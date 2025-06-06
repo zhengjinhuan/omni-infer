@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omni_infer"
+version = "0.1.0"
+description = "Omni Infer"
+authors = [
+    { name="Huawei" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    # Add dependencies here if needed, e.g. "numpy>=1.23"
+]
+
+[project.entry-points."vllm.platform_plugins"]
+npu = "omni.adaptors.vllm.platform:register"
+
+[project.entry-points."vllm.general_plugins"]
+npu_optimized_models = "omni.models:register_model"
+
+[tool.setuptools.packages.find]
+include = ["omni*"]

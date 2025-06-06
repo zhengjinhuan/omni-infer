@@ -1,0 +1,275 @@
+#!/bin/bash
+
+# Script to collect data from multiple nodes and transfer to target server
+# Then call separate_round.py script to organize the data
+
+print_usage() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+This script collects kernel_details.csv files from multiple nodes and transfers them to a target server.
+
+Required Options:
+    -s, --source SOURCE_PATH         Source directory path on each node
+    --dest-host DEST_HOST           Destination server address (use 'localhost' for local)
+    --dest-path DEST_PATH           Destination path on target server
+
+Optional Options:
+    -t, --target LOCAL_TARGET_PATH   Local target directory (default: same as source)
+    --node-rank NODE_RANK           Node rank number (default: 0)
+    --nnodes NNODES                Total number of nodes (default: 1)
+    --path-pattern PATTERN          File path pattern (default: devserver*/ASCEND_PROFILER_OUTPUT/kernel_details.csv)
+    --output-prefix PREFIX          Output file prefix (default: kernel_details)
+    --timestamp-position POS        Timestamp position for sorting (default: -3)
+    
+    --auth-type AUTH_TYPE          Authentication type: none, password, pem (default: none)
+    --pem-file PEM_FILE           PEM file path for SSH authentication
+    --ssh-user SSH_USER           SSH username (default: current user)
+    --ssh-port SSH_PORT           SSH port (default: 22)
+    
+    --separate-script SCRIPT_PATH   Path to separate_round.py script (default: ../tools/profiling/separate_round.py)
+    --files-per-round N            Number of files per round for separate_round.py (default: 8)
+
+Examples:
+    # Local collection without transfer
+    $0 -s /data/jobs --dest-host localhost --dest-path /data/collected
+
+    # Remote transfer with password authentication
+    $0 -s /data/jobs --dest-host 192.168.1.100 --dest-path /data/collected --auth-type password --ssh-user admin
+
+    # Remote transfer with PEM file
+    $0 -s /data/jobs --dest-host server.example.com --dest-path /data/collected --auth-type pem --pem-file ~/.ssh/key.pem
+
+    # With custom pattern
+    $0 -s /data/jobs --dest-host localhost --dest-path /data/collected --path-pattern "ma-job*/OUTPUT/kernel_*.csv"
+    
+    # With custom files per round
+    $0 -s /data/jobs --dest-host localhost --dest-path /data/collected --files-per-round 16
+
+EOF
+    exit 1
+}
+
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Assuming experiment/bin, so tools/profiling is at ../tools/profiling
+TOOLS_DIR="$(dirname "$SCRIPT_DIR")/tools/profiling"
+
+# Default values
+NODE_RANK=0
+NNODES=1
+PATH_PATTERN="devserver*/ASCEND_PROFILER_OUTPUT/kernel_details.csv"
+OUTPUT_PREFIX="kernel_details"
+TIMESTAMP_POSITION=-3
+AUTH_TYPE="none"
+SSH_USER=$(whoami)
+SSH_PORT=22
+SEPARATE_SCRIPT="$TOOLS_DIR/separate_round.py"
+FILES_PER_ROUND=8
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -s|--source)
+            SOURCE_PATH="$2"
+            shift 2
+            ;;
+        -t|--target)
+            LOCAL_TARGET_PATH="$2"
+            shift 2
+            ;;
+        --dest-host)
+            DEST_HOST="$2"
+            shift 2
+            ;;
+        --dest-path)
+            DEST_PATH="$2"
+            shift 2
+            ;;
+        --node-rank)
+            NODE_RANK="$2"
+            shift 2
+            ;;
+        --nnodes)
+            NNODES="$2"
+            shift 2
+            ;;
+        --path-pattern)
+            PATH_PATTERN="$2"
+            shift 2
+            ;;
+        --output-prefix)
+            OUTPUT_PREFIX="$2"
+            shift 2
+            ;;
+        --timestamp-position)
+            TIMESTAMP_POSITION="$2"
+            shift 2
+            ;;
+        --auth-type)
+            AUTH_TYPE="$2"
+            shift 2
+            ;;
+        --pem-file)
+            PEM_FILE="$2"
+            shift 2
+            ;;
+        --ssh-user)
+            SSH_USER="$2"
+            shift 2
+            ;;
+        --ssh-port)
+            SSH_PORT="$2"
+            shift 2
+            ;;
+        --separate-script)
+            SEPARATE_SCRIPT="$2"
+            shift 2
+            ;;
+        --files-per-round)
+            FILES_PER_ROUND="$2"
+            shift 2
+            ;;
+        -h|--help)
+            print_usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            print_usage
+            ;;
+    esac
+done
+
+# Check required parameters
+if [ -z "$SOURCE_PATH" ] || [ -z "$DEST_HOST" ] || [ -z "$DEST_PATH" ]; then
+    echo "Error: Missing required parameters"
+    print_usage
+fi
+
+# Set local target path if not specified
+if [ -z "$LOCAL_TARGET_PATH" ]; then
+    LOCAL_TARGET_PATH="$SOURCE_PATH"
+fi
+
+echo "Starting data collection..."
+echo "Source: $SOURCE_PATH"
+echo "Local target: $LOCAL_TARGET_PATH"
+echo "Destination: $DEST_HOST:$DEST_PATH"
+echo "Node rank: $NODE_RANK"
+
+# Step 1: Run extract_files_single_node.py locally
+EXTRACT_ARGS="-s \"$SOURCE_PATH\""
+[ ! -z "$LOCAL_TARGET_PATH" ] && EXTRACT_ARGS="$EXTRACT_ARGS -t \"$LOCAL_TARGET_PATH\""
+EXTRACT_ARGS="$EXTRACT_ARGS --node-rank $NODE_RANK"
+EXTRACT_ARGS="$EXTRACT_ARGS --path-pattern \"$PATH_PATTERN\""
+EXTRACT_ARGS="$EXTRACT_ARGS --output-prefix \"$OUTPUT_PREFIX\""
+EXTRACT_ARGS="$EXTRACT_ARGS --timestamp-position $TIMESTAMP_POSITION"
+
+echo "Running extract_files_single_node.py with args: $EXTRACT_ARGS"
+eval python "$TOOLS_DIR/extract_files_single_node.py" $EXTRACT_ARGS
+
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to extract files"
+    exit 1
+fi
+
+# Step 2: Transfer files to destination
+LOCAL_NODE_DIR="${LOCAL_TARGET_PATH}_node_${NODE_RANK}"
+
+if [ ! -d "$LOCAL_NODE_DIR" ]; then
+    echo "Error: Local directory $LOCAL_NODE_DIR not found"
+    exit 1
+fi
+
+# Function to check if destination is local
+is_local_destination() {
+    if [ "$DEST_HOST" == "localhost" ] || [ "$DEST_HOST" == "127.0.0.1" ]; then
+        return 0
+    fi
+    
+    # Check if destination host is actually this machine
+    local_ips=$(hostname -I 2>/dev/null | tr ' ' '\n')
+    local_hostname=$(hostname)
+    
+    # Check against all local IPs and hostname
+    for ip in $local_ips; do
+        if [ "$DEST_HOST" == "$ip" ]; then
+            return 0
+        fi
+    done
+    
+    if [ "$DEST_HOST" == "$local_hostname" ]; then
+        return 0
+    fi
+    
+    return 1
+}
+
+echo "Transferring files from $LOCAL_NODE_DIR to $DEST_HOST:$DEST_PATH"
+
+# Create destination directory structure
+if is_local_destination; then
+    # Local transfer
+    echo "Detected local destination, using direct copy"
+    mkdir -p "$DEST_PATH"
+    cp -r "$LOCAL_NODE_DIR" "$DEST_PATH/"
+    TRANSFER_STATUS=$?
+else
+    # Remote transfer
+    case "$AUTH_TYPE" in
+        "none")
+            SSH_OPTIONS="-p $SSH_PORT"
+            SCP_OPTIONS="-P $SSH_PORT"
+            ;;
+        "password")
+            SSH_OPTIONS="-p $SSH_PORT"
+            SCP_OPTIONS="-P $SSH_PORT"
+            echo "Note: You will be prompted for password"
+            ;;
+        "pem")
+            if [ -z "$PEM_FILE" ]; then
+                echo "Error: PEM file not specified for pem auth type"
+                exit 1
+            fi
+            if [ ! -f "$PEM_FILE" ]; then
+                echo "Error: PEM file not found: $PEM_FILE"
+                exit 1
+            fi
+            SSH_OPTIONS="-i $PEM_FILE -p $SSH_PORT"
+            SCP_OPTIONS="-i $PEM_FILE -P $SSH_PORT"
+            ;;
+        *)
+            echo "Error: Invalid auth type: $AUTH_TYPE"
+            exit 1
+            ;;
+    esac
+    
+    # Create remote directory
+    ssh $SSH_OPTIONS $SSH_USER@$DEST_HOST "mkdir -p $DEST_PATH"
+    
+    # Transfer files
+    scp $SCP_OPTIONS -r "$LOCAL_NODE_DIR" "$SSH_USER@$DEST_HOST:$DEST_PATH/"
+    TRANSFER_STATUS=$?
+fi
+
+if [ $TRANSFER_STATUS -ne 0 ]; then
+    echo "Error: Failed to transfer files"
+    exit 1
+fi
+
+echo "Files transferred successfully"
+
+# Create completion marker file
+MARKER_FILE=".transfer_complete_node_${NODE_RANK}"
+echo "$(date '+%Y-%m-%d %H:%M:%S')" > "$LOCAL_NODE_DIR/$MARKER_FILE"
+
+# Copy marker file to destination
+if is_local_destination; then
+    cp "$LOCAL_NODE_DIR/$MARKER_FILE" "$DEST_PATH/$(basename "$LOCAL_NODE_DIR")/"
+else
+    scp $SCP_OPTIONS "$LOCAL_NODE_DIR/$MARKER_FILE" "$SSH_USER@$DEST_HOST:$DEST_PATH/$(basename "$LOCAL_NODE_DIR")/"
+fi
+
+echo "Created transfer completion marker: $MARKER_FILE"
+
+echo "Data collection completed successfully"

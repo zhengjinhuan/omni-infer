@@ -1,0 +1,1 @@
+A collection of Ascend-optimized tools, offering disaggregated, large-scale, low-latency inference deployment, scheduler, and KV management, compatible with frameworks like vLLM, to streamline LLM deployment on Ascend hardware.

@@ -1,0 +1,104 @@
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 5bf90ca49..51e6689dd 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -214,6 +214,10 @@ class Scheduler(SchedulerInterface):
+                      request, request.num_computed_tokens, num_new_tokens,
+                      encoder_budget)
+ 
++            # By wcd, spec need fixup
++            if num_new_tokens == 0:
++                num_new_tokens = 1 + self.num_spec_tokens
++
+             if num_new_tokens == 0:
+                 # The request cannot be scheduled because one of the following
+                 # reasons:
+@@ -1006,5 +1010,5 @@ class Scheduler(SchedulerInterface):
+             self.finished_recving_kv_req_ids.add(req_id)
+         for req_id in (model_runner_output.finished_sending or ()):
+             logger.debug("Finished sending KV transfer for request %s", req_id)
+-            if req_id in self.requests:
++            if req_id in self.requests and req_id not in self._cached_reqs_data:
+                 self._free_blocks(self.requests[req_id])
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 4d5f4d3d1..7b403c9e6 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -38,6 +38,7 @@ from vllm.v1.request import Request, RequestStatus
+ from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
+ from vllm.v1.structured_output import StructuredOutputManager
+ from vllm.version import __version__ as VLLM_VERSION
++from concurrent.futures import ThreadPoolExecutor
+ 
+ logger = init_logger(__name__)
+ 
+@@ -115,6 +116,12 @@ class EngineCore:
+         self.batch_queue_size = self.model_executor.max_concurrent_batches
+         self.batch_queue: Optional[queue.Queue[tuple[Future[ModelRunnerOutput],
+                                                      SchedulerOutput]]] = None
++
++        self._slow_future = None
++        self._slow_executor = ThreadPoolExecutor(max_workers=1)
++        self.cur_batch = None
++        self.last_batch = None
++
+         if self.batch_queue_size > 1:
+             logger.info("Batch queue is enabled with size %d",
+                         self.batch_queue_size)
+@@ -211,18 +218,50 @@ class EngineCore:
+     def step(self) -> EngineCoreOutputs:
+         """Schedule, execute, and make output."""
+ 
+-        # Check for any requests remaining in the scheduler - unfinished,
+-        # or finished and not yet removed from the batch.
+         if not self.scheduler.has_requests():
++            self.cur_batch = None
++            self.last_batch = None
++            if self._slow_future is not None:
++                self._slow_future.cancel()
++            self._slow_future = None
+             return EngineCoreOutputs(
+                 outputs=[],
+                 scheduler_stats=self.scheduler.make_stats(),
+             )
+-        scheduler_output = self.scheduler.schedule()
+-        model_output = self.execute_model(scheduler_output)
+-        engine_core_outputs = self.scheduler.update_from_output(
+-            scheduler_output, model_output)  # type: ignore
+ 
++        engine_core_outputs = EngineCoreOutputs(
++                outputs=[],
++                scheduler_stats=self.scheduler.make_stats(),
++            )
++        self.cur_batch = self.scheduler.schedule()
++
++        output = None
++        if self._slow_future is not None:
++            output = self._slow_future.result()
++            for each_cached_req in self.cur_batch.scheduled_cached_reqs:
++                if each_cached_req.req_id in output.req_ids:
++                    req_id = output.req_id_to_index[each_cached_req.req_id]
++                    new_tokens = output.sampled_token_ids[req_id]
++                    spec_tokens = None
++                    len_spec_tokens = 0
++                    if output.spec_token_ids is not None:
++                        spec_tokens = output.spec_token_ids[req_id]
++                        len_spec_tokens = len(spec_tokens)
++                    if len(each_cached_req.new_token_ids) != self.cur_batch.num_scheduled_tokens[each_cached_req.req_id]:
++                        self.cur_batch.total_num_scheduled_tokens = self.cur_batch.total_num_scheduled_tokens - self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] + len(new_tokens) + len_spec_tokens
++                        self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] = len(new_tokens) + len_spec_tokens
++                        each_cached_req.new_token_ids = new_tokens[:]
++                        if spec_tokens is not None:
++                            self.cur_batch.scheduled_spec_decode_tokens[each_cached_req.req_id] = spec_tokens[:]
++
++        self._slow_future = self._slow_executor.submit(self.model_executor.execute_model, self.cur_batch)
++        time.sleep(0.005) # 5ms
++
++        if output is not None:
++            engine_core_outputs = self.scheduler.update_from_output(self.last_batch, output)
++
++        self.last_batch = self.cur_batch
++        # By wcd, return None or not?
+         return engine_core_outputs
+ 
+     def step_with_batch_queue(self) -> Optional[EngineCoreOutputs]:

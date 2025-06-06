@@ -1,0 +1,124 @@
+#!/bin/bash
+
+# PYTHON="/Users/kenzhang/wks/omni_planner/.venv/bin/python"
+PYTHON="python"
+
+# Get the directory where this script is located (experiments/bin)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Calculate the tools/profiling directory path
+PROF_TOOL="${SCRIPT_DIR}/../tools/profiling/prof_viz.py"
+
+# Function to display usage (without exit)
+show_usage() {
+    echo ""
+    echo "Usage: heatmap --main-path PATH [OPTIONS]"
+    echo ""
+    echo "Generate heatmaps for CSV files with dynamic scaling."
+    echo ""
+    echo "Required arguments:"
+    echo "  --main-path PATH         Main directory path to search for files"
+    echo ""
+    echo "Optional arguments:"
+    echo "  --file-pattern PATTERN   File pattern to match (default: round_*/analysis/*_step_*.csv)"
+    echo "  --custom-rescale MODE    Rescaling method: false, by-operator, user-defined"
+    echo "                          (default: false)"
+    echo "  --rescale-factor VALUE   Rescale factor (required when custom-rescale is user-defined)"
+    echo ""
+    echo "Examples:"
+    echo "  heatmap --main-path /path/to/data"
+    echo "  heatmap --main-path /path/to/data --custom-rescale by-operator"
+    echo "  heatmap --main-path /path/to/data --custom-rescale user-defined --rescale-factor 1000"
+    echo ""
+}
+
+# Function to display usage and exit
+usage() {
+    show_usage
+    exit 1
+}
+
+# Check if no arguments are provided
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+# Initialize variables
+MAIN_PATH=""
+FILE_PATTERN="round_*/analysis/*_step_*.csv"
+CUSTOM_RESCALE="false"
+RESCALE_FACTOR=""
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --main-path)
+            if [ $# -lt 2 ]; then
+                echo -e "\033[31mError: --main-path requires a path.\033[0m"
+                usage
+            fi
+            MAIN_PATH="$2"
+            shift 2
+            ;;
+        --file-pattern)
+            if [ $# -lt 2 ]; then
+                echo -e "\033[31mError: --file-pattern requires a pattern.\033[0m"
+                usage
+            fi
+            FILE_PATTERN="$2"
+            shift 2
+            ;;
+        --custom-rescale)
+            if [ $# -lt 2 ]; then
+                echo -e "\033[31mError: --custom-rescale requires a mode.\033[0m"
+                usage
+            fi
+            if [[ ! "$2" =~ ^(false|by-operator|user-defined)$ ]]; then
+                echo -e "\033[31mError: --custom-rescale must be 'false', 'by-operator', or 'user-defined'.\033[0m"
+                usage
+            fi
+            CUSTOM_RESCALE="$2"
+            shift 2
+            ;;
+        --rescale-factor)
+            if [ $# -lt 2 ]; then
+                echo -e "\033[31mError: --rescale-factor requires a value.\033[0m"
+                usage
+            fi
+            RESCALE_FACTOR="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo -e "\033[31mError: Unknown option '$1'\033[0m"
+            usage
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$MAIN_PATH" ]; then
+    echo -e "\033[31mError: --main-path is required.\033[0m"
+    usage
+fi
+
+# Validate main path exists
+if [ ! -d "$MAIN_PATH" ]; then
+    echo -e "\033[31mError: Main path '$MAIN_PATH' does not exist or is not a directory.\033[0m"
+    exit 1
+fi
+
+# Validate rescale factor when needed
+if [ "$CUSTOM_RESCALE" = "user-defined" ] && [ -z "$RESCALE_FACTOR" ]; then
+    echo -e "\033[31mError: --rescale-factor is required when --custom-rescale is 'user-defined'.\033[0m"
+    usage
+fi
+
+# Build and execute the command directly
+echo "Executing heatmap generation..."
+"$PYTHON" "$PROF_TOOL" \
+    --main-path "$MAIN_PATH" \
+    --file-pattern "$FILE_PATTERN" \
+    --custom-rescale "$CUSTOM_RESCALE" \
+    ${RESCALE_FACTOR:+--rescale-factor "$RESCALE_FACTOR"}

@@ -1,0 +1,8 @@
+setuptools==80.0.0
+pytest-html
+coverage
+pytest-env
+requests
+pytest-xdist
+openpyxl
+pytest-repeat
