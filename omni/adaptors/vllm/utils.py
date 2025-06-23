@@ -17,7 +17,10 @@
 # Adapted from vllm-project/vllm/vllm/worker/worker.py
 #
 
+import gc
+import os
 import math
+import shutil
 from typing import TYPE_CHECKING
 
 import torch
@@ -39,7 +42,8 @@ else:
 MAX_CAPTURE_SIZE = 1920
 
 ASCEND_QUATIZATION_METHOD = "ascend"
-
+BLOCK_NUM_CACHE_PATH_NAME = ".block_nums"
+BLOCK_NUM_CACHE_FILE_NAME = "block_num"
 
 def try_register_lib(lib_name: str, lib_info: str = ""):
     import importlib
@@ -159,3 +163,71 @@ def update_aclgraph_sizes(vllm_config: VllmConfig) -> None:
             "No adjustment needed for ACL graph batch sizes: %s model (layers: %d) with %d sizes",
             vllm_config.model_config.architectures[0], num_hidden_layers,
             len(original_sizes))
+
+def get_current_work_dir(file_name=None):
+    if file_name is None:
+        return envs.TORCHAIR_CACHE_HOME
+    return os.path.join(envs.TORCHAIR_CACHE_HOME, file_name)   
+
+def check_torchair_cache_exists():
+    res = False
+    torch_air_abs_path = get_current_work_dir()
+    try:
+        if os.path.exists(torch_air_abs_path):
+           file_list = os.listdir(torch_air_abs_path)
+           if len(file_list) != 0:
+               res = True
+    except PermissionError:
+        logger.debug("No permission to read the torchair graph cache file")
+    return res   
+
+def check_block_num_cache_exist():
+    res = False
+    block_num_cache_abs_path = get_current_work_dir(BLOCK_NUM_CACHE_PATH_NAME)
+    try:
+        if os.path.exists(block_num_cache_abs_path):
+           file_list = os.listdir(block_num_cache_abs_path)
+           if len(file_list) != 0:
+               res = True
+    except PermissionError:
+        logger.debug("No permission to read the block num cache file")
+    return res 
+
+def read_block_num_from_file(rank):
+    block_bytes = -1
+    block_num_cache_abs_path = get_current_work_dir(BLOCK_NUM_CACHE_PATH_NAME)
+    try:
+        block_num_file = os.path.join(block_num_cache_abs_path, f"{rank}_{BLOCK_NUM_CACHE_FILE_NAME}")
+        with open(block_num_file, "r", encoding="utf-8") as f:
+             block_bytes = int(f.readline())
+    except Exception:
+        logger.debug("Failed to read the %d block num cache file", rank)
+    return block_bytes
+
+def write_block_num_to_file(rank, block_bytes):
+    block_num_cache_abs_path = get_current_work_dir(BLOCK_NUM_CACHE_PATH_NAME)
+    if not os.path.exists(block_num_cache_abs_path):
+        try:
+           os.makedirs(block_num_cache_abs_path)
+        except Exception:
+           logger.debug("Path %s has created", block_num_cache_abs_path)     
+    try:
+        block_num_file = os.path.join(block_num_cache_abs_path, f"{rank}_{BLOCK_NUM_CACHE_FILE_NAME}")
+        with open(block_num_file, "w", encoding="utf-8") as f:
+            f.write(f"{block_bytes}")    
+    except Exception:
+        logger.debug("Failed to write block num into file:%s", block_num_file)
+        
+def delete_torchair_cache_file():
+    torch_air_abs_path = get_current_work_dir()
+    if os.path.exists(torch_air_abs_path):
+        try:
+           shutil.rmtree(torch_air_abs_path)
+        except Exception:
+            logger.debug("Failed to remove the file:%s", torch_air_abs_path)
+ 
+def clear_var(*need_clear_tensors):
+    for t in need_clear_tensors:
+        del t
+    gc.collect()
+    torch.npu.empty_cache()

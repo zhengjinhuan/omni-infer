@@ -52,6 +52,10 @@ env_variables: Dict[str, Callable[[], Any]] = {
     lambda: os.getenv("VLLM_VERSION", None),
     "GLOBAL_RANKTABLE":
     lambda: os.getenv("GLOBAL_RANKTABLE", None),
+    "MODEL_EXTRA_CFG_PATH":
+    lambda: os.getenv("MODEL_EXTRA_CFG_PATH", ""),
+    "TORCHAIR_CACHE_HOME":
+    lambda: os.getenv("TORCHAIR_CACHE_HOME", os.path.join(os.getcwd(), ".torchair_cache"))    
 }
 
 # end-env-vars-definition

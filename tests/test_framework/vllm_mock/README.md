@@ -150,6 +150,20 @@ To run without NPUs, in case of manual install, apply the required patches to vl
 cd ../vllm_ascend
 git apply ../vllm_mock/vllm_ascend_no_npu.patch
 ```
+For installation, if you do not have anything installed and no NPU, do the following:
+1. Install CANN toolkit and CANN nnal, e.g., https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.1.RC1/Ascend-cann-toolkit_8.1.RC1_linux-x86_64.run and https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%208.1.RC1/Ascend-cann-nnal_8.1.RC1_linux-x86_64.run
+2. Set the environments for CANN, and maybe also install CANN driver, unsure if needed, e.g. (wrong architecture but works), https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Ascend%20HDK/Ascend%20HDK%2024.1.RC2/Ascend-hdk-910b-npu-driver_24.1.rc2_linux-aarch64.run
+3. Install vllm, e.g.
+git clone --recurse-submodules -b omni_infer_v1 ssh://git@codehub-dg-g.huawei.com:2222/DataScience/omni_infer.git
+cd omni_infer/infer_engines/
+sh bash_install_mock_no_npus.sh
+cd vllm
+SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e .
+4. pip3 install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+5. pip3 install torch-npu==2.5.1
+6. pip install ray decorator cloudpickle tornado absl-py ml-dtypes attrs psutil scipy jinja2 latex2sympy2 word2number timeout_decorator "numpy<2" setuptools_scm cmake msgpack pybind11 quart
+7. CMAKE_MODULE_PATH=/root/venv/lib/python3.10/site-packages/torch/share/cmake/Torch/ CMAKE_PREFIX_PATH=/root/venv/lib/python3.10/site-packages/torch/share/cmake/Torch/ pip install -e . --no-build-isolation
+
 Then start the API server (set ASCEND_RT_VISIBLE_DEVICES as if you had enough NPUs, and also set env variable NO_NPU_MOCK):
 ```bash
 python ./scripts/vllm_serve_no_npu.py

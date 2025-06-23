@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -509,7 +512,7 @@ void gen_prefill_json_str_jsmn(
     return;
 }
 
-static void ngx_http_gen_prefill_request_body(
+static ngx_int_t ngx_http_gen_prefill_request_body(
     ngx_http_request_t *r, ngx_http_request_t *sr, ngx_http_prefill_ctx_t *ctx)
 {
     ngx_chain_t *cl;
@@ -521,8 +524,7 @@ static void ngx_http_gen_prefill_request_body(
 
     if (r->request_body == NULL || r->request_body->bufs == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: request body is empty");
-        ngx_http_finalize_request(r, NGX_ERROR);
-        return;
+        return NGX_ERROR;
     }
 
     // Calculate total body size from the main request
@@ -537,15 +539,14 @@ static void ngx_http_gen_prefill_request_body(
 
     if (len == 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: request body length is zero");
-        return;
+        return NGX_ERROR;
     }
 
     // Allocate memory for the temporary body copy + null terminator
     body_data = ngx_palloc(r->pool, len + 1);
     if (body_data == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: failed to allocate memory for body");
-        ngx_http_finalize_request(r, NGX_ERROR);
-        return;
+        return NGX_ERROR;
     }
 
     ctx->origin_body_data = body_data;  // record body data for decode request
@@ -567,8 +568,7 @@ static void ngx_http_gen_prefill_request_body(
                         "prefill: failed to read body from file, expected %uz, got %z",
                         buf_size,
                         n);
-                    ngx_http_finalize_request(r, NGX_ERROR);
-                    return;
+                    return NGX_ERROR;
                 }
                 p += buf_size;
             }
@@ -587,7 +587,7 @@ static void ngx_http_gen_prefill_request_body(
     size_t str_len = 0;
     gen_prefill_json_str_jsmn(sr, ctx, (char *)body_data, len, &modified_json_str, &str_len);
     if (modified_json_str == NULL || str_len == 0) {
-        return;
+        return NGX_ERROR;
     }
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP,
@@ -600,8 +600,7 @@ static void ngx_http_gen_prefill_request_body(
     b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
     if (b == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: failed to ngx_pcalloc buf");
-        ngx_http_finalize_request(r, NGX_ERROR);
-        return;
+        return NGX_ERROR;
     }
     b->pos = (u_char *)modified_json_str;
     b->last = b->pos + str_len;
@@ -613,8 +612,7 @@ static void ngx_http_gen_prefill_request_body(
     ngx_chain_t *new_chain = ngx_alloc_chain_link(sr->pool);
     if (new_chain == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: failed to allocate chain link");
-        ngx_http_finalize_request(r, NGX_ERROR);
-        return;
+        return NGX_ERROR;
     }
     new_chain->buf = b;
     new_chain->next = NULL;
@@ -624,8 +622,7 @@ static void ngx_http_gen_prefill_request_body(
         sr->request_body = ngx_pcalloc(sr->pool, sizeof(ngx_http_request_body_t));
         if (sr->request_body == NULL) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: failed to allocate request_body_t");
-            ngx_http_finalize_request(r, NGX_ERROR);
-            return;
+            return NGX_ERROR;
         }
     }
 
@@ -650,6 +647,7 @@ static void ngx_http_gen_prefill_request_body(
             sr->headers_in.content_length->value.data;
     }
     sr->request_length = str_len;
+    return NGX_DONE;
 }
 
 static void ngx_http_prefill_request_modify_handler(ngx_http_request_t *r)
@@ -703,8 +701,9 @@ static void ngx_http_prefill_request_modify_handler(ngx_http_request_t *r)
     headers_in->content_length_n = r->headers_in.content_length_n;
     headers_in->content_type = r->headers_in.content_type;
 
-    // Set the request body for the subrequest
-    ngx_http_gen_prefill_request_body(r, sr, ctx);
+    // Set the request body for the subrequest, call ngx_http_finalize_request to count--,
+    // otherwise connection under the hood will be left unclosed
+    ngx_http_finalize_request(r, ngx_http_gen_prefill_request_body(r, sr, ctx));
 }
 
 static ngx_int_t ngx_http_prefill_handler(ngx_http_request_t *r)

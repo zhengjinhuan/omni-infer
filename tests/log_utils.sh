@@ -4,9 +4,6 @@
 
 set -e
 
-# IP 
-IP=`hostname -I | awk '{print $1}'`
-
 # 日志颜色定义
 INFO_COLOR='\033[32m'
 WARNING_COLOR='\033[33m'
@@ -17,17 +14,17 @@ RESET='\033[0m'
 log() {
     local level="$1"
     local message="$2"
-    local datetime=$(date +"%Y-%m-%d %H:%M:%S")
+    local datetime=$(date -u +"%Y-%m-%d %H:%M:%S" --date='+8 hours')
 
     case "$level" in
         INFO)
-            echo -e "${INFO_COLOR}${datetime} [$IP] [INFO] ${message}${RESET}"
+            echo -e "${INFO_COLOR}${datetime} [INFO] ${message}${RESET}"
             ;;
         WARNING)
-            echo -e "${WARNING_COLOR}${datetime} [$IP] [WARNING] ${message}${RESET}"
+            echo -e "${WARNING_COLOR}${datetime} [WARNING] ${message}${RESET}"
             ;;
         ERROR)
-            echo -e "${ERROR_COLOR}${datetime} [$IP] [ERROR] ${message}${RESET}"
+            echo -e "${ERROR_COLOR}${datetime} [ERROR] ${message}${RESET}"
             ;;
         *)
             echo "${datetime} [${level}] ${message}"

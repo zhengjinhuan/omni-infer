@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -50,7 +53,7 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
         }
     }
 
-    // 创建新的Header结构
+    // Create a new Header structure
     h = ngx_list_push(&r->headers_in.headers);
     if (h == NULL) {
         return NGX_ERROR;
@@ -59,7 +62,7 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
     unsigned char uuid[UUID_STR_LEN];
     gen_uuid(uuid);
 
-    // 设置Header的key和value
+    // Set the key and value of the header
     p = ngx_palloc(r->pool, sizeof(x_request_id));
     if (p == NULL) {
         return NGX_ERROR;
@@ -117,9 +120,9 @@ static ngx_http_module_t ngx_http_set_request_id_module_ctx = {
 };
 
 ngx_module_t ngx_http_set_request_id_module = {NGX_MODULE_V1,
-    &ngx_http_set_request_id_module_ctx,  // 模块上下文
-    NULL,                                 // 模块指令
-    NGX_HTTP_MODULE,                      // 模块类型
+    &ngx_http_set_request_id_module_ctx,  // Module context
+    NULL,                                 // Module instructions
+    NGX_HTTP_MODULE,                      // Module type
     NULL,                                 // init master
     NULL,                                 // init module
     NULL,                                 // init process

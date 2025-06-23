@@ -64,4 +64,4 @@ def vocab_parallel_embedding_forward(self, input_):
     return output
 
 
-VocabParallelEmbedding.forward = vocab_parallel_embedding_forward
+

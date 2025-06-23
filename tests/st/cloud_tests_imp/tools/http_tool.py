@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 # -*- coding: UTF-8 -*-
 
 import requests
@@ -5,9 +8,7 @@ import json
 import os
 import re
 
-import logging
-
-logger = logging.getLogger(__name__)
+from tools.logger_tool import logger
 
 
 # 发送一些非json的数据的这个方法可以
@@ -20,7 +21,7 @@ def send_request(data, headers):
 
         # payload = tmp.encode("utf-8").decode("latin1")
         payload = tmp.encode("utf-8")
-        response = requests.request("POST", url, data=payload, headers=headers, verify=False)
+        response = requests.request("POST", url, data=payload, headers=headers, verify=False, timeout=80)
         logger.info(f"用例{case_name},返回码: {response.status_code}")
         logger.info(f"用例{case_name},返回体: {response.text}")
     except Exception as e:
@@ -46,7 +47,7 @@ def send_request_json(data):
     logger.info(f"用例{case_name},body: {payload}")
     payload = json.dumps(payload)
 
-    response = requests.request("POST", url, data=payload, headers=headers, verify=False)
+    response = requests.request("POST", url, data=payload, headers=headers, verify=False, timeout=80)
     logger.info(f"用例{case_name},返回码: {response.status_code}")
     logger.info(f"用例{case_name},返回体: {response.text}")
 

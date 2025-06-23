@@ -1,11 +1,12 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 # -*- coding: UTF-8 -*-
 import pytest
 import os
 import datetime
 
-import logging
-
-logger = logging.getLogger(__name__)
+from tools.logger_tool import logger
 
 
 def add_timestamp_to_filename(filename):
@@ -36,15 +37,7 @@ if __name__ == '__main__':
     parser.add_argument('--api_key', type=str, help='秘钥')
 
     args = parser.parse_args()
-    logger.info(args.url)
-    logger.info(args.model_name)
-    logger.info(args.max_fail)
-    logger.info(args.parallel_num)
-    logger.info(args.case_type)
-    logger.info(args.case_level)
-    logger.info(args.case_time)
-    logger.info(args.model_architecture)
-    logger.info(args.api_key)
+    logger.info(f"启动参数：\n{args}")
     os.environ["case_type"] = args.case_type
     os.environ["model_architecture"] = args.model_architecture
     if args.case_time == 'fast':
@@ -63,3 +56,5 @@ if __name__ == '__main__':
          f"--html=./report/{report_name}.html",
          f"--args={args.url},{args.model_name},{args.api_key}", "--dist=load",
          f"--log-file=./report/pytest_{current_time}.log"])
+
+    logger.warning("华为云功能用例执行结束")

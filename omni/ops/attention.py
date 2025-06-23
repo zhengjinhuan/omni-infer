@@ -19,7 +19,7 @@ from typing import List, Optional
 
 import torch
 from vllm.model_executor.layers.linear import ColumnParallelLinear
-
+from vllm.platforms import current_platform
 
 # Implementation of vanilla chunked prefill, should be removed after the kernel is ready for
 # all the corner case
@@ -61,9 +61,9 @@ def vanilla_chunked_prefill(
     seqlen_k = seqlen_k.view(-1, 1)
     seqlen_diff = seqlen_k - seqlen_q
     q_idx_mask = (torch.arange(0, max_seqlen_q,
-                               device="npu").view(1, -1).repeat(num_batch, 1))
+                               device=current_platform.device_type).view(1, -1).repeat(num_batch, 1))
     k_idx_mask = (torch.arange(0, max_seqlen_k,
-                               device="npu").view(1, -1).repeat(num_batch, 1))
+                               device=current_platform.device_type).view(1, -1).repeat(num_batch, 1))
     q_mask = q_idx_mask < seqlen_q
     k_mask = k_idx_mask < seqlen_k
 
@@ -72,28 +72,28 @@ def vanilla_chunked_prefill(
 
     # generate causal mask [batch, max_seqlen_q, max_seqlen_k]
     tril_mask = torch.tril(torch.ones(max_seqlen_k, max_seqlen_k,
-                                      device="npu"))
+                                      device=current_platform.device_type))
     tril_mask[tril_mask == 0] = float("-inf")
     tril_mask[tril_mask == 1] = 0
     causal_mask = tril_mask[causal_mask_idx]
     causal_mask_padding = torch.empty([num_batch, max_seqlen_q, max_seqlen_k],
-                                      device="npu").fill_(float("-inf"))
+                                      device=current_platform.device_type).fill_(float("-inf"))
     causal_mask_padding[q_mask] = causal_mask
     causal_mask_padding = causal_mask_padding.unsqueeze(1)
 
     pad_q = torch.zeros(
         [num_batch, max_seqlen_q, num_query_heads, head_dim],
-        device="npu",
+        device=current_platform.device_type,
         dtype=query.dtype,
     )
     pad_k = torch.zeros(
         [num_batch, max_seqlen_k, num_kv_heads, head_dim],
-        device="npu",
+        device=current_platform.device_type,
         dtype=key.dtype,
     )
     pad_v = torch.zeros(
         [num_batch, max_seqlen_k, num_kv_heads, head_dim],
-        device="npu",
+        device=current_platform.device_type,
         dtype=value.dtype,
     )
     pad_q[q_mask] = query
@@ -114,7 +114,7 @@ def vanilla_chunked_prefill(
     pad_k = pad_k.permute(0, 2, 1, 3)
     pad_v = pad_v.permute(0, 2, 1, 3)
     attn_mask = torch.empty([num_batch, 1, 1, max_seqlen_k],
-                            device="npu").fill_(float("-inf"))
+                            device=current_platform.device_type).fill_(float("-inf"))
     attn_mask[:, :, :, :max_seqlen_k].masked_fill_(k_mask[:, None, None, :], 0)
     attn_weights = torch.einsum("bhqd,bhkd->bhqk", pad_q, pad_k)
     attn_weights *= scale
@@ -178,14 +178,14 @@ def vanilla_chunked_prefill_mla(
         [k_nope, cache_k_pe.unsqueeze(2).expand(-1, -1, num_heads, -1)],
         dim=-1)
 
-    context_lens = context_lens.view(-1, 1).to("npu")
-    query_lens = query_lens.view(-1, 1).to("npu")
+    context_lens = context_lens.view(-1, 1).to(current_platform.device_type)
+    query_lens = query_lens.view(-1, 1).to(current_platform.device_type)
     seq_diff = context_lens - query_lens
 
     q_idx_mask = (torch.arange(0, max_query_len,
-                               device="npu").view(1, -1).repeat(batch_size, 1))
+                               device=current_platform.device_type).view(1, -1).repeat(batch_size, 1))
     kv_c_idx_mask = (torch.arange(0, max_context_len,
-                                  device="npu").view(1,
+                                  device=current_platform.device_type).view(1,
                                                      -1).repeat(batch_size, 1))
     kv_c_mask = kv_c_idx_mask < context_lens
     q_mask = q_idx_mask < query_lens
@@ -195,30 +195,30 @@ def vanilla_chunked_prefill_mla(
 
     # generate causal mask [batch, max_seqlen_q, max_seqlen_k]
     tril_mask = torch.tril(
-        torch.ones(max_context_len, max_context_len, device="npu"))
+        torch.ones(max_context_len, max_context_len, device=current_platform.device_type))
     tril_mask[tril_mask == 0] = float("-inf")
     tril_mask[tril_mask == 1] = 0
     causal_mask = tril_mask[causal_mask_idx]
     causal_mask_padding = torch.empty(
         [batch_size, max_query_len, max_context_len],
-        device="npu").fill_(float("-inf"))
+        device=current_platform.device_type).fill_(float("-inf"))
     causal_mask_padding[q_mask] = causal_mask
     # to [batch, num_heads, max_seqlen_q, max_seqlen_k]
     causal_mask_padding = causal_mask_padding.unsqueeze(1)
 
     pad_q = torch.zeros(
         [batch_size, max_query_len, num_heads, rope_dim + nope_dim],
-        device="npu",
+        device=current_platform.device_type,
         dtype=query.dtype,
     )
     pad_k = torch.zeros(
         [batch_size, max_context_len, num_heads, rope_dim + nope_dim],
-        device="npu",
+        device=current_platform.device_type,
         dtype=key.dtype,
     )
     pad_v = torch.zeros(
         [batch_size, max_context_len, num_heads, v_head_dim],
-        device="npu",
+        device=current_platform.device_type,
         dtype=value.dtype,
     )
     pad_q[q_mask] = query
@@ -229,7 +229,7 @@ def vanilla_chunked_prefill_mla(
     pad_k = pad_k.permute(0, 2, 1, 3)
     pad_v = pad_v.permute(0, 2, 1, 3)
     attn_mask = torch.empty([batch_size, 1, 1, max_context_len],
-                            device="npu").fill_(float("-inf"))
+                            device=current_platform.device_type).fill_(float("-inf"))
     attn_mask[:, :, :, :max_context_len].masked_fill_(
         kv_c_mask[:, None, None, :], 0)
     # [b, h, f, t]
@@ -270,14 +270,14 @@ def vanilla_decode_mla(
     kv_c_and_pe = key_cache[block_table].view(
         [batch_size, max_block_size * block_size, num_kv_heads, reduce_dim])
     max_context_len = max(context_lens)
-    context_lens = torch.tensor(context_lens, device="npu").view(batch_size, 1)
+    context_lens = torch.tensor(context_lens, device=current_platform.device_type).view(batch_size, 1)
     # [batch_size, max_context_len, num_kv_heads, latent_dim + rope_dim]
     # since the kv head is 1 in deepseek, we use expand here for perf
     kv_c_and_pe = kv_c_and_pe[:, :max_context_len, :, :].expand(
         -1, -1, num_heads, 1)
     kv_c = kv_c_and_pe[..., :latent_dim]
     kv_idx_mask = (torch.arange(0, max_context_len,
-                                device="npu").view(1,
+                                device=current_platform.device_type).view(1,
                                                    -1).repeat(batch_size, 1))
     # [batch_size, max_context_len]
     kv_idx_mask = kv_idx_mask < context_lens

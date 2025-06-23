@@ -1,7 +1,12 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 # -*- coding: UTF-8 -*-
 import logging
 import os.path
 import sys
+
+
 def init_logger():
     # 创建日志记录器
     print("======================init logger")
@@ -35,5 +40,4 @@ def init_logger():
     return logger
 
 
-# logger = init_logger();
-# logger.info("init_logger+++++++++++++++++++++")
+logger = init_logger()

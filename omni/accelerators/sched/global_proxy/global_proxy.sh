@@ -1,4 +1,7 @@
 #!/bin/bash
+NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
+export PATH=${NGINX_SBIN_PATH}:${PATH}
+
 if grep -qaE 'docker|kubepods|containerd' /proc/1/cgroup || [ -f /.dockerenv ]; then
     IN_CONTAINER=true
 else
@@ -44,14 +47,62 @@ function os_configuration() {
 }
 
 function rollback_os_config() {
-    \cp /etc/security/limits.conf_bak /etc/security/limits.conf
-    \cp /etc/sysctl.conf_bak /etc/sysctl.conf
-    \cp /etc/sysconfig/selinux_bak /etc/sysconfig/selinux
+    if [[ -f "/etc/security/limits.conf_bak" ]]; then
+        \cp /etc/security/limits.conf_bak /etc/security/limits.conf
+    fi
+
+    if [[ -f "/etc/sysctl.conf_bak" ]]; then
+        \cp /etc/sysctl.conf_bak /etc/sysctl.conf
+    fi
+
+    if [[ -f "/etc/sysconfig/selinux_bak" ]]; then
+        \cp /etc/sysconfig/selinux_bak /etc/sysconfig/selinux
+    fi
 }
 
 #########################
 ## nginx configuration ##
 #########################
+
+function create_default_nginx_conf() {
+    local nginx_conf_file="$1"
+
+    cat <<EOF > $nginx_conf_file
+
+worker_processes  1;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    server {
+        listen       80;
+        server_name  localhost;
+
+        location / {
+            root   html;
+            index  index.html index.htm;
+        }
+
+        #error_page  404              /404.html;
+
+        # redirect server error pages to the static page /50x.html
+        #
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   html;
+        }
+    }
+}
+EOF
+}
 
 function nginx_set_worker_processes() {
     local nginx_conf_file="$1"
@@ -116,6 +167,25 @@ function nginx_set_worker_cpu_affinity() {
             sed -i "1i ${affinity_line}" "$nginx_conf_file"
         fi
     fi
+}
+
+function nginx_set_error_log() {
+    local nginx_conf_file="$1"
+    local log_file="$2"
+    local log_level="$3"
+    local error_log_line="error_log $log_file $log_level;"
+
+    if [[ -z $log_file ]]; then
+        return
+    fi
+
+    # Check if log_file's directory exists, create it if not
+    log_dir=$(dirname "$log_file")
+    if [[ ! -d "$log_dir" ]]; then
+        mkdir -p "$log_dir"
+    fi
+
+    sed -i "1i ${error_log_line}" "$nginx_conf_file"
 }
 
 function nginx_set_worker_rlimit_nofile() {
@@ -210,15 +280,8 @@ function nginx_set_http_config() {
     local keep_alive_requests_line="keepalive_requests 2000;"
     local client_header_buffer_size_line="client_header_buffer_size 512k;"
     local large_client_header_buffers_line="large_client_header_buffers 4 512k;"
-    local server_names_hash_bucket_size_line="server_names_hash_bucket_size 128;"
     local client_body_buffer_size_line="client_body_buffer_size 128K;"
     local client_max_body_size_line="client_max_body_size 100m;"
-    local open_file_cache_errors_line="open_file_cache_errors on;"
-    local open_file_cache_min_uses_line="open_file_cache_min_uses 1;"
-    local open_file_cache_valid_line="open_file_cache_valid 50s;"
-    local open_file_cache_max_line="open_file_cache max=102400 inactive=40s;"
-    local proxy_connect_timeout_line="proxy_connect_timeout 600s;"
-    local proxy_send_timeout_line="proxy_send_timeout 600s;"
     local proxy_read_timeout_line="proxy_read_timeout 600s;"
     local subrequest_output_buffer_size_line="subrequest_output_buffer_size 1m;"
 
@@ -233,15 +296,8 @@ function nginx_set_http_config() {
     nginx_set_http_config_with_sed $nginx_conf_file "$keep_alive_requests_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$client_header_buffer_size_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$large_client_header_buffers_line"
-    nginx_set_http_config_with_sed $nginx_conf_file "$server_names_hash_bucket_size_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$client_body_buffer_size_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$client_max_body_size_line"
-    nginx_set_http_config_with_sed $nginx_conf_file "$open_file_cache_errors_line"
-    nginx_set_http_config_with_sed $nginx_conf_file "$open_file_cache_min_uses_line"
-    nginx_set_http_config_with_sed $nginx_conf_file "$open_file_cache_valid_line"
-    nginx_set_http_config_with_sed $nginx_conf_file "$open_file_cache_max_line" "open_file_cache "
-    nginx_set_http_config_with_sed $nginx_conf_file "$proxy_connect_timeout_line"
-    nginx_set_http_config_with_sed $nginx_conf_file "$proxy_send_timeout_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$proxy_read_timeout_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$subrequest_output_buffer_size_line"
 }
@@ -272,7 +328,13 @@ function nginx_set_upstream() {
     done
 
     # Compose new upstream block with 8 spaces indentation
-    local upstream_block="    upstream $upstream_name {\n        #length_balance;\n        keepalive 32;\n${upstream_servers}    }"
+    local upstream_block="    upstream $upstream_name {
+        #length_balance;
+        zone backend 64k;
+        least_conn;
+        keepalive 32;
+${upstream_servers}
+    }"
 
     # Remove existing upstream block (simple, not foolproof for nested/complex configs)
     awk -v name="$upstream_name" '
@@ -379,11 +441,15 @@ function nginx_configuration() {
     local listen_port="$4"
     local prefill_servers_list="$5"
     local decode_servers_list="$6"
+    local log_file="$7"
+    local log_level="$8"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
+    create_default_nginx_conf $nginx_conf_file
     nginx_set_worker_processes $nginx_conf_file $core_num
     # nginx_set_worker_cpu_affinity $nginx_conf_file $start_core_index $core_num
     nginx_set_worker_rlimit_nofile $nginx_conf_file
+    nginx_set_error_log $nginx_conf_file $log_file $log_level
     nginx_set_events_config $nginx_conf_file
     nginx_set_http_config $nginx_conf_file
     nginx_set_listen_port $nginx_conf_file $listen_port
@@ -396,8 +462,11 @@ function nginx_configuration() {
 
 function rollback_nginx_config() {
     local nginx_conf_file="$1"
+    local backup_file="$nginx_conf_file"_bak
 
-    \cp "$nginx_conf_file"_bak $nginx_conf_file
+    if [[ -f "$backup_file" ]]; then
+        \cp "$backup_file" $nginx_conf_file
+    fi
 }
 
 function stop_global_proxy() {
@@ -432,6 +501,8 @@ prefill_servers_list=""
 decode_servers_list=""
 stop=false
 rollback=false
+log_file=""
+log_level=""
 
 print_help() {
     echo "Usage:"
@@ -444,6 +515,8 @@ print_help() {
     echo "  --listen-port <PORT>,   -p <PORT>          Listening port"
     echo "  --prefill-servers-list <list>              Comma-separated backend servers for prefill (required to start proxy)"
     echo "  --decode-servers-list <list>               Comma-separated backend servers for decode (required to start proxy)"
+    echo "  --log-file <path>,      -l <path>          Log file path"
+    echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
     echo "  --help,                -h                  Show this help message"
@@ -452,7 +525,8 @@ print_help() {
     echo "  Start global proxy:"
     echo "    $0 --listen-port 8080 \\"
     echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
-    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002"
+    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
+    echo "       --log-file /var/log/proxy.log --log-level info"
     echo ""
     echo "  Stop global proxy:"
     echo "    $0 -S"
@@ -486,6 +560,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --decode-servers-list)
             decode_servers_list="$2"
+            shift 2
+            ;;
+        --log-file|-l)
+            log_file="$2"
+            shift 2
+            ;;
+        --log-level)
+            log_level="$2"
             shift 2
             ;;
         --stop|-S)
@@ -522,7 +604,7 @@ if ! [[ "$listen_port" =~ ^[0-9]+$ ]] || [[ "$listen_port" -lt 1024 || "$listen_
 fi
 
 function do_start() {
-    nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list"
+    nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"
     if [ "$IN_CONTAINER" = false ]; then
         os_configuration
     fi

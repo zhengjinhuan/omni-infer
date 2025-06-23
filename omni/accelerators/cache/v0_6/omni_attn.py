@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from typing import List, Tuple, Union, Optional, Dict, Type
 from typing_extensions import override
@@ -34,6 +23,7 @@ from vllm.attention.backends import utils as attn_utils
 from vllm.sequence import SequenceStatus
 from vllm.utils import Device
 from vllm.distributed import tensor_model_parallel_all_gather, get_world_group
+from vllm.platforms import current_platform
 
 from vllm_npu.common.attention.backends.fx_base_attn import (
     FXAttentionMetadata,
@@ -569,7 +559,7 @@ class OmniCacheEngine(AscendCacheEngine):
 
     def _log_after_init(self):
         is_tensor = isinstance(self.gpu_cache[0], torch.Tensor)
-        for cache, device in ((self.gpu_cache, "NPU"), (self.cpu_cache, "CPU")):
+        for cache, device in ((self.gpu_cache, current_platform.device_type), (self.cpu_cache, "CPU")):
             msg = f"For OMNI attention, the shape of KV cache on {device} in each layer is:"
             for layer_idx in range(self.num_attention_layers):
                 msg += "\n\t" + f"{layer_idx:2d}: ---> " + (str(tuple(cache[layer_idx].shape)) if is_tensor else
@@ -657,7 +647,8 @@ class OmniMLA(AscendDeepseekAttention_MLA):
 
         if self.layer_idx == 0:
             # initialize pattern at first layer
-            assert ENV.omni_attention_pattern is None
+            if ENV.omni_attention_pattern is not None:
+                raise RuntimeError("Omni attention pattern is already initialized.")
             global_rank = get_world_group().rank_in_group
             device = f'npu:{torch.npu.current_device()}'
 
@@ -671,7 +662,8 @@ class OmniMLA(AscendDeepseekAttention_MLA):
 
             get_world_group().broadcast(pattern)
             pattern = pattern.cpu().tolist()
-            assert isinstance(pattern, list) and all([pi in [0, 1] for pi in pattern])
+            if not (isinstance(pattern, list) and all([pi in [0, 1] for pi in pattern])):
+                raise RuntimeError(f"Pattern should be a list of 0s and 1s, but got {pattern}.")
             ENV.omni_attention_pattern = pattern
 
             # log at every rank
@@ -679,7 +671,8 @@ class OmniMLA(AscendDeepseekAttention_MLA):
             logger.warning(f"OMNI attention has been enabled with {SINK=}, {RECENT=}, {BETA=},"
                            f" and pattern={ENV.omni_attention_pattern} (SPARSITY={sparsity:.1f}%).")
 
-        assert ENV.omni_attention_pattern is not None
+        if ENV.omni_attention_pattern is None:
+            raise RuntimeError("Omni attention pattern is not correctly initialized.")
         self.omni_attn = ENV.omni_attention_pattern[self.layer_idx] == 1
 
     @override

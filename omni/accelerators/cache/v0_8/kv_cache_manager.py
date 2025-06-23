@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -128,8 +118,10 @@ class OmniKVCacheManager:
                     **mgr_kwargs,
                 ))
         # put full attention at the first position
-        assert full_attn_pool is not None, "No FullAttentionSpec is found."
-        assert len(self.block_pools) > 0, "No other AttentionSpec is found."
+        if full_attn_pool is None:
+            raise RuntimeError("No FullAttentionSpec is found.")
+        if len(self.block_pools) == 0:
+            raise RuntimeError("No other AttentionSpec is found.")
         self.block_pools = [full_attn_pool] + self.block_pools
         self.hybrid_managers = [full_attn_mgr] + self.hybrid_managers
 
@@ -275,10 +267,8 @@ class OmniKVCacheManager:
         # Touch the computed blocks to make sure they won't be evicted.
         if self.enable_caching:
             raise RuntimeError("Prefix caching is not supported with OmniAttention yet.")
-        else:
-            assert not new_computed_block_list, (
-                "Computed blocks should be empty when "
-                "prefix caching is disabled")
+        elif len(new_computed_block_list) > 0:
+            raise RuntimeError("Computed blocks should be empty when prefix caching is disabled")
 
         # outer list is group
         # inner list is blocks of each group
@@ -326,7 +316,8 @@ class OmniKVCacheManager:
         if not self.block_pools[0].reset_prefix_cache():
             return False
         if self.log_stats:
-            assert self.prefix_cache_stats is not None
+            if self.prefix_cache_stats is None:
+                raise RuntimeError("log_stats is enabled but prefix_cache_stats is None.")
             self.prefix_cache_stats.reset = True
         return True
 
@@ -369,7 +360,8 @@ class OmniKVCacheManager:
             list[int]: The number of common prefix blocks for each kv cache
             group.
         """
-        assert request.status == RequestStatus.RUNNING
+        if request.status != RequestStatus.RUNNING:
+            raise RuntimeError(f"Request status should be running, but got {request.status}.")
         return [
             mgr.get_num_common_prefix_blocks(
                 request.request_id, num_running_requests)
@@ -400,7 +392,8 @@ class OmniKVCacheManager:
             A list of lists of integers. The outer list corresponds to KV Cache groups,
             where the first is full attention group.
         """
-        assert all(request_id in mgr.req_to_blocks for mgr in self.hybrid_managers)
+        if any(request_id not in mgr.req_to_blocks for mgr in self.hybrid_managers):
+            raise RuntimeError(f"Request id {request_id} not detected.")
         group_block_ids: list[list[int]] = []
         for mgr in self.hybrid_managers:
             blocks = mgr.req_to_blocks[request_id]
@@ -440,7 +433,8 @@ class OmniAttentionManager(SingleTypeKVCacheManager):
         if num_new_blocks <= 0:
             return []
         else:
-            assert num_new_blocks == self.max_num_blocks, f"{num_new_blocks=}, while {self.max_num_blocks=}"
+            if num_new_blocks != self.max_num_blocks:
+                raise RuntimeError(f"{num_new_blocks=}, while {self.max_num_blocks=}")
             new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
             req_blocks.extend(new_blocks)
             return new_blocks

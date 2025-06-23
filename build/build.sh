@@ -61,8 +61,12 @@ fi
 VLLM_TARGET_DEVICE=empty python setup.py bdist_wheel
 mv dist/vllm* $BUILD_ROOT/build/dist
 
-cd ../vllm_ascend/
+cd $BUILD_ROOT
+python -m build
+mv dist/omni_i* $BUILD_ROOT/build/dist
+
+cd $BUILD_ROOT/omni/accelerators/placement
 python setup.py bdist_wheel
-mv dist/vllm* $BUILD_ROOT/build/dist
+mv dist/omni_placement* $BUILD_ROOT/build/dist
 
 cd $PWD

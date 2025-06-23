@@ -16,14 +16,6 @@ diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
 index 5ad05485e..c6dcdff43 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -33,6 +33,7 @@ from vllm.v1.structured_output import StructuredOutputManager
- 
- logger = init_logger(__name__)
- 
-+import vllm_ascend.distributed
- 
- class Scheduler(SchedulerInterface):
- 
 @@ -829,11 +817,12 @@ class Scheduler(SchedulerInterface):
              if req_data.req_id not in self.finished_req_ids:
                  self._cached_reqs_data[req_data.req_id].append(req_data)

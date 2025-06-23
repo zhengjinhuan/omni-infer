@@ -12,10 +12,10 @@ index 7c14bef..fcef34e 100644
      def all_to_all(self,
                     input_: torch.Tensor,
 diff --git a/vllm_ascend/models/__init__.py b/vllm_ascend/models/__init__.py
-index f60c28c..a2fe627 100644
+index 51cd5a5..18561e1 100644
 --- a/vllm_ascend/models/__init__.py
 +++ b/vllm_ascend/models/__init__.py
-@@ -29,3 +29,18 @@ def register_model():
+@@ -33,3 +33,20 @@ def register_model():
      ModelRegistry.register_model(
          "DeepseekV3ForCausalLM",
          "vllm_ascend.models.deepseek_v3:CustomDeepseekV3ForCausalLM")
@@ -36,8 +36,9 @@ index f60c28c..a2fe627 100644
 +        ModelRegistry.register_model(
 +            "DeepseekV3ForCausalLM",
 +            mock_model_class_factory(CustomDeepseekV3ForCausalLM))
+\ No newline at end of file
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index 7104ee6..6c25361 100644
+index 82c9927..55985f2 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -195,7 +195,7 @@ class NPUModelRunner:
@@ -93,7 +94,7 @@ index 7104ee6..6c25361 100644
          self.seq_lens_np = self.seq_lens_cpu.numpy()
  
          self.input_positions_cpu = torch.arange(0,
-@@ -1063,7 +1063,7 @@ class NPUModelRunner:
+@@ -1068,7 +1068,7 @@ class NPUModelRunner:
          else:
              logits = None
  
@@ -102,7 +103,7 @@ index 7104ee6..6c25361 100644
          del hidden_states, logits, dummy_kv_caches
          self.encoder_cache.clear()
          gc.collect()
-@@ -1071,12 +1071,14 @@ class NPUModelRunner:
+@@ -1076,12 +1076,14 @@ class NPUModelRunner:
      def load_model(self) -> None:
          logger.info("Starting to load model %s...", self.model_config.model)
  
@@ -121,7 +122,7 @@ index 7104ee6..6c25361 100644
  
          # adapter torch compile with npu_backend
          if self.enable_torchair_graph_mode:
-@@ -1110,7 +1112,7 @@ class NPUModelRunner:
+@@ -1115,7 +1117,7 @@ class NPUModelRunner:
              kv_cache_config: Configuration for the KV cache, including the KV
              cache size of each layer
          """
@@ -130,7 +131,7 @@ index 7104ee6..6c25361 100644
          kv_caches: Dict[str, torch.Tensor] = {}
          if not (vllm_version_is("0.8.5") or vllm_version_is("0.8.5.post1")):
              self.input_batch = InputBatch(
-@@ -1118,11 +1120,12 @@ class NPUModelRunner:
+@@ -1123,11 +1125,12 @@ class NPUModelRunner:
                  max_model_len=self.model_config.max_model_len,
                  max_num_batched_tokens=self.max_num_tokens,
                  device=self.device,
@@ -144,7 +145,7 @@ index 7104ee6..6c25361 100644
          for kv_cache_group in kv_cache_config.kv_cache_groups:
              kv_cache_spec = kv_cache_group.kv_cache_spec
              for layer_name in kv_cache_group.layer_names:
-@@ -1149,14 +1152,14 @@ class NPUModelRunner:
+@@ -1154,14 +1157,14 @@ class NPUModelRunner:
                              kv_cache_shape[:-1] +
                              (self.model_config.hf_text_config.kv_lora_rank, ),
                              dtype=self.dtype,
@@ -161,7 +162,7 @@ index 7104ee6..6c25361 100644
                              device=self.device)
                          kv_caches[layer_name] = (layer_kv_cache_nope,
                                                   layer_kv_cache_pe)
-@@ -1217,6 +1220,14 @@ class NPUModelRunner:
+@@ -1222,6 +1225,14 @@ class NPUModelRunner:
                  raise ValueError(
                      f"Unknown attention type: {attn_module.attn_type}")
  
@@ -177,10 +178,10 @@ index 7104ee6..6c25361 100644
  
      def capture_model(self) -> None:
 diff --git a/vllm_ascend/worker/worker_v1.py b/vllm_ascend/worker/worker_v1.py
-index 8c88d04..0ccaf1c 100644
+index 273d33c..26a82b4 100644
 --- a/vllm_ascend/worker/worker_v1.py
 +++ b/vllm_ascend/worker/worker_v1.py
-@@ -136,10 +136,10 @@ class NPUWorker(WorkerBase):
+@@ -115,10 +115,10 @@ class NPUWorker(WorkerBase):
  
      def init_device(self):
          if self.device_config.device.type == "npu":
@@ -195,7 +196,7 @@ index 8c88d04..0ccaf1c 100644
          else:
              info = f"Not support device type: {self.device_config.device}"
              logger.error(info)
-@@ -169,6 +169,7 @@ class NPUWorker(WorkerBase):
+@@ -148,6 +148,7 @@ class NPUWorker(WorkerBase):
              else:
                  raise NotImplementedError
  

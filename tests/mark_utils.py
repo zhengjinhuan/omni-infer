@@ -1,6 +1,9 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+# SPDX-License-Identifier: MIT
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.All rights reserved.
 
 """ define marks """
@@ -11,8 +14,8 @@ import numpy as np
 def arg_mark(plat_marks, level_mark):
     optional_plat_marks = ['platform_ascend', 'platform_ascend910b', 'platform_ascend310p', 'platform_gpu',
                            'cpu_linux', 'cpu_windows', 'cpu_macos']
-    # level0：门禁级别/冒烟用例，level1:全量用例
-    optional_level_marks = ['level0', 'level1']
+    # level0：门禁级别/冒烟用例，level1:全量用例，lts：长稳，common：通用
+    optional_level_marks = ['level0', 'level1', 'lts', 'common']
     if not plat_marks or not set(plat_marks).issubset(set(optional_plat_marks)):
         raise ValueError("wrong plat_marks values")
     if level_mark not in optional_level_marks:

@@ -1,7 +1,42 @@
-Omni_Infer is a suite of inference accelerators designed for the Ascend NPU platform, offering native support and an expanding feature set, including:
+```
 
-1. Enterprise-grade support for large-scale, disaggregated PD deployments
-2. Request-level load balancing for prefill and decode, optimizing total throughput
-3. Large-scale MoE expert deployment
-4. MoE expert load balancing with layer-wise, uneven redundancy support
-5. Attention optimizations for LLM, MLLM, and MoE models
++omni_infer
+    +—— accelerators                    # Accelerator package/plugin
+        +—— placement                      # MoE experts balancer
+        +—— sched                          # Schedulers, request level and instance level
+            +—— global_proxy               # global proxy for load balance and PD two phase scheduling
+        +—— attention                      # Attention accelerators
+        +—— cache                          # Attention accelerators
+        +—— pd                             # Prefill-Decode seperation accelerators
+        +—— torchair                       # Torch.compile 
+        +—— dist                           # Distributed communicators
+        +—— quant                          # Quantization
+        +—— preprocessing
+        +—— postprocessing
+    +—— models                          # Models inference scripts
+        +—— common
+            +—— layers
+            	+—— linear
+            	+—— activation
+            	+—— layernorm
+            	+—— moe
+            	+—— attention
+        +—— pangu 
+        +—— deepseek 
+        +—— qwen 
+    +—— adaptors                        # Adaptors for mainstream inference frameworks, include monkey patches if necessary
+        +—— vllm
+        +—— vllm-ascend
+        +—— sglang
+        +—— llamacpp
+    +—— infer_engines                   # Supported inference engines source code, simplify build process. Git submodules
+        +—— vllm
+        +—— vllm-ascend
+        +—— sglang
+        +—— llamacpp
+    +—— tests                           # Unit test entry point, each component need to have its own 
+                                          unit test dir and can be orchastrated from here.
+    +—— benchmarks                      # Benchmark scripts and datasets
+    +—— tools                           # miscellaneous tools
+
+```

@@ -5,20 +5,4 @@
 set -e
 
 MODEL_PATH=$1
-python3 -m vllm.entrypoints.openai.api_server \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --model ${MODEL_PATH} \
-    --data-parallel-size 8 \
-    --tensor-parallel-size 1 \
-    --enable-expert-parallel \
-    --dtype bfloat16 \
-    --max-model-len 10240 \
-    --trust_remote_code \
-    --gpu_memory_utilization 0.95 \
-    --block_size 128 \
-    --enforce-eager \
-    --served-model-name deepseek \
-    --distributed-executor-backend mp \
-    --max-num-batched-tokens 200000 \
-    --max-num-seqs 128
+vllm serve ${MODEL_PATH} --served-model-name=deepseek --trust-remote-code --max-model-len=8192 --gpu-memory-utilization=0.95 --data-parallel-size 2 --data-parallel-size-local 2  -tp=4 --enable-expert-parallel --block_size 128

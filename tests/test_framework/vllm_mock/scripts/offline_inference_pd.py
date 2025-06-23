@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 """
 This file demonstrates the example usage of disaggregated prefilling We will
 launch 2 vllm instances (NPU 0,1,3,4 for prefill and NPU 5,6,7,8 for decode),

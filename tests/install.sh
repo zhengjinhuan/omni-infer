@@ -6,6 +6,7 @@ set -e
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR=${OUTPUT_DIR-"output"}
+MOCKMODEL_FLAG=${MOCKMODEL_FLAG-"0"} # 0 不打MOCKMODEL的patch、1 打上MOCKMODEL的patch
 export INPUT_PATH=/home/ma-user/modelarts/inputs/data_url_0
 export OUTPUT_PATH=/home/ma-user/modelarts/outputs/train_url_0
 
@@ -34,28 +35,20 @@ pip install -r requirements-ci.txt -q
 
 log_info "拉vllm和vllm_ascend代码"
 cd $SCRIPT_PATH/..
-if [ ${TEST_LEVEL} = "level0" ]; then
-    log_info "Mock model"
-    bash build/build.sh --ci "1"
-    log_info "DeepSeek-V3-w8a8-0423 模型减层(61 -> 4)"
-    sed -i 's#"num_hidden_layers": 61#"num_hidden_layers": 4#g' ${INPUT_PATH}/model/DeepSeek-V3-w8a8-0423/config.json
+if [ "${TEST_LEVEL}" = "level0" ]; then
+    if [ "${MOCKMODEL_FLAG}" = "0" ]; then
+        log_info "Without Mock model"
+        bash build/build.sh
+    else
+        log_info "With Mock model"
+        bash build/build.sh --ci "1"
+    fi
 else
     bash build/build.sh
 fi
 
-WHL_PKGS_COUNT=`ls $SCRIPT_PATH/../build/dist/ | wc -l` 
-if [ "$WHL_PKGS_COUNT" = "2" ]; then
-    log_info "whl包安装vllm和vllm_ascend"
-    pip install $SCRIPT_PATH/../build/dist/vllm*
-else
-    log_info "源码安装vllm"
-    cd $SCRIPT_PATH/../infer_engines/vllm
-    VLLM_TARGET_DEVICE=empty pip install -e . -q
-
-    log_info "源码安装vllm_ascend"
-    cd $SCRIPT_PATH/../infer_engines/vllm_ascend
-    pip install -e . -q
-fi
+log_info "安装vllm"
+pip install $SCRIPT_PATH/../build/dist/vllm*
 
 log_info "安装高性能torch_npu包"
 cd $SCRIPT_PATH/..

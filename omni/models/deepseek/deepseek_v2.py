@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright 2023 The vLLM team.
@@ -303,7 +306,8 @@ class CustomDeepseekV2MLAAttention(DeepseekV2MLAAttention):
 
         self.num_heads = num_heads
         tp_size = get_tensor_model_parallel_world_size()
-        assert num_heads % tp_size == 0
+        if num_heads % tp_size != 0:
+            raise RuntimeError("num_heads % tp_size != 0")
         self.num_local_heads = num_heads // tp_size
 
         self.scaling = self.qk_head_dim**-0.5
@@ -612,7 +616,8 @@ class CustomDeepseekV2Model(nn.Module):
                 hidden_states = self.get_input_embeddings(input_ids)
             residual = None
         else:
-            assert intermediate_tensors is not None
+            if intermediate_tensors is None:
+                raise RuntimeError("intermediate_tensors is None")
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 

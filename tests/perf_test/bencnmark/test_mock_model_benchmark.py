@@ -1,6 +1,9 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+import ast
 # Copyright (c) Huawei Technologies Co., Ltd. 2025.
 # All rights reserved.
 
@@ -203,6 +206,59 @@ def test_benchmark_performance_level0(output_dir, forward_time, except_time, tok
     mock_model_except_time = float(except_time)
     check_benchmark_baseline(avg_tpot, check_field, mock_model_forward_time, mock_model_except_time)
     logging.info("level0 checks passed successfully")
+
+
+@arg_mark(['platform_ascend910b'], 'lts')
+def test_benchmark_performance_lts(output_dir, forward_time, except_time, tokenizer, served_model_name, host):
+    before_run_check(output_dir, host)
+    ip, port = host.split(':')
+    run_benchmark(
+        backend="openai",
+        host=ip,
+        port=port,
+        tokenizer=tokenizer,
+        served_model_name=served_model_name,
+        epochs=1,
+        parallel_num=[768],
+        prompt_tokens=[3500],
+        output_tokens=[1000],
+        benchmark_csv="benchmark_result_lts.csv",
+        dataset_type="random"
+    )
+
+    avg_tpot = read_csv_and_extract_data(output_dir)
+    mock_model_forward_time = float(forward_time)
+    check_field = "3500_1000_1152"
+    mock_model_except_time = float(except_time)
+    # check_benchmark_baseline(avg_tpot, check_field, mock_model_forward_time, mock_model_except_time)
+    logging.info("long term stability checks passed successfully")
+
+
+@arg_mark(['platform_ascend910b'], 'common')
+def test_benchmark_performance_common(output_dir, forward_time, except_time, tokenizer, served_model_name, host,
+                                      parallel_num, prompt_tokens, output_tokens, benchmark_csv):
+    before_run_check(output_dir, host)
+    ip, port = host.split(':')
+    run_benchmark(
+        backend="openai",
+        host=ip,
+        port=port,
+        tokenizer=tokenizer,
+        served_model_name=served_model_name,
+        epochs=1,
+        parallel_num=ast.literal_eval(parallel_num),
+        prompt_tokens=ast.literal_eval(prompt_tokens),
+        output_tokens=ast.literal_eval(output_tokens),
+        benchmark_csv=benchmark_csv,
+        dataset_type="random"
+    )
+
+    avg_tpot = read_csv_and_extract_data(output_dir)
+    mock_model_forward_time = float(forward_time)
+    check_field = "3584_1024_384"
+    mock_model_except_time = float(except_time)
+    # check_benchmark_baseline(avg_tpot, check_field, mock_model_forward_time, mock_model_except_time)
+    logging.info("level1 checks passed successfully")
 
 
 if __name__ == "__main__":

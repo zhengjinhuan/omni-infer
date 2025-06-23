@@ -1,3 +1,33 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
+"""
+This module provides a mock model implementation for vLLM, designed for
+capturing and replaying model inferences. It allows for simulating model
+behavior, capturing intermediate states (like KV caches), and replaying
+them for debugging, performance analysis, or testing without requiring
+actual NPU hardware.
+
+The core functionality is provided by `mock_model_class_factory`, which
+dynamically creates a mock model class by inheriting from a given base
+model class and overriding key methods like `__init__`, `forward`,
+`compute_logits`, `sample`, and `load_weights`.
+
+Features:
+- **Random Mode**: Generate random outputs for quick testing without
+  relying on captured data.
+- **Capture/Replay Mode**: Record model inputs/outputs and KV caches
+  during a run and replay them later.
+- **KV Cache Mode**: Specifically handle KV cache capture and replay
+  for prefill-decode separation.
+- **Prefill Process Handling**: Differentiates behavior for prefill
+  and decode stages.
+- **Simulated Elapsed Time**: Optionally simulate the time taken for
+  forward passes based on captured data.
+- **Torch Compile Mode**: Adjusts behavior when PyTorch's `torch.compile`
+  is enabled.
+"""
+
 from vllm import ModelRegistry
 import inspect
 
@@ -53,14 +83,40 @@ def access_variable(variable_name, stack_level=1):
 
 
 class MockModel:
+    """
+    A base class for the mock model. This class is primarily used as a mixin
+    to add mock functionalities to an existing vLLM model class.
+    """
     pass
 
 
 def mock_model_class_factory(base_class: type) -> type:
+    """
+    Dynamically creates a mock model class by inheriting from a given base_class.
+
+    This factory injects mock behaviors for model initialization, forward pass,
+    and other core functionalities, enabling capture and replay of model
+    inferences for testing and debugging.
+
+    Args:
+        base_class: The original vLLM model class to be mocked (e.g., LlamaModel).
+
+    Returns:
+        A new class that extends the base_class with mock capabilities.
+    """
 
     def __init__(self, *, vllm_config, prefix: str = ""):
+        """
+        Initializes the mock model.
+
+        Args:
+            vllm_config: Configuration object for vLLM.
+            prefix: Optional prefix for model components (passed to base_class).
+        """
         self.no_npu = os.getenv("NO_NPU_MOCK", default=False)
         if self.no_npu:
+            # If NO_NPU_MOCK is set, initialize as a standard nn.Module
+            # and extract necessary config details.
             nn.Module.__init__(self)
 
             config = vllm_config.model_config.hf_config
@@ -78,10 +134,12 @@ def mock_model_class_factory(base_class: type) -> type:
                 )
             )
         else:
+            # Otherwise, initialize using the base class's __init__ method.
             base_class.__init__(self, vllm_config=vllm_config, prefix=prefix)
 
         self.seed = 42
         self.block_size = vllm_config.cache_config.block_size
+        # Determine if torch.compile graph mode is enabled
         self.torch_compile_mode = (
             vllm_config.additional_config
             and "enable_graph_mode" in vllm_config.additional_config
@@ -90,6 +148,7 @@ def mock_model_class_factory(base_class: type) -> type:
         self.torch_compile_mode = self.torch_compile_mode or os.getenv(
             "TORCH_COMPILE_MODE_MOCK", default=False
         )
+        # Environment variables to control mock behavior
         self.prefill_process = os.getenv("PREFILL_PROCESS", default=False)
         self.kv_cache_mode = os.getenv("KV_CACHE_MODE", default=False)
         self.capture_mode = os.getenv("CAPTURE_MODE", default=False)
@@ -102,14 +161,15 @@ def mock_model_class_factory(base_class: type) -> type:
         )
         self.mock_capture_file = os.getenv(
             "MOCK_CAPTURE_FILE", default="mock_cache_20250519"
-        ) + ("p" if self.prefill_process else "")
+        ) + ("p" if self.prefill_process else "") # Append 'p' for prefill process
         self.simulate_elapsed_time = os.getenv("SIMULATE_ELAPSED_TIME", default=False)
         self.random_mode = os.getenv("RANDOM_MODE", default=False)
-        self.forward_time = int(os.getenv("FORWARD_TIME", "0"))  # ms
+        self.forward_time = int(os.getenv("FORWARD_TIME", "0"))  # Simulated forward time in ms
         self.mock_compute_logits = os.getenv(
             "MOCK_COMPUTE_LOGITS", default=self.random_mode
         )
 
+        # Create capture directory if it doesn't exist
         if not os.path.exists(self.mock_capture_dir):
             logger.debug(f">>>Creating {self.mock_capture_dir}.")
             import pathlib
@@ -122,18 +182,24 @@ def mock_model_class_factory(base_class: type) -> type:
             logger.debug(f">>>Running forward in random mode. ")
             logger.debug(f">>>Forward time set to {self.forward_time} ms")
 
-        self.input_id_cache = {}
-        self.req_id_to_prompt = {}
-        self.dummy_run = False
+        self.input_id_cache = {}  # Cache for input token IDs
+        self.req_id_to_prompt = {}  # Mapping from request ID to prompt token IDs
+        self.dummy_run = False  # Flag for dummy runs (e.g., for graph compilation)
 
         if self.replay_mode:
             logger.debug(
                 f">>>Replay mode is on. Loading mock_cache from "
                 + f"{os.path.join(self.mock_capture_dir, self.mock_capture_file)}"
             )
+            # Initialize mock cache if in replay mode
             initialize_mock_cache(self)
 
     def initialize_mock_cache(self):
+        """
+        Loads captured data from the mock cache file into memory.
+        This method populates `mock_cache_forward`, `mock_cache_compute_logits`,
+        and `mock_cache_sample` dictionaries based on the recorded method type.
+        """
         self.mock_cache_forward = {}
         self.mock_cache_compute_logits = {}
         self.mock_cache_sample = {}
@@ -175,6 +241,24 @@ def mock_model_class_factory(base_class: type) -> type:
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
+        """
+        Performs a mock forward pass of the model.
+
+        This method handles different modes: random output generation, capture,
+        and replay, based on the mock model's configuration. It also manages
+        KV cache interactions and prompt ID caching.
+
+        Args:
+            input_ids: Input token IDs.
+            positions: Positional IDs of the tokens.
+            kv_caches: Optional list of KV cache tensors.
+            attn_metadata: Attention metadata for the current forward pass.
+            intermediate_tensors: Optional intermediate tensors.
+            inputs_embeds: Optional input embeddings.
+
+        Returns:
+            The output tensor or intermediate tensors from the mock forward pass.
+        """
         attn_metadata = (
             get_forward_context().attn_metadata if not attn_metadata else attn_metadata
         )
@@ -269,6 +353,20 @@ def mock_model_class_factory(base_class: type) -> type:
         query_lens,
         req_ids,
     ):
+        """
+        Replays the model output and KV caches from the mock cache.
+
+        Args:
+            input_ids: Input token IDs.
+            positions: Positional IDs of the tokens.
+            block_table: Block table from attention metadata.
+            seq_lens: Sequence lengths from attention metadata.
+            query_lens: Query lengths from attention metadata.
+            req_ids: Request IDs.
+
+        Returns:
+            The replayed output tensor.
+        """
         if not self.torch_compile_mode:
             start_time = time.time()
 
@@ -308,6 +406,27 @@ def mock_model_class_factory(base_class: type) -> type:
         kv_caches,
         attn_metadata,
     ):
+        """
+        Runs the base model's forward pass if `output` is None, and
+        optionally captures the output and KV caches if in capture mode.
+
+        Args:
+            input_ids: Input token IDs.
+            positions: Positional IDs of the tokens.
+            intermediate_tensors: Optional intermediate tensors.
+            inputs_embeds: Optional input embeddings.
+            block_table: Block table from attention metadata.
+            query_lens: Query lengths from attention metadata.
+            req_ids: Request IDs.
+            concatenated_kv_caches: Concatenated KV cache tensors.
+            output: Pre-computed output (if available).
+            elapsed_time: Elapsed time for the forward pass.
+            kv_caches: Optional list of KV cache tensors.
+            attn_metadata: Attention metadata.
+
+        Returns:
+            The model's output tensor.
+        """
         if output is None:  # Run model if it did not run yet
             output, elapsed_time = base_forward(
                 self,
@@ -334,6 +453,15 @@ def mock_model_class_factory(base_class: type) -> type:
         return output
 
     def maintain_forward_cache(self, input_ids, block_table, query_lens, new_reqs):
+        """
+        Maintains the input token cache for forward passes.
+
+        Args:
+            input_ids: Input token IDs.
+            block_table: Block table from attention metadata.
+            query_lens: Query lengths from attention metadata.
+            new_reqs: Boolean indicating if it's a new request.
+        """
         if not self.kv_cache_mode:
             maintain_input_token_cache(
                 self, input_ids, block_table, query_lens, new_reqs
@@ -355,6 +483,25 @@ def mock_model_class_factory(base_class: type) -> type:
         kv_caches,
         attn_metadata,
     ):
+        """
+        Retrieves or computes KV caches based on the current mode.
+
+        Args:
+            input_ids: Input token IDs.
+            positions: Positional IDs of the tokens.
+            intermediate_tensors: Optional intermediate tensors.
+            inputs_embeds: Optional input embeddings.
+            block_table: Block table from attention metadata.
+            seq_lens: Sequence lengths from attention metadata.
+            kv_caches: Optional list of KV cache tensors.
+            attn_metadata: Attention metadata.
+
+        Returns:
+            A tuple containing:
+            - concatenated_kv_caches: Concatenated KV cache tensors.
+            - output: Model output (if computed).
+            - elapsed_time: Elapsed time for computation (if computed).
+        """
         if self.kv_cache_mode and (not self.prefill_process or self.capture_mode):
             output, elapsed_time = base_forward(
                 self,
@@ -372,6 +519,15 @@ def mock_model_class_factory(base_class: type) -> type:
             return concatenated_kv_caches, None, None
 
     def get_req_ids_for_prefill(self, positions):
+        """
+        Retrieves request IDs for prefill processes, potentially from the call stack.
+
+        Args:
+            positions: Positional IDs of the tokens.
+
+        Returns:
+            A list of request IDs.
+        """
         if not self.prefill_process and self.kv_cache_mode:
             scheduler_output, input_batch = find_scheduled_data_in_call_stack()
             for req in (
@@ -386,6 +542,13 @@ def mock_model_class_factory(base_class: type) -> type:
         return req_ids
 
     def find_scheduled_data_in_call_stack():
+        """
+        Attempts to find scheduler output and input batch data in the call stack.
+        This is a heuristic to retrieve information from higher-level callers.
+
+        Returns:
+            A tuple containing scheduler_output and input_batch if found, else None.
+        """
         for i in [6] + list(range(15)):
             scheduler_output = access_variable("scheduler_output", i)
             input_batch = (
@@ -406,6 +569,20 @@ def mock_model_class_factory(base_class: type) -> type:
         intermediate_tensors,
         inputs_embeds,
     ):
+        """
+        Executes the forward pass of the original base model.
+
+        Args:
+            input_ids: Input token IDs.
+            positions: Positional IDs of the tokens.
+            kv_caches: Optional list of KV cache tensors.
+            attn_metadata: Attention metadata.
+            intermediate_tensors: Optional intermediate tensors.
+            inputs_embeds: Optional input embeddings.
+
+        Returns:
+            A tuple containing the output tensor and the elapsed time.
+        """
         if not self.torch_compile_mode:
             start_time = time.time()
 
@@ -428,6 +605,15 @@ def mock_model_class_factory(base_class: type) -> type:
         return output, elapsed_time
 
     def set_kv_caches(self, block_table, seq_lens, saved_kv_caches):
+        """
+        Sets the KV caches for each layer of the model based on saved data.
+        This is typically used during replay mode for prefill processes.
+
+        Args:
+            block_table: Block table from attention metadata.
+            seq_lens: Sequence lengths from attention metadata.
+            saved_kv_caches: List of saved KV cache tensors.
+        """
         if self.prefill_process:
             for i_layer, layer in enumerate(self.model.layers):
                 attn_obj = (
@@ -460,6 +646,19 @@ def mock_model_class_factory(base_class: type) -> type:
         block_seq_num,
         block_id,
     ):
+        """
+        Helper function to set a single KV cache block.
+
+        Args:
+            saved_kv_caches: List of saved KV cache tensors.
+            i_layer: Index of the current layer.
+            layer: The current model layer.
+            attn_obj: The attention object (attn or mla_attn).
+            i: Index of the sequence.
+            seq_len: Length of the sequence.
+            block_seq_num: Sequential number of the block within the sequence.
+            block_id: Actual block ID in the KV cache.
+        """
         if block_seq_num <= seq_len // self.block_size:
             if hasattr(layer.self_attn, "attn"):
                 attn_obj.kv_cache[get_forward_context().virtual_engine][
@@ -498,6 +697,22 @@ def mock_model_class_factory(base_class: type) -> type:
         req_ids,
         positions,
     ):
+        """
+        Replays the mock cache for a forward pass, retrieving outputs and KV caches.
+
+        Args:
+            input_ids: Input token IDs.
+            block_table: Block table from attention metadata.
+            query_lens: Query lengths from attention metadata.
+            req_ids: Request IDs.
+            positions: Positional IDs of the tokens.
+
+        Returns:
+            A tuple containing:
+            - Concatenated output tensor.
+            - List of saved KV cache tensors.
+            - Total captured elapsed time.
+        """
         outputs = []
         saved_kv_caches = []
         total_captured_elapsed_time = 0.0
@@ -553,6 +768,16 @@ def mock_model_class_factory(base_class: type) -> type:
         )
 
     def get_unique_req_identifier(block_row):
+        """
+        Generates a unique identifier for a request based on its block table.
+        The first block table entry is used as the unique identifier.
+
+        Args:
+            block_row: A row from the block table.
+
+        Returns:
+            A unique identifier for the request.
+        """
         return block_row[0].item()  # The first block table entry is unique for each request
 
     def capture_mock_cache(
@@ -565,6 +790,19 @@ def mock_model_class_factory(base_class: type) -> type:
         req_ids,
         positions,
     ):
+        """
+        Captures the model's output and KV caches to a file.
+        This method is called when in capture mode.
+
+        Args:
+            output: The model's output tensor.
+            block_table: Block table from attention metadata.
+            query_lens: Query lengths from attention metadata.
+            elapsed_time: Elapsed time for the forward pass.
+            concatenated_kv_caches: Concatenated KV cache tensors.
+            req_ids: Request IDs.
+            positions: Positional IDs of the tokens.
+        """
         if get_pp_group().is_last_rank and (
             get_tp_group().is_last_rank or self.kv_cache_mode
         ):
@@ -635,6 +873,16 @@ def mock_model_class_factory(base_class: type) -> type:
                         )
 
     def maintain_input_token_cache(self, input_ids, block_table, query_lens, new_reqs):
+        """
+        Maintains a cache of input token IDs mapped to unique request identifiers.
+        This is used to reconstruct the full prompt for replay.
+
+        Args:
+            input_ids: Input token IDs.
+            block_table: Block table from attention metadata.
+            query_lens: Query lengths from attention metadata.
+            new_reqs: Boolean indicating if it's a new request.
+        """
         input_id_cache_keys = [
             get_unique_req_identifier(block_row) for block_row in block_table
         ]
@@ -664,12 +912,33 @@ def mock_model_class_factory(base_class: type) -> type:
             curr_idx += query_len
 
     def collect_kv_caches(self, block_table, seq_lens):
+        """
+        Collects KV caches from the model's attention layers.
+        Handles both standard attention and MLA attention.
+
+        Args:
+            block_table: Block table from attention metadata.
+            seq_lens: Sequence lengths from attention metadata.
+
+        Returns:
+            A list of concatenated KV cache tensors.
+        """
         if hasattr(self.model.layers[0].self_attn, "attn"):
             return collect_kv_caches_attn(self, block_table, seq_lens)
         else:
             return collect_kv_caches_mla_attn(self, block_table, seq_lens)
 
     def collect_kv_caches_attn(self, block_table, seq_lens):
+        """
+        Collects KV caches for standard attention mechanism.
+
+        Args:
+            block_table: Block table from attention metadata.
+            seq_lens: Sequence lengths from attention metadata.
+
+        Returns:
+            A list of concatenated KV cache tensors.
+        """
         kv_caches = [[] for _ in range(len(seq_lens))]
         for layer in self.model.layers:
             attn_obj = layer.self_attn.attn
@@ -700,6 +969,16 @@ def mock_model_class_factory(base_class: type) -> type:
         return concatenated_kv_caches
 
     def collect_kv_caches_mla_attn(self, block_table, seq_lens):
+        """
+        Collects KV caches for Multi-Layer Attention (MLA) mechanism.
+
+        Args:
+            block_table: Block table from attention metadata.
+            seq_lens: Sequence lengths from attention metadata.
+
+        Returns:
+            A list of concatenated KV cache tensors.
+        """
         kv_caches = [[] for _ in range(len(seq_lens))]
         for layer in self.model.layers:
             attn_obj = layer.self_attn.mla_attn
@@ -727,6 +1006,20 @@ def mock_model_class_factory(base_class: type) -> type:
         return concatenated_kv_caches
 
     def extract_attn_metadata(attn_metadata):
+        """
+        Extracts attention metadata (block table, sequence lengths, query lengths)
+        from the `attn_metadata` object, handling different vLLM/vLLM_ascend versions.
+
+        Args:
+            attn_metadata: The attention metadata object.
+
+        Returns:
+            A tuple containing:
+            - block_table: Tensor of block tables.
+            - seq_lens: Tensor of sequence lengths.
+            - query_lens: Tensor of query lengths.
+            - new_reqs: Boolean tensor indicating new requests.
+        """
         # Extract the correct metadata depending on vllm / vllm_ascend versions.
         if not hasattr(attn_metadata, "decode"):
             block_table = attn_metadata.block_tables
@@ -761,6 +1054,18 @@ def mock_model_class_factory(base_class: type) -> type:
         return block_table, seq_lens, query_lens, new_reqs
 
     def generate_random_output(self, input_ids, positions, attn_metadata):
+        """
+        Generates a random output tensor for the mock model.
+        Optionally simulates elapsed time and generates random KV caches.
+
+        Args:
+            input_ids: Input token IDs.
+            positions: Positional IDs of the tokens.
+            attn_metadata: Attention metadata.
+
+        Returns:
+            A randomly generated output tensor.
+        """
         if not self.torch_compile_mode:
             st = time.time()
 
@@ -788,6 +1093,10 @@ def mock_model_class_factory(base_class: type) -> type:
         return output
 
     def generate_random_kv_cache(self):
+        """
+        Generates random KV cache tensors for all layers of the model.
+        Used in random mode for prefill processes.
+        """
         torch.manual_seed(self.seed)
         self.seed += 1
         for layer in self.model.layers:
@@ -803,8 +1112,20 @@ def mock_model_class_factory(base_class: type) -> type:
                     device=virt_kv_cache.device,
                 )
 
-    # Define the cache key
     def cache_repr_from_inputs(self, prompt_token_ids, req_id, position):
+        """
+        Generates a cache key string from input parameters.
+        The key depends on whether it's a prefill process and KV cache mode.
+
+        Args:
+            prompt_token_ids: Token IDs of the prompt.
+            req_id: Request ID.
+            position: Positional ID.
+
+        Returns:
+            A string representing the cache key.
+        """
+        # Define the cache key
         if not self.prefill_process and self.kv_cache_mode:
             return str(self.req_id_to_prompt[req_id]) + "p" + str(position.item())
         else:
@@ -817,6 +1138,16 @@ def mock_model_class_factory(base_class: type) -> type:
         hidden_states: torch.Tensor,
         sampling_metadata,
     ) -> Optional[torch.Tensor]:
+        """
+        Computes mock logits or replays captured logits.
+
+        Args:
+            hidden_states: Hidden states from the model's output.
+            sampling_metadata: Metadata for sampling.
+
+        Returns:
+            The computed or replayed logits tensor.
+        """
 
         # Can turn off mocking compute_logits
         if not self.mock_compute_logits:
@@ -847,6 +1178,15 @@ def mock_model_class_factory(base_class: type) -> type:
             return outputs
 
     def replay_logits(self, hidden_states):
+        """
+        Replays logits from the mock cache.
+
+        Args:
+            hidden_states: Hidden states used as input to compute logits.
+
+        Returns:
+            The replayed logits tensor.
+        """
         outputs = []
         for hidden_state in hidden_states:
             input_str = base64.b64encode(
@@ -865,6 +1205,16 @@ def mock_model_class_factory(base_class: type) -> type:
         return outputs
 
     def run_and_maybe_capture_logits(self, hidden_states, sampling_metadata):
+        """
+        Runs the base model's `compute_logits` and optionally captures the output.
+
+        Args:
+            hidden_states: Hidden states from the model's output.
+            sampling_metadata: Metadata for sampling.
+
+        Returns:
+            The computed logits tensor.
+        """
         output = base_class.compute_logits(self, hidden_states, sampling_metadata)
 
         # Save captured input-output pair
@@ -905,11 +1255,32 @@ def mock_model_class_factory(base_class: type) -> type:
         logits: Optional[torch.Tensor],
         sampling_metadata,
     ):
+        """
+        Delegates to the base class's sample method.
+        This method is not typically captured or replayed by the mock.
+
+        Args:
+            logits: Logits tensor.
+            sampling_metadata: Metadata for sampling.
+
+        Returns:
+            The sampled output.
+        """
         return base_class.sample(
             self, logits, sampling_metadata
         )  # not needed to capture
 
     def load_weights(self, weights):
+        """
+        Loads model weights. If `NO_NPU_MOCK` is set, it returns an empty set,
+        otherwise, it delegates to the base class's `load_weights` method.
+
+        Args:
+            weights: Weights to load.
+
+        Returns:
+            A set of loaded weights or an empty set.
+        """
         if self.no_npu:
             return set()
         else:

@@ -19,6 +19,7 @@ import math
 from typing import Optional, Tuple
 
 import torch
+from vllm.platforms import current_platform
 from vllm.model_executor.layers.rotary_embedding import (
     DeepseekScalingRotaryEmbedding, RotaryEmbedding)
 
@@ -266,7 +267,7 @@ def deepseek_rope_init_func(
     _set_cos_sin_cache(self,
                        max_position_embeddings,
                        dtype=dtype,
-                       device="npu")
+                       device=current_platform.device_type)
 
 
 RotaryEmbedding.forward_oot = rope_forward_oot

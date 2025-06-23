@@ -14,7 +14,7 @@
 
 import logging
 import os
-from typing import Optional, Tuple, Type
+from typing import Optional, Tuple, Type, Any
 
 import torch
 from torch.library import Library
@@ -28,6 +28,72 @@ from typing import Callable, List, Optional, Tuple
 from omni.adaptors.vllm.utils import ASCEND_QUATIZATION_METHOD, update_aclgraph_sizes
 
 CUSTOM_OP_ENABLED = False  # Custom operations not enabled for Omni inference
+
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright 2023 The vLLM team.
+#
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Adapted from vllm/model_executor/models/qwen2_vl.py
+# This file is a part of the vllm-ascend project.
+
+import torch
+import vllm
+import vllm.distributed
+from torch.distributed import ProcessGroup
+
+origin_pg_init = ProcessGroup.__init__
+origin_destroy_model_parallel = None
+origin_stateless_init_dp_group = None
+
+def ascend_destroy_model_parallel():
+    """Set the groups to none and destroy them."""
+    
+    origin_destroy_model_parallel()
+    from omni.adaptors.vllm.distributed.parallel_state import \
+        destory_ascend_model_parallel
+    destory_ascend_model_parallel()
+
+def pg_patched_init(self, *args, **kwargs):
+    options = ProcessGroup.Options(backend="gloo")
+    origin_pg_init(self, *args, options)
+
+def noops(*args):
+    pass
+
+def init_dp_group(self) -> ProcessGroup:
+    from vllm.config import ParallelConfig
+    ProcessGroup.__init__ = pg_patched_init
+    ProcessGroup._set_default_backend = noops
+    pg = origin_stateless_init_dp_group(self)
+    ProcessGroup.__init__ = origin_pg_init
+    return pg;
+
+def update_parallel_state():
+    global origin_destroy_model_parallel 
+    if origin_destroy_model_parallel == None:
+        origin_destroy_model_parallel = vllm.distributed.parallel_state.destroy_model_parallel
+
+    vllm.distributed.parallel_state.destroy_model_parallel = ascend_destroy_model_parallel
+
+    if torch.__version__ == '2.5.1':
+        from vllm.config import ParallelConfig
+        global origin_stateless_init_dp_group
+        if origin_stateless_init_dp_group == None:
+            origin_stateless_init_dp_group = ParallelConfig.stateless_init_dp_group
+
+        ParallelConfig.stateless_init_dp_group = init_dp_group
 
 
 def ascend_direct_register_custom_op(
@@ -215,7 +281,8 @@ class NPUPlatform(Platform):
             parser: Optional argument parser to update with NPU-specific options.
         """
         ConfigUpdater.update_parser(parser)
-        from omni.ops.quantization.quant_config import AscendQuantConfig  # noqa: F401
+        update_parallel_state()
+        from omni.quantization.quant_config import AscendQuantConfig  # noqa: F401
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:
@@ -320,8 +387,8 @@ class NPUPlatform(Platform):
             str: The module path to the attention backend class.
         """
         ensure_v1_engine()
-        return ("omni.attention.mla.AscendMLABackend" if use_mla
-                else "omni.attention.attention.AscendAttentionBackend")
+        return ("omni.models.common.layers.attention.mla.AscendMLABackend" if use_mla
+                else "omni.models.common.layers.attention.attention.AscendAttentionBackend")
 
     @classmethod
     def get_punica_wrapper(cls) -> str:
