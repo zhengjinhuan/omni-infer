@@ -23,5 +23,3 @@ We welcome contributions to enhance Omni_Infer! Please check our [contributing g
 ## License
 
 Omni_Infer is licensed under the [MIT License](LICENSE).
-
-Thanks
