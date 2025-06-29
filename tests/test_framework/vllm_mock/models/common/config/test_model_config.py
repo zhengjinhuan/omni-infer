@@ -57,6 +57,7 @@ class TestModelAdditionalConfig(unittest.TestCase):
         self.assertEqual(config.operator_opt_config.enable_fusion_spec, True)
         self.assertEqual(config.operator_opt_config.enable_alltoall, True)
         self.assertEqual(config.operator_opt_config.enable_moe_expert_parallel, False)
+        self.assertEqual(config.operator_opt_config.control_accept_rate, -1)
         self.assertEqual(config.operator_opt_config.decode_gear_list, [17])
         
     def test_default_config_when_no_json(self):
@@ -107,6 +108,7 @@ class TestModelAdditionalConfig(unittest.TestCase):
         self.assertEqual(config.operator_opt_config.enable_fusion_spec, False)
         self.assertEqual(config.operator_opt_config.enable_alltoall, False)
         self.assertEqual(config.operator_opt_config.enable_moe_expert_parallel, True)
+        self.assertEqual(config.operator_opt_config.control_accept_rate, -1)
         self.assertEqual(config.operator_opt_config.decode_gear_list, [16])
 
 if __name__ == '__main__':

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export RAY_DEDUP_LOGS=1
 export HCCL_OP_EXPANSION_MODE=AIV

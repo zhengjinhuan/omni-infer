@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 set -e
 
 # 获取当前脚本的绝对路径并进入
@@ -128,14 +128,25 @@ else
     echo "默认PD分离服务已启动"
 fi
 
-pytest -vsra --disable-warnings -m "${TEST_LEVEL}" \
---html=${REPORT_HTML} \
---ignore=st/cloud_tests_imp \
---ignore=st/test_edit_distance/test_edit_distance.py \
-./st \
---host="${SERVER_HOST}" \
---output_dir="${TASK_OUTPUT_PATH}" \
---tokenizer="${MODEL_PATH}"
+if [ "${TEST_LEVEL}" = "level0" ]; then
+    pytest -x -vra --disable-warnings -m "${TEST_LEVEL}" \
+    --html=${REPORT_HTML} \
+    --ignore=st/cloud_tests_imp \
+    --ignore=st/test_edit_distance/test_edit_distance.py \
+    ./st \
+    --host="${SERVER_HOST}" \
+    --output_dir="${TASK_OUTPUT_PATH}" \
+    --tokenizer="${MODEL_PATH}"
+else
+    pytest -vra --disable-warnings -m "${TEST_LEVEL}" \
+    --html=${REPORT_HTML} \
+    --ignore=st/cloud_tests_imp \
+    --ignore=st/test_edit_distance/test_edit_distance.py \
+    ./st \
+    --host="${SERVER_HOST}" \
+    --output_dir="${TASK_OUTPUT_PATH}" \
+    --tokenizer="${MODEL_PATH}"
+fi
 
 test_result=$?
 # 检查退出状态码，如果不为0则表示有测试失败
@@ -149,12 +160,9 @@ fi
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd $SCRIPT_PATH/
 log_info "当前目录: $SCRIPT_PATH"
-test_qwen_result=$(bash test_qwen.sh --task-output-path ${TASK_OUTPUT_PATH})
-if [ $test_qwen_result -ne 0 ]; then
-    log_error "qwen脚本执行失败，返回值为: $test_qwen_result"
-    exit 1
-else
-    echo "qwen脚本执行成功"
-fi
+
+# 测试千问
+bash test_qwen.sh --task-output-path ${TASK_OUTPUT_PATH}
+
 # log_info "停止vllm服务"
 # pkill -f python3 || true

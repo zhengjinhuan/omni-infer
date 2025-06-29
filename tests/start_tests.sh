@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 set -e
 
 TEST_LEVEL=${TEST_LEVEL-"level0"}
@@ -44,7 +44,7 @@ if [ "${TEST_LEVEL}" != "level0" ] && [ "${PD_SEPARATION_FLAG}" = "0" ]; then
     cd $SCRIPT_PATH
     REPORT_NAME="pytest_edit_distance_report.html"
     unset RANDOM_MODE
-    pytest -vsra --disable-warnings -m "${TEST_LEVEL}" \
+    pytest -vra --disable-warnings -m "${TEST_LEVEL}" \
     --html=${TASK_OUTPUT_PATH}/${REPORT_NAME} \
     ./st/test_edit_distance/test_edit_distance.py
     log_info "停止vllm服务"

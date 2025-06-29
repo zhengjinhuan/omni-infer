@@ -80,6 +80,11 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         self.cache_sin = None
         self.cache_pos_shape = None
 
+        cache = self._compute_cos_sin_cache_alt()
+        cache = cache.to(dtype)
+        self.cos_sin_cache: torch.Tensor
+        self.register_buffer("cos_sin_cache", cache, persistent=False)
+
         if self.rotary_dim != self.head_size:
             self.rotary_pos_emb_cache = self.forward_impl(self.max_len, self.rotary_dim/2)
         else:
@@ -88,6 +93,16 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         self.q_cache = None
         self.k_cache = None
 
+    def _compute_cos_sin_cache_alt(self) -> torch.Tensor:
+        """Compute the cos and sin cache."""
+        inv_freq = self._compute_inv_freq(self.base)
+        t = torch.arange(self.max_position_embeddings, dtype=torch.float)
+
+        freqs = torch.einsum("i,j -> ij", t, inv_freq)
+        cos = freqs.cos()
+        sin = freqs.sin()
+        cache = torch.cat((cos, sin), dim=-1)
+        return cache
 
     def _compute_cos_sin_cache(self) -> torch.Tensor:
         """Compute the cos and sin cache."""
@@ -156,8 +171,8 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
 
     # use ascend_ops to deal with torch_npu.npu_apply_rotary_pos_emb last dim is not 128 bug
     def _forward_ascend_ops_and_small_ops(self, position_ids, query, key):
-        cos = torch.index_select(self.cos, dim=0, index=position_ids.squeeze(1)).unsqueeze(1)
-        sin = torch.index_select(self.sin, dim=0, index=position_ids.squeeze(1)).unsqueeze(1)
+        cos = torch.index_select(self.cos, dim=0, index=position_ids)
+        sin = torch.index_select(self.sin, dim=0, index=position_ids)
         query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
         key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
         cos = cos.unsqueeze(-2)
@@ -166,29 +181,29 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         k_embed = self.apply_rotary_pos_emb(key, cos, sin)
         return q_embed.flatten(-2), k_embed.flatten(-2)
 
-    # use torch_npu fused ops
-    def _forward_fused_ops(self, position_ids, query, key):
-        if query.shape[1] > 1:
-            if self.cache_cos is None or position_ids.shape != self.cache_pos_shape:
-                cos = self.embed(position_ids, self.cos)
-                sin = self.embed(position_ids, self.sin)
-                self.cache_cos = cos
-                self.cache_sin = sin
-                self.cache_pos_shape = position_ids.shape
-            else:
-                cos = self.cache_cos
-                sin = self.cache_sin
-        else:
-            cos = torch.index_select(self.cos, dim=0, index=position_ids.squeeze(1)).unsqueeze(1)
-            sin = torch.index_select(self.sin, dim=0, index=position_ids.squeeze(1)).unsqueeze(1)
-        # head_dim use class variable, repair head_dim convert to symbol in dynamo
-        query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
-        key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
-        cos = cos.unsqueeze(-2) # rotary_pos_emb api need cos/sin 4d input. only support BSND
-        sin = sin.unsqueeze(-2)
-        # npu_apply_rotary_pos_emb replace npu_rotary_mul, npu_rotary_mul will not support muti batch size
-        q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
-        return q_embed.flatten(-2), k_embed.flatten(-2)
+    def _forward_fused_ops(self, position_ids, query, key, is_neox_style_override: Optional[bool] = None):
+
+        if self.cos_sin_cache.device != query.device:
+            self.cos_sin_cache = self.cos_sin_cache.to(query.device)
+        if self.cos_sin_cache.dtype != query.dtype:
+            self.cos_sin_cache = self.cos_sin_cache.to(query.dtype)
+
+        neox_style = self.is_neox_style
+        if is_neox_style_override is not None:
+            neox_style = is_neox_style_override
+        query_shape, key_shape = query.shape, key.shape
+        query = query.contiguous().view(query.shape[0], -1)
+        key = key.contiguous().view(key.shape[0], -1)
+
+        torch_npu._npu_rotary_embedding(
+            position_ids,
+            query,
+            key,
+            self.head_size,
+            self.cos_sin_cache,
+            neox_style,
+        )
+        return query.view(query_shape), key.view(key_shape)
 
     def forward(self, position_ids, query, key):
         # adapt chatglm : dim = head_size / 2
@@ -432,12 +447,9 @@ class DeepseekScalingRotaryEmbedding(DeepseekScalingRotaryEmbeddingGPU):
         return cache
 
     def get_cos_sin(self, positions: torch.Tensor, offsets: Optional[torch.Tensor] = None):
-        cos = self.cos_cached[torch.add(positions, offsets)
-        if offsets is not None else positions]
-        sin = self.sin_cached[torch.add(positions, offsets)
-        if offsets is not None else positions]
-        cos = cos.view(-1, 1, 1, cos.shape[-1])
-        sin = sin.view(-1, 1, 1, sin.shape[-1])
+        positions = torch.add(positions, offsets) if offsets is not None else positions
+        cos = self.cos_cached[positions].view(-1, 1, 1, self.cos_cached.shape[-1])
+        sin = self.sin_cached[positions].view(-1, 1, 1, self.sin_cached.shape[-1])
         return cos, sin
 
     def forward(
@@ -479,6 +491,7 @@ def get_rope(
         is_neox_style: bool = True,
         rope_scaling: Optional[Dict[str, Any]] = None,
         dtype: Optional[torch.dtype] = None,
+        dual_chunk_attention_config: Optional[dict[str, Any]] = None,
 ):
     if dtype is None:
         dtype = torch.get_default_dtype()

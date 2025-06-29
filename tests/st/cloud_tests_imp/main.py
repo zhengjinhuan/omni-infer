@@ -50,7 +50,7 @@ if __name__ == '__main__':
     # 获取当前时间并格式化为字符串
     current_time = time.strftime("%Y%m%d%H%M%S")
     pytest.main(
-        ["-vs", f"-m={args.case_level}", "-n", f"{args.parallel_num}", "./", '--capture=sys',
+        ["-v", f"-m={args.case_level}", "-n", f"{args.parallel_num}", "./", '--capture=sys',
          "--maxfail",
          f"{args.max_fail}",
          f"--html=./report/{report_name}.html",

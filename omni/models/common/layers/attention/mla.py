@@ -42,12 +42,7 @@ if TYPE_CHECKING:
 KVCACHE_NZ_DIM = 16
 
 
-def generate_activate_mask(actual_seqs_num, batch_size):
-    decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
-    gear = next((g for g in decode_gear_list if g >= batch_size), decode_gear_list[-1])
-    mc2_mask = torch.zeros(gear, dtype=torch.bool, device=current_platform.device_type)
-    mc2_mask[:actual_seqs_num] = True
-    return mc2_mask
+
 
 def group_request_list(seq_lens, query_lens, block_tables, threshold):
     s_lens_result = []
@@ -207,6 +202,16 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self.block_size = self.runner.block_size
         self.base_index = np.array(list(range(0, self.block_size)))
         self.base_block = self.block_size * np.ones([1, self.block_size])
+        self.decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
+        self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device=current_platform.device_type)
+
+    def generate_activate_mask(self, actual_seqs_num, batch_size):
+        if len(self.decode_gear_list) > 1:
+            gear = next((g for g in self.decode_gear_list if g >= batch_size), self.decode_gear_list[-1])
+            self.mc2_mask = torch.zeros(gear, dtype=torch.bool, device=current_platform.device_type)
+        else:
+            self.mc2_mask.zero_()
+        self.mc2_mask[:actual_seqs_num].fill_(True)
 
     def reorder_batch(self, input_batch: "InputBatch",
                       scheduler_output: "SchedulerOutput") -> bool:
@@ -278,7 +283,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         cur_topk_list = [
             i % self.runner.model.config.n_routed_experts for i in range(
             global_rank // experts_tp_size * step, (global_rank // experts_tp_size + 1) * step)]
-        return torch.Tensor(cur_topk_list).to(dtype=torch.int32, device="npu", non_blocking=True).view(batch_size // world_size, -1)
+        return torch.Tensor(cur_topk_list).to(dtype=torch.int32, device=current_platform.device_type, non_blocking=True).view(batch_size // world_size, -1)
 
     def _get_graph_runner_block_tables(
             self, num_decode_tokens: int, block_tables: torch.Tensor) -> torch.Tensor:
@@ -334,23 +339,21 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         input_positions = self.runner.positions_cpu[:num_actual_tokens].to(
             device, non_blocking=True)
 
-        seq_lens = self.runner.seq_lens_cpu[:num_reqs].to(device, non_blocking=True)
-        seq_lens_list = self.runner.seq_lens_cpu[:num_reqs].tolist()
-
         # prefill也需要做padding，不然算子shape会报错
         if graph_pad_size > 0:
             padding = torch.full((graph_pad_size, ),
                                     PAD_SLOT_ID,
                                     dtype=slot_mapping.dtype,
                                     device=device)
-            slot_mapping = torch.cat([slot_mapping, padding])
             padding_0 = torch.zeros(graph_pad_size,
                                     dtype=input_positions.dtype,
                                     device=device)
+            slot_mapping = torch.cat([slot_mapping, padding])
             input_positions = torch.cat([input_positions, padding_0])
 
         prefill_metadata = None
         if self._num_prefills > 0:
+            seq_lens_list = self.runner.seq_lens_cpu[:num_reqs].tolist()
             query_lens_list = seq_lens_list
 
             reqs_start = self._num_decodes  # prefill_start
@@ -385,7 +388,6 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 kv_index_list=kv_index_list
             )
 
-
         decode_metadata = None
 
         if self._num_decodes > 0:
@@ -393,21 +395,21 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 if self._num_decode_tokens % self._num_decodes != 0:
                     raise RuntimeError("self._num_decode_tokens must be divisible by self._num_decodes")
                 num_tokens_per_req = self._num_decode_tokens // self._num_decodes
-                seq_lens = (input_positions + 1).to(seq_lens.dtype)
+                seq_lens = (input_positions + 1).to(self.runner.seq_lens.dtype)
                 block_table = block_table[:self._num_decodes, ...]
                 # has speculative tokens
                 if num_tokens_per_req > 1:
-                    block_table = block_table.unsqueeze(1).repeat(1, num_tokens_per_req, 1).view(-1, block_table.shape[-1])
-                block_table_padding = torch.zeros(
-                    (graph_pad_size, ) + block_table.shape[1:],
-                    dtype=block_table.dtype,
-                    device=block_table.device)
-                block_table = torch.cat([block_table, block_table_padding],
+                    block_table = block_table.repeat_interleave(num_tokens_per_req, dim=0)
+                block_table = torch.cat([block_table, 
+                                         torch.zeros(
+                                            (graph_pad_size, ) + block_table.shape[1:],
+                                            dtype=block_table.dtype,
+                                            device=block_table.device)],
                                         dim=0)
                 block_table = self._get_graph_runner_block_tables(
                     self._num_decode_tokens, block_table)
 
-                mc2_mask = generate_activate_mask(num_actual_tokens, num_actual_tokens + graph_pad_size)
+                self.generate_activate_mask(num_actual_tokens, num_actual_tokens + graph_pad_size)
                 cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
                 best_topk = None
                 if model_extra_config.operator_opt_config.best_ep:
@@ -419,7 +421,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 input_positions=input_positions,
                 block_table=block_table,
                 seq_lens=seq_lens,
-                mc2_mask=mc2_mask,
+                mc2_mask=self.mc2_mask,
                 cos=cos,
                 sin=sin,
                 best_topk=best_topk)
@@ -455,14 +457,14 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         seq_lens = torch.ones(max_pad_size, dtype=torch.long, device=self.runner.device, pin_memory=True) * 2
         cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
         best_topk = None
-        mc2_mask = generate_activate_mask(num_tokens, max_pad_size)
+        self.generate_activate_mask(num_tokens, max_pad_size)
         if model_extra_config.operator_opt_config.best_ep:
             best_topk = self.cal_best_topk(max_pad_size)
         decode_metadata = AscendMLADecodeMetadata(
                 input_positions=input_positions,
                 block_table=block_table,
                 seq_lens=seq_lens,
-                mc2_mask=mc2_mask,
+                mc2_mask=self.mc2_mask,
                 cos=cos,
                 sin=sin,
                 best_topk=best_topk)
@@ -584,9 +586,6 @@ class AscendMLAImpl(MLAAttentionImpl):
         if kv_b_proj_weight.shape != expected_shape:
             raise RuntimeError(f"{kv_b_proj_weight.shape} != {expected_shape}")
  
- 
- 
- 
         kv_b_proj_weight = kv_b_proj_weight.view(
             self.kv_lora_rank,
             self.num_local_heads,
@@ -604,7 +603,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.actual_seq_lengths = {}
         for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
             self.norm_res[batch_size] = torch.zeros([batch_size * tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
-            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * tp_size + 1)), dtype=torch.int64, device="npu")
+            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
             torch._dynamo.mark_static(self.norm_res[batch_size])
             torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
 

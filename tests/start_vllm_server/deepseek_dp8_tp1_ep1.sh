@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 set -e
 
 MODEL_PATH=$1

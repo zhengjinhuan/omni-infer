@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 export GLOO_SOCKET_IFNAME=enp67s0f5
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export VLLM_USE_V1=1

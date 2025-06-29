@@ -4,8 +4,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import ast
-# Copyright (c) Huawei Technologies Co., Ltd. 2025.
-# All rights reserved.
 
 import os
 import logging
@@ -161,7 +159,7 @@ def test_benchmark_performance_level1(output_dir, forward_time, except_time, tok
     before_run_check(output_dir, host)
     ip, port = host.split(':')
     run_benchmark(
-        backend="openai",
+        backend="openai-chat",
         host=ip,
         port=port,
         tokenizer=tokenizer,
@@ -187,7 +185,7 @@ def test_benchmark_performance_level0(output_dir, forward_time, except_time, tok
     before_run_check(output_dir, host)
     ip, port = host.split(':')
     run_benchmark(
-        backend="openai",
+        backend="openai-chat",
         host=ip,
         port=port,
         tokenizer=tokenizer,
@@ -213,7 +211,7 @@ def test_benchmark_performance_lts(output_dir, forward_time, except_time, tokeni
     before_run_check(output_dir, host)
     ip, port = host.split(':')
     run_benchmark(
-        backend="openai",
+        backend="openai-chat",
         host=ip,
         port=port,
         tokenizer=tokenizer,
@@ -240,7 +238,7 @@ def test_benchmark_performance_common(output_dir, forward_time, except_time, tok
     before_run_check(output_dir, host)
     ip, port = host.split(':')
     run_benchmark(
-        backend="openai",
+        backend="openai-chat",
         host=ip,
         port=port,
         tokenizer=tokenizer,

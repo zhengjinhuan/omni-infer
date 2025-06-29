@@ -20,7 +20,9 @@ base:
     VLLM_USE_V1: "1" # Use VLLM V1 version (1 to enable)
     VLLM_WORKER_MULTIPROC_METHOD: "fork" # VLLM worker process method (fork or spawn)
     ASCEND_RT_VISIBLE_DEVICES: "0,1" # Visible physical devices for the instance. such as "0,1,2,3"
-    MODEL_EXTRA_CFG_PATH: "/workspace/omni_infer/tests/test_config/test_config_prefill.json"
+    HCC_INTRA_ROCE_ENABLE: "1" # Set to 1 for A3, enable intra-HCCL ROCE
+    HCC_INTRA_PCIE_ENABLE: "0" # Set to 0 for A3, enable intra-HCCL PCIE
+    MODEL_EXTRA_CFG_PATH: "/workspace/omni_infer/tests/test_config/test_config.json" # p/d is different, p is test_config_prefill.json, d is test_config_decode.json
     OMNI_USE_DSV3: "1"
   api_servers_params:
     --model-path: "/data/models/DeepSeek-R1" # Model path
@@ -32,10 +34,6 @@ base:
     --log-dir: "/data/logs"
     --gpu-util: 0.9
     --extra-args": "--enable-expert-parallel"
-a3:
-  env:
-    HCC_INTRA_ROCE_ENABLE: "1" # Set to 1 for A3, enable intra-HCCL ROCE
-    HCC_INTRA_PCIE_ENABLE: "0" # Set to 0 for A3, enable intra-HCCL PCIE
 pd_disaggregation:
   env:
     GLOBAL_RANK_TABLE_FILE_PATH: ""  # Global rank table file path. For merged P/D instances,usually global_ranktable_merge.json

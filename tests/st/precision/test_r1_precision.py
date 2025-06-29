@@ -51,7 +51,7 @@ def test_precision_chat_level0(host, served_model_name):
         if "老三" in value and "偷吃" in value:
             assert True
         else:
-            assert False, "回答不符合预期"
+            assert False, f"回答不符合预期，模型原始输出：{content}，</think>标签后的内容：{value}"
     else:
         assert False, f"请求失败，状态码: {response.status_code}， 响应结果: {response.content}"
 

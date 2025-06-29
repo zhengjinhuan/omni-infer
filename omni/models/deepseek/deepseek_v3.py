@@ -95,7 +95,6 @@ SEQ_SPLIT_LENGTH = 4096
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_dispatch_combine else 256
 KVCACHE_NZ_DIM = 16
 # Load FFN weights into L1Cache in advance, and add them after debugging is stable.
-FFN1_PREFETCH_SIZE = 56 * 1024 * 1024
 
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
@@ -298,8 +297,10 @@ class DeepseekMoE(nn.Module):
         self.local_expert_num = self.n_routed_experts // get_expert_parallel_world_size()
         self.in_scale_2 = torch.ones((self.local_expert_num, self.experts.w13_weight_scale.shape[-1] // 2), dtype=torch.float32, device=current_platform.device_type)
         torch._dynamo.mark_static(self.in_scale_2)
+        self.w13_prefetch_size = 70 * 1024 * 1024
+        self.w2_prefetch_size = 0 if self.ep_size <= 64 else 14 * 2 * 1024 * 1024
 
-    def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
 
         if (model_extra_config.operator_opt_config.moe_multi_stream_tune and
@@ -308,150 +309,168 @@ class DeepseekMoE(nn.Module):
             model_extra_config.operator_opt_config.moe_dispatch_combine):
             if self.warm_up:
                 self.warm_up = False
+            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
+                router_logits, _ = self.gate.forward(hidden_states.float())
+                # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
+                hidden_states_3d = hidden_states.unsqueeze(1)
+                hidden_states = hidden_states_3d.squeeze(1)
 
-            router_logits, _ = self.gate.forward(hidden_states.float())
-            # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
-            hidden_states_3d = hidden_states.unsqueeze(1)
-            hidden_states = hidden_states_3d.squeeze(1)
-
-            with tng.scope.npu_stream_switch('21'):
-                hidden_states = tng.scope.npu_wait_tensor(hidden_states, router_logits)
-                # shared_experts w13
-                gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states)
-
-            topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
-                                                                self.experts.top_k, self.experts.use_grouped_topk,
-                                                                self.experts.renormalize,
-                                                                self.experts.topk_group, self.experts.num_expert_group,
-                                                                self.experts.custom_routing_function,
-                                                                self.experts.scoring_func,
-                                                                self.experts.e_score_correction_bias,
-                                                                self.routed_scaling_factor,
-                                                                layer=self.experts  # ENABLE_OMNI_PLANNER
-                                                                )
-
-            if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-                faka_topk_ids = attn_metadata.decode.best_topk
-                topk_ids = tng.scope.npu_wait_tensor(faka_topk_ids, topk_ids)
-
-            mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and attn_metadata.decode is not None else None
-            layer = self.experts
-            max_num_deployed_expert = self.n_routed_experts
-            if model_extra_config.operator_opt_config.use_omni_placement:
-                max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
-                max_num_deployed_expert = max_num_deployed_expert_per_rank * get_expert_parallel_world_size()
-            act_dtype = hidden_states.dtype
-            shared_expert_rank_num = 0
-            kwargs = {
-                "x": hidden_states,
-                "expert_ids": topk_ids,  # [n*topk]
-                "expert_shard_type": 0,  # Set it to 0 for now
-                "shared_expert_rank_num": shared_expert_rank_num,  # 32
-                "moe_expert_num": max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0 redundancy 256, 1 redundancy expert 320
-                "global_bs": 0,  # 0 Default (all); all tokens can be set
-            }
-
-            experts_tp_size = layer.tp_size
-            world_size = get_world_group().world_size
-            # In fact, what we get is the die number, and the ep group is not adapted by default.
-            # The default ep group is experts_num/die_num.
-            global_rank = get_world_group().rank_in_group
-            all_to_all_group_size = world_size // experts_tp_size
-
-            kwargs.update({
-                "scales": None,  # Quantization coefficient
-                "quant_mode": layer.quant_mode,  # 0: Non-quantization; 1: Static quantization; 2: Dynamic quantization
-                "group_ep": layer.moe_all_to_all_group_name,  # Unlike torch, it is obtained by name.
-                "ep_world_size": all_to_all_group_size,
-                "ep_rank_id": global_rank // experts_tp_size,
-                "group_tp": layer.moe_rs_group_name,
-                "tp_world_size": experts_tp_size,
-                "tp_rank_id": global_rank % experts_tp_size,
-                "x_active_mask": mc2_mask,
-            })
-
-            output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
-            expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
-
-            group_list = expert_token_nums.to(torch.int64)
-            if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
-                if is_prefill:
-                    layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-                else:
-                    with tng.scope.npu_stream_switch('22'):
-                        layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-
-            group_list = group_list[:len(self.experts.w13_weight)] # Adapt to redundant and non-redundant layers, #ENABLE_OMNI_PLANNER
-            # cal experts
-            weight1_3 = self.experts.w13_weight
-            weight2 = self.experts.w2_weight
-            weight_scale1_3 = self.experts.w13_weight_scale
-            weight_scale2 = self.experts.w2_weight_scale
-
-            if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
-                pertoken_scale = dynamic_scale
-            else:
-                expand_x, pertoken_scale = torch_npu.npu_dynamic_quant(expand_x)
-
-            with tng.scope.npu_stream_switch('21'):
+                with tng.scope.npu_stream_switch('21'):
+                    hidden_states = tng.scope.npu_wait_tensor(hidden_states, router_logits)
+                    # shared_experts w13
+                    gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states)
                 wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
-                wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
-                if not isinstance(gate_up_share, torch.Tensor):
-                    gate_up_share = (wait_gate, gate_up_share[1])
-                intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
+			
+            # expert weight prefetch
+            if self.w13_prefetch_size > 0:
+                torch_npu.npu_prefetch(self.experts.w13_weight, wait_gate, self.w13_prefetch_size)
+            if self.w2_prefetch_size > 0:
+                torch_npu.npu_prefetch(self.experts.w2_weight, wait_gate, self.w2_prefetch_size)
 
-            gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
-                                                        split_item=3, output_dtype=torch.int32, group_type=0,
-                                                        group_list_type=1)[0]
-            
-            gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-                gate_up_proj, weight_scale=weight_scale1_3, activate_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
-                group_index=group_list, activate_left=True, quant_mode=1)
+            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
+                topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
+                                                                    self.experts.top_k, self.experts.use_grouped_topk,
+                                                                    self.experts.renormalize,
+                                                                    self.experts.topk_group, self.experts.num_expert_group,
+                                                                    self.experts.custom_routing_function,
+                                                                    self.experts.scoring_func,
+                                                                    self.experts.e_score_correction_bias,
+                                                                    self.routed_scaling_factor,
+                                                                    layer=self.experts  # ENABLE_OMNI_PLANNER
+                                                                    )
 
-            hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
-                                            per_token_scale=[pertoken_scale],bias=None,
-                                            group_list=group_list, split_item=3, output_dtype=act_dtype,
-                                            group_type=0,
-                                            group_list_type=1)[0]
+                if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
+                    faka_topk_ids = attn_metadata.decode.best_topk
+                    topk_ids = tng.scope.npu_wait_tensor(faka_topk_ids, topk_ids)
 
-            # moeCombine
-            kwargs = {
-                "expand_x": hidden_states_experts,
-                "expert_ids": topk_ids,  # [n*topk]
-                "expand_idx": expand_idx,
-                "expert_scales": topk_weights.to(torch.float32),  # weight [n*topk]
-                "expert_shard_type": 0,
-                "shared_expert_rank_num": shared_expert_rank_num,
-                "moe_expert_num":  max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0 redundancy 256, 1 redundancy expert 320
-                "global_bs": 0,  # 0 Default (all); all tokens can be set
-            }
-            tp_recv_counts = output[5]
-            stage3_kwargs = {
-                "ep_send_counts": ep_recv_counts,  # dispatch's send_counts
-                "group_ep": layer.moe_all_to_all_group_name,  # Unlike torch, it is obtained by name.
-                "ep_world_size": all_to_all_group_size,
-                "ep_rank_id": global_rank // experts_tp_size,
-                "tp_send_counts": tp_recv_counts,
-                "group_tp": layer.moe_rs_group_name,
-                "tp_world_size": experts_tp_size,
-                "tp_rank_id": global_rank % experts_tp_size,
-                "x_active_mask": mc2_mask,
-            }
-            kwargs.update(stage3_kwargs)
+                mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and attn_metadata.decode is not None else None
+                layer = self.experts
+                max_num_deployed_expert = self.n_routed_experts
+                if model_extra_config.operator_opt_config.use_omni_placement:
+                    max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
+                    max_num_deployed_expert = max_num_deployed_expert_per_rank * get_expert_parallel_world_size()
+                act_dtype = hidden_states.dtype
+                shared_expert_rank_num = 0
+                kwargs = {
+                    "x": hidden_states,
+                    "expert_ids": topk_ids,  # [n*topk]
+                    "expert_shard_type": 0,  # Set it to 0 for now
+                    "shared_expert_rank_num": shared_expert_rank_num,  # 32
+                    "moe_expert_num": max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0 redundancy 256, 1 redundancy expert 320
+                    "global_bs": 0,  # 0 Default (all); all tokens can be set
+                }
 
-            with tng.scope.npu_stream_switch('21'):
-                if isinstance(intermediate_hiddenstates_share, dict):
-                    intermediate_hiddenstates_share['x_int8'] = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share.get('x_int8'), hidden_states_experts)
+                experts_tp_size = layer.tp_size
+                world_size = get_world_group().world_size
+                # In fact, what we get is the die number, and the ep group is not adapted by default.
+                # The default ep group is experts_num/die_num.
+                global_rank = get_world_group().rank_in_group
+                all_to_all_group_size = world_size // experts_tp_size
+
+                kwargs.update({
+                    "scales": None,  # Quantization coefficient
+                    "quant_mode": layer.quant_mode,  # 0: Non-quantization; 1: Static quantization; 2: Dynamic quantization
+                    "group_ep": layer.moe_all_to_all_group_name,  # Unlike torch, it is obtained by name.
+                    "ep_world_size": all_to_all_group_size,
+                    "ep_rank_id": global_rank // experts_tp_size,
+                    "group_tp": layer.moe_rs_group_name,
+                    "tp_world_size": experts_tp_size,
+                    "tp_rank_id": global_rank % experts_tp_size,
+                    "x_active_mask": mc2_mask,
+                })
+
+                output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
+                expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
+
+                group_list = expert_token_nums.to(torch.int64)
+                if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
+                    if is_prefill:
+                        layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+                    else:
+                        with tng.scope.npu_stream_switch('21'):
+                            layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+
+                group_list = group_list[:len(self.experts.w13_weight)] # Adapt to redundant and non-redundant layers, #ENABLE_OMNI_PLANNER
+                # cal experts
+                weight1_3 = self.experts.w13_weight
+                weight2 = self.experts.w2_weight
+                weight_scale1_3 = self.experts.w13_weight_scale
+                weight_scale2 = self.experts.w2_weight_scale
+
+                if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
+                    pertoken_scale = dynamic_scale
                 else:
-                    intermediate_hiddenstates_share = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share, hidden_states_experts)
-                shared_output, _ = self.shared_experts.down_proj.forward(intermediate_hiddenstates_share)
+                    expand_x, pertoken_scale = torch_npu.npu_dynamic_quant(expand_x)
 
-            hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
+                with tng.scope.npu_stream_switch('21'):
+                    wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
+                    wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
+                    if not isinstance(gate_up_share, torch.Tensor):
+                        gate_up_share = (wait_gate, gate_up_share[1])
+                    intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
 
-            if shared_output is not None:
-                final_hidden_states = (hidden_states_route, shared_output)
+                gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
+                                                            split_item=3, output_dtype=torch.int32, group_type=0,
+                                                            group_list_type=1)[0]
+                
+                gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
+                    gate_up_proj, weight_scale=weight_scale1_3, activate_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
+                    group_index=group_list, activate_left=True, quant_mode=1)
 
-            return final_hidden_states, residual
+                hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
+                                                per_token_scale=[pertoken_scale],bias=None,
+                                                group_list=group_list, split_item=3, output_dtype=act_dtype,
+                                                group_type=0,
+                                                group_list_type=1)[0]
+
+                # moeCombine
+                kwargs = {
+                    "expand_x": hidden_states_experts,
+                    "expert_ids": topk_ids,  # [n*topk]
+                    "expand_idx": expand_idx,
+                    "expert_scales": topk_weights.to(torch.float32),  # weight [n*topk]
+                    "expert_shard_type": 0,
+                    "shared_expert_rank_num": shared_expert_rank_num,
+                    "moe_expert_num":  max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0 redundancy 256, 1 redundancy expert 320
+                    "global_bs": 0,  # 0 Default (all); all tokens can be set
+                }
+                tp_recv_counts = output[5]
+                stage3_kwargs = {
+                    "ep_send_counts": ep_recv_counts,  # dispatch's send_counts
+                    "group_ep": layer.moe_all_to_all_group_name,  # Unlike torch, it is obtained by name.
+                    "ep_world_size": all_to_all_group_size,
+                    "ep_rank_id": global_rank // experts_tp_size,
+                    "tp_send_counts": tp_recv_counts,
+                    "group_tp": layer.moe_rs_group_name,
+                    "tp_world_size": experts_tp_size,
+                    "tp_rank_id": global_rank % experts_tp_size,
+                    "x_active_mask": mc2_mask,
+                }
+                kwargs.update(stage3_kwargs)
+
+                with tng.scope.npu_stream_switch('21'):
+                    if isinstance(intermediate_hiddenstates_share, dict):
+                        intermediate_hiddenstates_share['x_int8'] = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share.get('x_int8'), hidden_states_experts)
+                    else:
+                        intermediate_hiddenstates_share = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share, hidden_states_experts)
+                    shared_output, _ = self.shared_experts.down_proj.forward(intermediate_hiddenstates_share)
+
+            # prefetch weights for attention next layer
+            if next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
+                    attn_prefetch_size = 96*1024*1024
+                    attn_prefetch_flag = shared_output
+                    torch_npu.npu_prefetch(next_attention_weights['q_a_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
+                    torch_npu.npu_prefetch(next_attention_weights['kv_a_proj_with_mqa_weight'], attn_prefetch_flag, attn_prefetch_size)
+                    torch_npu.npu_prefetch(next_attention_weights['q_b_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
+                    torch_npu.npu_prefetch(next_attention_weights['W_UK'], attn_prefetch_flag, attn_prefetch_size)
+
+            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
+                hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
+
+                if shared_output is not None:
+                    final_hidden_states = (hidden_states_route, shared_output)
+
+                return final_hidden_states, residual
 
         if self.n_shared_experts is not None:
             if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
@@ -852,7 +871,8 @@ class DeepseekDecoderLayer(nn.Module):
             kv_cache: torch.Tensor,
             attn_metadata: AttentionMetadata,
             residual: Optional[torch.Tensor],
-            layer_id: Optional[int] = None
+            layer_id: Optional[int] = None,
+            next_attention_weights: Optional[dict] = None
     ) -> torch.Tensor:
         # Self Attention
         if residual is None:
@@ -872,10 +892,6 @@ class DeepseekDecoderLayer(nn.Module):
         )
 
         is_prefill = attn_metadata is None or attn_metadata.prefill is not None
-
-        # TODO 调试稳定后再加，只能在图模式下使用
-        if self.is_moe == True and not is_prefill:
-            torch_npu.npu_prefetch(self.mlp.experts.w13_weight, hidden_states, FFN1_PREFETCH_SIZE, 0)
 
         if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
             with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
@@ -910,11 +926,8 @@ class DeepseekDecoderLayer(nn.Module):
             residual = torch.cat(residual_out)[:local_length]
         else:
             if self.is_moe == True:
-                if not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
-                    with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
-                        hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id)
-                else:
-                    hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id)
+                # omni placement do not support super kernel
+                hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
                 if isinstance(hidden_states, (tuple, list)):
                     assert len(hidden_states) == 2
                     # 0 is the shared expert hidden_states, 1 is the routing expert hidden_states, add operation cannot be placed in the super kernel
@@ -983,6 +996,7 @@ class DeepseekV3Model(nn.Module):
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.first_k_dense_replace = config.first_k_dense_replace
 
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
@@ -1044,12 +1058,28 @@ class DeepseekV3Model(nn.Module):
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             layer_id = i - 3
+
+            if i >= self.first_k_dense_replace and i < self.end_layer - 1: 
+                next_attention_weights = {
+                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
+                    'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
+                    'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
+                    'W_UK': self.layers[i + 1].self_attn.attn_mla.impl.W_UK
+                }
+            else: 
+                next_attention_weights = {
+                    'q_a_proj_weight': None,
+                    'kv_a_proj_with_mqa_weight': None,
+                    'q_b_proj_weight': None,
+                    'W_UK': None
+                }
             hidden_states, residual = layer(positions,
                                             hidden_states,
                                             kv_caches[i - self.start_layer] if kv_caches is not None else None,
                                             attn_metadata, 
                                             residual,
-                                            layer_id)
+                                            layer_id,
+                                            next_attention_weights)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({

@@ -18,11 +18,7 @@ if __name__ == "__main__":
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "fork"
     os.environ["USING_LCCL_COM"] = "0"
 
-    os.environ["RANDOM_MODE"] = "RANDOM"
-    os.environ["MOCK_CAPTURE_DIR"] = "/home/kc/capture/"
-    os.environ["MOCK_CAPTURE_FILE"] = ".mock_cache"
-    os.environ["MOCK_CAPTURE_FILE_LOCK"] = ".lock"
+    os.environ["NO_NPU_MOCK"] = "1"
+    os.environ["RANDOM_MODE"] = "1"
 
-    os.environ["NO_NPU_MOCK"] = "0"
-
-    run_vllm_serve(tp=1, dp=24, model="/home/kc/models/DeepSeek-V2-Lite")
+    run_vllm_serve(tp=1, dp=24, model="/home/kc/models/Qwen2.5-7B-Instruct")

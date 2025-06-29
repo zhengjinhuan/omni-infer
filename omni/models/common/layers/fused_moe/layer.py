@@ -297,7 +297,6 @@ class FusedMoE(torch.nn.Module):
                     scoring_func=scoring_func,
                     e_score_correction_bias=e_score_correction_bias)
                 topk_weights = topk_weights * routed_scaling_factor
-
             else:
                 is_prefill = get_forward_context().attn_metadata is None or get_forward_context().attn_metadata.prefill is not None
                 if is_prefill:

@@ -12,7 +12,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "vllm.entrypoints.openai.api_server",
         "--port", "8089",
         "--model", model,
-        "--enable-expert-parallel",
+        # "--enable-expert-parallel",
         "--max_num_seqs", "128",
         "--max_model_len", "8000",
         "--tensor_parallel_size", f"{tp}",
@@ -35,15 +35,12 @@ if __name__ == "__main__":
     # Set environment variables
     os.environ['VLLM_ENABLE_MC2'] = '0'
     os.environ['VLLM_USE_V1'] = '1'
-    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3"
+    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1"
     os.environ['RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES'] = "1"
     os.environ['HCCL_CONNECT_TIMEOUT'] = "3600"
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "fork"
     os.environ["USING_LCCL_COM"] = "0"
 
-    os.environ["CAPTURE_MODE"] = "1"
-    os.environ["MOCK_CAPTURE_DIR"] = "/home/kc/capture/"
-    os.environ["MOCK_CAPTURE_FILE"] = ".mock_cache"
-    os.environ["MOCK_CAPTURE_FILE_LOCK"] = ".lock"
+    os.environ["RANDOM_MODE"] = "1"
     
-    run_vllm_serve(tp=2, dp=1, model="/home/kc/models/DeepSeek-V2-Lite")
+    run_vllm_serve(tp=2, dp=1, model="/home/kc/models/Qwen2.5-7B-Instruct")

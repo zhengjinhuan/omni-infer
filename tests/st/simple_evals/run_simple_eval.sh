@@ -8,7 +8,6 @@ export PYTHONPATH=${CRTDIR}:$PYTHONPATH
 python simple_evals.py --dataset mgsm drop mmlu humaneval gpqa \
 --served-model-name deepseek \
 --url http://${host}/v1 \
---max-tokens 2048 \
+--max-tokens 10240 \
 --temperature 0.5 \
---num-threads 500 \
---debug
+--num-threads 150

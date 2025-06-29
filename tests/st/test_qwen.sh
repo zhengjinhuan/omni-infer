@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-set -e
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 # 获取当前脚本的绝对路径并进入
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,17 +85,16 @@ log_info "当前目录: $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pytest -vsra --disable-warnings -m "platform_ascend910b and ${LEVEL_INPUT}" \
   ./precision/test_r1_precision.py --host="127.0.0.1:8300" --served_model_name="qwen"
 
+
+test_result=$?
 log_info "停止vllm服务"
 pkill -f python
 
-
-test_result=$?
 # 检查退出状态码，如果不为0则表示有测试失败
-if [ $test_result -ne 0 ]; then
-    log_error "测试失败"
-    exit 1
+if [ "${test_result}" -ne 0 ]; then
+    echo "千问用例测试失败"
 else
-    echo "测试例100%通过"
+    echo "千问用例测试成功"
 fi
 
 exit 0

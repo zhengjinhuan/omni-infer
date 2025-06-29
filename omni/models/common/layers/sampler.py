@@ -643,6 +643,7 @@ class SimpleSampler(RejectionSamplerV1):
         self.previous_repetition_penalties = [] 
         self.previous_presence_penalties = []
         self.main_sampler = main_sampler
+        self.minus_one = None
 
     def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
 
@@ -651,6 +652,9 @@ class SimpleSampler(RejectionSamplerV1):
         num_logprobs = sampling_metadata.max_num_logprobs
         if num_logprobs is not None:
             raise ("Logprobs gathered is not supported in current version")
+        if self.minus_one is None:
+            # prepare const on npu
+            self.minus_one = -torch.ones(1, 1, device=input_ids.device, dtype=input_ids.dtype)
 
         batch_size = num_decodes + num_prefills
         logits_indices = logits_indices.to(torch.int32)
@@ -658,13 +662,14 @@ class SimpleSampler(RejectionSamplerV1):
         if self.main_sampler is None:
             forward_tokens = logits.argmax(dim=-1).to(dtype = input_ids.dtype, device=input_ids.device)
         else:
-            start_indices = torch.arange(batch_size, device = logits.device) * num_sampling_tokens_per_req
-            forward_tokens = torch.empty_like(logits_indices, dtype = input_ids.dtype, device = input_ids.device).view(batch_size, -1)
+            start_indices = torch.arange(batch_size, device=logits.device) * num_sampling_tokens_per_req
+            forward_tokens = torch.empty_like(logits_indices, dtype=input_ids.dtype, device=input_ids.device).view(batch_size, -1)
             for i in range(num_sampling_tokens_per_req):
                 sampler_output = self.main_sampler(
-                    logits=logits[start_indices + i],
+                    logits=logits[start_indices],
                     sampling_metadata=sampling_metadata,
                 )
+                start_indices += 1
                 forward_tokens[:, i] = sampler_output.sampled_token_ids.view(-1)
                 sampler_output.sampled_token_ids = None
         if num_prefills > 0:
@@ -684,12 +689,12 @@ class SimpleSampler(RejectionSamplerV1):
             output_token_ids = forward_tokens.clone().view(-1, 1)
         else:
             accepted =  input_ids[logits_indices].view(batch_size, -1)[:,1:] == forward_tokens.view(batch_size, -1)[:,:-1]  # bool [batch_size, 1]
+            if model_extra_config.operator_opt_config.control_accept_rate >= 0 and model_extra_config.operator_opt_config.control_accept_rate <= 1:
+                accepted = torch.empty_like(accepted, dtype=torch.float32).uniform_() < model_extra_config.operator_opt_config.control_accept_rate
             # TODO support multiple speculative tokens
             accepted_num = accepted.view(-1).to(torch.int32)
             offset = torch.arange(num_sampling_tokens_per_req, device = accepted_num.device, dtype = torch.int32)
-            accepted_mask = offset[None, :] <= accepted_num[:, None]
-            output_token_ids = torch.where(accepted_mask, forward_tokens, -1)
-
+            output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], forward_tokens, self.minus_one)
             last_accepted_index = torch.arange(batch_size, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num
 
         sampler_output = SamplerOutput(

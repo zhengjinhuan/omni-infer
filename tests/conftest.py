@@ -26,6 +26,10 @@ def pytest_addoption(parser):
     parser.addoption("--output_tokens", action="store", default="[1000]", help="Parameter for output_tokens")
     parser.addoption("--benchmark_csv", action="store", default="benchmark_result.csv",
                      help="Parameter for benchmark_csv")
+    parser.addoption("--pd_server_log_path", action="store", default="/data/omni_infer/log/server_0.log", help="Path of PD server log")
+    parser.addoption("--server_mode", action="store", default="0", help="Parameter for server mode")
+
+
 
 
 @pytest.fixture
@@ -76,3 +80,12 @@ def output_tokens(request):
 @pytest.fixture
 def benchmark_csv(request):
     return request.config.getoption("--benchmark_csv")
+
+
+@pytest.fixture
+def pd_server_log_path(request):
+    return request.config.getoption("--pd_server_log_path")
+
+@pytest.fixture
+def server_mode(request):
+    return request.config.getoption("--server_mode")
