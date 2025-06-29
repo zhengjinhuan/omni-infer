@@ -1,22 +1,28 @@
-# omni-placement
+# OmniPlacement SDK
 
-OmniPlacement provides a framework to optimize the token to expert mapping, the goal of the
-optimization is to achieve the best possible through put with a targeted latency.
+OmniPlacement is an advanced Software Development Kit (SDK) designed for dynamic expert placement in Mixture of Experts (MoE) systems for NPU-accelerated environments. It enables efficient, near-realtime expert placement with minimal impact on inference performance. Key features include:
 
-The token to expert mapping is modelled as `[T, ES]` where `ES` is the score of each expert
-representing it's importance.
+1. **Expert Rearrangement**: Dynamically reconfigures experts to optimize resource utilization.
+2. **Layer-Wise Uneven Expert Placement**: Supports non-uniform distribution of experts across layers for enhanced efficiency.
+3. **Near-Realtime Placement**: Updates expert placements with negligible performance overhead.
+4. **Near-Realtime Activation Capturing**: Captures expert activation in realtime
 
-Each mapping is assigned a 'cost'， which is an approximation of execution latency.
+## Framework Capabilities
+OmniPlacement provides a robust framework to streamline MoE operations:
 
-TODO:
-1. single token optimization
-2. multi token optimizationm
+1. **Realtime Expert Activation Monitoring**: Captures activation data to inform optimization strategies.
+2. **Optimized Expert Placement**: Utilizes advanced algorithms to minimize MoE latency by determining optimal expert configurations.
+3. **Dynamic Placement Updates**: Refreshes expert placements in near-realtime to adapt to changing workloads.
 
-Goal:
-1. minimize cross machine communication --> this might be the highest priority
-2. minimize corss device communication
-3. minimize computation cost --> this might not be the bottleneck but it could simplify the
-optimization of the corss machine/device communication
+## Placement Optimization Objectives
+The SDK focuses on two primary goals to enhance performance:
 
-1. 先装c++.so
-2. pip install -e ., 自动挂载.so
+1. **Minimize Maximum Activation Load**: Balances expert activation across all NPUs to prevent bottlenecks.
+2. **Reduce Communication Overhead**: Optimizes placement based on NPU cluster topology to lower inter-device communication costs.
+
+## Expert Selection
+1. **[Placeholder] Expert Selection Criteria**: Section to be completed, focusing on criteria for selecting experts based on workload and NPU capabilities.
+2. **[Placeholder] Selection Algorithm**: Section to be completed, detailing the algorithm for prioritizing experts during placement.
+
+## High Availability via Dynamic Redundant Expert Placement
+OmniPlacement enhances system reliability by supporting dynamic redundant expert placement on existing NPU devices without service interruptions. This capability significantly reduces **Recovery Time Objective (RTO)** for large-scale MoE systems, ensuring rapid recovery from failures and maintaining service continuity.
