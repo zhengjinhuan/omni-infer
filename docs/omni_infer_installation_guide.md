@@ -26,13 +26,13 @@ npu-smi info
 
 ```
 ssh root@192.168.1.100
-
 ```
 
 ## docker镜像下载
 
-点击这里进行下载 （TODO）
-下载命令（TODO）
+```
+docker pull swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer:202506272026
+```
 
 ## docker镜像拉起命令
 
