@@ -1,23 +1,29 @@
-# Omni_Infer: Inference Accelerators for Ascend NPU
+# Omni_Infer：基于昇腾的超大规模MoE模型推理加速技术
 
-Omni_Infer is a powerful suite of inference accelerators tailored for the Ascend NPU platform, fully compatible with vLLM, and designed to deliver high-performance, enterprise-grade inference with native support and a growing feature set.
+中文 | [View English](./README_en.md)
 
-## Key Features
+Omni_Infer是一套专为昇腾硬件平台定制的强大推理加速工具集，完全兼容业界目前主流的开源大模型推理框架（比如vLLM等），旨在提供高性能、企业级推理能力，具备原生支持且功能集持续扩展。
 
-- **Enterprise-Grade Low-Latency P/D Scheduling**: xPyD scheduling with scale-out support for large-scale, disaggregated PD deployments, ensuring minimal latency. Refer to [Global Proxy Design](omni/accelerators/sched/global_proxy/README.md) for details.
-- **Request-Level Load Balancing**: Optimizes prefill and decode phases for maximum throughput and low latency across all sequence lengths.
-- **Optimized MoE Expert Deployment**: Supports large-scale Mixture of Experts (MoE) models with EP144/EP288 configurations.
-- **MoE Expert Load Balancing**: Features layer-wise, uneven redundancy and near real-time dynamic expert placement for efficient resource utilization. Refer to [OmniPlacement Design](omni/accelerators/placement/README.md) for details.
-- **Advanced Attention Optimizations**: Tailored for LLM, MLLM, and MoE models, enhancing performance and scalability.
+## 核心特性
 
-## Getting Started
+- **企业级低延迟P/D调度**：支持xPyD调度及大规模分布式PD部署的横向扩展，确保最低延迟。详情请参考[全局代理设计](omni/accelerators/sched/global_proxy/README.md)。
+- **请求级负载均衡**：针对所有序列长度优化预填充（prefill）和解码（decode）阶段，实现最大吞吐量与低延迟。
+- **优化的MoE专家部署**：支持EP144/EP288配置的大规模混合专家（Mixture of Experts, MoE）模型。
+- **MoE专家负载均衡**：具备分层非均匀冗余和近实时动态专家放置功能，提升资源利用效率。详情请参考[OmniPlacement设计](omni/accelerators/placement/README.md)。
+- **高级注意力机制优化**：专为LLM、MLLM和MoE模型定制，增强性能与可扩展性。
 
-(SECTION TO BE COMPLETED)
-To integrate Omni_Infer into your project, refer to the [installation guide](link-to-installation-guide) and [documentation](link-to-docs) for detailed setup instructions and API references.
+## High-Level 架构图
 
-## Contributing
-We welcome contributions to enhance Omni_Infer! Please check our [contributing guidelines](./CONTRIBUTION.md) and submit pull requests or issues via [Gitee Issues](https://gitee.com/omniai/omniinfer/issues/new?issue%5Bassignee_id%5D=0&issue%5Bmilestone_id%5D=0).
+![image](docs/figures/omni_infer_high_level_arch.png)
 
-## License
+## 快速开始
 
-Omni_Infer is licensed under the [MIT License](LICENSE).
+如需将Omni_Infer集成到项目中，请参考[安装指南](docs/omni_infer_installation_guide.md)和[文档](docs/)获取详细的设置说明和API参考。
+
+## 贡献指南
+
+我们欢迎您为Omni_Infer贡献代码！请查看[贡献指南](./CONTRIBUTION.md)，并通过[Gitee Issues](https://gitee.com/omniai/omniinfer/issues/new?issue%5Bassignee_id%5D=0&issue%5Bmilestone_id%5D=0)提交拉取请求或问题。
+
+## 许可证
+
+Omni_Infer基于[MIT许可证](LICENSE)发布。
