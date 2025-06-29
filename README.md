@@ -16,8 +16,6 @@ Omni_Infer is a powerful suite of inference accelerators tailored for the Ascend
 To integrate Omni_Infer into your project, refer to the [installation guide](link-to-installation-guide) and [documentation](link-to-docs) for detailed setup instructions and API references.
 
 ## Contributing
-
-(SECTION TO BE COMPLETED)
 We welcome contributions to enhance Omni_Infer! Please check our [contributing guidelines](./CONTRIBUTION.md) and submit pull requests or issues via [Gitee Issues](https://gitee.com/omniai/omniinfer/issues/new?issue%5Bassignee_id%5D=0&issue%5Bmilestone_id%5D=0).
 
 ## License
