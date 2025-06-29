@@ -23,13 +23,13 @@ import os
 from omni.cli.config_transform import transform_deployment_config
 
 def load_config(config_path):
-    """加载并解析 YAML 配置文件"""
+    """Load and parse YAML configuration file"""
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
 
 def run_ansible_playbook_with_config(config_path):
-    """使用配置文件作为 inventory 执行 Ansible Playbook"""
+    """Run Ansible Playbook using the configuration file as inventory"""
     transform_deployment_config(config_path)
     command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml"
     process = subprocess.Popen(
@@ -41,81 +41,69 @@ def run_ansible_playbook_with_config(config_path):
     stdout, stderr = process.communicate()
 
     if process.returncode != 0:
-        print(f"部署失败: stdout:{stdout.decode()} stderr:{stderr.decode()}")
+        print(f"Deployment failed: stdout: stdout:{stdout.decode()} stderr:{stderr.decode()}")
     else:
-        print(f"部署成功: {stdout.decode()}")
+        print(f"Deployment succeeded: {stdout.decode()}")
 
 
 def check_service_health(config):
-    """执行服务健康检查"""
+    """Perform service health check"""
     try:
-        # 解析代理配置
         proxy_host = config['deployment']['proxy']['host']
         proxy_port = config['deployment']['proxy']['listen_port']
         model_path = config['services']['model_path']
 
-        # 构造请求 URL
         url = f"http://{proxy_host}:{proxy_port}/v1/completions"
 
-        # 构造请求头
         headers = {
             "Content-Type": "application/json",
-            "Authorization": "Bearer YOUR_API_KEY"  # 替换为实际 API 密钥
+            "Authorization": "Bearer YOUR_API_KEY"
         }
 
-        # 构造请求体
         payload = {
             "model": model_path,
             "prompt": "Alice is ",
             "max_tokens": 50,
             "temperature": 0
         }
-
-        # 发送请求
         response = requests.post(url, headers=headers, data=json.dumps(payload))
-
-        # 处理响应
         if response.status_code == 200:
-            print("✅ 服务健康检查通过")
-            print(f"响应内容: {response.json()}")
+            print("Health check passed")
+            print(f"Response content: {response.json()}")
             return True
         else:
-            print(f"❌ 服务异常 (状态码: {response.status_code})")
-            print(f"错误信息: {response.text}")
+            print(f"Service abnormal (Status code: {response.status_code})")
+            print(f"Error message: {response.text}")
             return False
 
     except KeyError as e:
-        print(f"❌ 配置错误: 缺少必要的配置项 {e}")
+        print(f"Configuration error: Missing required configuration item {e}")
         return False
     except requests.exceptions.RequestException as e:
-        print(f"❌ 网络错误: {e}")
+        print(f"Network error: {e}")
         return False
     except Exception as e:
-        print(f"❌ 未知错误: {e}")
+        print(f"Unknown error: {e}")
         return False
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Omni Inference 服务管理")
+    parser = argparse.ArgumentParser(description="Omni Inference Service Management")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # 新增 serve 子命令
-    serve_parser = subparsers.add_parser("serve", help="部署推理服务")
-    serve_parser.add_argument("config", help="配置文件路径")
+    serve_parser = subparsers.add_parser("serve", help="Deploy inference services")
+    serve_parser.add_argument("config", help="Path to configuration file")
 
-    # 新增 status 子命令
-    status_parser = subparsers.add_parser("status", help="服务健康检查")
-    status_parser.add_argument("--config", default="omni_infer_deployment.yml", help="配置文件路径")
+    status_parser = subparsers.add_parser("status", help="Check service health")
+    status_parser.add_argument("--config", default="omni_infer_deployment.yml", help="Path to configuration file")
 
     args = parser.parse_args()
 
     if args.command == "serve":
-        # 执行 Ansible 部署
-        print(f"🚀 开始部署服务，使用配置文件: {args.config}")
+        print(f"Starting service deployment using configuration file: {args.config}")
         run_ansible_playbook_with_config(args.config)
     elif args.command == "status":
-        # 执行健康检查
-        print(f"🔍 开始服务健康检查，使用配置文件: {args.config}")
+        print(f"Starting service health check using configuration file: {args.config}")
         config = load_config(args.config)
         check_service_health(config)
 

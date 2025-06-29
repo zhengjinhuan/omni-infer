@@ -45,10 +45,8 @@ def patch_all():
     global _patch_done
     if _patch_done:
         return
-    omni_use_dsv3 = int(os.getenv("OMNI_USE_DSV3", "0"))
     patch_vllm_distributed()
-    if omni_use_dsv3:
-        patch_rope() # this patch need to move to dsv3 path to avoid errors
+    patch_rope()
     patch_embedding()
     patch_sampler()
     _patch_done = True

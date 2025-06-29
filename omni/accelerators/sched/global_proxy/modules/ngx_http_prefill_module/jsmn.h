@@ -2,10 +2,6 @@
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 /*
- * Copyright (c) Huawei Technologies Co., Ltd. 2019-2023. All rights reserved.
-*/
-
-/*
  * MIT License
  *
  * Copyright (c) 2010 Serge Zaitsev

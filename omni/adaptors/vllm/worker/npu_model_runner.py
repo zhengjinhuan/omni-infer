@@ -68,6 +68,9 @@ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 import vllm.envs as envs
 
+from vllm.utils import is_pin_memory_available
+from contextlib import nullcontext
+ 
 from abc import abstractmethod, ABCMeta
 
 omni_use_dsv3 = int(os.getenv("OMNI_USE_DSV3", "0"))
@@ -152,7 +155,7 @@ class NPUModelRunner(GPUModelRunner):
         self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,
                                             dtype=torch.int64,
                                             device="cpu",
-                                            pin_memory=True)
+                                            pin_memory=is_pin_memory_available())
         self.slot_mapping_np = self.slot_mapping_cpu.numpy()
         self.input_ids = torch.zeros(self.max_num_tokens,
                                      dtype=torch.int64,
@@ -160,14 +163,14 @@ class NPUModelRunner(GPUModelRunner):
         self.input_ids_cpu = torch.zeros(self.max_num_tokens,
                                          dtype=torch.int64,
                                          device="cpu",
-                                         pin_memory=self.pin_memory)
+                                         pin_memory=is_pin_memory_available())
         self.seq_lens = torch.zeros(self.max_num_reqs,
                                     dtype=torch.int64,
                                     device=self.device)
         self.seq_lens_cpu = torch.zeros(self.max_num_reqs,
                                         dtype=torch.int64,
                                         device="cpu",
-                                        pin_memory=self.pin_memory)
+                                        pin_memory=is_pin_memory_available())
         self.seq_lens_np = self.seq_lens_cpu.numpy()
         # TODO: support arbitrary spec tokens
         self.graph_block_tables = np.zeros(
@@ -201,7 +204,7 @@ class NPUModelRunner(GPUModelRunner):
         if additional_config:
             self.enable_torchair_graph_mode = additional_config.get(
                 "enable_graph_mode",
-                False) and self.vllm_config.model_config.use_mla
+                False)
             self.use_cached_npu_graph = additional_config.get(
                 "use_cached_npu_graph", False)
             self.decode_gear_list_ori = additional_config.get(
@@ -211,8 +214,8 @@ class NPUModelRunner(GPUModelRunner):
             if len(self.decode_gear_list) > MAX_GEAR_NUM:
                 raise ValueError(f"Max gear num supported is {MAX_GEAR_NUM} now.")
         
-            if self.decode_gear_list and self.max_batch_size != max(self.decode_gear_list):
-                self.decode_gear_list = [gear for gear in self.decode_gear_list_ori if gear < self.max_batch_size] + [self.max_batch_size]
+            if self.decode_gear_list_ori and self.max_batch_size < max(self.decode_gear_list_ori):
+                self.decode_gear_list = [gear for gear in self.decode_gear_list_ori if gear <= self.max_batch_size]
                 logger.warning(f"PTA_TORCHAIR_DECODE_GEAR_LIST({self.decode_gear_list_ori}) becomes ({self.decode_gear_list}) due to max_batch_size({self.max_batch_size})")
             else:
                 self.decode_gear_list = self.decode_gear_list_ori # List of categories
@@ -307,9 +310,7 @@ class NPUModelRunner(GPUModelRunner):
         cu_num_tokens = np.cumsum(num_scheduled_tokens)
         cumsums_offsets = np.repeat(cu_num_tokens - num_scheduled_tokens,
                                     num_scheduled_tokens)
-        sample_indices = cu_num_tokens - 1
-        sample_indices = torch.from_numpy(sample_indices).to(self.device,
-                                                             non_blocking=True)
+
         arange = self.arange_np[:total_num_scheduled_tokens] - cumsums_offsets
 
         positions_np = self.positions_np[:total_num_scheduled_tokens]
@@ -320,12 +321,10 @@ class NPUModelRunner(GPUModelRunner):
         self.positions[:total_num_scheduled_tokens].copy_(
             self.positions_cpu[:total_num_scheduled_tokens], non_blocking=True)
         positions = self.positions[:num_input_tokens]
-        self.query_lens = torch.from_numpy(num_scheduled_tokens)
 
         self.seq_lens_np[:num_reqs] = (
             self.input_batch.num_computed_tokens_cpu[:num_reqs] +
             num_scheduled_tokens)
-        seq_lens = self.seq_lens_cpu[:num_reqs]
 
         block_table_indices = (req_indices * self.max_num_blocks_per_req +
                                positions_np // self.block_size)
@@ -350,13 +349,14 @@ class NPUModelRunner(GPUModelRunner):
         if attn_state == AscendAttentionState.DecodeOnly:
             if num_reqs > self.max_batch_size:
                 raise RuntimeError("num_reqs is bigger than max_batch_size")
-            graph_pad_size = self.max_batch_size - num_reqs
             if self.use_spec_decode:
                 graph_pad_size = self.max_batch_size - num_reqs * 2 # TODO 根据投机config设置
+            else:
+                graph_pad_size = self.max_batch_size - num_reqs
         else:    
             # The reduce_scatter in the TP communication domain after embedding, P goes through this
             graph_pad_size = _get_pad_size(num_input_tokens)
-   
+
         if not (omni_use_dsv3 or (attn_state == AscendAttentionState.DecodeOnly and self.enable_torchair_graph_mode)):
             graph_pad_size = 0
 
@@ -384,8 +384,7 @@ class NPUModelRunner(GPUModelRunner):
                            0,
                            torch.from_numpy(token_indices),
                            out=self.input_ids_cpu[:total_num_scheduled_tokens])
-        self.query_start_loc_np[0] = 0
-        self.query_start_loc_np[1:num_reqs + 1] = cu_num_tokens
+
         # Copy the tensors to the NPU.
         self.input_ids[:total_num_scheduled_tokens].copy_(
             self.input_ids_cpu[:total_num_scheduled_tokens], non_blocking=True)
@@ -400,7 +399,10 @@ class NPUModelRunner(GPUModelRunner):
             # Iterate over the dictionary rather than all requests since not all
             # requests have draft tokens.
 
-            sample_indices = torch.arange(total_num_scheduled_tokens, dtype = sample_indices.dtype, device=sample_indices.device)
+            sample_indices = torch.arange(total_num_scheduled_tokens, dtype=torch.int32, device=self.device)
+        else:
+            sample_indices = cu_num_tokens - 1
+            sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
 
         return attn_metadata, graph_pad_size, sample_indices, positions, has_spec_tokens
 
@@ -419,7 +421,6 @@ class NPUModelRunner(GPUModelRunner):
         model_kwargs = {}
         raw_hidden_states = None
         if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
-            logger.debug(f">>>>> num_input_tokens = {num_input_tokens}, max_batch_size = {self.max_batch_size}, graph_pad_size = {graph_pad_size}")
             if graph_pad_size >= 0:
                 padding = torch.zeros(graph_pad_size,
                                       dtype=input_ids.dtype,
@@ -458,7 +459,7 @@ class NPUModelRunner(GPUModelRunner):
 
             if self.enable_torchair_graph_mode and attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
                 start_debug = time.time()
-                logger.info("Start running compiled model.")
+                logger.debug("Start running compiled model.")
                 if isinstance(self.model, GraphCompileConfiguration):
                     self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                 start_os_env = time.time()
@@ -508,11 +509,11 @@ class NPUModelRunner(GPUModelRunner):
                     cost_model = end_model - start_time
                     cost_os_env = start_time - start_os_env
                     cost_debug = start_debug - start_os_env
-                    logger.warning(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
+                    logger.info(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
             else:
                 if self.model is None:
                     raise RuntimeError("self.model must not be None")
-                logger.info("Start running eager model.")
+                logger.debug("Start running eager model.")
                 if os.environ.get('PROFILING_FORWARD', "0") == '1' and num_input_tokens > 20000:
                     import torch_npu
                     prof_save_path = os.environ.get("PROFILING_SAVE_PATH", "./")
@@ -574,7 +575,7 @@ class NPUModelRunner(GPUModelRunner):
         cost_fc = start_ret - start_fc
         cost_setup_connector = start_f - start_setup_connector
         cost_fc_exit = start_ret - start_fc_exit
-        logger.info(f" ***** before fc {cost_before_fc:.6f}, fc {cost_fc:.6f}={cost_setup_connector:.6f}+{cost_fc_exit:.6f}")
+        logger.debug(f" ***** before fc {cost_before_fc:.6f}, fc {cost_fc:.6f}={cost_setup_connector:.6f}+{cost_fc_exit:.6f}")
         return hidden_states, raw_hidden_states, input_ids, finished_sending, finished_recving
 
     @torch.inference_mode()
@@ -701,8 +702,10 @@ class NPUModelRunner(GPUModelRunner):
             with set_forward_context(attn_metadata,
                                     self.vllm_config,
                                     num_tokens=scheduler_output.total_num_scheduled_tokens):
-                torch._dynamo.mark_static(input_ids)
-                torch._dynamo.mark_static(raw_hidden_states)
+                if not self.drafter_mark_static:
+                    torch._dynamo.mark_static(input_ids)
+                    torch._dynamo.mark_static(raw_hidden_states)
+                    self.drafter_mark_static = True
                 mtp_hidden_states = self.compile_drafter(
                     input_ids=mtp_input_tokens.to(torch.long),
                     positions=positions,
@@ -866,7 +869,7 @@ class NPUModelRunner(GPUModelRunner):
     def load_model(self) -> None:
         logger.info("Starting to load model %s...", self.model_config.model)
 
-        with DeviceMemoryProfiler() as m:  # noqa: SIM117
+        with DeviceMemoryProfiler() if not int(os.getenv("NO_NPU_MOCK", "0")) else nullcontext() as m:  # noqa: SIM117
             self.model = get_model(vllm_config=self.vllm_config)
             if self.lora_config:
                 raise ValueError("LoRA model is not supported on NPU now.")
@@ -883,8 +886,9 @@ class NPUModelRunner(GPUModelRunner):
                 self.model_config.hf_config.architectures = original_arch
                 self.model_config.hf_config.model_type = original_type
                 # zxp TODO: check if fusion_spec.py from line 90 needed?
-        logger.info("Loading model weights took %.4f GB",
-                    m.consumed_memory / float(2**30))
+        if not int(os.getenv("NO_NPU_MOCK", "0")):
+            logger.info("Loading model weights took %.4f GB",
+                        m.consumed_memory / float(2**30))
 
         # adapter torch compile with npu_backend
         if self.enable_torchair_graph_mode:
@@ -933,7 +937,7 @@ class NPUModelRunner(GPUModelRunner):
             max_model_len=self.model_config.max_model_len,
             max_num_batched_tokens=self.max_num_tokens,
             device=self.device,
-            pin_memory=True,
+            pin_memory=is_pin_memory_available(),
             vocab_size=self.model_config.get_vocab_size(),
             kv_cache_config=kv_cache_config,
         )
@@ -970,17 +974,19 @@ class NPUModelRunner(GPUModelRunner):
                 else:
                     raise ValueError("Unknown KV cache spec type.")
 
-        bind_kv_cache(
-            kv_caches,
-            self.vllm_config.compilation_config.static_forward_context,
-            self.kv_caches)
+        if not int(os.getenv("NO_NPU_MOCK", "0")):
+            bind_kv_cache(
+                kv_caches,
+                self.vllm_config.compilation_config.static_forward_context,
+                self.kv_caches)
 
         if has_kv_transfer_group():
             get_kv_transfer_group().register_kv_caches(kv_caches)
 
     def capture_model(self) -> None:
         start_time = time.perf_counter()
-        start_free_npu_memory = torch.npu.mem_get_info()[0]
+        if not int(os.getenv("NO_NPU_MOCK", "0")):
+            start_free_npu_memory = torch.npu.mem_get_info()[0]
         if self.enable_torchair_graph_mode:
             decode_gear_list = self.decode_gear_list
             graph_num = len(decode_gear_list)
@@ -1006,6 +1012,22 @@ class NPUModelRunner(GPUModelRunner):
             if gear >= max_num_token:
                 return gear
         raise ValueError(f"decode input batch size {max_num_token} exceeds maximum gear {max(self.decode_gear_list)}.")
+    
+    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
+        if int(os.getenv("NO_NPU_MOCK", "0")):
+            kv_cache_spec: dict[str, KVCacheSpec] = {}
+            block_size = self.vllm_config.cache_config.block_size
+            use_mla = self.vllm_config.model_config.use_mla
+            kv_cache_spec["mock.0"] = FullAttentionSpec(
+                block_size=block_size,
+                num_kv_heads=1,
+                head_size=16,
+                dtype=torch.bfloat16,
+                use_mla=use_mla
+            )
+            return kv_cache_spec
+        else:
+            return super().get_kv_cache_spec()
 
 
 class WrapModel(nn.Module):
@@ -1022,10 +1044,26 @@ class WrapModel(nn.Module):
         torch.npu.set_compile_mode(jit_compile=False)
         self.cached_decode_dict = {}
         for i, gear in enumerate(self.decode_gear_list):
-            self.cached_decode_dict[gear] = torchair.inference.cache_compile(getattr(self, f"decode_batch_{i}"), config=config, dynamic=True, ge_cache=False, fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,)
+            self.cached_decode_dict[gear] = torchair.inference.cache_compile(getattr(self, f"decode_batch_{i}"), config=config, dynamic=True, ge_cache=True, fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,)
 
     def decode_batch_0(self, *args, **kwargs):
         return self._forward(*args, **kwargs)
+
+    def decode_batch_1(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def decode_batch_2(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def decode_batch_3(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def decode_batch_4(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def decode_batch_5(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
 
     def decode(self, *args, **kwargs):
         return self._forward(*args, **kwargs)
@@ -1051,27 +1089,9 @@ class WrapModel(nn.Module):
         hidden_states = self.model.forward(input_ids, positions, intermediate_tensors=intermediate_tensors, **kwargs)
         return hidden_states
 
-class WrapDrafter(nn.Module):
+class WrapDrafter(WrapModel):
     def __init__(self, model, decode_gear_list) -> None:
-        super().__init__()
-        self.model = model
-        self.decode_gear_list = decode_gear_list
-        from torchair.configs.compiler_config import CompilerConfig
-        import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce
-        torch._dynamo.reset()
-        config = CompilerConfig()
-        config.experimental_config.keep_inference_input_mutations = True
-        config.experimental_config.tiling_schedule_optimize = True
-        torch.npu.set_compile_mode(jit_compile=False)
-        self.cached_decode_dict = {}
-        for i, gear in enumerate(self.decode_gear_list):
-            self.cached_decode_dict[gear] = torchair.inference.cache_compile(getattr(self, f"decode_batch_{i}"), config=config, dynamic=True, ge_cache=False, fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,)
-
-    def decode_batch_0(self, *args, **kwargs):
-        return self._forward(*args, **kwargs)
-
-    def decode(self, *args, **kwargs):
-        return self._forward(*args, **kwargs)
+        super().__init__(model, decode_gear_list)
 
     def forward(
             self,

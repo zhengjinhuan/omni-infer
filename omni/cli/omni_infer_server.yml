@@ -730,7 +730,7 @@
 
     - name: Wait 60 seconds.
       pause:
-        seconds: 60  # 支持小数（如0.5秒）
+        seconds: 60  # Support decimals（such as 0.5s）
       tags: 
         - server
         - onlyserver

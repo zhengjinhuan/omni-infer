@@ -2,11 +2,11 @@ START_DIR=$PWD
 
 BUILD_ROOT="$(dirname $(dirname "$(realpath "$0")"))"
 
-# 帮助信息
+# Function to display help information
 print_help() {
-    echo "使用方法: $0 [选项]"
-    echo "选项:"
-    echo "  -h, --help                        显示此帮助信息"
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  -h, --help                        Display this help information"
     echo "  --ci                              CI build"
     exit 0
 }
@@ -21,7 +21,7 @@ parse_long_option() {
     return 0
 }
 
-# 解析选项
+# Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
@@ -47,7 +47,7 @@ cd $BUILD_ROOT/infer_engines
 
 if [ "$USE_MOCK_MODEL" = "1" ]; then
     # Patch vllm
-    ./bash_install_mock.sh
+    ./bash_install_code.sh
 
     cd vllm
     git apply $BUILD_ROOT/tests/reduce_the_num_of_hidden_layers_of_deepseek_v3_w8a8.patch

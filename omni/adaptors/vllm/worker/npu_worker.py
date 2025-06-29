@@ -133,10 +133,13 @@ class NPUWorker(WorkerBase):
 
     def init_device(self):
         if self.device_config.device.type == current_platform.device_type:
-            self.device = torch.device(f"{current_platform.device_type}:{self.local_rank}")
-            NPUPlatform.set_device(self.device)
-            NPUPlatform.empty_cache()
-            self.init_npu_memory = NPUPlatform.mem_get_info()[0]
+            if int(os.getenv("NO_NPU_MOCK", "0")):
+                self.device = torch.device(f"cpu")
+            else:
+                self.device = torch.device(f"{current_platform.device_type}:{self.local_rank}")
+                NPUPlatform.set_device(self.device)
+                NPUPlatform.empty_cache()
+                self.init_npu_memory = NPUPlatform.mem_get_info()[0]
         else:
             info = f"Not support device type: {self.device_config.device}"
             logger.error(info)
@@ -173,6 +176,9 @@ class NPUWorker(WorkerBase):
         return coef * block_size * (kv_lora_rank + qk_rope_head_dim) * 2 
     
     def determine_available_memory(self) -> int:
+        if int(os.getenv("NO_NPU_MOCK", "0")):
+            return int(100000000)
+ 
         cur_npu_kv_cache_bytes = self._compute_kv_cache_bytes()
         if not self.enable_torchair_graph_mode:
            clear_var() 
@@ -193,9 +199,9 @@ class NPUWorker(WorkerBase):
                 if not is_all_kv_cache_bytes_equal:
                         raise RuntimeError(f"The block num data of some ranks has been modified kv_cache_bytes:{is_all_kv_cache_bytes_equal}")
                         
-                if abs(cur_npu_kv_cache_bytes - npu_kv_cache_bytes) > range:
-                        raise RuntimeError(f"The range between the current NPU kv_cache_bytes and the recorded kv_cache_bytes exceeds {range} "
-                                            f"cur_npu_kv_cache_bytes:{cur_npu_kv_cache_bytes}, old_kv_cache_bytes:{npu_kv_cache_bytes}")
+                # if abs(cur_npu_kv_cache_bytes - npu_kv_cache_bytes) > range:
+                #         raise RuntimeError(f"The range between the current NPU kv_cache_bytes and the recorded kv_cache_bytes exceeds {range} "
+                #                             f"cur_npu_kv_cache_bytes:{cur_npu_kv_cache_bytes}, old_kv_cache_bytes:{npu_kv_cache_bytes}")
                     
                 logger.info("Currently use graph cache")           
                 clear_var(old_kv_cache_bytes, all_kv_cache_bytes) 

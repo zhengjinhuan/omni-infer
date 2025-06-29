@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 #!/bin/bash
 
 set -e
@@ -16,13 +18,16 @@ if [ ! -d nginx-${NGINX_VERSION} ]; then
 	tar -zxf nginx-${NGINX_VERSION}.tar.gz
 fi
 
-yum install -y pcre libuuid-devel
+yum install -y pcre gcc gcc-c++ make zlib zlib-devel pcre pcre-devel openssl-devel
 
 cd nginx-${NGINX_VERSION}
-CFLAGS="-O2" ./configure --sbin-path=${NGINX_SBIN_PATH} \
+./configure --sbin-path=${NGINX_SBIN_PATH} \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_prefill_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_set_request_id_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_length_balance_module \
-    --without-http_gzip_module
+    --without-http_gzip_module \
+    --with-pcre-jit \
+    --with-cc-opt='-O3 -fPIE -fstack-protector-strong' \
+    --with-ld-opt='-fPIE -pie'
 make -j
 make install

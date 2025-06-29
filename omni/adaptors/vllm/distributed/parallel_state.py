@@ -27,6 +27,7 @@ from vllm.distributed import (
 )
 from vllm.logger import logger
 from omni.models.common.config.model_config import model_extra_config
+import os
 
 initialize_model_parallel_default = parallel_state.initialize_model_parallel
 
@@ -153,7 +154,8 @@ def initialize_local_world_group(backend) -> None:
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
     world_size: int = torch.distributed.get_world_size()
-    local_size = calculate_effective_local_size(torch.npu.device_count(), world_size)
+    local_size = calculate_effective_local_size(torch.npu.device_count() if not int(os.getenv("NO_NPU_MOCK", "0")) \
+        else len(os.getenv("ASCEND_RT_VISIBLE_DEVICES").split(",")), world_size)
 
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
 
@@ -181,7 +183,8 @@ def initialize_local_comm_group_list(backend) -> None:
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
     world_size: int = torch.distributed.get_world_size()
-    local_size = calculate_effective_local_size(torch.npu.device_count(), world_size)
+    local_size = calculate_effective_local_size(torch.npu.device_count() if not int(os.getenv("NO_NPU_MOCK", "0")) \
+        else len(os.getenv("ASCEND_RT_VISIBLE_DEVICES").split(",")), world_size)
 
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
 
@@ -213,7 +216,8 @@ def initialize_cross_comm_group_list(backend) -> None:
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
     world_size: int = torch.distributed.get_world_size()
-    local_size = calculate_effective_local_size(torch.npu.device_count(), world_size)
+    local_size = calculate_effective_local_size(torch.npu.device_count() if not int(os.getenv("NO_NPU_MOCK", "0")) \
+        else len(os.getenv("ASCEND_RT_VISIBLE_DEVICES").split(",")), world_size)
 
     server_size = world_size // local_size
 

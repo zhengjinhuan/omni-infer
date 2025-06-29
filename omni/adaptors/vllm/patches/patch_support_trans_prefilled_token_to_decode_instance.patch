@@ -1,5 +1,5 @@
 diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
-index cc549d47e..677b73034 100644
+index cc549d47e..2f2194211 100644
 --- a/vllm/entrypoints/openai/serving_completion.py
 +++ b/vllm/entrypoints/openai/serving_completion.py
 @@ -89,6 +89,7 @@ class OpenAIServingCompletion(OpenAIServing):
@@ -42,7 +42,7 @@ index cc549d47e..677b73034 100644
  
              response = self.request_output_to_completion_response(
                  final_res_batch_checked,
-@@ -283,6 +290,27 @@ class OpenAIServingCompletion(OpenAIServing):
+@@ -283,6 +290,36 @@ class OpenAIServingCompletion(OpenAIServing):
          else:
              include_usage, include_continuous_usage = False, False
  
@@ -64,6 +64,15 @@ index cc549d47e..677b73034 100644
 +                                text = prompt_text,
 +                            )
 +                        ])
++
++                    if include_continuous_usage:
++                            prompt_tokens = len(prompt_tmp) - 1
++                            completion_tokens = 1
++                            chunk.usage = UsageInfo(
++                                prompt_tokens = prompt_tokens,
++                                completion_tokens=completion_tokens,
++                                total_tokens=prompt_tokens + completion_tokens,
++                            )
 +                    response_json = chunk.model_dump_json(exclude_unset=False)
 +                    yield f"data: {response_json}\n\n"
 +
@@ -71,7 +80,7 @@ index cc549d47e..677b73034 100644
              async for prompt_idx, res in result_generator:
                  prompt_token_ids = res.prompt_token_ids
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index c599f04c8..77aadcf3b 100644
+index c599f04c8..dd2175c79 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -765,7 +765,10 @@ class Scheduler(SchedulerInterface):
@@ -118,24 +127,19 @@ index c599f04c8..77aadcf3b 100644
  
      def _update_waiting_for_remote_kv(self, request: Request) -> bool:
          """
-@@ -988,12 +991,11 @@ class Scheduler(SchedulerInterface):
+@@ -988,11 +991,10 @@ class Scheduler(SchedulerInterface):
          if self.vllm_config.speculative_config is not None:
              request.spec_token_ids.append(0)
  
 -        # very dangerous changes! 
--        # self.kv_cache_manager.single_type_manager.cache_blocks(
--        #     request,
--        #     self.kv_cache_manager.req_to_block_hashes[request.request_id],
+         # self.kv_cache_manager.single_type_manager.cache_blocks(
+         #     request,
+         #     self.kv_cache_manager.req_to_block_hashes[request.request_id],
 -        #     num_computed_tokens,
--        # )
-+        self.kv_cache_manager.single_type_manager.cache_blocks(
-+            request,
-+            self.kv_cache_manager.req_to_block_hashes[request.request_id],
-+            ((request.num_tokens - 1) // self.block_size) * self.block_size,
-+        )
++        #     ((request.num_tokens - 1) // self.block_size) * self.block_size,
+         # )
  
          # Update the request state for scheduling.
-         # request.num_computed_tokens = num_computed_tokens
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
 index 4d5f4d3d1..bc57b2fc1 100644
 --- a/vllm/v1/engine/core.py
@@ -150,8 +154,8 @@ index 4d5f4d3d1..bc57b2fc1 100644
 +                    if scheduler_output.kv_connector_metadata.requests[new_req.req_id].spec_token_ids != []:
 +                        scheduler_output.scheduled_spec_decode_tokens[new_req.req_id] \
 +                            = scheduler_output.kv_connector_metadata.requests[new_req.req_id].spec_token_ids
-+                        scheduler_output.num_scheduled_tokens[new_req.req_id] += len(scheduler_output.scheduled_spec_decode_tokens[new_req.req_id])
-+                        scheduler_output.total_num_scheduled_tokens += len(scheduler_output.scheduled_spec_decode_tokens[new_req.req_id])
++                      #  scheduler_output.num_scheduled_tokens[new_req.req_id] += len(scheduler_output.scheduled_spec_decode_tokens[new_req.req_id])
++                      #  scheduler_output.total_num_scheduled_tokens += len(scheduler_output.scheduled_spec_decode_tokens[new_req.req_id])
          model_output = self.execute_model(scheduler_output)
          engine_core_outputs = self.scheduler.update_from_output(
              scheduler_output, model_output)  # type: ignore

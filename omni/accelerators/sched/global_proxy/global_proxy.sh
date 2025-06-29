@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 #!/bin/bash
 NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
 export PATH=${NGINX_SBIN_PATH}:${PATH}
@@ -140,6 +142,7 @@ function nginx_worker_cpu_affinity_layout() {
         done
         layout="${layout}${mask} "
     done
+    echo "${layout}"
 }
 
 function nginx_set_worker_cpu_affinity() {
@@ -319,6 +322,7 @@ function nginx_set_upstream() {
     local nginx_conf_file="$1"
     local servers_list="$2"
     local upstream_name="$3"
+    local use_shm_zone="$4"
 
     # Build server lines with 8 spaces indentation
     local upstream_servers=""
@@ -327,12 +331,17 @@ function nginx_set_upstream() {
         upstream_servers+="        server $srv max_fails=3 fail_timeout=10s;\n"
     done
 
+    local zone_line=""
+    if [ "$use_shm_zone" = true ]; then
+        zone_line="zone $upstream_name 128k;"
+    fi
+
     # Compose new upstream block with 8 spaces indentation
     local upstream_block="    upstream $upstream_name {
         #length_balance;
-        zone backend 64k;
+        ${zone_line}
         least_conn;
-        keepalive 32;
+        keepalive 128;
 ${upstream_servers}
     }"
 
@@ -447,15 +456,15 @@ function nginx_configuration() {
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
     nginx_set_worker_processes $nginx_conf_file $core_num
-    # nginx_set_worker_cpu_affinity $nginx_conf_file $start_core_index $core_num
+    nginx_set_worker_cpu_affinity $nginx_conf_file $start_core_index $core_num
     nginx_set_worker_rlimit_nofile $nginx_conf_file
     nginx_set_error_log $nginx_conf_file $log_file $log_level
     nginx_set_events_config $nginx_conf_file
     nginx_set_http_config $nginx_conf_file
     nginx_set_listen_port $nginx_conf_file $listen_port
     nginx_set_reuseport $nginx_conf_file
-    nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers"
-    nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers"
+    nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers" true
+    nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false
     nginx_set_location_openai_compatible $nginx_conf_file
     nginx_set_load_modules $nginx_conf_file
 }
@@ -495,7 +504,7 @@ function start_global_proxy() {
 
 nginx_conf_file="/usr/local/nginx/conf/nginx.conf"
 start_core_index="0"
-core_num="16"
+core_num="4"
 listen_port="8080"
 prefill_servers_list=""
 decode_servers_list=""

@@ -221,6 +221,9 @@ class ConfigUpdater:
         if enable_graph_mode and envs.VLLM_USE_V1 and envs.VLLM_MLA_DISABLE:
             logger.warning("Graph mode not supported for V1 without MLA. Disabling.")
             vllm_config.additional_config["enable_graph_mode"] = False
+        if int(os.getenv("RANDOM_MODE", default='0')) or int(os.getenv("CAPTURE_MODE", default='0')) or int(os.getenv("REPLAY_MODE", default='0')):
+            logger.warning("Graph mode not supported for MOCK mode. Disabling.")
+            vllm_config.additional_config["enable_graph_mode"] = False
 
     @staticmethod
     def _update_parallel_config(vllm_config: 'VllmConfig') -> None:
@@ -426,9 +429,9 @@ class NPUPlatform(Platform):
         """Check if pinned memory is available.
 
         Returns:
-            bool: Always True for NPU.
+            bool: Always True for NPU unless mock (no NPU).
         """
-        return True
+        return not int(os.getenv("NO_NPU_MOCK", "0"))
 
     @classmethod
     def supports_v1(cls, model_config: 'ModelConfig') -> bool:
