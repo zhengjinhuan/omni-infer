@@ -18,7 +18,7 @@ To integrate Omni_Infer into your project, refer to the [installation guide](lin
 ## Contributing
 
 (SECTION TO BE COMPLETED)
-We welcome contributions to enhance Omni_Infer! Please check our [contributing guidelines](link-to-contributing) and submit pull requests or issues via [GitHub Issues](link-to-issues).
+We welcome contributions to enhance Omni_Infer! Please check our [contributing guidelines](./CONTRIBUTION.md) and submit pull requests or issues via [GitHub Issues](https://gitee.com/omniai/omniinfer/issues/new?issue%5Bassignee_id%5D=0&issue%5Bmilestone_id%5D=0).
 
 ## License
 
