@@ -6,7 +6,7 @@ Omni-Infer是一套专为昇腾硬件平台定制的强大推理加速工具集�
 
 ## 核心特性
 
-- **企业级低延迟P/D调度**：支持xPyD调度及大规模分布式PD部署的横向扩展，确保最低延迟。详情请参考[全局代理设计](omni/accelerators/sched/global_proxy/README.md)。
+- **企业级低延迟P/D调度**：支持xPyD调度及大规模分布式PD部署的横向扩展，确保最低延迟。详情请参考[Global Proxy设计](omni/accelerators/sched/global_proxy/README.md)。
 - **请求级负载均衡**：针对所有序列长度优化预填充（prefill）和解码（decode）阶段，实现最大吞吐量与低延迟。
 - **优化的MoE专家部署**：支持EP144/EP288配置的大规模混合专家（Mixture of Experts, MoE）模型。
 - **MoE专家负载均衡**：具备分层非均匀冗余和近实时动态专家放置功能，提升资源利用效率。详情请参考[OmniPlacement设计](omni/accelerators/placement/README.md)。
