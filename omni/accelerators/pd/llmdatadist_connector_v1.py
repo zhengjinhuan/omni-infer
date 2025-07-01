@@ -239,7 +239,13 @@ class PrefillConnectorWorker:
             self.receive_req_list = []
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True)
             self.thread.start()
-        self.datadist_manager = LLMDataDistManager(vllm_config.kv_transfer_config)
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
+        if ENABLED:
+            manager_cls = OmniBiGroupDataDistManager
+            logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
+        else:
+            manager_cls = LLMDataDistManager
+        self.datadist_manager = manager_cls(vllm_config.kv_transfer_config)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.datadist_manager.register_memory(kv_caches)
@@ -361,8 +367,13 @@ class DecodeConnectorWorker:
     """Worker implementation for datadist."""
 
     def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: str):
-
-        self.datadist_manager = LLMDataDistManager(vllm_config.kv_transfer_config)
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
+        if ENABLED:
+            manager_cls = OmniBiGroupDataDistManager
+            logger.warning(f"DecodeConnector is using Omni datadist manager for KV transfer.")
+        else:
+            manager_cls = LLMDataDistManager
+        self.datadist_manager = manager_cls(vllm_config.kv_transfer_config)
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
@@ -382,7 +393,8 @@ class DecodeConnectorWorker:
         futures = []
         logger.info(f" ***** start_load_kv:{len(metadata.requests)}")
         for req_id, meta in metadata.requests.items():
-            if len(meta.local_block_ids) == 0:
+            if len(meta.local_block_ids) == 0 or \
+                    all(isinstance(group_blk, list) and len(group_blk) == 0 for group_blk in meta.local_block_ids):
                 logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
                 continue
             logger.info(
@@ -418,13 +430,6 @@ class DecodeConnectorWorker:
         remote_host_ip: str,
     ):
         start = time.time()
-        num_local_blocks = len(local_block_ids)
-
-        num_remote_blocks = len(remote_block_ids)
-        if num_local_blocks > num_remote_blocks:
-            raise RuntimeError("num_local_blocks must be less than or equal to num_remote_blocks")
-        if num_local_blocks < num_remote_blocks:
-            remote_block_ids = remote_block_ids[-num_local_blocks:]
         self.datadist_manager.pull_kv(remote_block_ids, local_block_ids, dst_cluster_id)
         self._send_pulled_kv_req_list(remote_host_ip, [request_id])
         with self._transfer_lock:
