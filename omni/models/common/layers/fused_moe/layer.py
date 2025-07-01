@@ -277,6 +277,11 @@ class FusedMoE(torch.nn.Module):
                        routed_scaling_factor: Optional[torch.Tensor] = None,
                        layer: torch.nn.Module = None
                        ):
+        # For vllm v1, metadata is a dict {layer_name: metadata}
+        attn_metadata = get_forward_context().attn_metadata
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[next(iter(attn_metadata))]
+        is_prefill = attn_metadata is None or attn_metadata.prefill is not None
         # DeekSeekv2 uses grouped_top_k
         # adapt: When num_expert_group=1, it degenerates to fused_topk.
         if use_grouped_topk:# and num_expert_group != 1:
@@ -298,7 +303,6 @@ class FusedMoE(torch.nn.Module):
                     e_score_correction_bias=e_score_correction_bias)
                 topk_weights = topk_weights * routed_scaling_factor
             else:
-                is_prefill = get_forward_context().attn_metadata is None or get_forward_context().attn_metadata.prefill is not None
                 if is_prefill:
                     topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
                         router_logits.float(),
