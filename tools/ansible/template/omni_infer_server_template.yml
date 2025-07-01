@@ -21,17 +21,18 @@
 
   environment:
     # Global Configuration 
-    LOG_PATH: "/data/your_path/log"
+    LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
     MODEL_LEN_MAX_PREFILL: "30000"
     MODEL_LEN_MAX_DECODE: "16384"
+    LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
 
     # Configuration for containers 
     DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omni_infer_v1/omni_infer_v1_a3:20250619"
     DOCKER_NAME_P: "you_name_omni_infer_prefill"
     DOCKER_NAME_D: "you_name_omni_infer_decode"
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
-    SCRIPTS_PATH: "/tmp/your_path/scripts"
+    SCRIPTS_PATH: "/tmp/scripts_path"
 
     # Code path in container
     CODE_PATH: "/workspace"
@@ -41,7 +42,7 @@
 
   vars:
     # Configure the storage path of the ranktable file. 
-    ranktable_save_path: "/tmp/yourpath/ranktable_save_dir"
+    ranktable_save_path: "/tmp/ranktable_save_path"
     docker_run_cmd: |
       docker run -it --shm-size=500g \
         -e CODE_PATH=$CODE_PATH \
@@ -865,3 +866,19 @@
       when: "'C' in group_names"
       tags: 
         - run_proxy
+
+    - name: Create a directory on the executor.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
+        state: directory
+      tags: 
+        - fetch_log
+
+    - name: Forward logs from all machines to the executor.
+      ansible.builtin.synchronize:
+        mode: pull
+        src: "{{ ansible_env.LOG_PATH }}"
+        dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+      delegate_to: localhost
+      tags: 
+        - fetch_log
