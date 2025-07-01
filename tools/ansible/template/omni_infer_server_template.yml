@@ -25,6 +25,7 @@
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
     MODEL_LEN_MAX_PREFILL: "30000"
     MODEL_LEN_MAX_DECODE: "16384"
+    LOCAL_CODE_PATH: "/data/local_code_path"
 
     # Configuration for containers 
     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
@@ -327,8 +328,8 @@
 
     docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
 
 
   tasks:
@@ -439,19 +440,19 @@
     
     - name: The executor synchronizes code to all instances.
       synchronize:
-        src: "/data/your_code_path/omniinfer"
-        dest: "/data/your_code_path/"
+        src: "{{ ansible_env.LOCAL_CODE_PATH }}/omniinfer"
+        dest: "{{ ansible_env.LOCAL_CODE_PATH }}"
       tags: sync_code
 
     - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer && docker cp /data/your_code_path/omniinfer ${DOCKER_NAME_P}:/workspace/"
+      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_P}:/workspace/"
       environment:
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
       when: "'P' in group_names"
       tags: sync_code
 
     - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer && docker cp /data/your_code_path/omniinfer ${DOCKER_NAME_D}:/workspace/"
+      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_D}:/workspace/"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
       when: "'D' in group_names"
