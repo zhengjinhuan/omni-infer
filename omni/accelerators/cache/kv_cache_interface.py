@@ -2,11 +2,14 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from dataclasses import dataclass
+import re
 import torch
 
 from vllm.logger import init_logger
 from vllm.utils import cdiv
-from vllm.config import VllmConfig
+from vllm.config import VllmConfig, get_layers_from_vllm_config
+from vllm.attention import AttentionType
+from vllm.attention.layer import Attention
 from vllm.v1.kv_cache_interface import (
     KVCacheSpec,
     AttentionSpec,
@@ -16,13 +19,15 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.core.kv_cache_utils import create_kv_cache_group_specs
 from vllm.v1.worker.block_table import BlockTable, MultiGroupBlockTable
+from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 
 logger = init_logger("vllm.v1.omni")
 
-SINK = 128
-RECENT = 256
+SINK = 1
+RECENT = 3
 BETA = 0.2
+PATTERN = [1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0]
 
 
 @dataclass
@@ -38,14 +43,14 @@ class OmniKVCacheConfig(KVCacheConfig):
 
 @dataclass
 class OmniAttentionSpec(AttentionSpec):
-    sink: int = SINK
-    recent: int = RECENT
+    sink_blocks: int = SINK
+    recent_blocks: int = RECENT
 
     def __post_init__(self):
-        if self.sink % self.block_size != 0 or self.recent % self.block_size != 0:
-            raise ValueError("Sink and recent values should be divisible by block_size.")
-        self.max_compressed_len = self.sink + self.recent
-        self.max_num_blocks = self.max_compressed_len // self.block_size
+        self.max_num_blocks = self.sink_blocks + self.recent_blocks
+        self.sink = self.sink_blocks * self.block_size
+        self.recent = self.recent_blocks * self.block_size
+        self.max_compressed_len = self.max_num_blocks * self.block_size
 
     @property
     def type_id(self) -> str:
@@ -73,9 +78,9 @@ class OmniMultiGroupBlockTable(MultiGroupBlockTable):
         ]
 
 
-def _get_kv_cache_config_omni_type(vllm_config: VllmConfig,
-                                   kv_cache_spec: dict[str, KVCacheSpec],
-                                   available_memory: int) -> OmniKVCacheConfig:
+def get_kv_cache_config_omni_type(vllm_config: VllmConfig,
+                                  kv_cache_spec: dict[str, KVCacheSpec],
+                                  available_memory: int) -> OmniKVCacheConfig:
     """
     Generates the KV cache configuration for a model with two types of KV cache.
     It's assumed that the numbers of layers with these two types are approximately same.
@@ -101,7 +106,7 @@ def _get_kv_cache_config_omni_type(vllm_config: VllmConfig,
     # Here we implicitly assume the numbers of full and swa layers are close,
     # since the sum of one full layer and one swa layer equals to two original layers.
     omni_num_blocks = int(num_blocks * BETA)
-    full_num_blocks = 2 * num_blocks - omni_num_blocks
+    full_num_blocks = int(1.9 * num_blocks - omni_num_blocks)
 
     # logging
     num_tokens = num_blocks * vllm_config.cache_config.block_size
@@ -142,3 +147,37 @@ def _get_kv_cache_config_omni_type(vllm_config: VllmConfig,
                                                     grouped_layer_names)
     )
     return kv_cache_config
+
+
+def get_omni_hybrid_kv_cache_spec(self: GPUModelRunner) -> dict[str, KVCacheSpec]:
+    """Generates the KVCacheSpec by parsing the kv cache format from
+    each attention module in the static forward context.
+    Returns:
+        A dictionary mapping layer names to their KV cache format.
+    """
+    layers = get_layers_from_vllm_config(self.vllm_config, Attention)
+    block_size = self.vllm_config.cache_config.block_size
+    use_mla = self.vllm_config.model_config.use_mla
+    kv_cache_spec: dict[str, KVCacheSpec] = {}
+    for layer_name, attn_module in layers.items():
+        layer_idx = int(re.findall(r"model\.layers\.(\d+)", layer_name)[0])
+        if attn_module.attn_type == AttentionType.DECODER:
+            if PATTERN[layer_idx] == 1:
+                kv_cache_spec[layer_name] = OmniAttentionSpec(
+                    block_size=block_size,
+                    num_kv_heads=1 if use_mla else attn_module.num_kv_heads,
+                    head_size=512+64 if use_mla else attn_module.head_size,
+                    dtype=self.kv_cache_dtype,
+                    use_mla=use_mla,
+                    sink=SINK,
+                    recent=RECENT)
+            else:
+                kv_cache_spec[layer_name] = FullAttentionSpec(
+                    block_size=block_size,
+                    num_kv_heads=1 if use_mla else attn_module.num_kv_heads,
+                    head_size=512+64 if use_mla else attn_module.head_size,
+                    dtype=self.kv_cache_dtype,
+                    use_mla=use_mla)
+        else:
+            raise NotImplementedError("Omni attention supports decoder-only models.")
+    return kv_cache_spec
