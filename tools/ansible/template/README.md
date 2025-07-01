@@ -132,20 +132,21 @@ yum install openssh-server
 ## 修改配置
 在 **omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml** 中， 只需修改以下配置项 `ansible_user / ansible_ssh_private_key_file`; 
 在 **omni_infer_server_template.yml** 中， 只需修改以下配置项 `MODEL_PATH / DOCKER_IMAGE_ID / CODE_PATH`， 就可拉起 omniai 服务。
+此外，建议修改 omni_infer_server_template.yml 中的 `LOG_PATH`、`LOG_PATH_IN_EXECUTOR`、`SCRIPTS_PATH` 和 `ranktable_save_path`，防止路径下的文件被其他人覆盖。
 
 ## 执行命令
 ```bash
 # 进入到文件目录下执行
 cd ./omni_infer/tools/ansible
 # 2P1D
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --skip-tags sync_code
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --skip-tags "sync_code,fetch_log"
 # 4P1D
-ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml --skip-tags sync_code
+ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml --skip-tags "sync_code,fetch_log"
 
 # 如果你想拉最新代码去跑服务，就去执行机的 /data/local_code_path 路径下 clone 最新代码，然后执行下列命令即可
 cd omni_infer/infer_engines/
 bash bash_install_code.sh
-ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml
+ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml --skip-tags fetch_log
 
 # 基于指定镜像创建并启动新的容器实例
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_docker
@@ -155,6 +156,8 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server
 # 拉起nginx服务
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_proxy
+# 将日志存放在执行机指定路径
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags fetch_log
 # 清理残余配置，主要是 stop 容器并且删除容器，以及删除 ranktable 和临时脚本
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags clean_up
 ```
