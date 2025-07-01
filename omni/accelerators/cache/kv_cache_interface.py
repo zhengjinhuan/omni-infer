@@ -118,7 +118,7 @@ def get_kv_cache_config_omni_type(vllm_config: VllmConfig,
     max_model_len_str = f"{vllm_config.model_config.max_model_len:,}"
     max_concurrency = num_tokens / vllm_config.model_config.max_model_len
     omni_max_concur = min(full_num_tokens / vllm_config.model_config.max_model_len,
-                          omni_num_tokens / (SINK + RECENT))
+                          omni_num_blocks / (SINK + RECENT))
     logger.info("Maximum concurrency for %s tokens per request changes from %.2fx to %.2fx",
                 max_model_len_str, max_concurrency, omni_max_concur)
 
