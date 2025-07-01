@@ -138,7 +138,7 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 # 4P1D
 ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml --skip-tags sync_code
 
-# 如果你想拉最新代码去跑服务，就去执行机的 /data/your_code_path 路径下 clone 最新代码，然后执行下列命令即可
+# 如果你想拉最新代码去跑服务，就去执行机的 /data/local_code_path 路径下 clone 最新代码，然后执行下列命令即可
 cd omni_infer/infer_engines/
 bash bash_install_code.sh
 ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml
