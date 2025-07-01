@@ -49,6 +49,10 @@
 
 * `LOG_PATH`: Decode/Prefill/Global Proxy 实例日志的存放的路径。
 
+* `LOG_PATH_IN_EXECUTOR`: 执行机上存放 Decode/Prefill/Global Proxy 实例日志的路径。
+
+* `LOCAL_CODE_PATH`: 执行机上的代码路径，即用户通过 git clone 拉取的代码存放路径。例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`。
+
 * `MODEL_PATH`: 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致。
 
 * `MODEL_LEN_MAX_PREFILL`: Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为30000。
