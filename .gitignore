@@ -14,5 +14,3 @@ test_moe_weights
 test_tensor
 test_placement
 __pycache__
-.gitee/
-.github/
