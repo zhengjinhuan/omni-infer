@@ -62,6 +62,8 @@ deployment:
     private_key: "/workspace/pem/keypair.pem"
 
 services:
+  local_code_path: "/data/local_code_path"
+
   model_path: "/data/models/DeepSeek-R1-w8a8"
 
   prefill:
