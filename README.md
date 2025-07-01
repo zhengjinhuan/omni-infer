@@ -17,6 +17,10 @@ Omni-Infer是一套专为昇腾硬件平台定制的强大推理加速工具集�
 - **MoE专家负载均衡**：具备分层非均匀冗余和近实时动态专家放置功能，提升资源利用效率。详情请参考[OmniPlacement设计](omni/accelerators/placement/README.md)。
 - **高级注意力机制优化**：专为LLM、MLLM和MoE模型定制，增强性能与可扩展性。
 
+## 开源社区
+
+有关Omni-Infer社区运作、活动、治理相关的信息，请访问我们的[社区运作仓库](https://gitee.com/omniai/community)
+
 ## High-Level 架构图
 
 ![image](docs/figures/omni_infer_high_level_arch.png)
