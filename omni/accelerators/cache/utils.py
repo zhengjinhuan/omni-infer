@@ -47,6 +47,7 @@ def compute_omni_attn_metadata(
     # [0,0,1,1,2,2,...]
     req_ids = token_ids // tokens_per_req
 
+    # [L1,L1,L2,L2,L3,L3,...] -> [L1-1,L1,L2-1,L2,L3-1,L3,...]
     seq_len_per_token = seq_len_per_token + spec_ids + 1 - tokens_per_req
     mask = (seq_len_per_token > sink + recent)
     window_pos = (seq_len_per_token - bases) % recent + sink
@@ -64,7 +65,6 @@ def compute_omni_attn_metadata(
         # shift block table rows
         m, n = block_table_np.shape
         rows, cols = np.indices((m, n))
-        # block_shifts = block_shifts[:, np.newaxis]
         cols = (cols - block_shifts[:, None]) % n
         block_table_np = block_table_np[rows, cols]
 

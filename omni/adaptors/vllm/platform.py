@@ -210,7 +210,7 @@ class ConfigUpdater:
         cls._update_parallel_config(vllm_config)
         cls._update_cache_config(vllm_config)
         cls._enable_custom_ops(vllm_config)
-        cls._enable_acceleration_features(vllm_config)
+        cls._may_enable_omni_attn(vllm_config)
 
     @staticmethod
     def _handle_graph_mode(vllm_config: 'VllmConfig') -> None:
@@ -250,7 +250,7 @@ class ConfigUpdater:
         vllm_config.compilation_config.custom_ops = ["all"]
 
     @staticmethod
-    def _enable_acceleration_features(vllm_config: 'VllmConfig') -> None:
+    def _may_enable_omni_attn(vllm_config: 'VllmConfig') -> None:
         if not vllm_config.additional_config:
             return
         def to_bool(val):
@@ -262,11 +262,12 @@ class ConfigUpdater:
                 return val
             raise ValueError(f"Cannot convert variable to bool. Type {type(val)}. Value {val}.")
         enable_omni_attn = to_bool(vllm_config.additional_config.get("enable_omni_attn", False))
+        omni_attn_config = vllm_config.additional_config.get("omni_attn_config", None)
         if enable_omni_attn:
-            from omni.accelerators.cache import apply_omni_patch
+            from omni.accelerators.cache import apply_omni_attn_patch
             kv_transfer_config = vllm_config.kv_transfer_config
             is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
-            apply_omni_patch(enable=True, is_kv_consumer=is_kv_consumer)
+            apply_omni_attn_patch(enable=True, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
 
 
 class NPUPlatform(Platform):

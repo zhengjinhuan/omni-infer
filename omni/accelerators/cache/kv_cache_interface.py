@@ -102,11 +102,12 @@ def get_kv_cache_config_omni_type(vllm_config: VllmConfig,
     # the original number of blocks if layers were uniform
     num_blocks = int(available_memory // page_size // len(kv_cache_spec))
     num_blocks = max(num_blocks, 0)
-
-    # Here we implicitly assume the numbers of full and swa layers are close,
-    # since the sum of one full layer and one swa layer equals to two original layers.
+    num_omni_layers = sum(PATTERN)
+    num_full_layers = len(PATTERN) - num_omni_layers
     omni_num_blocks = int(num_blocks * BETA)
-    full_num_blocks = int(1.9 * num_blocks - omni_num_blocks)
+    # This computation is to ensure that the total number of blocks
+    # of all layers does not exceed the original number.
+    full_num_blocks = int(num_blocks * (1 + (1-BETA)*num_omni_layers/(num_full_layers+1)))
 
     # logging
     num_tokens = num_blocks * vllm_config.cache_config.block_size

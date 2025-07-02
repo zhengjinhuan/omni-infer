@@ -7,7 +7,7 @@ from omni.accelerators.pd.llmdatadist_manager import (
     unzip_kv_cache,
     logger,
 )
-from .kv_cache_interface import PATTERN, SINK, RECENT
+from . import kv_cache_interface as itfc
 
 
 class OmniBiGroupDataDistManager(LLMDataDistManager):
@@ -25,8 +25,8 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
         num_layers = len(flatten_kv_caches[0])
 
         # partition layer indices into full and omni
-        full_layer_idx = [i for i in range(num_layers) if PATTERN[i] == 0]
-        omni_layer_idx = [i for i in range(num_layers) if PATTERN[i] == 1]
+        full_layer_idx = [i for i in range(num_layers) if itfc.PATTERN[i] == 0]
+        omni_layer_idx = [i for i in range(num_layers) if itfc.PATTERN[i] == 1]
         layer_idx = [full_layer_idx, omni_layer_idx]
 
         # check validity
@@ -56,7 +56,7 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
         for model_id, sub_kv_caches in enumerate(flatten_kv_caches):
             # sub_kv_caches is a list of Tensors, whose length is number of layers
 
-            for flag in [0, 1]:
+            for flag in range(len(self.registerd_kv_caches)):
                 group_kv_caches = [sub_kv_caches[j] for j in layer_idx[flag]]
                 cache_desc = CacheDesc(num_tensors=len(group_kv_caches), shape=tuple(group_kv_caches[0].shape),
                                        data_type=TORCH_DTYPE_TO_NPU_DTYPE[group_kv_caches[0].dtype])
@@ -86,13 +86,13 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
         for omni. In contrast, `src_blocks` is a list corresponding to the block table
         allocated for all layers during prefill.
         """
-        # 不加这一行的话fx模式会报错，原因初步判断是多协程拉取kv时丢失context
         torch.npu.set_device(f"npu:{self.local_rank}")
-        omni_max_blocks = SINK + RECENT
+        sink, recent = itfc.SINK, itfc.RECENT
+        omni_max_blocks = sink + recent
         N = len(self.registerd_kv_caches[0])
         used_ids = set()
 
-        for flag in [0, 1]:
+        for flag in range(len(self.registerd_kv_caches)):
             group_tgt_blocks: list[int] = tgt_blocks[flag]
             for model_id, kv_cache in enumerate(self.registerd_kv_caches[flag]):
                 cur_id = flag * N + model_id
@@ -110,7 +110,7 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
                     if len(src_blocks) < omni_max_blocks:
                         tmp_tgt = group_tgt_blocks[:len(src_blocks)]
                     elif len(src_blocks) > omni_max_blocks:
-                        tmp_src = src_blocks[:SINK] + src_blocks[-RECENT:]
+                        tmp_src = src_blocks[:sink] + src_blocks[-recent:]
                     if len(tmp_src) != len(tmp_tgt):
                         raise RuntimeError("src and tgt cannot match for omni kv caches. "
                                            f"{src_blocks=}, {tgt_blocks=}, "
