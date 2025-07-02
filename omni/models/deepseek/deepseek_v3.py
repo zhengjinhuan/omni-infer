@@ -806,6 +806,7 @@ class DeepseekDecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.prefix = prefix
+        self.layer_name = f"{prefix}.self_attn.attn"
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -874,6 +875,8 @@ class DeepseekDecoderLayer(nn.Module):
             layer_id: Optional[int] = None,
             next_attention_weights: Optional[dict] = None
     ) -> torch.Tensor:
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.layer_name]
         # Self Attention
         if residual is None:
             residual = hidden_states
@@ -1122,7 +1125,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             self.model.make_empty_intermediate_tensors)
 
         self.return_hidden_states = True
-        self.input_marked=False
+        self.input_marked = False
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -1301,20 +1304,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
         if not self.input_marked:
             torch._dynamo.mark_static(input_ids)
             torch._dynamo.mark_static(positions)
-            if attn_metadata.decode.cos is not None:
-                torch._dynamo.mark_static(attn_metadata.decode.cos)
-            if attn_metadata.decode.sin is not None:
-                torch._dynamo.mark_static(attn_metadata.decode.sin)
-            if attn_metadata.decode.mc2_mask is not None:
-                torch._dynamo.mark_static(attn_metadata.decode.mc2_mask)
-            if attn_metadata.decode.best_topk is not None:
-                torch._dynamo.mark_static(attn_metadata.decode.best_topk)
-            if attn_metadata.decode.block_table is not None:
-                torch._dynamo.mark_static(attn_metadata.decode.block_table)
-            if attn_metadata.decode.seq_lens is not None:
-                torch._dynamo.mark_static(attn_metadata.decode.seq_lens)
-            if attn_metadata.slot_mapping is not None:
-                torch._dynamo.mark_static(attn_metadata.slot_mapping)
             for i in range(len(kv_caches)):
                 if kv_caches[i][0] is not None:
                     torch._dynamo.mark_static(kv_caches[i][0])

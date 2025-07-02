@@ -5,7 +5,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
-from typing_extensions import overload
+from typing_extensions import override
 
 from vllm.distributed.kv_events import KVCacheEvent
 from vllm.logger import init_logger
@@ -19,7 +19,7 @@ from vllm.v1.request import Request, RequestStatus
 
 from .kv_cache_interface import OmniKVCacheConfig, OmniAttentionSpec
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.v1.omni")
 
 
 @dataclass
@@ -51,9 +51,12 @@ class OmniKVCacheBlocks:
         """
         return [[block.block_id for block in group] for group in self.blocks]
 
-    def get_unhashed_block_ids(self) -> list[int]:
-        """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
-        raise NotImplementedError("Method get_unhashed_block_ids is not implemented yet for OmniKVCacheBlocks")
+    def get_unhashed_block_ids(self) -> list[list[int]]:
+        """Get block_ids of unhashed blocks from OmniKVCacheBlocks instance."""
+        return [
+            [block.block_id for block in group if block.block_hash is None]
+            for group in self.blocks
+        ]
 
 
 class OmniKVCacheManager:
@@ -89,7 +92,7 @@ class OmniKVCacheManager:
         self.log_stats = log_stats
         self.prefix_cache_stats = PrefixCacheStats() if log_stats else None
 
-        full_attn_pool, full_attn_mgr = None
+        full_attn_pool, full_attn_mgr = None, None
         self.block_pools: list[BlockPool] = []
         self.hybrid_managers: list[SingleTypeKVCacheManager] = []
         for group in kv_cache_config.kv_cache_groups:
@@ -130,6 +133,7 @@ class OmniKVCacheManager:
         # `get_computed_blocks` or `allocate_slots`.
         self.req_to_block_hashes: defaultdict[
             str, list[BlockHashType]] = defaultdict(list)
+        logger.warning(f"OmniKVCacheManager is being used with {len(self.hybrid_managers)} KV cache groups.")
 
     @property
     def usage(self) -> float:
@@ -178,7 +182,7 @@ class OmniKVCacheManager:
                 or request.sampling_params.prompt_logprobs is not None):
             return OmniKVCacheBlocks.create_empty(), 0
 
-        # Think about the logic related to prefix caching in omni attention
+        # Think about the logic related to prefix caching in omni attention.
         # Currently disabled. So the function just returns empty blocks and 0.
         # The two return values correspond to the arguments `new_computed_blocks`
         # and `num_new_computed_tokens` in method `self.allocate_slots()`.
@@ -292,6 +296,18 @@ class OmniKVCacheManager:
 
         return OmniKVCacheBlocks(new_blocks)
 
+    def allocate_slots_running(
+        self,
+        request: Request,
+        num_new_tokens: int,
+        num_lookahead_tokens: int = 0,
+    ) -> Optional[OmniKVCacheBlocks]:
+        return self.allocate_slots(
+            request,
+            num_new_tokens,
+            num_lookahead_tokens=num_lookahead_tokens,
+        )
+
     def free(self, request: Request) -> None:
         """Free the blocks allocated for the request.
         We free the blocks in reverse order so that he tail blocks are evicted
@@ -392,13 +408,15 @@ class OmniKVCacheManager:
             A list of lists of integers. The outer list corresponds to KV Cache groups,
             where the first is full attention group.
         """
-        if any(request_id not in mgr.req_to_blocks for mgr in self.hybrid_managers):
-            raise RuntimeError(f"Request id {request_id} not detected.")
+        assert request_id in self.single_type_manager.req_to_blocks
         group_block_ids: list[list[int]] = []
         for mgr in self.hybrid_managers:
-            blocks = mgr.req_to_blocks[request_id]
-            block_ids = [blk.block_id for blk in blocks]
-            group_block_ids.append(block_ids)
+            if request_id in mgr.req_to_blocks:
+                blocks = mgr.req_to_blocks[request_id]
+                block_ids = [blk.block_id for blk in blocks]
+                group_block_ids.append(block_ids)
+            else:
+                group_block_ids.append([])
         return group_block_ids
 
 
@@ -408,23 +426,23 @@ class OmniAttentionManager(SingleTypeKVCacheManager):
         self.max_tokens = self.kv_cache_spec.max_compressed_len
         self.max_num_blocks = self.kv_cache_spec.max_num_blocks
 
-    @overload
+    @override
     def get_num_blocks_to_allocate(
             self, request_id: str, num_tokens: int,
             new_computed_blocks: list[KVCacheBlock]) -> int:
-        if request_id in self.req_to_blocks and len(self.req_to_blocks[request_id]) > 0:
+        if len(self.req_to_blocks[request_id]) > 0:
             return 0
         else:
             # allocate max blocks for each new request, so that no more allocation is done afterwards
             return self.max_num_blocks
 
-    @overload
+    @override
     def save_new_computed_blocks(
             self, request_id: str,
             new_computed_blocks: list[KVCacheBlock]) -> None:
         return
 
-    @overload
+    @override
     def allocate_new_blocks(self, request_id: str,
                             num_tokens: int) -> list[KVCacheBlock]:
         req_blocks = self.req_to_blocks[request_id]
@@ -439,7 +457,7 @@ class OmniAttentionManager(SingleTypeKVCacheManager):
             req_blocks.extend(new_blocks)
             return new_blocks
 
-    @overload
+    @override
     def cache_blocks(self, request: Request, block_hashes: list[BlockHashType],
                      num_tokens: int) -> None:
         return
