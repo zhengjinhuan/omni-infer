@@ -170,8 +170,8 @@ def get_omni_hybrid_kv_cache_spec(self: GPUModelRunner) -> dict[str, KVCacheSpec
                     head_size=512+64 if use_mla else attn_module.head_size,
                     dtype=self.kv_cache_dtype,
                     use_mla=use_mla,
-                    sink=SINK,
-                    recent=RECENT)
+                    sink_blocks=SINK,
+                    recent_blocks=RECENT)
             else:
                 kv_cache_spec[layer_name] = FullAttentionSpec(
                     block_size=block_size,

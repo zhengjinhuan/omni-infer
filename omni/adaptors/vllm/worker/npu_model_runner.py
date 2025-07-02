@@ -70,7 +70,7 @@ import vllm.envs as envs
 
 from vllm.utils import is_pin_memory_available
 from contextlib import nullcontext
- 
+
 from abc import abstractmethod, ABCMeta
 
 omni_use_dsv3 = int(os.getenv("OMNI_USE_DSV3", "0"))
@@ -114,7 +114,7 @@ class DummyAttentionMetadataBuilder(metaclass=ABCMeta):
     @abstractmethod
     def build_dummy(self, *args, **kwargs):
         pass
-    
+
     @abstractmethod
     def mark_static_for_attn_metadata(self, *args, **kwargs):
         pass
@@ -173,7 +173,7 @@ class NPUModelRunner(GPUModelRunner):
                                  int(mask_len))
         self.attn_mask_builder = AttentionMaskBuilder.initialize_from_len(
             self.attn_mask_len, self.dtype)
-        
+
         self.drafter_mark_static = False
         self.dummy_drafter_mark_static = False
 
@@ -183,7 +183,7 @@ class NPUModelRunner(GPUModelRunner):
         self.decode_gear_list = []
         self.decode_gear_list_ori = []
         self.max_batch_size = self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * 2
-        
+
         if additional_config:
             self.enable_torchair_graph_mode = additional_config.get(
                 "enable_graph_mode",
@@ -196,7 +196,7 @@ class NPUModelRunner(GPUModelRunner):
                 raise TypeError("decode_gear_list must be list[int]")
             if len(self.decode_gear_list) > MAX_GEAR_NUM:
                 raise ValueError(f"Max gear num supported is {MAX_GEAR_NUM} now.")
-        
+
             if self.decode_gear_list_ori and self.max_batch_size < max(self.decode_gear_list_ori):
                 self.decode_gear_list = [gear for gear in self.decode_gear_list_ori if gear <= self.max_batch_size]
                 logger.warning(f"PTA_TORCHAIR_DECODE_GEAR_LIST({self.decode_gear_list_ori}) becomes ({self.decode_gear_list}) due to max_batch_size({self.max_batch_size})")
@@ -313,7 +313,7 @@ class NPUModelRunner(GPUModelRunner):
                 graph_pad_size = self.max_batch_size - num_reqs * 2 # TODO 根据投机config设置
             else:
                 graph_pad_size = self.max_batch_size - num_reqs
-        else:    
+        else:
             # The reduce_scatter in the TP communication domain after embedding, P goes through this
             graph_pad_size = _get_pad_size(num_input_tokens)
 
@@ -376,7 +376,7 @@ class NPUModelRunner(GPUModelRunner):
 
         has_spec_tokens = len(
             scheduler_output.scheduled_spec_decode_tokens) > 0
- 
+
         if has_spec_tokens:
             # 当前仅在DecodeOnly时才可能到此逻辑
             # TODO 复用GPU ModelRunner中的_calc_spec_decode_metadata及SpecDecodeMetadata
@@ -411,7 +411,7 @@ class NPUModelRunner(GPUModelRunner):
                 padding = torch.zeros(graph_pad_size,
                                       dtype=input_ids.dtype,
                                       device=input_ids.device)
-                input_ids = torch.cat([input_ids, padding]) 
+                input_ids = torch.cat([input_ids, padding])
         else:
             if graph_pad_size >= 0:
                 vocab_size = self.model_config.get_vocab_size()
@@ -488,7 +488,7 @@ class NPUModelRunner(GPUModelRunner):
                                 **model_kwargs,
                             )
                     if not omni_use_dsv3:
-                        hidden_states = forward_results                       
+                        hidden_states = forward_results
                     else:
                         raw_hidden_states, hidden_states = forward_results
                     end_model = time.time()
@@ -581,7 +581,7 @@ class NPUModelRunner(GPUModelRunner):
             return self.kv_connector_no_forward(scheduler_output)
         attn_metadata, graph_pad_size, sample_indices, positions, has_spec_tokens = self._prepare_inputs(scheduler_output)
         hidden_states, raw_hidden_states, input_ids, finished_sending, finished_recving = self._execute_model(scheduler_output,
-                                           attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)        
+                                           attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
         start_2 = time.time()
         logits = self.model.compute_logits(hidden_states[sample_indices], None)
         start_3 = time.time()
@@ -591,7 +591,7 @@ class NPUModelRunner(GPUModelRunner):
         start_4 = time.time()
 
         # Sample the next token and get logprobs if needed.
-        sampling_metadata = self.input_batch.sampling_metadata 
+        sampling_metadata = self.input_batch.sampling_metadata
         if not self.use_spec_decode:
             sampler_output = self.sampler(
                     logits=logits,
@@ -655,7 +655,7 @@ class NPUModelRunner(GPUModelRunner):
                 sampled_token_ids,
                 self.input_batch.vocab_size,
             )
- 
+
         spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
 
         # Mask out the sampled tokens that should not be sampled.
@@ -720,10 +720,10 @@ class NPUModelRunner(GPUModelRunner):
                     intermediate_tensors=None,
                     inputs_embeds=None
                 )
-    
+
         mtp_logits =self.drafter.compute_logits(mtp_hidden_states[last_accepted_index], None)
         return mtp_logits.argmax(dim=-1, keepdim=True)
-        
+
 
     @torch.inference_mode()
     def _dummy_run(self, num_tokens: int) -> torch.Tensor:
@@ -754,7 +754,7 @@ class NPUModelRunner(GPUModelRunner):
 
         if not self.kv_caches:
             # profile run
-            with set_forward_context(None, self.vllm_config, num_tokens=num_tokens):            
+            with set_forward_context(None, self.vllm_config, num_tokens=num_tokens):
                 forward_results = self.model(
                                     input_ids=input_ids,
                                     positions=positions,
@@ -784,6 +784,7 @@ class NPUModelRunner(GPUModelRunner):
             self.attn_mask = None
             self.attn_state = AscendAttentionState.DecodeOnly
 
+            attn_metadata = {}
             is_pd_seperate_d = self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
             for kv_cache_group_id, kv_cache_group_spec in enumerate(
                     self.kv_cache_config.kv_cache_groups):
@@ -811,7 +812,7 @@ class NPUModelRunner(GPUModelRunner):
                         **model_kwargs,
                     )
                     if not omni_use_dsv3:
-                        hidden_states = forward_results                       
+                        hidden_states = forward_results
                     else:
                         raw_hidden_states, hidden_states = forward_results
                     if self.use_spec_decode and self.speculative_config.method in ('mtp'):
@@ -870,11 +871,11 @@ class NPUModelRunner(GPUModelRunner):
             self.model = get_model(vllm_config=self.vllm_config)
             if self.lora_config:
                 raise ValueError("LoRA model is not supported on NPU now.")
-            if hasattr(self, "drafter"):            
+            if hasattr(self, "drafter"):
                 logger.info("Loading mtp model...")
                 original_arch = self.model_config.hf_config.architectures # ['DeepseekV3ForCausalLM']
                 original_type = self.model_config.hf_config.model_type    # 'deepseek_v3'
-                                                      
+
                 self.model_config.hf_config.architectures = ["DeepSeekMTPModel"]
                 self.model_config.hf_config.model_type = "deepseek_mtp"
                 self.drafter = get_model(vllm_config=self.vllm_config)
@@ -1001,7 +1002,7 @@ class NPUModelRunner(GPUModelRunner):
             if gear >= max_num_token:
                 return gear
         raise ValueError(f"decode input batch size {max_num_token} exceeds maximum gear {max(self.decode_gear_list)}.")
-    
+
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         if int(os.getenv("NO_NPU_MOCK", "0")):
             kv_cache_spec: dict[str, KVCacheSpec] = {}
@@ -1106,7 +1107,7 @@ class WrapDrafter(WrapModel):
             input_ids: torch.Tensor,
             positions: torch.Tensor,
             kv_caches: List[torch.Tensor],
-            attn_metadata, 
+            attn_metadata,
             previous_hidden_states: torch.Tensor,
             intermediate_tensors: Optional[IntermediateTensors],
             **kwargs,
