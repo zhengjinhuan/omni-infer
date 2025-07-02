@@ -4,7 +4,7 @@ set -e
 PATCH_ROOT=../../omni/adaptors/vllm/patches/
 
 cd ./vllm
-git checkout tags/v0.9.0
+git checkout 65334ef3
 git apply $PATCH_ROOT/null_value_handling.patch
 git apply --whitespace=nowarn $PATCH_ROOT/manual_apiserver_scaleout.patch
 git apply --whitespace=nowarn $PATCH_ROOT/scheduler_kv_cache_manager_partial_kv_transfer.patch
