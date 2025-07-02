@@ -346,6 +346,14 @@
         - run_server
         - run_proxy
         - clean_up
+
+    - name: generate container name.  
+      set_fact:
+        ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{ inventory_hostname }}"
+        ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
+        ACTUAL_DOCKER_NAME_C: "{{ ansible_env.DOCKER_NAME_C }}_{{ inventory_hostname }}"
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: 
         - sync_code
       
     - name: Check and delete Prefill/Decode group Docker containers.

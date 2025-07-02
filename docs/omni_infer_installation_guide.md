@@ -4,14 +4,8 @@
 操作系统：Linux
 Python: >=3.9, <= 3.11
 
-# 安装
-
-目前仅支持基于docker 镜像进行安装，docker镜像中安装好了依赖的CANN和Torch-NPU包，并且已经预装了一个可直接运行的omni-infer和vllm包。
-
-## 新环境检查
-
-### Ascend NPU固件和驱动检查
-
+# 环境检查
+## Ascend NPU固件和驱动检查
 使用如下命令检查Ascend NPU固件和驱动是否正确安装
 npu-smi info
 正常显示如下图所示
@@ -20,13 +14,17 @@ npu-smi info
 
 ![image](./figures/d00adf38-6e60-42ad-94be-a74964c47694.png)
 
-### 网络连通性检查
+## 网络连通性检查
 
 若要PD分离部署，确保部署PD分离部署的CloudMatrix384机器网络是联通的，可以在其中一台机器上使用ssh命令进行尝试，命令示例
 
 ```
 ssh root@192.168.1.100
 ```
+
+# 部署
+
+目前docker镜像中安装好了依赖的CANN和Torch-NPU包，并且已经预装了一个可直接运行的omni-infer和vllm包。配套的CANN和Torch-NPU正式版本正在整理中。
 
 ## docker镜像下载
 
@@ -68,6 +66,29 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
     ${IMAGES_ID}
 
 ```
+
+## 下载omni_infer以及vllm源码并安装vllm
+可以选择在宿主机或者容器内下载源码，如果在容器内下载，应在主机挂载在容器的目录下下载；在宿主机内下载则无此约束。
+
+1. 拉取 omni_infer 源码；
+2. 在目录 omniinfer/infer_engines 下拉取 vllm v0.9.0 源码；
+   infer_engines下的目录结构如下:
+   ![alt text](./figures/20250702_141938.png)
+
+3. 执行目录 omniinfer/infer_engines 下的脚本 bash_install_code.sh； 
+4. 卸载镜像或者宿主机中已有的omni_infer包，
+   pip uninstall vllm -y
+   pip uninstall omni_infer -y
+   pip uninstall omni_placement -y
+5. 编译omni_infer
+   cd omni
+   build/build.sh
+   可以看到最终在build/dist目录下有生成whl包
+6. 通过whl包安装
+   pip install vllm.whl
+   pip install omni_infer.whl
+   pip install omni_placement.whl
+   安装成后，可以通过pip list查看是否有安装成功
 
 ## omni_infer包检查
 
@@ -123,7 +144,6 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
 ## PD分离自动化部署
 
 当前限制说明：
-
 目前仅支持Deepseek-R1-W8A8模型，权重下载地址（TODO）
 目前仅支持支持一个 D 的场景，如支持 4P1D、8P1D 等场景，不支持多个 D，如 4P2D、8P4D 等场景不支持；
 目前不支持 P 一主一从的配置，仅支持每个 P 只有一主
@@ -134,22 +154,45 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
 
 ![image](./figures/ab1a606f-20cd-417f-a0d6-fec4b3d26d27.png)
 
-ansible 详细说明参考：**tools**/**ansible**/**README.md**
+ansible 详细说明参考：**omniinfer**/**tools**/**ansible**/**template**/**README.md**。
+在 omniinfer/tools/ansible/ 、 omniinfer/tools/ansible/template/ 和 omniinfer/omni/cli 下面都有 xxx_inventory.yml 和 xxx_server.yml 文件，其中：
+1. omniinfer/tools/ansible/ 路径下这两种文件用于 `CI`；
+2. omniinfer/tools/ansible/template/ 路径下的这两种文件即可用于 `ansible` 一键部署 `omniinfer` 服务，参考**通过 ansible 部署**章节；
+3. omniinfer/omni/cli 路径下的这两种文件即用于 `omni_cli` 一键部署服务，参考 **omni_cli 一键部署**章节。
 
-### omni_cli一键部署
+### 准备密钥文件
+首先介绍执行机和目标机的概念，执行机就是运行 `omni_cli` 和 `ansible` 命令的主机，而目标机就是被 `omni_cli` 和 `ansible` 管理的远程主机，也就是用户部署服务所用到的机器。在使用一键式部署命令前，用户需要准备好密钥文件，密钥文件用于执行机通过 `ansible` 去登录目标机，如果你已经有登录目标机的密钥文件，就不需要执行下列操作：
 
-该工具目前仅支持拉起**MTP+入图**的服务配置，若要修改请参考**通过ansible部署**章节；
-提供的docker镜像中默认安装omni_cli工具，进入容器后，通过以下命令查看是否携带。
+1. 首先在执行机生成秘钥对：
+    ```bash
+    ssh-keygen -t ed25519 -C "SSH key comment" -f ~/.ssh/my_key # -t 指定密钥类型 (推荐 ed25519)，-f 指定文件名
+    ```
+2. 密钥文件默认存放位置为：~/.ssh/。设置密钥文件权限：
+    ```bash
+    chmod 700 ~/.ssh
+    chmod 600 ~/.ssh/id_ed25519     # 私钥必须设为 600
+    chmdo 644 ~/.ssh/id_ed25519.pub
+    ```
+3. 部署公钥到远程目标机：
+    ```bash
+    # 当前只能通过目标机的登录密码去传输密钥文件到远程目标机
+    ssh-copy-id -i ~/.ssh/id_ed25519.pub user@remote-host
+    ```
+
+### omni_cli 一键部署
+
+该工具目前仅支持拉起**MTP+入图**的服务配置，若要修改请参考**通过 ansible 部署**章节；
+提供的docker镜像中默认安装 omni_cli 工具，在宿主机 **下载omni_infer以及vllm源码并安装vllm** 时 omni_cli 也安装好了，通过以下命令查看是否安装：
 
 ```
 omni_cli --help
 ```
-
 ![image](./figures/53e799d4-b756-46d0-8cc8-8ff2c99c1dd8.png)
 
 #### 配置文件说明
 
-`cd /your_path/omni_infer/omni/cli` 进入配置文件 `omni_infer_deployment.yml` 所在目录；
+进入 omni_infer 代码路径下，`cd omniinfer/omni/cli` 进入配置文件所在目录，有 `omni_infer_deployment.yml` 和 `omni_infer_server.yml` 两个配置文件，前者的 `services` 字段下配置参数最终会替换后者中相似的配置，用户只需要修改 `omni_infer_deployment.yml` 中的参数即可，`omni_infer_server.yml` 内的参数修改属于进阶操作，
+由于PD 服务实例均在容器里运行，`docker_image` 用来指定运行的容器镜像，如 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer:202506272026`，其中 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer` 表示镜像仓地址，`202506272026` 表示镜像版本号，如果远程目标机没有此容器镜像，脚本会自动下载。
 配置文件是一个 4P1D 的模板，如果需要增加 P，在 `prefill` 中增加一个 `group5` ，其他配置按实际情况配置即可，需要继续增加 P，以此类推；`group` 中的各个字段说明如下：
 
 | 字段                            | 含义                                                                                                                               |
@@ -192,46 +235,44 @@ group1:
 #### 命令执行
 
 ```
-# 进入到你的工作目录下
-cd /your_workspace
+# 进入到工作目录下
+cd /work_path
 
 # 拉起 服务
-omni_cli serve /your_path/omni_infer/omni/cli/omni_infer_deployment.yml
+omni_cli serve /download_path/omni_infer/omni/cli/omni_infer_deployment.yml
 
 # 查看服务是否拉起成功
 omni_cli status
 
 ```
 
-### 通过ansible部署（高阶）
+### 通过 ansible 部署（高阶）
 
 #### 环境准备
 
-**在执行机安装 ansible和openssh:**
+如果是在执行机的宿主机，需要安装 `ansible` 和 `openssh`:
 
 ```
 yum install ansible
 yum install openssh-server
-
 ```
 
-**修改配置文件：**
+#### 配置文件说明
 
-在 **omni\_infer\_inventory.yml** 中， 目标机信息；
-以2P1D为例，修改tools/ansible/template/omni_infer_inventory_used_for_2P1D.yml文件中的执行机IP，p0/p1/d0/d1/c0下面的`ansible_host:`值，其中p0/p1表示用来部署P的2台CloudMatrix384机器信息，d0/d1表示用来部署D的2台A3机器信息，c0表示用来部署globalproxy的机器信息，可以使用p0/p1/d0/d1中的任意一台;
+在 **omniinfer/tools/ansible/template/** 中，有 omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml 两个文件，omni_infer_inventory_used_for_2P1D.yml 用于四机 2P1D 场景，omni_infer_inventory_used_for_4P1D.yml 用于八机 4P1D 场景，其他场景可以参考这两个文件创建新的 inventory 文件；此外还有一个 omni_infer_server_template.yml 文件，这三个
+文件的参数配置说明可以参考 **omniinfer/tools/ansible/template/README.md**, 以2P1D为例，则修改 omni_infer_inventory_used_for_2P1D.yml 文件，将 `p0/p1/d0/d1/c0` 下面的 `ansible_host:` 值改为机器的 ip，其中p0/p1表示用来部署P的2台A3机器，d0/d1表示用来部署D的2台A3机器，c0表示用来部署globalproxy的机器信息，可以使用p0/p1/d0/d1中的任意一台;
 
 ![image](./figures/79f4a480-e13b-45a3-bc9e-080f27ea3995.png)
 
 ![image](./figures/4d4eb6e0-2af8-4ce2-8233-b8ccebc7c4a4.png)
 在 **omni\_infer\_server.yml** 中， 修改task任务依赖的环境变量。
 
-**修改完命令执行**
+#### 执行命令
 
 ```
 # 进入到文件目录下执行
-cd ./omni_infer/tools/ansible
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml
-
+cd omniinfer/tools/ansible/template
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml
 ```
 
 #### PD分离部署
@@ -248,7 +289,7 @@ ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml
 
 #### 代码同步更新
 
-执行机代码存放路径：/data/omni\_infer (可以修改成自己的代码路径，下图synchronize操作就是把执行机的代码同步到目标机上)
+执行机代码存放路径：/data/omniinfer (可以修改成自己的代码路径，下图synchronize操作就是把执行机的代码同步到目标机上)
 
 ![image](./figures/07a40404-2aa6-4165-b43d-6e386da57777.png)
 
@@ -258,7 +299,7 @@ ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml
 
 **omni\_infer\_server.yml** 主要放的是自动化的一些操作任务。
 
-当前已有的task:
+通过给 `task` 增加 `tags` 控制管理任务，当前已有的 `tags`:
 
 ```
     - run_docker
@@ -280,29 +321,7 @@ ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --》默认�
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_server --》只执行pd分离服务拉起
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_proxy --》只执行global_proxy分离服务拉起
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags sync_code --》只执行代码同步更新任务
+ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags fetch_log --》将日志存放在执行机指定路径
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags sync_code --》过滤sync
 
 ```
-
-## 源码安装omni_infer
-
-1. 拉取vllm v0.9.0代码
-2. 将vllm代码放入infer_engines目录下
-   infer_engines下的目录结构如下
-   
-   ![image](./figures/9f66a7d7-2b5a-470c-a816-b0b9064854d2.png)
-3. 卸载镜像中已有的omni_infer包
-   pip uninstall vllm -y
-   pip uninstall omni_infer -y
-   pip uninstall omni_placement -y
-4. 编译omni_infer
-   cd omni
-   build/build.sh
-   可以看到最终在build/dist目录下有生成whl包
-5. 通过whl包安装
-   pip install vllm.whl
-   pip install omni_infer.whl
-   pip install omni_placement.whl
-   安装成后，可以通过pip list查看是否有安装成功
-
-
