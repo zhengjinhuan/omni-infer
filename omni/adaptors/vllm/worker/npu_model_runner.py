@@ -1089,9 +1089,43 @@ class WrapModel(nn.Module):
         hidden_states = self.model.forward(input_ids, positions, intermediate_tensors=intermediate_tensors, **kwargs)
         return hidden_states
 
-class WrapDrafter(WrapModel):
+class WrapDrafter(nn.Module):
     def __init__(self, model, decode_gear_list) -> None:
-        super().__init__(model, decode_gear_list)
+        super().__init__()
+        self.model = model
+        self.decode_gear_list = decode_gear_list
+        from torchair.configs.compiler_config import CompilerConfig
+        import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce
+        torch._dynamo.reset()
+        config = CompilerConfig()
+        config.experimental_config.keep_inference_input_mutations = True
+        config.experimental_config.tiling_schedule_optimize = True
+        torch.npu.set_compile_mode(jit_compile=False)
+        self.cached_decode_dict = {}
+        for i, gear in enumerate(self.decode_gear_list):
+            self.cached_decode_dict[gear] = torchair.inference.cache_compile(getattr(self, f"draft_decode_batch_{i}"), config=config, dynamic=True, ge_cache=True, fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,)
+
+    def draft_decode_batch_0(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_1(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_2(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_3(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_4(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_5(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+
+    def decode(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
 
     def forward(
             self,
