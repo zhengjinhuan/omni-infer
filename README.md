@@ -2,6 +2,10 @@
 
 中文 | [View English](./README_en.md)
 
+*社区新闻* 🔥
+- [2025/07] 社区的PD分离、EP负载均衡、算子与图三个SIG计划在7月的第二周召开**首次SIG例会**，有兴趣与会的开发者请见三个SIG分别的会议安排：[PD分离SIG会议安排](https://gitee.com/omniai/community/blob/master/sigs/sig-pd-seperation.md),[EP负载均衡SIG会议安排](https://gitee.com/omniai/community/blob/master/sigs/sig-ep-placement.md),[算子与图SIG会议安排](https://gitee.com/omniai/community/blob/master/sigs/sig-ops-and-graph.md).
+- [2025/07] 2025年7月5日，在苏州举办的OpenInfra基金会Meetup将有Omni-infer议题分享，详情请见[社区活动页面](https://gitee.com/omniai/community/blob/master/events/README.md)
+
 Omni-Infer是一套专为昇腾硬件平台定制的强大推理加速工具集，完全兼容业界目前主流的开源大模型推理框架（比如vLLM等），旨在提供高性能、企业级推理能力，具备原生支持且功能集持续扩展。
 
 ## 核心特性
