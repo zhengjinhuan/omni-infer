@@ -294,7 +294,7 @@ class DeepseekMoE(nn.Module):
                 prefix=f"{prefix}.shared_experts",
             )
 
-        self.local_expert_num = self.n_routed_experts // get_expert_parallel_world_size()
+        self.local_expert_num = self.experts.w13_weight_scale.shape[0]
         self.in_scale_2 = torch.ones((self.local_expert_num, self.experts.w13_weight_scale.shape[-1] // 2), dtype=torch.float32, device=current_platform.device_type)
         torch._dynamo.mark_static(self.in_scale_2)
         self.w13_prefetch_size = 70 * 1024 * 1024
@@ -327,8 +327,7 @@ class DeepseekMoE(nn.Module):
             if self.w2_prefetch_size > 0:
                 torch_npu.npu_prefetch(self.experts.w2_weight, wait_gate, self.w2_prefetch_size)
 
-            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
-                topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
+            topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
                                                                     self.experts.top_k, self.experts.use_grouped_topk,
                                                                     self.experts.renormalize,
                                                                     self.experts.topk_group, self.experts.num_expert_group,
@@ -338,6 +337,8 @@ class DeepseekMoE(nn.Module):
                                                                     self.routed_scaling_factor,
                                                                     layer=self.experts  # ENABLE_OMNI_PLANNER
                                                                     )
+            
+            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
 
                 if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
                     faka_topk_ids = attn_metadata.decode.best_topk
@@ -345,10 +346,8 @@ class DeepseekMoE(nn.Module):
 
                 mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and attn_metadata.decode is not None else None
                 layer = self.experts
-                max_num_deployed_expert = self.n_routed_experts
-                if model_extra_config.operator_opt_config.use_omni_placement:
-                    max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
-                    max_num_deployed_expert = max_num_deployed_expert_per_rank * get_expert_parallel_world_size()
+                
+                max_num_deployed_expert = self.local_expert_num * get_data_parallel_world_size()
                 act_dtype = hidden_states.dtype
                 shared_expert_rank_num = 0
                 kwargs = {
@@ -390,7 +389,6 @@ class DeepseekMoE(nn.Module):
                         with tng.scope.npu_stream_switch('21'):
                             layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
 
-                group_list = group_list[:len(self.experts.w13_weight)] # Adapt to redundant and non-redundant layers, #ENABLE_OMNI_PLANNER
                 # cal experts
                 weight1_3 = self.experts.w13_weight
                 weight2 = self.experts.w2_weight
