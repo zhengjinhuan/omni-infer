@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import zmq
 import os
 import time
+import pickle
 
 from vllm.envs import VLLM_RPC_TIMEOUT
 from vllm.config import VllmConfig
@@ -288,6 +289,10 @@ class DecodeConnectorScheduler:
         self._reqs_need_recv: dict[str, tuple[Request, list[int]]] = {}
         self.processed_request: set[str] = set()
 
+        self.context = zmq.Context()
+        self.pub = self.context.socket(zmq.PUB)
+        self.pub.bind(f"ipc:///tmp/sched-pub-{vllm_config.parallel_config.data_parallel_rank_local}")
+
     def get_num_new_matched_tokens(
             self, request: "Request",
             num_computed_tokens: int) -> tuple[int, bool]:
@@ -345,6 +350,12 @@ class DecodeConnectorScheduler:
                 kv_transfer_params=req.kv_transfer_params,
             )
         self._reqs_need_recv.clear()
+
+        if scheduler_output is None:
+            # Let go fast path
+            serialized_data = pickle.dumps(metadata)
+            self.pub.send(serialized_data)
+
         return metadata
 
     def request_finished(
@@ -361,7 +372,7 @@ class DecodeConnectorWorker:
     """Worker implementation for datadist."""
 
     def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: str):
-
+        self.vllm_config = vllm_config
         self.datadist_manager = LLMDataDistManager(vllm_config.kv_transfer_config)
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
@@ -372,6 +383,21 @@ class DecodeConnectorWorker:
 
         self.ctx = zmq.Context()
         self.zmq_socket_map = {}
+
+        self.thread = threading.Thread(target=self.on_fast_path_req)
+        self.thread.start()
+
+    def on_fast_path_req(self):
+        context = zmq.Context()
+        sub = context.socket(zmq.SUB)
+        sub.connect(f"ipc:///tmp/sched-pub-{self.vllm_config.parallel_config.data_parallel_rank_local}")
+        sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        
+        while True:
+            serialized_data = sub.recv()
+            metadata = pickle.loads(serialized_data)
+
+            self.start_load_kv(metadata)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.datadist_manager.register_memory(kv_caches)
