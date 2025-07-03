@@ -9,43 +9,6 @@
 Omni-Infer是一套专为昇腾硬件平台定制的强大推理加速工具集，完全兼容业界目前主流的开源大模型推理框架（比如vLLM等），旨在提供高性能、企业级推理能力，具备原生支持且功能集持续扩展。
 
 
-```
-"quantization_config": {
-        "config_groups": {
-            "group_0": {
-                "input_activations": {
-                    "actorder": null,
-                    "block_structure": null,
-                    "dynamic": true,
-                    "group_size": null,
-                    "num_bits": 8,
-                    "observer": "memoryless",
-                    "observer_kwargs": {},
-                    "strategy": "token",
-                    "symmetric": true,
-                    "type": "int"
-                },
-                "output_activations": null,
-                "targets": [
-                    "Linear"
-                ],
-                "weights": {
-                    "actorder": null,
-                    "block_structure": null,
-                    "dynamic": false,
-                    "group_size": null,
-                    "num_bits": 8,
-                    "observer": "minmax",
-                    "observer_kwargs": {},
-                    "strategy": "channel",
-                    "symmetric": true,
-                    "type": "int"
-                }
-            }
-        },
-```
-
-
 ## 核心特性
 
 - **企业级低延迟P/D调度**：支持xPyD调度及大规模分布式PD部署的横向扩展，确保最低延迟。详情请参考[全局代理设计](omni/accelerators/sched/global_proxy/README.md)。
