@@ -35,15 +35,15 @@ def run_ansible_playbook_with_config(config_path):
     process = subprocess.Popen(
         command,
         shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        stdout=None,
+        stderr=None
     )
-    stdout, stderr = process.communicate()
 
-    if process.returncode != 0:
-        print(f"Deployment failed: stdout: stdout:{stdout.decode()} stderr:{stderr.decode()}")
+    return_code = process.wait() 
+    if return_code != 0:
+        print(f"Deployment failed with return code {return_code}")
     else:
-        print(f"Deployment succeeded: {stdout.decode()}")
+        print("Deployment succeeded")
 
 
 def check_service_health(config):

@@ -67,28 +67,36 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
 
 ```
 
-## 下载omni_infer以及vllm源码并安装vllm
+## 下载 omni_infer 以及 vllm 源码并安装 vllm
 可以选择在宿主机或者容器内下载源码，如果在容器内下载，应在主机挂载在容器的目录下下载；在宿主机内下载则无此约束。
-
-1. 拉取 omni_infer 源码；
-2. 在目录 omniinfer/infer_engines 下拉取 vllm v0.9.0 源码；
-   infer_engines下的目录结构如下:
-   ![alt text](./figures/20250702_141938.png)
+执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm，如果用户参考 **通过 ansible 部署** 章节，可以不用执行 4 到 6 步；
+1. git clone 拉取 omni_infer 源码；
+2. 在目录 omniinfer/infer_engines 下 git clone 拉取 vllm v0.9.0 源码，注意文件夹名改为 "vllm"；infer_engines下的目录结构如下:
+    ![alt text](./figures/20250702_141938.png)
 
 3. 执行目录 omniinfer/infer_engines 下的脚本 bash_install_code.sh； 
-4. 卸载镜像或者宿主机中已有的omni_infer包，
-   pip uninstall vllm -y
-   pip uninstall omni_infer -y
-   pip uninstall omni_placement -y
-5. 编译omni_infer
-   cd omni
-   build/build.sh
-   可以看到最终在build/dist目录下有生成whl包
-6. 通过whl包安装
-   pip install vllm.whl
-   pip install omni_infer.whl
-   pip install omni_placement.whl
-   安装成后，可以通过pip list查看是否有安装成功
+4. 卸载已有的omni_infer包；
+    ```bash
+    pip uninstall vllm -y
+    pip uninstall omni_infer -y
+    pip uninstall omni_placement -y
+    ```
+
+5. 编译omni_infer，最终在build/dist目录下有生成whl包；
+    ```bash
+    cd omniinfer
+    bash build/build.sh
+    ```
+
+6. 进入 build/dist 目录，安装whl包，可以通过pip list查看是否有安装成功；
+    ```bash
+    cd build/dist
+
+    # 安装 vllm/omni_infer/omni_placement 等 whl 包，如下命令仅供参考
+    pip install vllm.whl
+    pip install omni_infer.whl
+    pip install omni_placement.whl
+    ```
 
 ## omni_infer包检查
 
@@ -191,7 +199,7 @@ omni_cli --help
 
 #### 配置文件说明
 
-进入 omni_infer 代码路径下，`cd omniinfer/omni/cli` 进入配置文件所在目录，有 `omni_infer_deployment.yml` 和 `omni_infer_server.yml` 两个配置文件，前者的 `services` 字段下配置参数最终会替换后者中相似的配置，用户只需要修改 `omni_infer_deployment.yml` 中的参数即可，`omni_infer_server.yml` 内的参数修改属于进阶操作，
+进入 omni_infer 代码路径下，`cd omniinfer/omni/cli` 进入配置文件所在目录，有 `omni_infer_deployment.yml` 和 `omni_infer_server.yml` 两个配置文件，前者的 `services` 字段下配置参数最终会替换后者中相似的配置，用户只需要修改 `omni_infer_deployment.yml` 中的参数即可，`omni_infer_server.yml` 内的参数修改属于进阶操作（参考**通过 ansible 部署**章节），
 由于PD 服务实例均在容器里运行，`docker_image` 用来指定运行的容器镜像，如 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer:202506272026`，其中 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer` 表示镜像仓地址，`202506272026` 表示镜像版本号，如果远程目标机没有此容器镜像，脚本会自动下载。
 配置文件是一个 4P1D 的模板，如果需要增加 P，在 `prefill` 中增加一个 `group5` ，其他配置按实际情况配置即可，需要继续增加 P，以此类推；`group` 中的各个字段说明如下：
 
@@ -210,6 +218,7 @@ omni_cli --help
 
 | 字段                         | 含义                                                                                         |
 | :----------------------------- | :--------------------------------------------------------------------------------------------- |
+| `local_code_path`        | 执行机上的代码路径，即用户通过 git clone 拉取的代码存放路径。例如用户在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path` |
 | `model_path`             | 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致 |
 | `prefill: max_model_len` | Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为30000             |
 | `decode: max_model_len`  | Decode 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为16384              |
@@ -244,6 +253,8 @@ omni_cli serve /download_path/omni_infer/omni/cli/omni_infer_deployment.yml
 # 查看服务是否拉起成功
 omni_cli status
 
+# 进入远程目标机日志目录下查看日志
+cd /data/omniinfer/log
 ```
 
 ### 通过 ansible 部署（高阶）
