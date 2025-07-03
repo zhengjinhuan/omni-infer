@@ -1,0 +1,205 @@
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 8ac653487..6135367d4 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -1241,6 +1241,8 @@ class CompletionResponse(OpenAIBaseModel):
+ class CompletionResponseStreamChoice(OpenAIBaseModel):
+     index: int
+     text: str
++    prompt_num_tokens: Optional[int] = None
++    output_num_tokens: Optional[int] = None
+     logprobs: Optional[CompletionLogProbs] = None
+     finish_reason: Optional[str] = None
+     stop_reason: Optional[Union[int, str]] = Field(
+@@ -1438,6 +1440,8 @@ class DeltaMessage(OpenAIBaseModel):
+ 
+ class ChatCompletionResponseStreamChoice(OpenAIBaseModel):
+     index: int
++    prompt_num_tokens: Optional[int] = None
++    output_num_tokens: Optional[int] = None
+     delta: DeltaMessage
+     logprobs: Optional[ChatCompletionLogProbs] = None
+     finish_reason: Optional[str] = None
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index ee18e0b0a..035bff4d0 100644
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -211,6 +211,11 @@ class OpenAIServingChat(OpenAIServing):
+         try:
+             for i, engine_prompt in enumerate(engine_prompts):
+                 sampling_params: Union[SamplingParams, BeamSearchParams]
++                if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++                    engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
++                    new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
++                    delta_text = tokenizer.convert_tokens_to_string([new_tokens])
++                    engine_prompt["prefilled_texts"] = delta_text
+                 default_max_tokens = self.max_model_len - len(
+                     engine_prompt["prompt_token_ids"])
+                 if request.use_beam_search:
+@@ -763,6 +768,8 @@ class OpenAIServingChat(OpenAIServing):
+                         # Send token-by-token response for each request.n
+                         choice_data = ChatCompletionResponseStreamChoice(
+                             index=i,
++                            prompt_num_tokens = num_prompt_tokens,
++                            output_num_tokens = len(output.token_ids),
+                             delta=delta_message,
+                             logprobs=logprobs,
+                             finish_reason=None)
+@@ -823,6 +830,8 @@ class OpenAIServingChat(OpenAIServing):
+                         choice_data = ChatCompletionResponseStreamChoice(
+                             index=i,
+                             delta=delta_message,
++                            prompt_num_tokens = num_prompt_tokens,
++                            output_num_tokens = len(output.token_ids),
+                             logprobs=logprobs,
+                             finish_reason=output.finish_reason
+                             if not auto_tools_called else "tool_calls",
+@@ -912,6 +921,16 @@ class OpenAIServingChat(OpenAIServing):
+ 
+         assert final_res is not None
+ 
++        if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++            prompt_token_ids = request.kv_transfer_params["prefilled_token"]
++            new_tokens = tokenizer.convert_ids_to_tokens(prompt_token_ids[0])
++            prompt_text = tokenizer.convert_tokens_to_string([new_tokens])
++            final_res.outputs[0].text = prompt_text + final_res.outputs[0].text
++        if final_res.kv_transfer_params:
++            ## In Prefill node, the response will carry prompt_token_ids with kv_transfer_params
++            final_res.kv_transfer_params["prompt_token_ids"] = final_res.prompt_token_ids
++            final_res.kv_transfer_params["prefilled_token"] = [final_res.outputs[0].token_ids[0]]
++
+         choices: list[ChatCompletionResponseChoice] = []
+ 
+         role = self.get_chat_request_role(request)
+@@ -1069,6 +1088,8 @@ class OpenAIServingChat(OpenAIServing):
+             num_prompt_tokens += len(final_res.encoder_prompt_token_ids)
+         num_generated_tokens = sum(
+             len(output.token_ids) for output in final_res.outputs)
++        if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++            num_generated_tokens += 1
+         usage = UsageInfo(prompt_tokens=num_prompt_tokens,
+                           completion_tokens=num_generated_tokens,
+                           total_tokens=num_prompt_tokens +
+diff --git a/vllm/entrypoints/openai/serving_engine.py b/vllm/entrypoints/openai/serving_engine.py
+index 8b3857fad..9c271f0b8 100644
+--- a/vllm/entrypoints/openai/serving_engine.py
++++ b/vllm/entrypoints/openai/serving_engine.py
+@@ -1009,24 +1009,29 @@ class OpenAIServing:
+             request = tool_parser(tokenizer).adjust_request(  # type: ignore
+                 request=request)
+ 
+-        if isinstance(request_prompt, str):
+-            prompt_inputs = await self._tokenize_prompt_input_async(
+-                request,
+-                tokenizer,
+-                request_prompt,
+-                truncate_prompt_tokens=truncate_prompt_tokens,
+-                add_special_tokens=add_special_tokens,
+-            )
++        if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++            engine_prompt = TokensPrompt(
++                prompt_token_ids=request.kv_transfer_params["prompt_token_ids"])
+         else:
+-            # For MistralTokenizer
+-            assert is_list_of(request_prompt, int), (
+-                "Prompt has to be either a string or a list of token ids")
+-            prompt_inputs = TextTokensPrompt(
+-                prompt=tokenizer.decode(request_prompt),
+-                prompt_token_ids=request_prompt)
+-
+-        engine_prompt = TokensPrompt(
+-            prompt_token_ids=prompt_inputs["prompt_token_ids"])
++            if isinstance(request_prompt, str):
++                prompt_inputs = await self._tokenize_prompt_input_async(
++                    request,
++                    tokenizer,
++                    request_prompt,
++                    truncate_prompt_tokens=truncate_prompt_tokens,
++                    add_special_tokens=add_special_tokens,
++                )
++            else:
++                # For MistralTokenizer
++                assert is_list_of(request_prompt, int), (
++                    "Prompt has to be either a string or a list of token ids")
++                prompt_inputs = TextTokensPrompt(
++                    prompt=tokenizer.decode(request_prompt),
++                    prompt_token_ids=request_prompt)
++
++            engine_prompt = TokensPrompt(
++                prompt_token_ids=prompt_inputs["prompt_token_ids"])
++
+         if mm_data is not None:
+             engine_prompt["multi_modal_data"] = mm_data
+         if request.mm_processor_kwargs is not None:
+diff --git a/vllm/inputs/data.py b/vllm/inputs/data.py
+index c83ab73b6..31c42c6eb 100644
+--- a/vllm/inputs/data.py
++++ b/vllm/inputs/data.py
+@@ -62,7 +62,8 @@ class TokensPrompt(TypedDict):
+     """
+     Optional cache salt to be used for prefix caching.
+     """
+-
++    prefilled_token_ids: Optional[list[int]] = []
++    prefilled_texts: Optional[str] = ""
+ 
+ class EmbedsPrompt(TypedDict):
+     """Schema for a prompt provided via token embeddings."""
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index ee70514f9..0c1acb37e 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -993,6 +993,10 @@ class Scheduler(SchedulerInterface):
+         if num_computed_tokens == request.num_tokens:
+             num_computed_tokens -= 1
+ 
++        if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
++            request.prompt_token_ids.extend(request.kv_transfer_params["prefilled_token"])
++            request.append_output_token_ids(request.kv_transfer_params["prefilled_token"])
++
+         # with spec
+         if self.vllm_config.speculative_config is not None:
+             request.spec_token_ids.append(0)
+diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
+index 5628f0a11..4314279a6 100644
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -16,7 +16,7 @@ from vllm.inputs.preprocess import InputPreprocessor
+ from vllm.logger import init_logger
+ from vllm.lora.request import LoRARequest
+ from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
+-from vllm.outputs import RequestOutput
++from vllm.outputs import RequestOutput, CompletionOutput
+ from vllm.pooling_params import PoolingParams
+ from vllm.prompt_adapter.request import PromptAdapterRequest
+ from vllm.sampling_params import SamplingParams
+@@ -287,6 +287,29 @@ class AsyncLLM(EngineClient):
+         """
+ 
+         try:
++            if "prefilled_token_ids" in prompt and prompt["prefilled_token_ids"] != []:
++                if sampling_params.n == 1:
++                    output = RequestOutput(request_id=request_id,
++                            prompt=None, finished=False, prompt_logprobs=None,
++                            prompt_token_ids=prompt["prompt_token_ids"],
++                            outputs=[CompletionOutput(index=0,
++                                cumulative_logprob=None, logprobs=None,
++                                text= prompt["prefilled_texts"],
++                                token_ids=prompt["prefilled_token_ids"])])
++                else:
++                    # Fan out child requests (for n>1).
++                    parent_request = ParentRequest(request_id, sampling_params)
++                    for idx in range(sampling_params.n):
++                        request_id_child, params = parent_request.get_child_info(idx)
++                        output = RequestOutput(request_id=request_id_child,
++                                prompt=None, finished=False, prompt_logprobs=None,
++                                prompt_token_ids=prompt["prompt_token_ids"],
++                                outputs=[CompletionOutput(index=idx,
++                                    cumulative_logprob=None, logprobs=None,
++                                    text= prompt["prefilled_texts"],
++                                    token_ids=prompt["prefilled_token_ids"])])
++                prompt["prefilled_token_ids"] = []
++                yield output
+             # We start the output_handler on the first call to generate() so
+             # we can call __init__ before the event loop, which enables us
+             # to handle startup failure gracefully in the OpenAI server.
