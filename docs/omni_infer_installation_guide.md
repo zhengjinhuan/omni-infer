@@ -76,18 +76,24 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
    ![alt text](./figures/20250702_141938.png)
 
 3. 执行目录 omniinfer/infer_engines 下的脚本 bash_install_code.sh； 
-4. 卸载镜像或者宿主机中已有的omni_infer包，
-   pip uninstall vllm -y
-   pip uninstall omni_infer -y
-   pip uninstall omni_placement -y
+4. 卸载镜像或者宿主机中已有的omni_infer包
+    ```
+    pip uninstall vllm -y
+    pip uninstall omni_infer -y
+    pip uninstall omni_placement -y
+   ```
 5. 编译omni_infer
-   cd omni
-   build/build.sh
+    ```
+    cd omniinfer
+    build/build.sh
+   ```
    可以看到最终在build/dist目录下有生成whl包
 6. 通过whl包安装
-   pip install vllm.whl
-   pip install omni_infer.whl
-   pip install omni_placement.whl
+    ```
+    pip install vllm.whl
+    pip install omni_infer.whl
+    pip install omni_placement.whl
+    ```
    安装成后，可以通过pip list查看是否有安装成功
 
 ## omni_infer包检查
@@ -97,7 +103,7 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
 ```
 pip list | grep omni_infer
 ```
-
+检查结果如下：
 ![image](./figures/7bf10117-2c1a-4ec7-a7b6-2ce29c37fda1.png)
 
 ## 混布
@@ -144,9 +150,90 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
 ## PD分离自动化部署
 
 当前限制说明：
-目前仅支持Deepseek-R1-W8A8模型，权重下载地址（TODO）
+目前仅支持Deepseek-R1-W8A8模型，需要基于开源的Deepseek-R1权重进行转换，参考**权重转换**章节
 目前仅支持支持一个 D 的场景，如支持 4P1D、8P1D 等场景，不支持多个 D，如 4P2D、8P4D 等场景不支持；
 目前不支持 P 一主一从的配置，仅支持每个 P 只有一主
+
+### 权重转换
+
+1. 机器准备，准备一台 CloudMatrix384 机器；
+
+2. 下载原始权重，支持的Deepseek-R1原始权重地址：https://www.modelscope.cn/deepseek-ai/DeepSeek-R1.git
+
+3. 安装依赖包，transformers（=4.48.2）和 accelerate，命令如下：
+    ```
+    pip install transformers==4.48.2
+    pip install accelerate
+    ```
+
+4. 安装转换工具，转换工具下载地址：https://gitee.com/ascend/msit/tree/8.0.RC1_ZS2.0_20251230，安装命令如下
+    ```
+    cd msit-8.0.RC1_ZS2.0_20251230/msmodelslim
+    bash install.sh
+    ```
+
+5. CANN包安装，参考链接：https://gitee.com/ascend/msit/tree/master/msmodelslim#%E7%8E%AF%E5%A2%83%E5%92%8C%E4%BE%9D%E8%B5%96
+     https://www.hiascend.com/developer/download/community/result?module=pt+cann&product=4&model=32
+
+     需要安装**cann-toolkit**和**cann-kernels**，下载链接https://www.hiascend.com/developer/download/community/result?module=pt+cann&product=4&model=32
+     安装命令，以aarch64 run包为例
+     ```
+     chmod +x Ascend-cann-toolkit_8.1.RC1_linux-aarch64.run
+     ./Ascend-cann-toolkit_8.1.RC1_linux-aarch64.run --install --quiet
+     chmod +x Atlas-A3-cann-kernels_8.1.RC1_linux-aarch64.run
+     ./Atlas-A3-cann-kernels_8.1.RC1_linux-aarch64.run --install --quiet
+     ```
+
+6. Torch-NPU安装，安装包下载链接：https://www.hiascend.com/developer/download/commercial/result?module=cann
+
+    选择其中的**2.1.0**版本
+
+7. 修改模型权重文件
+    modeling_deepseek.py修改，参照下图红框部分，注释掉红框中的代码片段
+    ![image](./figures/modeling_deepseek_modify.png)
+
+    
+
+    修改代码片段如下
+
+    ```
+    from transformers.utils import (
+        add_start_docstrings,
+        add_start_docstrings_to_model_forward,
+        # is_flash_attn_2_available,
+        is_flash_attn_greater_or_equal_2_10,
+        logging,
+        replace_return_docstrings,
+    )
+    from transformers.utils.import_utils import is_torch_fx_available
+    from .configuration_deepseek import DeepseekV3Config
+    import torch.distributed as dist
+    import numpy as np
+    
+    '''
+    if is_flash_attn_2_available():
+        from flash_attn import flash_attn_func, flash_attn_varlen_func
+        from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
+    '''
+    
+    ```
+
+    
+
+    
+
+    config.json修改，参照下图红框部分，删除掉红框中的代码片段
+    ![image](./figures/config_json_modify.png)
+
+8. 开始转换，执行以下脚本，假设权重和msit都放在/data/models/目录
+    ```
+    #!/bin/bash
+    source /usr/local/Ascend/ascend-toolkit/set_env.sh
+    export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
+    export PYTHONPATH=/data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/:$PYTHONPATH
+    cd /data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/example/DeepSeek
+    python quant_deepseek_w8a8.py --model_path /data/models/DeepSeek-R1 --save_path /data/models/DeepSeek-R1-Quant --dynamic --disable_anti --quant_mtp
+    ```
 
 ### 部署框架介绍
 
