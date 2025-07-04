@@ -438,7 +438,13 @@
       when: "'C' in group_names"
       tags: 
         - run_docker
-    
+
+    - name: Create a directory to store the code.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOCAL_CODE_PATH }}"
+        state: directory
+      tags: sync_code
+
     - name: The executor synchronizes code to all instances.
       synchronize:
         src: "{{ ansible_env.LOCAL_CODE_PATH }}/omniinfer"
@@ -875,7 +881,7 @@
       tags: 
         - run_proxy
 
-    - name: Create a directory on the executor.
+    - name: Create a directory on the executor to store the log.
       ansible.builtin.file:
         path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
         state: directory
