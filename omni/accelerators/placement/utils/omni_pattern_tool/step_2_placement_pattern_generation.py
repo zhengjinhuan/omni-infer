@@ -42,7 +42,7 @@ def allocate_expert_deployments_improved(
     loads_list = loads.tolist() if is_numpy else list(loads)
     
     if load_normalization == 'log':
-        normalized_loads = [np.log1p(load) for load in loads_list]
+        normalized_loads = loads_list
     else:
         normalized_loads = loads_list
 
@@ -166,7 +166,7 @@ def distribute_experts_to_ranks(
     expert_instances = []
     for expert_idx, count in enumerate(deployments):
         if count > 0:
-            load = loads_np[expert_idx]
+            load = loads_np[expert_idx] / count
             for _ in range(count):
                 expert_instances.append((load, expert_idx))
 
@@ -190,12 +190,26 @@ def distribute_experts_to_ranks(
         if not possible_devices:
             raise RuntimeError(f"Unable to find a suitable rank for expert {expert_idx} (load {load}).")
 
-        best_device = min(possible_devices, key=lambda dev_id: device_loads[dev_id])
+        # best_device = min(possible_devices, key=lambda dev_id: device_loads[dev_id])
+        best_device = possible_devices[0]
+        for i in range(1,len(possible_devices)):
+            if device_loads[possible_devices[i]] < device_loads[best_device]:
+                best_device = possible_devices[i]
 
         placement_matrix[best_device, expert_idx] = 1
         device_loads[best_device] += load
         device_expert_counts[best_device] += 1
 
+    new_placement_matrix = placement_matrix.copy()
+    num_ranks_per_host =16
+    num_hosts = int(num_ranks_target_pattern / num_ranks_per_host)
+    host_cur_rank = [0] * num_hosts
+    for i in range(num_ranks_target_pattern):
+        new_host_id = i % num_hosts
+        new_placement_matrix[new_host_id * num_ranks_per_host + host_cur_rank[new_host_id]] = placement_matrix[i]
+        host_cur_rank[new_host_id] += 1
+    placement_matrix = new_placement_matrix
+        
     if not np.all(device_expert_counts == experts_per_rank):
         logger.warning(f"Expert counts per rank after allocation do not all equal the expected value {experts_per_rank}.")
         logger.warning(f"Actual counts: {device_expert_counts}")
