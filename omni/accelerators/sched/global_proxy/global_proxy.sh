@@ -342,7 +342,24 @@ function nginx_set_upstream() {
     fi
 
     # Compose new upstream block with 8 spaces indentation
-    local upstream_block="    upstream $upstream_name {
+    if [ "$upstream_name" = "prefill_servers" ]; then
+        local upstream_block="    upstream $upstream_name {
+        weighted_least_active off;
+        keepalive 2048;
+        keepalive_timeout 110s;
+        keepalive_requests 20000;
+${upstream_servers}
+    }"
+    elif [ "$upstream_name" = "decode_servers" ]; then
+        local upstream_block="    upstream $upstream_name {
+        weighted_least_active on;
+        keepalive 2048;
+        keepalive_timeout 110s;
+        keepalive_requests 20000;
+${upstream_servers}
+    }"
+    else
+        local upstream_block="    upstream $upstream_name {
         #length_balance;
         ${zone_line}
         least_conn;
@@ -351,6 +368,7 @@ function nginx_set_upstream() {
         keepalive_requests 20000;
 ${upstream_servers}
     }"
+    fi
 
     # Remove existing upstream block (simple, not foolproof for nested/complex configs)
     awk -v name="$upstream_name" '
@@ -442,11 +460,13 @@ function nginx_set_load_modules() {
     local load_module_set_request_id_line="load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;"
     local load_module_prefill_line="load_module /usr/local/nginx/modules/ngx_http_prefill_module.so;"
     local load_module_upstream_length_balance_line="load_module /usr/local/nginx/modules/ngx_http_upstream_length_balance_module.so;"
+    local load_module_upstream_wla_line="load_module /usr/local/nginx/modules/ngx_http_upstream_weighted_least_active_module.so;"
 
     # Add all load module at the top
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
     sed -i "2i ${load_module_prefill_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_length_balance_line}" "$nginx_conf_file"
+    sed -i "3i ${load_module_upstream_wla_line}" "$nginx_conf_file"
 
 }
 

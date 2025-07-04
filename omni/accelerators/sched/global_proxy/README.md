@@ -4,20 +4,40 @@ Global Proxy
 
 ## Global Proxy is A Nginx Enforced Proxy for P/D Disaggregation LLM Inference 
 
-This guide describes how to build and configure the dynamic modules, which are composed of Global Proxy for NGINX, 
-#### PD Support
-* `ngx_http_prefill_module`: implements prefill decode disaggregation logic. It first generates a subrequest to a internal uri `/prefill_internal` for prefill. After subrequest is done, the main request resumes to go to upstream servers for decode.
-* `ngx_http_set_request_id_module`: inserts a `X-Request-Id` header if not exist.
-#### Load Balancing
-* `ngx_http_upstream_length_balance_module`: enables request distribution based on request length to backend servers.
-* `ngx_http_upstream_greedy_timeout_module`: enables dynamic load balancing by assigning each request to the backend server that is expected to become available the earliest.
-
-    Beyond the dynamic load balancing modules, we also provide two configurations for bucket-based scheduling:
-
-* `static_bucket`: Uses regular expression matching to route short and long requests to different upstream ports.
-* `dynamic_bucket`: Dynamically calculates bucket boundaries based on recent request lengths to group similar-length requests together.
+This guide describes how to build and configure the dynamic modules, which are composed of Global Proxy for NGINX,
 
 ![design](./img/global_proxy_design.png)
+
+### PD Support
+- **`ngx_http_prefill_module`**: implements prefill decode disaggregation logic. It first generates a subrequest to a internal uri `/prefill_internal` for prefill. After subrequest is done, the main request resumes to go to upstream servers for decode.
+- **`ngx_http_set_request_id_module`**: inserts a `X-Request-Id` header if not exist.
+
+### Load Balancing  
+#### Development Modules  
+
+We offer several custom NGINX modules as development templates to help developers quickly learn and prototype new NGINX modules.
+
+- `ngx_http_upstream_length_balance_module`: enables request distribution based on request length to backend servers.
+
+- `ngx_http_upstream_greedy_timeout_module`: enables dynamic load balancing by assigning each request to the backend server that is expected to become available the earliest.
+ 
+
+#### Bucket-Based Scheduling Configurations  
+
+In addition to dynamic modules, we offer two bucket-based scheduling strategies:
+
+- `static_bucket`: Uses regular expression matching to route short and long requests to different upstream ports.
+
+- `dynamic_bucket`: Dynamically calculates bucket boundaries based on recent request lengths to group similar-length requests together.
+
+
+#### Batch-Level Balancing in XpYd Scenarios  
+
+Through verification in **XpYd serving scenarios**, we observed that **batch-level balancing** significantly impacts system efficiency. To address this, we designed two specialized modules targeting the Prefill and Decode stages:
+
+- **`ngx_http_upstream_prefill_score_balance_module`**: Designed for the Prefill stage, this module minimizes **Time-To-First-Token (TTFT)** by scoring each peer based on the increase in estimated response time when adding a new request, and selecting the peer with the minimal score increase.
+
+- **`ngx_http_upstream_weighted_least_active_module`**: Tailored for the Decode stage, this module balances both **active request numbers** and **tokens** (including prompt and decoded tokens) across servers to improve decoding throughput and latency consistency.
 
 ---
 
@@ -29,6 +49,10 @@ wget https://openresty.org/download/openresty-1.21.4.1.tar.gz
 
 tar -xzf openresty-1.21.4.1.tar.gz
 ```
+
+**Note:** In this example, we use **OpenResty** as the NGINX source distribution for demonstration purposes, since it includes the official NGINX core along with some commonly used modules and enhancements. Alternatively, you can directly download and build from the official [NGINX source code](http://nginx.org/en/download.html) if preferred.
+
+
 ---
 ## 2. Build the Modules
 ```bash
