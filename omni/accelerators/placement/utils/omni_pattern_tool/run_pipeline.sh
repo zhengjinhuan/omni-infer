@@ -8,7 +8,7 @@
 # Default parameters
 TIMESTAMP=$(date +%Y%m%d_%H%M%S) 
 INPUT_LOG_FILES=("./dump_to_log-1.log" "./dump_to_log-2.log")  # Default to multiple log files, can be overridden
-INPUT_TXT_FOLDERS=("D:/0703_old_data/decoder")  # Default to a list of txt folders
+INPUT_TXT_FOLDERS=("./decoder1" "./decoder2")  # Default to a list of txt folders
 INPUT_MODE="txt" 
 TOPK_ID_COUNT_DIR="${TOPK_ID_COUNT_DIR:-./topk_id_count}"
 PLACEMENT_PATTERN_DIR="${PLACEMENT_PATTERN_DIR:-./placement_pattern}"
@@ -23,8 +23,8 @@ NUM_REDUNDANT_LAYERS="58"
 EXPERT_REDUNDANT_LIMIT=199
 NUM_LAYERS_TARGET_PATTERN=58
 NUM_EPS_TARGET_PATTERN=256
-DATASET_NAME="${DATASET_NAME:-$TIMESTAMP}"  # 默认使用统一时间戳
-OUTPUT_FILE_PREFIX="${OUTPUT_FILE_PREFIX:-$TIMESTAMP}"  # 默认使用统一时间戳
+DATASET_NAME="${DATASET_NAME:-$TIMESTAMP}"  # 默认使用统一时间�?
+OUTPUT_FILE_PREFIX="${OUTPUT_FILE_PREFIX:-$TIMESTAMP}"  # 默认使用统一时间�?
 PATTERN_MODE="all"
 COLLECTING_MODES="decode"
 RECORDSTEP_RANGE=""
@@ -108,12 +108,12 @@ parse_arguments() {
             --num_eps_target_pattern) NUM_EPS_TARGET_PATTERN="$2"; shift 2 ;;
             --dataset_name)
                 DATASET_NAME="$2"
-                [[ "$DATASET_NAME" == "" ]] && DATASET_NAME="$TIMESTAMP"  # 空字符串使用统一时间戳
+                [[ "$DATASET_NAME" == "" ]] && DATASET_NAME="$TIMESTAMP"  # 空字符串使用统一时间�?
                 shift 2
                 ;;
             --output_file_prefix)
                 OUTPUT_FILE_PREFIX="$2"
-                [[ "$OUTPUT_FILE_PREFIX" == "" ]] && OUTPUT_FILE_PREFIX="$TIMESTAMP"  # 空字符串使用统一时间戳
+                [[ "$OUTPUT_FILE_PREFIX" == "" ]] && OUTPUT_FILE_PREFIX="$TIMESTAMP"  # 空字符串使用统一时间�?
                 shift 2
                 ;;
             --pattern_mode) PATTERN_MODE="$2"; shift 2 ;;
@@ -270,7 +270,7 @@ run_pipeline() {
         --pattern_mode "$PATTERN_MODE" \
         --collecting_modes "$COLLECTING_MODES" \
         --recordstep_range "$RECORDSTEP_RANGE" \
-        --timestamp "$TIMESTAMP"  # 传递统一时间戳
+        --timestamp "$TIMESTAMP"  # 传递统一时间�?
 
     if [[ $? -eq 0 ]]; then
         echo "Pipeline executed successfully."
