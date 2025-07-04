@@ -190,7 +190,6 @@ def distribute_experts_to_ranks(
         if not possible_devices:
             raise RuntimeError(f"Unable to find a suitable rank for expert {expert_idx} (load {load}).")
 
-        # best_device = min(possible_devices, key=lambda dev_id: device_loads[dev_id])
         best_device = possible_devices[0]
         for i in range(1,len(possible_devices)):
             if device_loads[possible_devices[i]] < device_loads[best_device]:
@@ -201,7 +200,7 @@ def distribute_experts_to_ranks(
         device_expert_counts[best_device] += 1
 
     new_placement_matrix = placement_matrix.copy()
-    num_ranks_per_host =16
+    num_ranks_per_host = 16
     num_hosts = int(num_ranks_target_pattern / num_ranks_per_host)
     host_cur_rank = [0] * num_hosts
     for i in range(num_ranks_target_pattern):
