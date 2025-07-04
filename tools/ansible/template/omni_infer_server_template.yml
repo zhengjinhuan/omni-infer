@@ -329,8 +329,8 @@
 
     docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
 
 
   tasks:
@@ -346,14 +346,6 @@
         - run_server
         - run_proxy
         - clean_up
-
-    - name: generate container name.  
-      set_fact:
-        ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{ inventory_hostname }}"
-        ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
-        ACTUAL_DOCKER_NAME_C: "{{ ansible_env.DOCKER_NAME_C }}_{{ inventory_hostname }}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: 
         - sync_code
       
     - name: Check and delete Prefill/Decode group Docker containers.
@@ -454,23 +446,23 @@
       tags: sync_code
 
     - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_P}:/workspace/"
+      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_P}:{{ ansible_env.CODE_PATH }}/"
       environment:
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
       when: "'P' in group_names"
       tags: sync_code
 
     - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_D}:/workspace/"
+      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_D}:{{ ansible_env.CODE_PATH }}/"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
       when: "'D' in group_names"
       tags: sync_code
 
     - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_C rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_C}:/workspace/"
+      command: /bin/bash -c "docker exec $DOCKER_NAME_C rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_C}:{{ ansible_env.CODE_PATH }}/"
       environment:
-        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_C }}"
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
       when: "'C' in group_names"
       tags: sync_code
       
@@ -887,6 +879,8 @@
       ansible.builtin.file:
         path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
         state: directory
+      when: "'P' in group_names or 'D' in group_names"
+      delegate_to: localhost
       tags: 
         - fetch_log
 
@@ -895,6 +889,7 @@
         mode: pull
         src: "{{ ansible_env.LOG_PATH }}"
         dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+      when: "'P' in group_names or 'D' in group_names"
       delegate_to: localhost
       tags: 
         - fetch_log
