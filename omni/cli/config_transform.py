@@ -313,7 +313,7 @@ def transform_deployment_config(config_path):
             return
 
         # update the omni_infer_server.yml
-        update_yml_file(logger, playbookArges, f"{input_data['services']['local_code_path']}/omniinfer/omni_infer_server.yml")
+        update_yml_file(logger, playbookArges, f"{input_data['services']['local_code_path']}/omniinfer/omni/cli/omni_infer_server.yml")
         
         # Write to output file
         with open(f'{os.getcwd()}/omni_infer_inventory.yml', 'w') as f:

@@ -64,7 +64,7 @@ deployment:
 services:
   local_code_path: "/data/local_code_path"
 
-  model_path: "/data/models/DeepSeek-R1-w8a8"
+  model_path: "/data/models/DeepSeek-R1-w8a8-fusion"
 
   prefill:
     max_model_len: "30000"
