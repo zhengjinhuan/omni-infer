@@ -280,12 +280,12 @@ function nginx_set_http_config() {
     local tcp_no_push_on_line="tcp_nopush on;"
     local tcp_no_delay_on_line="tcp_nodelay	on;"
     local send_file_max_chunk_line="sendfile_max_chunk 512k;"
-    local keep_alive_requests_line="keepalive_requests 2000;"
+    local keep_alive_requests_line="keepalive_requests 20000;"
     local client_header_buffer_size_line="client_header_buffer_size 512k;"
     local large_client_header_buffers_line="large_client_header_buffers 4 512k;"
     local client_body_buffer_size_line="client_body_buffer_size 128K;"
     local client_max_body_size_line="client_max_body_size 100m;"
-    local proxy_read_timeout_line="proxy_read_timeout 600s;"
+    local proxy_read_timeout_line="proxy_read_timeout 14400s;"
     local subrequest_output_buffer_size_line="subrequest_output_buffer_size 1m;"
 
     if [[ ! -f "$nginx_conf_file" ]]; then
@@ -327,13 +327,18 @@ function nginx_set_upstream() {
     # Build server lines with 8 spaces indentation
     local upstream_servers=""
     IFS=',' read -ra ADDR <<< "$servers_list"
+    local upstream_count="${#ADDR[@]}"
     for srv in "${ADDR[@]}"; do
         upstream_servers+="        server $srv max_fails=3 fail_timeout=10s;\n"
     done
+    echo "Number of upstream servers: $upstream_count"
 
     local zone_line=""
     if [ "$use_shm_zone" = true ]; then
-        zone_line="zone $upstream_name 128k;"
+        # Each 128k can hold up to 64 servers, round up
+        local blocks=$(( (upstream_count + 63) / 64 ))
+        local zone_size=$(( blocks * 128 ))
+        zone_line="zone $upstream_name ${zone_size}k;"
     fi
 
     # Compose new upstream block with 8 spaces indentation
@@ -341,7 +346,9 @@ function nginx_set_upstream() {
         #length_balance;
         ${zone_line}
         least_conn;
-        keepalive 128;
+        keepalive 2048;
+        keepalive_timeout 110s;
+        keepalive_requests 20000;
 ${upstream_servers}
     }"
 
@@ -510,6 +517,7 @@ prefill_servers_list=""
 decode_servers_list=""
 stop=false
 rollback=false
+dry_run=false
 log_file=""
 log_level=""
 
@@ -526,6 +534,7 @@ print_help() {
     echo "  --decode-servers-list <list>               Comma-separated backend servers for decode (required to start proxy)"
     echo "  --log-file <path>,      -l <path>          Log file path"
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
+    echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
     echo "  --help,                -h                  Show this help message"
@@ -536,6 +545,11 @@ print_help() {
     echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
     echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
     echo "       --log-file /var/log/proxy.log --log-level info"
+    echo ""
+    echo "  Dry run (preview configuration):"
+    echo "    $0 --dry-run --listen-port 8080 \\"
+    echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
+    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002"
     echo ""
     echo "  Stop global proxy:"
     echo "    $0 -S"
@@ -579,6 +593,10 @@ while [[ $# -gt 0 ]]; do
             log_level="$2"
             shift 2
             ;;
+        --dry-run|-d)
+            dry_run=true
+            shift 1
+            ;;
         --stop|-S)
             stop=true
             shift 1
@@ -614,6 +632,10 @@ fi
 
 function do_start() {
     nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"
+    if [ "$dry_run" = true ]; then
+        echo "Dry run complete. Configuration generated at $nginx_conf_file."
+        exit 0
+    fi
     if [ "$IN_CONTAINER" = false ]; then
         os_configuration
     fi

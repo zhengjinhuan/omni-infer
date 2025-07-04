@@ -462,7 +462,7 @@
     - name: Copy the file from the host machine to the container
       command: /bin/bash -c "docker exec $DOCKER_NAME_C rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_C}:{{ ansible_env.CODE_PATH }}/"
       environment:
-        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_C }}"
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
       when: "'C' in group_names"
       tags: sync_code
       
@@ -879,6 +879,8 @@
       ansible.builtin.file:
         path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
         state: directory
+      when: "'P' in group_names or 'D' in group_names"
+      delegate_to: localhost
       tags: 
         - fetch_log
 
@@ -887,6 +889,7 @@
         mode: pull
         src: "{{ ansible_env.LOG_PATH }}"
         dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+      when: "'P' in group_names or 'D' in group_names"
       delegate_to: localhost
       tags: 
         - fetch_log

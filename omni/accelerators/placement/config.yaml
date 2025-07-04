@@ -21,8 +21,6 @@ pattern_path: "../patterns/base_patterns/DSV3_baseline_16_devices_58_MoE_Layers.
 
 #define max_layer_num as a constant 58 (for deepseek moe layer num 58)
 max_moe_layer_num: 58
-max_batch_size: 256
-max_top_k: 8
 
 # enable_dump: True
 # dump_dir: "/home/profiling/dump_data"
