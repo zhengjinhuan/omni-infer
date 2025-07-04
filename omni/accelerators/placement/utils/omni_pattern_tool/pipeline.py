@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+#!/usr/bin/env python
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025. All rights reserved.
 
 import os
 import argparse
@@ -18,57 +19,86 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
+def parse_recordstep_range(recordstep_range: str) -> tuple:
+    """Parse recordstep_range into start and end integers."""
+    if not recordstep_range:
+        return None
+    try:
+        start, end = map(int, recordstep_range.split(':'))
+        if start < 0 or end < start:
+            raise ValueError
+        return (start, end)
+    except ValueError:
+        raise ValueError("recordstep_range must be in format 'start:end' where start and end are non-negative integers and start <= end.")
+
 def main():
     parser = argparse.ArgumentParser(description="Pipeline for processing expert deployment and load analysis.")
     parser.add_argument('--input_log_files', type=str, nargs='+', default=['./activation_data.log'],
                         help='List of paths to input log files (e.g., activation_data.log), used when input_mode="log"')
-    parser.add_argument('--input_txt_folder', type=str, default=None,
-                       help='Path to folder containing .txt files, used when input_mode="txt"')
+    parser.add_argument('--input_txt_folders', type=str, nargs='+', default=['./decode'],
+                        help='List of folders containing .txt files, used when input_mode="txt"')
     parser.add_argument('--input_mode', type=str, default='txt', choices=['log', 'txt'],
-                       help='Input mode: "log" for log files, "txt" for text files')
+                        help='Input mode: "log" for log files, "txt" for text files')
     parser.add_argument('--topk_id_count_dir', type=str, default='./topk_id_count',
-                       help='Directory for output CSV files')
+                        help='Directory for output CSV files')
     parser.add_argument('--placement_pattern_dir', type=str, default='./placement_pattern',
-                       help='Directory for placement pattern files')
+                        help='Directory for placement pattern files')
     parser.add_argument('--placement_pattern_view_dir', type=str, default='./placement_pattern_view',
-                       help='Directory for placement pattern visualization files')
+                        help='Directory for placement pattern visualization files')
     parser.add_argument('--placement_pattern_analysis_dir', type=str, default='./placement_pattern_analysis',
-                       help='Directory for load analysis plots')
+                        help='Directory for load analysis plots')
     parser.add_argument('--output_csv', type=str, default=None,
-                       help='Name of the output CSV file in topk_id_count_dir (default: topk_ids_count_<timestamp>_<collecting_modes>.csv)')
+                        help='Name of the output CSV file in topk_id_count_dir (default: topk_ids_count_<timestamp>_<collecting_modes>_step<start>to<end>.csv)')
     parser.add_argument('--num_layers', type=int, default=58,
-                       help='Number of layers')
+                        help='Number of layers')
     parser.add_argument('--num_ranks_of_collecting_data', type=int, required=True,
-                       help='Number of rank IDs for data collection')
+                        help='Number of rank IDs for data collection')
     parser.add_argument('--num_positions_of_routed_experts', type=int, default=256,
-                       help='Number of routed expert positions')
+                        help='Number of routed expert positions')
     parser.add_argument('--num_ranks_target_pattern', type=int, required=True,
-                       help='Number of ranks for placement pattern')
+                        help='Number of ranks for placement pattern')
     parser.add_argument('--num_redundant_layers', type=int, nargs='*', default=[0, 10, 20, 30, 58],
-                       help='List of redundant or rearrange layers for batch processing')
+                        help='List of redundant or rearrange layers for batch processing')
     parser.add_argument('--expert_redundant_limit', type=int, default=11,
-                       help='Maximum additional deployments per expert')
+                        help='Maximum additional deployments per expert')
     parser.add_argument('--num_layers_target_pattern', type=int, default=58,
-                       help='Number of layers for placement pattern')
+                        help='Number of layers for target pattern')
     parser.add_argument('--num_eps_target_pattern', type=int, default=256,
-                       help='Number of experts per layer')
+                        help='Number of experts per layer')
     parser.add_argument('--dataset_name', type=str, default='sharegpt',
-                       help='Dataset name for plotting')
+                        help='Dataset name for plotting')
     parser.add_argument('--output_file_prefix', type=str, default='DSV3_0418_share_gpt_RedFullLays',
-                       help='Prefix for output placement pattern filenames')
+                        help='Prefix for output placement pattern filenames')
     parser.add_argument('--pattern_mode', type=str, default='all',
                         choices=['rearrange', 'redundant', 'all'],
                         help='Pattern generation mode: rearrange, redundant, or all (both modes)')
     parser.add_argument('--collecting_modes', type=str, default='all',
-                       choices=['prefill', 'decode', 'all'],
-                       help='Data collection mode: prefill, decode, or all')
+                        choices=['prefill', 'decode', 'all'],
+                        help='Data collection mode: prefill, decode, or all')
+    parser.add_argument('--recordstep_range', type=str, default=None,
+                        help='Range of recordstep or step values to process (format: start:end, e.g., 400:500)')
+    parser.add_argument('--timestamp', type=str, default=None,
+                        help='Unified timestamp for file naming (format: YYYYMMDD_HHMMSS)')
 
     args = parser.parse_args()
-    
+    if args.recordstep_range == "":
+        args.recordstep_range = None
+
     pattern_modes = ['rearrange', 'redundant'] if args.pattern_mode == 'all' else [args.pattern_mode]
-    
-    # Generate timestamp for log file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # 使用传递的 timestamp，如果未提供则生成新的
+    timestamp = args.timestamp if args.timestamp else datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # 如果 dataset_name 或 output_file_prefix 为空字符串，使用统一时间戳
+    if args.dataset_name == "":
+        args.dataset_name = timestamp
+    if args.output_file_prefix == "":
+        args.output_file_prefix = timestamp
+
+
+    # Parse recordstep_range for suffix
+    step_range = parse_recordstep_range(args.recordstep_range)
+    step_suffix = f"_step{step_range[0]}to{step_range[1]}" if step_range else ""
 
     for dir_path in [args.topk_id_count_dir, args.placement_pattern_dir,
                      args.placement_pattern_view_dir, args.placement_pattern_analysis_dir]:
@@ -86,21 +116,21 @@ def main():
         for log_file in input_log_files:
             if not os.path.exists(log_file):
                 raise ValueError(f"日志文件 {log_file} 不存在")
-        input_txt_folder = None
+        input_txt_folders = None
     else:  # input_mode == 'txt'
-        if not args.input_txt_folder or not os.path.isdir(args.input_txt_folder):
-            raise ValueError("当 input_mode='txt' 时，input_txt_folder 必须为有效的文件夹路径")
-        input_txt_folder = os.path.normpath(args.input_txt_folder)
+        input_txt_folders = [os.path.normpath(f) for f in args.input_txt_folders]
+        for folder in input_txt_folders:
+            if not os.path.isdir(folder):
+                raise ValueError(f"文本文件夹 {folder} 不是有效的文件夹路径")
         input_log_files = None
     
     if not args.output_csv:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.output_csv = f"topk_ids_count_{timestamp}_{args.collecting_modes}.csv"
+        args.output_csv = f"topk_ids_count_{timestamp}_{args.collecting_modes}{step_suffix}.csv"
 
     print(f"Step 1: Generating layer-EP count matrix to {args.topk_id_count_dir}")
     generate_csv(
         input_log_files=input_log_files,
-        input_txt_folder=input_txt_folder,
+        input_txt_folders=input_txt_folders,
         input_mode=args.input_mode,
         output_dir=os.path.normpath(args.topk_id_count_dir),
         output_csv=args.output_csv,
@@ -108,18 +138,18 @@ def main():
         num_ranks_of_collecting_data=args.num_ranks_of_collecting_data,
         num_positions_of_routed_experts=args.num_positions_of_routed_experts,
         collecting_modes=args.collecting_modes,
-        log_timestamp=timestamp  
+        log_timestamp=timestamp,
+        recordstep_range=args.recordstep_range
     )
     
-    output_csv_path = Path(args.topk_id_count_dir) / (args.output_csv if args.output_csv else
-                                                     f"topk_ids_count_{timestamp}_{args.collecting_modes}.csv")
+    output_csv_path = Path(args.topk_id_count_dir) / args.output_csv
     output_csv_path = str(output_csv_path)
 
     pp_path_lis = []
     ppname_lis = ['Baseline']
     for num_red_layers in args.num_redundant_layers:
         for mode in pattern_modes:
-            mode_suffix = f"_{args.collecting_modes}"
+            mode_suffix = f"_{args.collecting_modes}{step_suffix}"
             is_redundant = (mode == 'redundant')
             output_file = (f"placement_pattern_{timestamp}_{num_red_layers}_{mode}_layers_"
                            f"{args.num_layers_target_pattern}_layers_{args.num_ranks_target_pattern}_ranks_"
@@ -143,7 +173,8 @@ def main():
                 output_file=output_file,
                 is_redundant=is_redundant,
                 collecting_modes=args.collecting_modes,
-                log_timestamp=timestamp  
+                log_timestamp=timestamp,
+                recordstep_range=args.recordstep_range
             )
 
     for pp_path, ppname in zip(pp_path_lis, ppname_lis[1:]):
@@ -165,7 +196,7 @@ def main():
         ppname_lis=ppname_lis,
         fig_save_path=os.path.normpath(args.placement_pattern_analysis_dir),
         num_ranks=args.num_ranks_target_pattern,
-        dataset_name=args.dataset_name,
+        dataset_name=f"{args.num_ranks_target_pattern}_Ranks_{args.dataset_name}{step_suffix}",
         log_timestamp=timestamp
     )
     

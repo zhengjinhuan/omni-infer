@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+#!/usr/bin/env python
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025
 
 import os
 import numpy as np
@@ -20,7 +21,7 @@ def allocate_expert_deployments_improved(
     loads: Union[List[float], np.ndarray],
     expert_redundant_limit: int,
     budget_limit: int,
-    load_normalization: str = None,
+    load_normalization: str = 'log',
     is_redundant: bool = False
 ) -> List[int]:
     """
@@ -112,7 +113,8 @@ def distribute_experts_sequentially(
 def distribute_experts_to_ranks(
     initial_loads: Union[List[float], np.ndarray],
     deployments: List[int],
-    num_ranks_target_pattern: int
+    num_ranks_target_pattern: int,
+    layer_idx: int = 0
 ) -> Tuple[float, np.ndarray]:
     """
     Distribute experts to ranks based on loads and deployments.
@@ -175,13 +177,17 @@ def distribute_experts_to_ranks(
     device_loads = np.zeros(num_ranks_target_pattern, dtype=float)
     placement_matrix = np.zeros((num_ranks_target_pattern, num_experts), dtype=int)
     device_expert_counts = np.zeros(num_ranks_target_pattern, dtype=int)
+    
+    start_rank = 0
+    logger.info(f"Layer {layer_idx}: Starting expert placement from rank {start_rank}")
 
     for load, expert_idx in expert_instances:
         best_device = -1
         min_load_for_candidate = float('inf')
 
         possible_devices = []
-        for rank_id in range(num_ranks_target_pattern):
+        for i in range(num_ranks_target_pattern):
+            rank_id = (start_rank + i) % num_ranks_target_pattern
             can_place_expert = (placement_matrix[rank_id, expert_idx] == 0)
             has_space = (device_expert_counts[rank_id] < experts_per_rank)
             if can_place_expert and has_space:
@@ -190,9 +196,10 @@ def distribute_experts_to_ranks(
         if not possible_devices:
             raise RuntimeError(f"Unable to find a suitable rank for expert {expert_idx} (load {load}).")
 
+        # best_device = min(possible_devices, key=lambda dev_id: device_loads[dev_id])
         best_device = possible_devices[0]
-        for i in range(1,len(possible_devices)):
-            if device_loads[possible_devices[i]] < device_loads[best_device]:
+        for i in range(1, len(possible_devices)) :
+            if (device_loads[possible_devices[i]] < device_loads[best_device]) :
                 best_device = possible_devices[i]
 
         placement_matrix[best_device, expert_idx] = 1
@@ -201,14 +208,13 @@ def distribute_experts_to_ranks(
 
     new_placement_matrix = placement_matrix.copy()
     num_ranks_per_host = 16
-    num_hosts = int(num_ranks_target_pattern / num_ranks_per_host)
+    num_hosts = int((num_ranks_target_pattern + 1) / num_ranks_per_host)
     host_cur_rank = [0] * num_hosts
-    for i in range(num_ranks_target_pattern):
+    for i in range(num_ranks_target_pattern) :
         new_host_id = i % num_hosts
         new_placement_matrix[new_host_id * num_ranks_per_host + host_cur_rank[new_host_id]] = placement_matrix[i]
         host_cur_rank[new_host_id] += 1
     placement_matrix = new_placement_matrix
-        
     if not np.all(device_expert_counts == experts_per_rank):
         logger.warning(f"Expert counts per rank after allocation do not all equal the expected value {experts_per_rank}.")
         logger.warning(f"Actual counts: {device_expert_counts}")
@@ -227,7 +233,8 @@ def process_expert_deployments(
     output_file: str = None,
     is_redundant: bool = False,
     collecting_modes: str = 'all',
-    log_timestamp: Optional[str] = None
+    log_timestamp: Optional[str] = None,
+    recordstep_range: Optional[str] = None
 ) -> np.ndarray:
     """
     Process expert deployments and generate a placement pattern, supporting both rearrange-only and redundant modes.
@@ -244,13 +251,14 @@ def process_expert_deployments(
         is_redundant: If True, allow redundant deployments; if False, rearrange only.
         collecting_modes: Data collection mode ('prefill', 'decode', or 'all') for filename.
         log_timestamp: Timestamp for log file naming (optional).
+        recordstep_range: Range of recordstep or step values (format: start:end, optional).
 
     Returns:
         Placement pattern as a numpy array.
     """
     # Set up logging
     if log_timestamp is None:
-        log_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        raise ValueError("log_timestamp must be provided.")
     log_file = f"pattern_generation_pipeline_{log_timestamp}.log"
     logging.basicConfig(
         level=logging.INFO,
@@ -309,7 +317,8 @@ def process_expert_deployments(
             max_load, placement_matrix = distribute_experts_to_ranks(
                 initial_loads=ep_activation_counts[layer_idx_moe],
                 deployments=expert_allocation_count,
-                num_ranks_target_pattern=num_ranks_target_pattern
+                num_ranks_target_pattern=num_ranks_target_pattern,
+                layer_idx=layer_idx_moe
             )
             logger.info(f"Layer {layer_idx_moe}: Optimized allocation, number of deployed experts = {sum(expert_allocation_count)}")
         else:
@@ -326,10 +335,10 @@ def process_expert_deployments(
         logger.info(f"Layer {layer_idx}: Total deployments = {total_deployments}")
       
     if output_file is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        step_suffix = f"_step{recordstep_range.split(':')[0]}to{recordstep_range.split(':')[1]}" if recordstep_range else ""
         mode = 'redundant' if is_redundant else 'rearrange'
-        suffix = f'epmaxdeploy_{expert_redundant_limit+1}_{collecting_modes}' if is_redundant else collecting_modes
-        output_file = (f"placement_pattern_{timestamp}_{num_special_layers}_{mode}_layers_"
+        suffix = f'epmaxdeploy_{expert_redundant_limit+1}_{collecting_modes}{step_suffix}' if is_redundant else f'{collecting_modes}{step_suffix}'
+        output_file = (f"placement_pattern_{log_timestamp}_{num_special_layers}_{mode}_layers_"
                     f"{num_layers_target_pattern}_layers_{num_ranks_target_pattern}_ranks_{suffix}.npy")
     
     output_path = os.path.join(output_dir, output_file)

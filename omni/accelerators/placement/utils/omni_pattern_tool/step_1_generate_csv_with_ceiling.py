@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+#!/usr/bin/env python
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025
 
 import os
 import csv
@@ -21,18 +22,30 @@ except ImportError:
 
 # Precompile regex pattern for log files
 LOG_PATTERN = re.compile(
-    r'\[dump activation\] (prefill|decode) step \d+ in rank (\d+) for layer (\d+) get (\d+) experts data: ([\d\s]+)'
+    r'\[dump activation\] (prefill|decode) step (\d+) in rank (\d+) for layer (\d+) get (\d+) experts data: ([\d\s]+)'
 )
-logger = None
+
+def parse_recordstep_range(recordstep_range: Optional[str]) -> Optional[Tuple[int, int]]:
+    """Parse recordstep_range parameter (format: start:end)."""
+    if recordstep_range is None or recordstep_range == "":
+        return None
+    try:
+        start, end = map(int, recordstep_range.split(':'))
+        if start < 0 or end < start:
+            raise ValueError
+        return start, end
+    except ValueError:
+        raise ValueError("recordstep_range must be in format 'start:end' where start and end are non-negative integers and start <= end.")
 
 def validate_inputs(
     input_log_files: Optional[List[str]],
-    input_txt_folder: Optional[str],
+    input_txt_folders: Optional[List[str]], 
     input_mode: str,
     collecting_modes: str,
     num_ranks_of_collecting_data: Optional[int],
     num_positions_of_routed_experts: int,
-    num_layers: int
+    num_layers: int,
+    recordstep_range: Optional[str]
 ) -> None:
     """Validate input parameters."""
     if input_mode not in ['log', 'txt']:
@@ -47,8 +60,11 @@ def validate_inputs(
             if not log_file.endswith('.log'):
                 logger.warning(f"Input file {log_file} does not have a .log extension, please verify the file type")
     else:
-        if not input_txt_folder or not os.path.isdir(input_txt_folder):
-            raise ValueError("When input_mode='txt', input_txt_folder must be a valid directory path.")
+        if not isinstance(input_txt_folders, list) or not input_txt_folders:
+            raise ValueError("When input_mode='txt', input_txt_folders must be a non-empty list of directory paths.")
+        for folder in input_txt_folders:
+            if not os.path.isdir(folder):
+                raise ValueError(f"Text folder {folder} is not a valid directory.")
     
     if collecting_modes not in ['prefill', 'decode', 'all']:
         raise ValueError("collecting_modes must be 'prefill', 'decode', or 'all'.")
@@ -65,6 +81,8 @@ def validate_inputs(
         )
     if num_layers <= 0:
         raise ValueError("num_layers must be a positive integer.")
+    
+    parse_recordstep_range(recordstep_range)  # Validate recordstep_range format
 
 def process_log_line(
     line: str,
@@ -73,60 +91,66 @@ def process_log_line(
     num_layers: int,
     numbers_per_rank: int,
     line_count: int,
-    file_name: str
+    file_name: str,
+    step_range: Optional[Tuple[int, int]]
 ) -> Optional[Tuple[int, int, List[int]]]:
     """Process a single log line and extract relevant data."""
     line = line.strip()
     if not line:
-        return None, None, None
+        return None
 
     match = LOG_PATTERN.match(line)
     if not match:
-        return None, None, None
+        return None
 
-    mode, rank_id, layer_id, expert_count, expert_data = match.groups()
+    mode, step, rank_id, layer_id, expert_count, expert_data = match.groups()
     if mode not in valid_modes:
-        return None, None, None
+        return None
 
     try:
+        step = int(step)
         rank_id = int(rank_id)
         layer_id = int(layer_id)
         expert_count = int(expert_count)
     except ValueError:
-        logger.warning(f"Unable to parse rank_id, layer_id, or expert_count, file {file_name} line {line_count}: {line}")
-        return None, None, None
+        logger.warning(f"Unable to parse step, rank_id, layer_id, or expert_count, file {file_name} line {line_count}: {line}")
+        return None
+
+    # Filter by step range
+    if step_range and not (step_range[0] <= step <= step_range[1]):
+        return None
 
     if not (0 <= rank_id < num_ranks_of_collecting_data):
         logger.warning(f"rank_id {rank_id} out of range [0, {num_ranks_of_collecting_data-1}], file {file_name} line {line_count}: {line}")
-        return None, None, None
+        return None
 
     if not (0 <= layer_id < num_layers):
         logger.warning(f"layer_id {layer_id} out of range [0, {num_layers-1}], file {file_name} line {line_count}: {line}")
-        return None, None, None
+        return None
 
     try:
         expert_values = [int(x) for x in expert_data.strip().split('\t') if x.strip()]
     except ValueError:
         logger.warning(f"Invalid expert data format '{expert_data}', file {file_name} line {line_count}: {line}")
-        return None, None, None
+        return None
 
     if len(expert_values) != expert_count:
         logger.warning(f"Expert count {expert_count} does not match data count {len(expert_values)}, file {file_name} line {line_count}: {line}")
-        return None, None, None
+        return None
 
     if expert_count != numbers_per_rank:
         logger.warning(
             f"Expert count {expert_count} does not equal the number of experts per rank {numbers_per_rank}, "
             f"file {file_name} line {line_count}: {line}"
         )
-        return None, None, None
+        return None
 
     try:
         values = [math.ceil(float(num) / 128) for num in expert_values]
         return rank_id, layer_id, values
     except ValueError as e:
         logger.warning(f"Unable to process expert data '{expert_data}', file {file_name} line {line_count}, error: {e}")
-        return None, None, None
+        return None
 
 def process_log_file(
     log_file: str,
@@ -134,7 +158,8 @@ def process_log_file(
     num_ranks_of_collecting_data: int,
     num_layers: int,
     numbers_per_rank: int,
-    csv_data: np.ndarray
+    csv_data: np.ndarray,
+    step_range: Optional[Tuple[int, int]]
 ) -> int:
     """Process a single log file and update csv_data."""
     processed_lines = 0
@@ -148,7 +173,7 @@ def process_log_file(
 
                     result = process_log_line(
                         line, valid_modes, num_ranks_of_collecting_data, num_layers,
-                        numbers_per_rank, line_count, log_file
+                        numbers_per_rank, line_count, log_file, step_range
                     )
                     if result:
                         rank_id, layer_id, values = result
@@ -198,7 +223,7 @@ def process_txt_file(
 
 def generate_csv(
     input_log_files: Optional[List[str]] = None,
-    input_txt_folder: Optional[str] = None,
+    input_txt_folders: Optional[List[str]] = None,
     input_mode: str = 'log',
     output_dir: str = './topk_id_count',
     collecting_modes: str = 'all',
@@ -206,22 +231,24 @@ def generate_csv(
     num_layers: int = 58,
     num_ranks_of_collecting_data: Optional[int] = None,
     num_positions_of_routed_experts: int = 256,
-    log_timestamp: Optional[str] = None
+    log_timestamp: Optional[str] = None,
+    recordstep_range: Optional[str] = None
 ) -> str:
     """
     Extract activation data from input files and generate a summarized CSV file.
 
     Parameters:
         input_log_files: List of log file paths (.log files, used when input_mode='log')
-        input_txt_folder: Path to folder containing .txt files (used when input_mode='txt')
+        input_txt_folders: List of folders containing .txt files (used when input_mode='txt')
         input_mode: Input mode, 'log' or 'txt', default 'log'
         output_dir: Directory for output CSV file
         collecting_modes: Data collection mode, 'prefill', 'decode', or 'all'
-        output_csv: Output CSV filename (optional, default: topk_ids_count_<timestamp>_<collecting_modes>.csv)
+        output_csv: Output CSV filename (optional, default: topk_ids_count_<timestamp>_<collecting_modes>_step<start>to<end>.csv if recordstep_range is set)
         num_layers: Number of layers
         num_ranks_of_collecting_data: Number of ranks for data collection
         num_positions_of_routed_experts: Number of routed expert positions
         log_timestamp: Timestamp for log file naming (optional)
+        recordstep_range: Range of recordstep or step values to process (format: start:end, optional)
 
     Returns:
         Path to the generated CSV file
@@ -242,13 +269,22 @@ def generate_csv(
 
     # Validate inputs
     validate_inputs(
-        input_log_files, input_txt_folder, input_mode, collecting_modes,
-        num_ranks_of_collecting_data, num_positions_of_routed_experts, num_layers
+        input_log_files, input_txt_folders, input_mode, collecting_modes,
+        num_ranks_of_collecting_data, num_positions_of_routed_experts, num_layers,
+        recordstep_range
     )
+
+    # Parse recordstep_range
+    step_range = parse_recordstep_range(recordstep_range)
+    if step_range:
+        logger.info(f"Processing steps in range: {step_range[0]} to {step_range[1]}")
+    else:
+        logger.info("No recordstep_range specified, processing all steps.")
 
     # Set default output_csv
     if not output_csv:
-        output_csv = f"topk_ids_count_{log_timestamp}_{collecting_modes}.csv"
+        step_suffix = f"_step{step_range[0]}to{step_range[1]}" if step_range else ""
+        output_csv = f"topk_ids_count_{log_timestamp}_{collecting_modes}{step_suffix}.csv"
 
     # Ensure output directory exists
     output_dir = os.path.normpath(output_dir)
@@ -265,21 +301,42 @@ def generate_csv(
     csv_data = np.zeros((num_layers, num_ranks_of_collecting_data * numbers_per_rank), dtype=int)
 
     total_processed_lines = 0
+    total_processed_files = 0
 
     if input_mode == 'log':
         valid_modes = {'prefill', 'decode'} if collecting_modes == 'all' else {collecting_modes}
         for log_file in input_log_files:
-            total_processed_lines += process_log_file(
+            processed_lines = process_log_file(
                 log_file, valid_modes, num_ranks_of_collecting_data, num_layers,
-                numbers_per_rank, csv_data
+                numbers_per_rank, csv_data, step_range
             )
+            total_processed_lines += processed_lines
+            total_processed_files += 1
     else:
-        txt_files = glob.glob(os.path.join(input_txt_folder, "activation_counts_recordstep_*.txt"))
-        if not txt_files:
-            raise ValueError(f"No matching .txt files found in folder {input_txt_folder} "
-                             f"(expected format: activation_counts_recordstep_*_rank_<rank_id>.txt)")
+        filtered_txt_files = []
+        for txt_folder in input_txt_folders:
+            txt_files = glob.glob(os.path.join(txt_folder, "activation_counts_recordstep_*.txt"))
+            if not txt_files:
+                logger.warning(f"No matching .txt files found in folder {txt_folder} "
+                               f"(expected format: activation_counts_recordstep_*_rank_<rank_id>.txt)")
+                continue
 
-        for txt_file in txt_files:
+            for txt_file in txt_files:
+                filename = os.path.basename(txt_file)
+                try:
+                    recordstep_str = filename.split('recordstep_')[1].split('_rank_')[0]
+                    recordstep = int(recordstep_str)
+                    if step_range is None or (step_range[0] <= recordstep <= step_range[1]):
+                        filtered_txt_files.append(txt_file)
+                except (IndexError, ValueError):
+                    logger.warning(f"Skipping file with unexpected filename format: {filename}")
+                    continue
+
+        if not filtered_txt_files:
+            logger.error(f"No .txt files across folders {input_txt_folders} match the recordstep range {step_range}")
+            raise ValueError(f"No valid .txt files found in folders {input_txt_folders}, check recordstep range or folder contents")
+
+        for txt_file in filtered_txt_files:
             filename = os.path.basename(txt_file)
             try:
                 rank_id = int(filename.split('_rank_')[1].split('.txt')[0])
@@ -291,10 +348,14 @@ def generate_csv(
                 logger.warning(f"Skipping rank_id {rank_id}, not in range [0, {num_ranks_of_collecting_data-1}]")
                 continue
 
-            total_processed_lines += process_txt_file(txt_file, num_layers, numbers_per_rank, rank_id, csv_data)
+            processed_lines = process_txt_file(txt_file, num_layers, numbers_per_rank, rank_id, csv_data)
+            total_processed_lines += processed_lines
+            total_processed_files += 1
+
+        logger.info(f"Processed {total_processed_files} .txt files across {len(input_txt_folders)} folders")
 
     if total_processed_lines == 0:
-        raise ValueError("No valid data extracted from any input files, please check input content or parameter configuration")
+        raise ValueError("No valid data extracted from any input files, please check input content, parameter configuration, or recordstep range")
 
     # Generate CSV
     try:
@@ -306,9 +367,8 @@ def generate_csv(
                 row = [f'layer_{layer_idx}'] + csv_data[layer_idx].tolist()
                 writer.writerow(row)
         logger.info(f"CSV file generated successfully: {output_csv_path}")
-        logger.info(f"Processed {len(input_log_files if input_mode == 'log' else txt_files)} input files, "
-                    f"total valid data lines: {total_processed_lines}")
-        print(f"CSV file generated successfully: {output_csv_path}")  # Only print CSV path to terminal
+        logger.info(f"Processed {total_processed_files} input files, total valid data lines: {total_processed_lines}")
+        print(f"CSV file generated successfully: {output_csv_path}")
     except Exception as e:
         logger.error(f"Unable to write CSV file {output_csv_path}, error: {e}")
         raise
@@ -316,7 +376,7 @@ def generate_csv(
     return output_csv_path
 
 if __name__ == "__main__":
-    # Example: Log file mode
+    # Example: Log file mode with step range
     generate_csv(
         input_log_files=["./dump_to_log-1.log", "./dump_to_log-2.log"],
         input_mode='log',
@@ -325,16 +385,18 @@ if __name__ == "__main__":
         output_csv="longbench_3.5k_decode.csv",
         num_layers=58,
         num_ranks_of_collecting_data=64,
-        num_positions_of_routed_experts=256
+        num_positions_of_routed_experts=256,
+        recordstep_range="400:500"
     )
-    # Example: Text file mode
+    # Example: Text file mode with multiple folders merged into one CSV
     generate_csv(
-        input_txt_folder="./activation_datas/longbench_1k_32die_0428/1step_425",
+        input_txt_folders=["./decode", "./activation_datas/longbench_1k_32die_0428/1step_425"],
         input_mode='txt',
         output_dir="./topk_id_count",
         collecting_modes="decode",
-        output_csv="longbench_1k_32die_0428_recordstep_425.csv",
+        output_csv="longbench_combined.csv",
         num_layers=58,
         num_ranks_of_collecting_data=32,
-        num_positions_of_routed_experts=256
+        num_positions_of_routed_experts=256,
+        recordstep_range="400:500"
     )
