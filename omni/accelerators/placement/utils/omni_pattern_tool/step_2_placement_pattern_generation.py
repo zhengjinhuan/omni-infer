@@ -21,7 +21,7 @@ def allocate_expert_deployments_improved(
     loads: Union[List[float], np.ndarray],
     expert_redundant_limit: int,
     budget_limit: int,
-    load_normalization: str = 'log',
+    load_normalization: str = None,
     is_redundant: bool = False
 ) -> List[int]:
     """
@@ -43,7 +43,7 @@ def allocate_expert_deployments_improved(
     loads_list = loads.tolist() if is_numpy else list(loads)
     
     if load_normalization == 'log':
-        normalized_loads = loads_list
+        normalized_loads = [np.log1p(load) for load in loads_list]
     else:
         normalized_loads = loads_list
 
@@ -196,7 +196,6 @@ def distribute_experts_to_ranks(
         if not possible_devices:
             raise RuntimeError(f"Unable to find a suitable rank for expert {expert_idx} (load {load}).")
 
-        # best_device = min(possible_devices, key=lambda dev_id: device_loads[dev_id])
         best_device = possible_devices[0]
         for i in range(1, len(possible_devices)) :
             if (device_loads[possible_devices[i]] < device_loads[best_device]) :
