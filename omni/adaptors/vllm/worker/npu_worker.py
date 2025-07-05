@@ -121,7 +121,6 @@ class NPUWorker(WorkerBase):
         self.profiler = self._init_profiler()
 
         torch.npu.get_device_properties = get_device_properties
-        torch.cuda = torch.npu
 
         vllm_config.model_config.disable_cascade_attn = True
         self._init_graph_options()
