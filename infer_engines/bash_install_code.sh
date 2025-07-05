@@ -17,3 +17,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/vllm_all_to_all.patch
 git apply --whitespace=nowarn $PATCH_ROOT/bug_fix.patch
 git apply --whitespace=nowarn $PATCH_ROOT/mtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/patch_support_trans_prefilled_token_for_chat.patch
+git apply --whitespace=nowarn $PATCH_ROOT/num_token_for_proxy.patch
