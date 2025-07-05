@@ -15,14 +15,17 @@
 
 - name: run omniai
   hosts: all
+  any_errors_fatal: true
+  max_fail_percentage: 0
   gather_facts: yes
 
   environment:
     # Global Configuration 
-    LOG_PATH: "/data/omni_infer/log"
+    LOG_PATH: "/data/omniinfer/log"
     MODEL_PATH: "/path/to/your_model"
     MODEL_LEN_MAX_PREFILL: "30000"
     MODEL_LEN_MAX_DECODE: "16384"
+    LOCAL_CODE_PATH: "/data/local_code_path"
 
     # Configuration for containers 
     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
@@ -31,8 +34,8 @@
     DOCKER_NAME_C: "omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts"
 
-    # Script path in container 
-    DOCKER_SCRIPTS: "/workspace/omni_infer/tools/scripts"
+    # code path in container 
+    CODE_PATH: "/workspace"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -42,9 +45,8 @@
     ranktable_save_path: "/tmp/ranktable_save_dir"
     docker_run_cmd: |
       docker run -it --shm-size=500g \
-        -e DOCKER_SCRIPTS=$DOCKER_SCRIPTS \
+        -e CODE_PATH=$CODE_PATH \
         -e RANKTABLE_SAVE_PATH={{ ranktable_save_path }} \
-        -e MODEL_PATH=$MODEL_PATH \
         -e LOG_PATH=$LOG_PATH \
         --net=host \
         --privileged=true \
@@ -63,7 +65,6 @@
         -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \
         -v /tmp:/tmp \
         -v /data:/data \
-        -v $MODEL_PATH:$MODEL_PATH \
         -v $LOG_PATH:$LOG_PATH \
         -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime \
 
@@ -77,7 +78,7 @@
 
       rm -rf ${PREFILL_RANKTABLE_SAVE_PATH}
       mkdir -p ${PREFILL_RANKTABLE_SAVE_PATH}
-      python ${DOCKER_SCRIPTS}/pd_ranktable_tools.py --mode gen --prefill-server-list "${PREFILL_SERVER_LIST}" --api-server --save-dir ${PREFILL_RANKTABLE_SAVE_PATH}
+      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --prefill-server-list "${PREFILL_SERVER_LIST}" --api-server --save-dir ${PREFILL_RANKTABLE_SAVE_PATH}
 
     generate_decode_ranktable_cmd: |
       #!/bin/bash
@@ -86,7 +87,7 @@
 
       rm -rf ${DECODE_RANKTABLE_SAVE_PATH}
       mkdir -p ${DECODE_RANKTABLE_SAVE_PATH}
-      python ${DOCKER_SCRIPTS}/pd_ranktable_tools.py --mode gen --decode-server-list ${DECODE_SERVER_LIST} --save-dir ${DECODE_RANKTABLE_SAVE_PATH}
+      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --decode-server-list ${DECODE_SERVER_LIST} --save-dir ${DECODE_RANKTABLE_SAVE_PATH}
       
     generate_global_ranktable_cmd: |
       #!/bin/bash
@@ -102,7 +103,7 @@
       api_server_files=$(ls collect_files_p/api/*.json | head -1)
 
       if [ $DECODE_POD_NUM -gt 1 ]; then
-        python ${DOCKER_SCRIPTS}/pd_ranktable_tools.py \
+        python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
         --mode merge-local \
         --local-ranktable-list ${decode_ranktable_list} \
         --save-dir ${RANKTABLE_SAVE_PATH}/global
@@ -112,7 +113,7 @@
         decode_local_ranktable_merge="${decode_ranktable_list}"
       fi
 
-      python ${DOCKER_SCRIPTS}/pd_ranktable_tools.py \
+      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
       --mode merge-all \
       --api-server-list ${api_server_files} \
       --prefill-server-list ${prefill_ranktable_list} \
@@ -129,13 +130,13 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
-      MODEL_EXTRA_CFG_PATH="/workspace/omni_infer/tests/test_config/test_config_prefill.json"
+      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
 
-      cd ${DOCKER_SCRIPTS}
-      bash ${DOCKER_SCRIPTS}/pd_run.sh \
+      cd ${CODE_PATH}/omniinfer/tools/scripts
+      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -182,15 +183,15 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="/workspace/omni_infer/tests/test_config/test_config_decode.json"
+      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32'
       GPU_UTIL=0.95
       ADDITIONAL_CONFIG='{"enable_graph_mode": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
 
-      cd ${DOCKER_SCRIPTS}
-      bash ${DOCKER_SCRIPTS}/pd_run.sh \
+      cd ${CODE_PATH}/omniinfer/tools/scripts
+      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -245,8 +246,18 @@
           ((port++))
         done
       done
-      cd ${DOCKER_SCRIPTS}
+      cd ${CODE_PATH}/omniinfer/tools/scripts
       bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" &
+
+    kill_python_processes_cmd:
+      #!/bin/bash
+
+      ps aux | grep "python" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+
+    kill_nginx_processes_cmd:
+      #!/bin/bash
+
+      ps aux | grep "nginx" | grep -v "grep" | awk '{print $2}' | xargs kill -9
 
     start_docker_cmd_p: >
       {{ docker_run_cmd }}
@@ -258,7 +269,6 @@
 
     start_docker_cmd_c: >
       {{ docker_run_cmd }} 
-      -e DOCKER_SCRIPTS=$DOCKER_SCRIPTS 
       -e PROXY_NODE_PORT=$NODE_PORT
       -d --name $DOCKER_NAME_C $DOCKER_IMAGE_ID
 
@@ -284,6 +294,7 @@
 
     docker_start_vllm_cmd_p: >
       {{ docker_exec_cmd }} 
+      -e MODEL_PATH=$MODEL_PATH
       -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
       -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
@@ -299,6 +310,7 @@
 
     docker_start_vllm_cmd_d: >
       {{ docker_exec_cmd }} 
+      -e MODEL_PATH=$MODEL_PATH
       -e MODEL_LEN_MAX_DECODE=$MODEL_LEN_MAX_DECODE
       -e DECODE_SERVER_LIST=$DECODE_SERVER_LIST
       -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
@@ -317,6 +329,9 @@
 
     docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
 
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
+
   tasks:
     - name: generate container name.  
       set_fact:
@@ -325,10 +340,12 @@
         ACTUAL_DOCKER_NAME_C: "{{ ansible_env.DOCKER_NAME_C }}_{{ inventory_hostname }}"
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: 
-        - start
-        - server
-        - onlyserver
-        - proxy
+        - run_docker
+        - sync_code
+        - ranktable
+        - run_server
+        - run_proxy
+        - clean_up
       
     - name: Check and delete Prefill/Decode group Docker containers.
       block:
@@ -358,7 +375,9 @@
             /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
       when: "'P' in group_names or 'D' in group_names"
-      tags: start
+      tags: 
+        - run_docker
+        - clean_up
 
     - name: Check and delete containers used for global proxy server. 
       block:
@@ -387,7 +406,98 @@
             /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
       when: "'C' in group_names"
-      tags: start
+      tags: 
+        - run_docker
+        - clean_up
+
+    - name: Create the path used to store the log. 
+      command: /bin/bash -c "mkdir -p ${LOG_PATH}"
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: run_docker
+
+    - name: Run container for prefill instances.
+      command: bash -c "{{ start_docker_cmd_p }}"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags: run_docker
+    
+    - name: Run container for decode instances.
+      command: bash -c "{{ start_docker_cmd_d }}"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
+      tags: run_docker
+
+    - name: Run container for global proxy server.
+      command: bash -c "{{ start_docker_cmd_c }}"
+      environment:
+        NODE_PORT: "{{ node_port }}"
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      when: "'C' in group_names"
+      tags: run_docker
+
+    - name: The executor synchronizes code to all instances.
+      synchronize:
+        src: "{{ ansible_env.LOCAL_CODE_PATH }}/omniinfer"
+        dest: "{{ ansible_env.LOCAL_CODE_PATH }}/"
+      tags: sync_code
+
+    - name: Copy the file from the host machine to the container
+      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_P}:/workspace/"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags: sync_code
+
+    - name: Copy the file from the host machine to the container
+      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_D}:/workspace/"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
+      tags: sync_code
+
+    - name: Copy the file from the host machine to the container
+      command: /bin/bash -c "docker exec $DOCKER_NAME_C rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_C}:/workspace/"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      when: "'C' in group_names"
+      tags: sync_code
+      
+    - name: docker_update_prefill_code_cmd.
+      command: bash -c "{{ docker_update_prefill_code_cmd }}"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags: sync_code
+
+    - name: docker_update_decode_code_cmd.
+      command: bash -c "{{ docker_update_decode_code_cmd }}"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
+      tags: sync_code
+
+    - name: Create a directory on the local node. 
+      command: bash -c "rm -rf {{ ranktable_save_path }}; mkdir -p {{ ranktable_save_path }}/global {{ ranktable_save_path }}/collect_files_d {{ ranktable_save_path }}/collect_files_p/api;"
+      delegate_to: localhost
+      tags: 
+        - run_docker
+        - clean_up
+
+    - name: Delete the path used to store the script.
+      command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}"
+      register: cmd_result
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: 
+        - run_docker
+        - clean_up
+
+    - name: Create the path used to store the script.
+      command: /bin/bash -c "mkdir -p ${SCRIPTS_PATH}"
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: 
+        - run_docker
 
     - name: Register all values. 
       set_fact:  
@@ -464,9 +574,9 @@
       run_once: yes
       delegate_to: localhost
       tags: 
-        - server
-        - onlyserver
-        - proxy
+        - ranktable
+        - run_server
+        - run_proxy
 
     - name: Display all values. 
       debug:
@@ -482,34 +592,13 @@
       run_once: yes
       delegate_to: localhost
 
-    - name: Create a directory on the local node. 
-      command: bash -c "rm -rf {{ ranktable_save_path }}; mkdir -p {{ ranktable_save_path }}/global {{ ranktable_save_path }}/collect_files_d {{ ranktable_save_path }}/collect_files_p/api;"
-      delegate_to: localhost
-      tags: start
-
-    - name: Create the path used to store the log.
-      command: /bin/bash -c "mkdir -p ${LOG_PATH}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: run_docker
-
-    - name: Delete the path used to store the script.
-      command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}"
-      register: cmd_result
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: start
-
-    - name: Create the path used to store the script.
-      command: /bin/bash -c "mkdir -p ${SCRIPTS_PATH}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: start
-
     - name: Generate a script to generate the ranktable file for the prefill instances. 
       copy:
         content: "{{ generate_prefill_ranktable_cmd }}"
         dest: "$SCRIPTS_PATH/generate_prefill_ranktable.sh"
         mode: '0750'
       when: "'P' in group_names"
-      tags: server
+      tags: ranktable
 
     - name: Generate a script to generate the ranktable file for the decode instances. 
       copy:
@@ -517,7 +606,7 @@
         dest: "$SCRIPTS_PATH/generate_decode_ranktable.sh"
         mode: '0750'
       when: "'D' in group_names"
-      tags: server
+      tags: ranktable
 
     - name: Generate a script to generate the global ranktable file.
       copy:
@@ -527,80 +616,18 @@
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
       tags: server
 
-    - name: Generate a script to run the vllm server for the prefill instances.
-      copy:
-        content: "{{ run_vllm_server_prefill_cmd }}"
-        dest: "$SCRIPTS_PATH/vllm_run_for_p.sh"
-        mode: '0750'
-      when: "'P' in group_names"
-      tags: 
-        - server
-        - onlyserver
-
-    - name: Generate a script to run the vllm server for the decode instances.
-      copy:
-        content: "{{ run_vllm_server_decode_cmd }}"
-        dest: "$SCRIPTS_PATH/vllm_run_for_d.sh"
-        mode: '0750'
-      vars:
-        server_offset_dict: "{{ DECODE_SERVER_OFFSET }}"
-      when: "'D' in group_names"
-      tags: 
-        - server
-        - onlyserver
-
-    - name: Get socket name for communication between prefill instances and decode instances.
-      shell: |
-        ip -4 route list 0/0 | awk '{print $5}' | head -1
-      register: default_interface_result
-      changed_when: false
-      tags: 
-        - server
-        - onlyserver
-
-    - name: Use a variable to store the socket name. 
-      set_fact:
-        default_interface: "{{ default_interface_result.stdout }}"
-      when: default_interface_result.stdout != ""
-      tags: 
-        - server
-        - onlyserver
-
-    - name: Run container for prefill instances.
-      command: bash -c "{{ start_docker_cmd_p }}"
-      environment:
-        ROLE: "P"
-        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-      when: "'P' in group_names"
-      tags: start
-    
-    - name: Run container for decode instances.
-      command: bash -c "{{ start_docker_cmd_d }}"
-      environment:
-        ROLE: "D"
-        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-      when: "'D' in group_names"
-      tags: start
-
-    - name: Run container for global proxy server.
-      command: bash -c "{{ start_docker_cmd_c }}"
-      environment:
-        ROLE: "C"
-        NODE_PORT: "{{ node_port }}"
-        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-      when: "'C' in group_names"
-      tags: start
-
     - name: Delete the path used to store the ranktable files.
       command: /bin/bash -c "rm -rf {{ ranktable_save_path }}"
       register: cmd_result
       when: "'P' in group_names or 'D' in group_names"
-      tags: server
+      tags: 
+        - ranktable
+        - clean_up
 
     - name: Create the path used to store the global ranktable file.
       command: /bin/bash -c "mkdir -p {{ ranktable_save_path }}/global"
       when: "'P' in group_names or 'D' in group_names"
-      tags: server
+      tags: ranktable
 
     - name: Generate the ranktable file in the prefill instances. 
       command: bash -c "{{ docker_generate_prefill_ranktable_cmd }}"
@@ -608,7 +635,7 @@
         PREFILL_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
       when: "'P' in group_names"
-      tags: server
+      tags: ranktable
 
     - name: Generate the ranktable file in the decode instances. 
       command: bash -c "{{ docker_generate_decode_ranktable_cmd }}"
@@ -616,7 +643,7 @@
         DECODE_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
       when: "'D' in group_names"
-      tags: server
+      tags: ranktable
 
     - name: Get a list of JSON files in prefill instances that match the format.
       ansible.builtin.find:
@@ -626,7 +653,7 @@
       register: p_dynamic_files
       when: "'P' in group_names"
       changed_when: false
-      tags: server
+      tags: ranktable
 
     - name: Forward the JSON file of the prefill instances to the executor. 
       ansible.builtin.fetch:
@@ -639,7 +666,7 @@
       when: 
         - "'P' in group_names"
         - p_dynamic_files.matched > 0 or lookup('file', fixed_file_src, errors='ignore').exists
-      tags: server
+      tags: ranktable
 
     - name: Get a list of JSON files in decode instances that match the format.
       ansible.builtin.find:
@@ -649,7 +676,7 @@
       register: d_dynamic_files
       when: "'D' in group_names"
       changed_when: false
-      tags: server
+      tags: ranktable
 
     - name: Forward the JSON file of the decode instances to the executor. 
       ansible.builtin.fetch:
@@ -661,7 +688,7 @@
         - "'D' in group_names"
         - d_dynamic_files.matched > 0
       register: fetch_result
-      tags: server
+      tags: ranktable
 
     - name: The executor synchronizes the files to the first prefill instances. 
       synchronize:
@@ -671,7 +698,7 @@
         - "{{ ranktable_save_path }}/collect_files_p"
         - "{{ ranktable_save_path }}/collect_files_d"
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
-      tags: server
+      tags: ranktable
 
     - name: Generate the global ranktable file on the first prefill instances. 
       command: bash -c "{{ docker_generate_global_cmd }}"
@@ -679,7 +706,7 @@
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
         DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
-      tags: server
+      tags: ranktable
 
     - name: Get the global ranktable file of the first prefill instances. 
       ansible.builtin.find:
@@ -689,7 +716,7 @@
       register: merge_json_files
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
       changed_when: false
-      tags: server
+      tags: ranktable
 
     - name: Forward the global ranktable file of the first prefill instances to the executor. 
       ansible.builtin.fetch:
@@ -698,14 +725,75 @@
         flat: yes
       loop: "{{ merge_json_files.files | map(attribute='path') | list }}"
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
-      tags: server
+      tags: ranktable
 
     - name: The executor synchronizes the global ranktable file to all instances. 
       synchronize:
         src: "{{ ranktable_save_path }}/global"
         dest: "{{ ranktable_save_path }}"
       when: "inventory_hostname != groups['P'][0]"
-      tags: server
+      tags: ranktable
+
+    - name: Generate a script to kill all Python processes in the container. 
+      copy:
+        content: "{{ kill_python_processes_cmd }}"
+        dest: "$SCRIPTS_PATH/kill_python_processes.sh"
+        mode: '0750'
+      when: "'P' in group_names or 'D' in group_names"
+      tags: run_server
+
+    - name: Kill all Python processes in the container of prefill.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      failed_when: false
+      no_log: true
+      when: "'P' in group_names"
+      tags: run_server
+
+    - name: Kill all Python processes in the container of decode.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      failed_when: false
+      no_log: true
+      when: "'D' in group_names"
+      tags: run_server
+
+    - name: Generate a script to run the vllm server for the prefill instances.
+      copy:
+        content: "{{ run_vllm_server_prefill_cmd }}"
+        dest: "$SCRIPTS_PATH/vllm_run_for_p.sh"
+        mode: '0750'
+      when: "'P' in group_names"
+      tags: 
+        - run_server
+
+    - name: Generate a script to run the vllm server for the decode instances.
+      copy:
+        content: "{{ run_vllm_server_decode_cmd }}"
+        dest: "$SCRIPTS_PATH/vllm_run_for_d.sh"
+        mode: '0750'
+      vars:
+        server_offset_dict: "{{ DECODE_SERVER_OFFSET }}"
+      when: "'D' in group_names"
+      tags: 
+        - run_server
+
+    - name: Get socket name for communication between prefill instances and decode instances.
+      shell: |
+        ip -4 route list 0/0 | awk '{print $5}' | head -1
+      register: default_interface_result
+      changed_when: false
+      tags: 
+        - run_server
+
+    - name: Use a variable to store the socket name. 
+      set_fact:
+        default_interface: "{{ default_interface_result.stdout }}"
+      when: default_interface_result.stdout != ""
+      tags: 
+        - run_server
 
     - name: Run the Omniai service for decode instances. 
       command: bash -c "{{ docker_start_vllm_cmd_d }}"
@@ -725,15 +813,13 @@
         HOST: "{{ inventory_hostname }}"
       when: "'D' in group_names"
       tags: 
-        - server
-        - onlyserver
+        - run_server
 
-    - name: Wait 60 seconds.
+    - name: Wait 45 seconds.
       pause:
-        seconds: 60  # Support decimals（such as 0.5s）
+        seconds: 45  # Support decimals（such as 0.5s）
       tags: 
-        - server
-        - onlyserver
+        - run_server
 
     - name: Run the Omniai service for prefill instances. 
       command: bash -c "{{ docker_start_vllm_cmd_p }}"
@@ -751,8 +837,24 @@
         PREFILL_TENSOR_PARALLEL_SIZE: "{{ ascend_rt_visible_devices.split(',') | length }}"
       when: "'P' in group_names"
       tags: 
-        - server
-        - onlyserver
+        - run_server
+
+    - name: Generate a script to kill all nginx processes in the container. 
+      copy:
+        content: "{{ kill_nginx_processes_cmd }}"
+        dest: "$SCRIPTS_PATH/kill_nginx_processes.sh"
+        mode: '0750'
+      when: "'C' in group_names"
+      tags: run_proxy
+
+    - name: Kill all Python processes in the container of prefill.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/kill_nginx_processes.sh"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      failed_when: false
+      no_log: true
+      when: "'C' in group_names"
+      tags: run_proxy
 
     - name: Generate a script to run the global proxy server.
       copy:
@@ -761,7 +863,7 @@
         mode: '0750'
       when: "'C' in group_names"
       tags: 
-        - proxy
+        - run_proxy
 
     - name: Run the global proxy server.
       command: bash -c "{{ docker_start_proxy_cmd_c }}"
@@ -769,4 +871,4 @@
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
       when: "'C' in group_names"
       tags: 
-        - proxy
+        - run_proxy

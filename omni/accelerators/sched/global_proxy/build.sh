@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 #!/bin/bash
 
 set -e
@@ -21,13 +19,13 @@ fi
 yum install -y pcre gcc gcc-c++ make zlib zlib-devel pcre pcre-devel openssl-devel
 
 cd nginx-${NGINX_VERSION}
-./configure --sbin-path=${NGINX_SBIN_PATH} \
+CFLAGS="-O2" ./configure --sbin-path=${NGINX_SBIN_PATH} \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_prefill_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_set_request_id_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_length_balance_module \
-    --without-http_gzip_module \
-    --with-pcre-jit \
-    --with-cc-opt='-O3 -fPIE -fstack-protector-strong' \
-    --with-ld-opt='-fPIE -pie'
-make -j
+    --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_greedy_timeout_module \
+    --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_prefill_score_balance_module \
+    --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_weighted_least_active_module \
+    --without-http_gzip_module
+make -j16
 make install

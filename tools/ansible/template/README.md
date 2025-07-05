@@ -49,13 +49,17 @@
 
 * `LOG_PATH`: Decode/Prefill/Global Proxy 实例日志的存放的路径。
 
+* `LOG_PATH_IN_EXECUTOR`: 执行机上存放 Decode/Prefill/Global Proxy 实例日志的路径。
+
+* `LOCAL_CODE_PATH`: 执行机上的代码路径，即用户通过 git clone 拉取的代码存放路径。例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`。
+
 * `MODEL_PATH`: 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致。
 
 * `MODEL_LEN_MAX_PREFILL`: Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为30000。
 
 * `MODEL_LEN_MAX_DECODE`: Decode 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为16384。
 
-* `DOCKER_IMAGE_ID`: omniai 服务实例均在容器里面运行， 用来指定运行的容器镜像， 如: registry-cbu.huawei.com/omni_infer_v1/omni_infer_v1_a3:20250611， registry-cbu.huawei.com/omni_infer_v1/omni_infer_v1_a3 表示镜像仓地址， 20250611 表示镜像版本号， 如果远程目标机没有此容器镜像， ansible 会自动下载。
+* `DOCKER_IMAGE_ID`: omniai 服务实例均在容器里面运行， 用来指定运行的容器镜像， 如: `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer:202506272026`，其中 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer` 表示镜像仓地址，`202506272026` 表示镜像版本号，如果远程目标机没有此容器镜像，脚本会自动下载。
 
 * `DOCKER_NAME_P`: Prefill 节点的容器别名， 默认前缀 `omni_infer_prefill_`。 如 `omni_infer_prefill_p0` 表示 Prefill 第一个实例的容器名。
 
@@ -65,7 +69,7 @@
 
 * `SCRIPTS_PATH`: ansible 运行过程中自动生成的脚本文件存放路径， 用户可以不关注， ansible 执行过程中会自动生成。
 
-* `CODE_PATH`: 容器内的VLLM代码路径。开发人员要使用自己的VLLM代码，有两种方式：第一，先将自己的 VLLM 代码放在宿主机上，然后通过 docker cp 复制到容器中，并且修改 CODE_PATH，最后重新执行 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server 拉起 VLLM 服务；第二，同样先将自己的 VLLM 代码放在宿主机上，然后修改 omni_infer_server_template.yml 文件第 43 行的 docker_run_cmd，将自己的代码路径通过 -v 挂载到容器中，并重新执行 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml 拉起 VLLM 服务。
+* `CODE_PATH`: 容器内的 omni_infer 源码路径。开发人员通过 ansible 脚本将执行机上的源码同步到容器内，存储路径即 `CODE_PATH`。
 
 * `DECODE_TENSOR_PARALLEL_SIZE`: Decode 实例 tensor parallel 参数 tp， 默认值为1。
 
@@ -127,21 +131,24 @@ yum install openssh-server
 
 ## 修改配置
 在 **omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml** 中， 只需修改以下配置项 `ansible_user / ansible_ssh_private_key_file`; 
-在 **omni_infer_server_template.yml** 中， 只需修改以下配置项 `MODEL_PATH / DOCKER_IMAGE_ID / CODE_PATH`， 就可拉起 omniai 服务。
+在 **omni_infer_server_template.yml** 中， 只需修改以下配置项 `MODEL_PATH / DOCKER_IMAGE_ID / CODE_PATH / LOCAL_CODE_PATH`， 就可拉起 omniai 服务。
+此外，建议修改 omni_infer_server_template.yml 中的 `LOG_PATH`、`LOG_PATH_IN_EXECUTOR`、`SCRIPTS_PATH` 和 `ranktable_save_path`，防止路径下的文件被其他人覆盖。
 
 ## 执行命令
 ```bash
-# 进入到文件目录下执行
-cd ./omni_infer/tools/ansible
-# 2P1D
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --skip-tags sync_code
-# 4P1D
-ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml --skip-tags sync_code
-
-# 如果你想拉最新代码去跑服务，就去执行机的 /data/your_code_path 路径下 clone 最新代码，然后执行下列命令即可
-cd omni_infer/infer_engines/
+# 拉取库上最新代码，比如执行机的 /workspace/local_code_path 路径下 clone 源码，执行下列命令即可
+cd omniinfer/infer_engines/
 bash bash_install_code.sh
-ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml
+# 进入到 ansible 脚本目录下
+cd omniinfer/tools/ansible/template
+# 如果是部署四机 2P1D，就执行如下命令：
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --skip-tags fetch_log
+# 如果是部署八机 4P1D，就执行如下命令：
+ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml --skip-tags fetch_log
+
+# 后续修改了执行机上的源码，执行下列命令即可通过修改后的源码拉起服务
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags sync_code
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server
 
 # 基于指定镜像创建并启动新的容器实例
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_docker
@@ -151,6 +158,8 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server
 # 拉起nginx服务
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_proxy
+# 将日志存放在执行机指定路径
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags fetch_log
 # 清理残余配置，主要是 stop 容器并且删除容器，以及删除 ranktable 和临时脚本
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags clean_up
 ```
