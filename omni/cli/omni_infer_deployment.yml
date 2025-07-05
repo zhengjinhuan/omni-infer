@@ -23,28 +23,28 @@ deployment:
       master_port: "8080"
       base_api_port: "9000"
       private_key: "/workspace/pem/keypair.pem"
-      ascend_rt_visible_devices: "0,1"
+      ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
     group2:
       user: "root"
       hosts: "127.0.0.2"
       master_port: "8080"
       base_api_port: "9000"
       private_key: "/workspace/pem/keypair.pem"
-      ascend_rt_visible_devices: "2,3"
+      ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
     group3:
       user: "root"
       hosts: "127.0.0.3"
       master_port: "8080"
       base_api_port: "9000"
       private_key: "/workspace/pem/keypair.pem"
-      ascend_rt_visible_devices: "4,5"
+      ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
     group4:
       user: "root"
       hosts: "127.0.0.4"
       master_port: "8080"
       base_api_port: "9000"
       private_key: "/workspace/pem/keypair.pem"
-      ascend_rt_visible_devices: "6,7"
+      ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
   decode:
     group1:
