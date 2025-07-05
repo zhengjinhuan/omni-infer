@@ -39,7 +39,6 @@ from vllm.platforms import current_platform
 
 from omni.ops.attention import vanilla_chunked_prefill
 from omni.models.common.layers.attention.attention_mask import AttentionMaskBuilder
-from omni.models.common.layers.attention.attention_dummy_builder import DummyAttentionMetadataBuilder
 
 
 class AscendAttentionState(Enum):
@@ -116,7 +115,7 @@ class AscendMetadata:
     attn_mask: Optional[torch.Tensor] = None
 
 
-class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
+class AscendAttentionMetadataBuilder:
 
     def __init__(self, runner, kv_cache_spec: AttentionSpec = None,
                  block_table: BlockTable = None):
@@ -124,7 +123,6 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.runner = runner
         self.dtype = runner.dtype
         self.device = runner.device
-        self.block_table = block_table
 
         mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", 10000)
         self.attn_mask_len = min(self.runner.model_config.max_model_len,
@@ -163,12 +161,13 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
               common_attn_metadata=None,
               graph_pad_size=-1):
 
-        block_table = self.block_table.get_device_tensor()[:num_reqs]
+        block_table = self.runner.input_batch.block_table[
+                          0].get_device_tensor()[:num_reqs]
 
         seq_lens = self.runner.seq_lens_cpu[:num_reqs]
         query_lens = seq_lens - self.runner.input_batch.num_computed_tokens_cpu_tensor[:num_reqs]
 
-        slot_mapping = self.block_table.slot_mapping_cpu[:num_actual_tokens].to(
+        slot_mapping = self.runner.slot_mapping_cpu[:num_actual_tokens].to(
             self.runner.device, non_blocking=True, dtype=torch.int32)
 
         if self.runner.scheduler_config.chunked_prefill_enabled:
@@ -195,12 +194,6 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                        attn_mask=attn_mask,
                                        attn_state=attn_state)
         return attn_metadata
-
-    def build_dummy(self):
-        return None
-
-    def mark_static_for_attn_metadata(self):
-        pass
 
 
 class AscendAttentionBackendImpl(AttentionImpl):

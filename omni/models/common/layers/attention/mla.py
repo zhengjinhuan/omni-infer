@@ -33,7 +33,7 @@ from omni.models.common.config.model_config import model_extra_config
 from vllm.platforms import current_platform
 from omni.models.common.layers.attention.attention import AscendAttentionState
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
-from omni.models.common.layers.attention.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.adaptors.vllm.worker.npu_model_runner import DummyAttentionMetadataBuilder
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.kv_cache_interface import AttentionSpec
 

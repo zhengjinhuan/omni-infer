@@ -54,7 +54,6 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 
 from omni.models.common.layers.attention.attention import AttentionMaskBuilder
 from omni.models.common.layers.attention.attention import AscendAttentionState
-from omni.models.common.layers.attention.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler
 from omni.adaptors.vllm.platform import NPUPlatform
 from vllm.distributed.parallel_state import get_dp_group
@@ -105,6 +104,20 @@ class GraphCompileConfiguration:
     def mark_static_for_graph(self, *args, **kwargs):
         torch._dynamo.mark_static(args[0])
         torch._dynamo.mark_static(args[1])
+
+class DummyAttentionMetadataBuilder(metaclass=ABCMeta):
+    """
+    When Model DP is turned on, the idle DP needs to build fake data to run with it.
+    At this time, the attention metadata builder needs to inherit this interface to implement build_dummy method.
+    """
+
+    @abstractmethod
+    def build_dummy(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def mark_static_for_attn_metadata(self, *args, **kwargs):
+        pass
 
 
 class NPUModelRunner(GPUModelRunner):

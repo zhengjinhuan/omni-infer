@@ -57,7 +57,7 @@ __origin_get_device_properties__ = torch.npu.get_device_properties
 class NPUDeviceProperties:
     def __init__(self, device):
         self.properties = __origin_get_device_properties__(device)
-        self.multi_processor_count = self.properties.multi_processor_count \
+        self.multi_processor_count = properties.multi_processor_count \
             if hasattr(self.properties, 'multi_processor_count') else 0
 
 def get_device_properties(device):
@@ -121,7 +121,6 @@ class NPUWorker(WorkerBase):
         self.profiler = self._init_profiler()
 
         torch.npu.get_device_properties = get_device_properties
-        torch.cuda = torch.npu
 
         vllm_config.model_config.disable_cascade_attn = True
         self._init_graph_options()
@@ -152,7 +151,7 @@ class NPUWorker(WorkerBase):
 
         # Init ModelRunner here, so that we have access to self.device.
         self.model_runner = NPUModelRunner(self.vllm_config, self.device)
-
+    
     def _init_graph_options(self):
         self.block_num_floating_range = BLOCK_NUM_FLOATING_RANGE
         additional_config = self.vllm_config.additional_config
@@ -165,8 +164,8 @@ class NPUWorker(WorkerBase):
                 "enable_graph_mode",
                 False) and self.vllm_config.model_config.use_mla
            self.use_cached_npu_graph = additional_config.get(
-                "use_cached_npu_graph", False)
-
+                "use_cached_npu_graph", False) 
+    
     def page_size_bytes(self) -> int:
         # For MLA we only store a single latent vector
         coef = 1 if self.vllm_config.model_config.use_mla else 2
@@ -174,17 +173,17 @@ class NPUWorker(WorkerBase):
         block_size = self.vllm_config.cache_config.block_size
         kv_lora_rank = config.kv_lora_rank
         qk_rope_head_dim = config.qk_rope_head_dim
-        return coef * block_size * (kv_lora_rank + qk_rope_head_dim) * 2
-
+        return coef * block_size * (kv_lora_rank + qk_rope_head_dim) * 2 
+    
     def determine_available_memory(self) -> int:
         if int(os.getenv("NO_NPU_MOCK", "0")):
             return int(100000000)
-
+ 
         cur_npu_kv_cache_bytes = self._compute_kv_cache_bytes()
         if not self.enable_torchair_graph_mode:
-           clear_var()
+           clear_var() 
            return cur_npu_kv_cache_bytes
-
+        
         last_use_kv_cache_bytes = cur_npu_kv_cache_bytes
         range = self.block_num_floating_range * self.page_size_bytes()
         print(f"range = {range}")
@@ -192,24 +191,24 @@ class NPUWorker(WorkerBase):
             if check_torchair_cache_exists() and check_block_num_cache_exist():
                 npu_kv_cache_bytes = read_block_num_from_file(torch.distributed.get_rank())
                 if npu_kv_cache_bytes == -1:
-                    raise RuntimeError(f"Read npu_kv_cache_bytes: {npu_kv_cache_bytes} error, "
+                    raise RuntimeError(f"Read npu_kv_cache_bytes: {npu_kv_cache_bytes} error, " 
                                         f"please make sure the block num cache file is correct")
                 old_kv_cache_bytes = torch.tensor([npu_kv_cache_bytes], device=self.device_config.device)
                 all_kv_cache_bytes = get_dp_group().all_gather(old_kv_cache_bytes, 0)
                 is_all_kv_cache_bytes_equal = (all_kv_cache_bytes[:] == old_kv_cache_bytes).all().item()
                 if not is_all_kv_cache_bytes_equal:
                         raise RuntimeError(f"The block num data of some ranks has been modified kv_cache_bytes:{is_all_kv_cache_bytes_equal}")
-
+                        
                 # if abs(cur_npu_kv_cache_bytes - npu_kv_cache_bytes) > range:
                 #         raise RuntimeError(f"The range between the current NPU kv_cache_bytes and the recorded kv_cache_bytes exceeds {range} "
                 #                             f"cur_npu_kv_cache_bytes:{cur_npu_kv_cache_bytes}, old_kv_cache_bytes:{npu_kv_cache_bytes}")
-
-                logger.info("Currently use graph cache")
-                clear_var(old_kv_cache_bytes, all_kv_cache_bytes)
+                    
+                logger.info("Currently use graph cache")           
+                clear_var(old_kv_cache_bytes, all_kv_cache_bytes) 
                 last_use_kv_cache_bytes = npu_kv_cache_bytes
-
+                
             else:
-                logger.warning("Currently no graph cache available")
+                logger.warning("Currently no graph cache available")  
                 delete_torchair_cache_file()
                 cur_npu_kv_cache_bytes = torch.tensor([cur_npu_kv_cache_bytes], device=self.device_config.device)
                 all_kv_cache_bytes = get_dp_group().all_gather(cur_npu_kv_cache_bytes, 0)
@@ -217,9 +216,9 @@ class NPUWorker(WorkerBase):
                 write_block_num_to_file(torch.distributed.get_rank(), kv_cache_bytes)
                 clear_var(cur_npu_kv_cache_bytes, all_kv_cache_bytes)
                 last_use_kv_cache_bytes = kv_cache_bytes
-
+        
         return last_use_kv_cache_bytes
-
+    
     def _compute_kv_cache_bytes(self):
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
@@ -249,7 +248,7 @@ class NPUWorker(WorkerBase):
             f"Available memory: {usable_memory_size}, total memory: {total_npu_memory}"
         )
         return int(npu_kv_cache_bytes)
-
+    
     def execute_model(
         self,
         scheduler_output: "SchedulerOutput",
