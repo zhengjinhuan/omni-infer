@@ -40,6 +40,12 @@
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
 
+    # CPU Core Affinity
+    GLOBAL_PROXY_CORE_NUM: "4"
+    GLOBAL_PROXY_START_CORE_INDEX: "16"
+    PD_RUN_CORE_AFFINITY_CMD: "taskset -c 0-15,20-319"
+    CPU_AFFINITY_COMF: "1,npu0:3-10,npu1:23-30,npu2:43-50,npu3:63-70,npu4:83-90,npu5:103-110,npu6:123-130,npu7:143-150,npu8:163-170,npu9:183-190,npu10:203-210,npu11:223-230,npu12:243-250,npu13:263-270,npu14:283-290,npu15:303-310"
+
   vars:
     # Configure the storage path of the ranktable file. 
     ranktable_save_path: "/tmp/ranktable_save_dir"
@@ -134,9 +140,10 @@
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
+      export CPU_AFFINITY_CONF="${CPU_AFFINITY_COMF}"
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
+      ${PD_RUN_CORE_AFFINITY_CMD} bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -189,6 +196,7 @@
       ADDITIONAL_CONFIG='{"enable_graph_mode": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
+      export CPU_AFFINITY_CONF="${CPU_AFFINITY_COMF}"
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
@@ -247,7 +255,15 @@
         done
       done
       cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" &
+      bash global_proxy.sh \
+        --listen-port "$PROXY_NODE_PORT" \
+        --prefill-servers-list "$prefill_result" \
+        --decode-servers-list "$decode_result" \
+        --log-file /tmp/nginx_error.log \
+        --log-level notice \
+        --start-core-index $GLOBAL_PROXY_START_CORE_INDEX \
+        --core-num $GLOBAL_PROXY_CORE_NUM \
+        &
 
     kill_python_processes_cmd:
       #!/bin/bash
