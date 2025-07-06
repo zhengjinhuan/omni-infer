@@ -344,7 +344,6 @@ function nginx_set_upstream() {
     # Compose new upstream block with 8 spaces indentation
     if [ "$upstream_name" = "prefill_servers" ]; then
         local upstream_block="    upstream $upstream_name {
-        weighted_least_active off;
         keepalive 2048;
         keepalive_timeout 110s;
         keepalive_requests 20000;

@@ -4,16 +4,13 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
-#include <ngx_atomic.h>
 #include <ngx_http_upstream.h>
+#include <ngx_atomic.h>
 #include <math.h>
 
-extern ngx_module_t ngx_http_upstream_length_balance_module;
-
 #define NGX_DEFAULT_MAX_UPSTREAM_SERVERS 512
-#define SHM_NAME "length_balance_shm"
-#define SHM_SIZE (128 * 1024) // 128K, fixed size for shared memory
-
+#define LENGTH_BALANCE_SHM_NAME "length_balance_shm"
+#define SHM_SIZE (128 * 1024)
 typedef struct {
     ngx_flag_t enable;
     ngx_uint_t merge_threshold;
@@ -55,23 +52,89 @@ typedef struct {
     ngx_log_t *log;
 } ngx_http_length_peer_data_t;
 
-static ngx_shm_zone_t *length_shm_zone = NULL;
+static ngx_shm_zone_t *length_balance_shm_zone = NULL;
 static ngx_http_length_stats_t *global_stats = NULL;
-static ngx_str_t shm_name = ngx_string(SHM_NAME);
+static ngx_str_t length_balance_shm_name = ngx_string(LENGTH_BALANCE_SHM_NAME);
 static ngx_atomic_t next_shm_idx = 0;
 
 #define NGX_LENGTH_BALANCE_DEFAULT_MERGE_THRESHOLD 32
 #define NGX_LENGTH_BALANCE_DEFAULT_REQLEN_WEIGHT 1.0
 #define NGX_LENGTH_BALANCE_DEFAULT_DECAY_FACTOR 2
 
-static char *ngx_conf_set_double_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+static void *ngx_http_length_balance_create_srv_conf(ngx_conf_t *cf);
+static char *ngx_http_length_balance_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
+
+static ngx_int_t ngx_http_length_balance_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data);
+static char *ngx_conf_set_double_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
+static char *ngx_http_upstream_length_balance(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static ngx_int_t ngx_http_upstream_init_length_balance(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us);
+static ngx_int_t ngx_http_upstream_init_length_balance_peer(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *us);
+static ngx_int_t ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data);
+static void ngx_http_upstream_free_length_balance_peer(ngx_peer_connection_t *pc, void *data, ngx_uint_t state);
+
+static char *
+ngx_conf_set_double_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
     ngx_str_t *value = cf->args->elts;
     double *dp = (double *)((char *)conf + cmd->offset);
     *dp = atof((const char *)value[1].data);
     return NGX_CONF_OK;
 }
 
-static void *ngx_http_length_balance_create_srv_conf(ngx_conf_t *cf) {
+static ngx_command_t ngx_http_upstream_length_balance_commands[] = {
+    { ngx_string("length_balance"),
+      NGX_HTTP_UPS_CONF | NGX_CONF_NOARGS,
+      ngx_http_upstream_length_balance,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("length_balance_merge_threshold"),
+      NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_length_balance_conf_t, merge_threshold),
+      NULL },
+
+    { ngx_string("length_balance_req_len_weight"),
+      NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
+      ngx_conf_set_double_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_length_balance_conf_t, req_len_weight),
+      NULL },
+
+    { ngx_string("length_balance_decay_factor"),
+      NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_length_balance_conf_t, decay_factor),
+      NULL },
+
+    ngx_null_command
+};
+
+static ngx_http_module_t ngx_http_upstream_length_balance_module_ctx = {
+    NULL,
+    NULL,
+    NULL, NULL,
+    ngx_http_length_balance_create_srv_conf,
+    ngx_http_length_balance_merge_srv_conf,
+    NULL, NULL
+};
+
+ngx_module_t ngx_http_upstream_length_balance_module = {
+    NGX_MODULE_V1,
+    &ngx_http_upstream_length_balance_module_ctx,
+    ngx_http_upstream_length_balance_commands,
+    NGX_HTTP_MODULE,
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+    NGX_MODULE_V1_PADDING
+};
+
+static void *
+ngx_http_length_balance_create_srv_conf(ngx_conf_t *cf)
+{
     ngx_http_length_balance_conf_t *conf = ngx_pcalloc(cf->pool, sizeof(*conf));
     if (conf == NULL) return NULL;
     conf->enable = NGX_CONF_UNSET;
@@ -81,7 +144,9 @@ static void *ngx_http_length_balance_create_srv_conf(ngx_conf_t *cf) {
     return conf;
 }
 
-static char *ngx_http_length_balance_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child) {
+static char *
+ngx_http_length_balance_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+{
     ngx_http_length_balance_conf_t *prev = parent;
     ngx_http_length_balance_conf_t *conf = child;
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
@@ -92,7 +157,7 @@ static char *ngx_http_length_balance_merge_srv_conf(ngx_conf_t *cf, void *parent
 }
 
 static ngx_int_t
-ngx_http_length_balance_init_zone(ngx_shm_zone_t *shm_zone, void *data)
+ngx_http_length_balance_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
 {
     if (data) {
         shm_zone->data = data;
@@ -105,74 +170,15 @@ ngx_http_length_balance_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     return NGX_OK;
 }
 
-static char *ngx_http_upstream_length_balance(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static ngx_int_t ngx_http_upstream_init_length_balance(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us);
-static ngx_int_t ngx_http_upstream_init_length_balance_peer(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *us);
-static ngx_int_t ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data);
-
-static ngx_command_t ngx_http_upstream_length_balance_commands[] = {
-    {ngx_string("length_balance"),
-     NGX_HTTP_UPS_CONF | NGX_CONF_NOARGS,
-     ngx_http_upstream_length_balance,
-     0,
-     0,
-     NULL},
-    {ngx_string("length_balance_merge_threshold"),
-     NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot,
-     NGX_HTTP_SRV_CONF_OFFSET,
-     offsetof(ngx_http_length_balance_conf_t, merge_threshold),
-     NULL},
-    {ngx_string("length_balance_req_len_weight"),
-     NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_double_slot,
-     NGX_HTTP_SRV_CONF_OFFSET,
-     offsetof(ngx_http_length_balance_conf_t, req_len_weight),
-     NULL},
-    {ngx_string("length_balance_decay_factor"),
-     NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot,
-     NGX_HTTP_SRV_CONF_OFFSET,
-     offsetof(ngx_http_length_balance_conf_t, decay_factor),
-     NULL},
-    ngx_null_command
-};
-
-static ngx_http_module_t ngx_http_upstream_length_balance_module_ctx = {
-    NULL, 
-    NULL, 
-    NULL,
-    NULL,
-    ngx_http_length_balance_create_srv_conf,
-    ngx_http_length_balance_merge_srv_conf,
-    NULL,
-    NULL
-};
-
-ngx_module_t ngx_http_upstream_length_balance_module = {
-    NGX_MODULE_V1,
-    &ngx_http_upstream_length_balance_module_ctx,
-    ngx_http_upstream_length_balance_commands, 
-    NGX_HTTP_MODULE,                           
-    NULL,                                        
-    NULL,                                        
-    NULL,                                       
-    NULL,                                        
-    NULL,                                      
-    NULL,                                        
-    NULL,                                       
-    NGX_MODULE_V1_PADDING
-};
-
 static char *
 ngx_http_upstream_length_balance(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    if (length_shm_zone == NULL) {
-        length_shm_zone = ngx_shared_memory_add(cf, &shm_name, SHM_SIZE, &ngx_http_upstream_length_balance_module);
-        if (length_shm_zone == NULL) {
+    if (length_balance_shm_zone == NULL) {
+        length_balance_shm_zone = ngx_shared_memory_add(cf, &length_balance_shm_name, SHM_SIZE, &ngx_http_upstream_length_balance_module);
+        if (length_balance_shm_zone == NULL) {
             return NGX_CONF_ERROR;
         }
-        length_shm_zone->init = ngx_http_length_balance_init_zone;
+        length_balance_shm_zone->init = ngx_http_length_balance_init_shm_zone;
     }
 
     ngx_http_upstream_srv_conf_t *uscf;
@@ -185,7 +191,8 @@ ngx_http_upstream_length_balance(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 static ngx_int_t
 ngx_http_upstream_init_length_balance(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
 {
-    ngx_uint_t i, n;
+    ngx_uint_t i;
+    ngx_uint_t n;
     ngx_http_upstream_server_t *server;
     ngx_http_length_peer_t *peer, **peerp;
     ngx_http_length_peers_t *peers;
@@ -197,7 +204,7 @@ ngx_http_upstream_init_length_balance(ngx_conf_t *cf, ngx_http_upstream_srv_conf
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "No upstream servers defined");
         return NGX_ERROR;
     }
-    if (!length_shm_zone) {
+    if (!length_balance_shm_zone) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "length_balance shared memory not initialized");
         return NGX_ERROR;
     }
@@ -228,19 +235,19 @@ ngx_http_upstream_init_length_balance(ngx_conf_t *cf, ngx_http_upstream_srv_conf
 
     if (ngx_atomic_fetch_add(&next_shm_idx, 0) + n > SHM_SIZE / sizeof(ngx_http_length_stats_t)) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
-                      "length_balance shared memory is too small for %ui servers of upstream \"%V\". Total servers %ui, available %D",
-                      n, &us->host, ngx_atomic_fetch_add(&next_shm_idx, 0) + n, SHM_SIZE / sizeof(ngx_http_length_stats_t));
+            "length_balance shared memory is too small for %ui servers of upstream \"%V\". Total servers %ui, available %D",
+            n, &us->host, ngx_atomic_fetch_add(&next_shm_idx, 0) + n, SHM_SIZE / sizeof(ngx_http_length_stats_t));
         return NGX_ERROR;
     }
     peers->shm_base_idx = ngx_atomic_fetch_add(&next_shm_idx, n);
 
     for (i = 0; i < n; i++) {
-        peer[i].sockaddr = server[i].addrs[0].sockaddr;
-        peer[i].socklen = server[i].addrs[0].socklen;
-        peer[i].name = server[i].addrs[0].name;
-        peer[i].weight = server[i].weight;
-        peer[i].down = server[i].down;
-        peer[i].next = NULL;
+        peer[i].sockaddr    = server[i].addrs[0].sockaddr;
+        peer[i].socklen     = server[i].addrs[0].socklen;
+        peer[i].name        = server[i].addrs[0].name;
+        peer[i].weight      = server[i].weight;
+        peer[i].down        = server[i].down;
+        peer[i].next        = NULL;
         peer[i].stat_offset = i;
         *peerp = &peer[i];
         peerp = &peer[i].next;
@@ -254,15 +261,6 @@ ngx_http_upstream_init_length_balance(ngx_conf_t *cf, ngx_http_upstream_srv_conf
     us->peer.init = ngx_http_upstream_init_length_balance_peer;
 
     return NGX_OK;
-}
-
-static void
-ngx_http_upstream_free_length_balance_peer(ngx_peer_connection_t *pc, void *data, ngx_uint_t state)
-{
-    ngx_http_length_peer_data_t *lp = data;
-    if (lp) {
-        ngx_free(lp);
-    }
 }
 
 static ngx_int_t
@@ -297,7 +295,8 @@ ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data)
 {
     ngx_http_length_peer_data_t *lp = data;
     ngx_http_length_peer_t *peer, *min_peers[NGX_DEFAULT_MAX_UPSTREAM_SERVERS];
-    ngx_uint_t i = 0, count = 0;
+    ngx_uint_t i = 0;
+    ngx_uint_t count = 0;
     double min_score = -1;
     ngx_http_request_t *r = lp->request;
     ngx_http_length_balance_conf_t *conf = lp->peers->conf;
@@ -306,7 +305,7 @@ ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data)
     u_char *p = ngx_sprintf(buf, "%.3f", conf->req_len_weight);
     *p = '\0';
     ngx_log_error(NGX_LOG_WARN, lp->log, 0,
-        "[Length Balance Param]: merge_threshold=%ui, req_len_weight=%s, decay_factor=%ui",
+        "[LengthBalance-Param] merge_threshold=%ui, req_len_weight=%s, decay_factor=%ui",
         conf->merge_threshold, buf, conf->decay_factor);
 
     ngx_atomic_t req_len = (r && r->headers_in.content_length_n > 0) ? r->headers_in.content_length_n : 0;
@@ -320,15 +319,15 @@ ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data)
 
         if (global_idx >= SHM_SIZE / sizeof(ngx_http_length_stats_t)) {
             ngx_log_error(NGX_LOG_EMERG, lp->log, 0,
-                          "length_balance: global_idx %ui out of bounds (max %D) for peer \"%V\", upstream \"%V\"",
-                          global_idx, SHM_SIZE / sizeof(ngx_http_length_stats_t), &peer->name, &lp->peers->name);
+                "length_balance: global_idx %ui out of bounds (max %D) for peer \"%V\", upstream \"%V\"",
+                global_idx, SHM_SIZE / sizeof(ngx_http_length_stats_t), &peer->name, &lp->peers->name);
             continue;
         }
 
         ngx_http_length_stats_t *stat = &lp->stats[global_idx];
 
         ngx_atomic_t current_requests = stat->total_requests + ngx_atomic_fetch_add(&lp->peers->local_requests[i], 0);
-        ngx_atomic_t current_length = stat->total_length + ngx_atomic_fetch_add(&lp->peers->local_lengths[i], 0);
+        ngx_atomic_t current_length   = stat->total_length   + ngx_atomic_fetch_add(&lp->peers->local_lengths[i], 0);
 
         double score = current_requests + current_length + req_len * conf->req_len_weight;
 
@@ -346,15 +345,15 @@ ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data)
     if (count == 0) {
         pc->name = &lp->peers->name;
         ngx_log_error(NGX_LOG_ERR, lp->log, 0,
-                      "length_balance: no active peers found for upstream \"%V\"", &lp->peers->name);
+            "length_balance: no active peers found for upstream \"%V\"", &lp->peers->name);
         return NGX_BUSY;
     }
     ngx_uint_t rand_idx = ngx_random() % count;
     peer = min_peers[rand_idx];
 
     pc->sockaddr = peer->sockaddr;
-    pc->socklen = peer->socklen;
-    pc->name = &peer->name;
+    pc->socklen  = peer->socklen;
+    pc->name     = &peer->name;
 
     lp->current = peer;
     ngx_uint_t p_local_idx = peer->stat_offset;
@@ -390,12 +389,12 @@ ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data)
                     ngx_atomic_t new_total_len = (old_total_len / conf->decay_factor) + len;
 
                     ngx_atomic_cmp_set(&lp->stats[global_idx].total_requests, old_total_req, new_total_req);
-                    ngx_atomic_cmp_set(&lp->stats[global_idx].total_length, old_total_len, new_total_len);
+                    ngx_atomic_cmp_set(&lp->stats[global_idx].total_length,   old_total_len, new_total_len);
 
                 } else {
                     ngx_log_error(NGX_LOG_EMERG, lp->log, 0,
-                                  "length_balance: merge global_idx %ui out of bounds (max %D) for local_idx %ui, upstream \"%V\"",
-                                  global_idx, SHM_SIZE / sizeof(ngx_http_length_stats_t), i, &lp->peers->name);
+                        "length_balance: merge global_idx %ui out of bounds (max %D) for local_idx %ui, upstream \"%V\"",
+                        global_idx, SHM_SIZE / sizeof(ngx_http_length_stats_t), i, &lp->peers->name);
                 }
             }
         }
@@ -403,4 +402,13 @@ ngx_http_upstream_get_length_balance_peer(ngx_peer_connection_t *pc, void *data)
     }
 
     return NGX_OK;
+}
+
+static void
+ngx_http_upstream_free_length_balance_peer(ngx_peer_connection_t *pc, void *data, ngx_uint_t state)
+{
+    ngx_http_length_peer_data_t *lp = data;
+    if (lp) {
+        ngx_free(lp);
+    }
 }
