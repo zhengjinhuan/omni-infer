@@ -21,7 +21,7 @@ class PathManager:
         self.pybind_inc = pybind11.get_include()
 
         # ascend
-        ascend_root = os.getenv('ASCEND_TOOLKIT_HOME',None)
+        ascend_root = os.getenv('ASCEND_TOOLKIT_HOME', None)
         if ascend_root is None:
             raise EnvironmentError("Environment variable 'ASCEND_TOOLKIT_HOME' is not set. Please set this environment variable before running the program.")
         self.ascend_inc = os.path.join(ascend_root, "include")
