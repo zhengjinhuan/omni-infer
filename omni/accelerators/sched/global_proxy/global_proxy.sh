@@ -334,40 +334,28 @@ function nginx_set_upstream() {
     echo "Number of upstream servers: $upstream_count"
 
     local zone_line=""
-    if [ "$use_shm_zone" = true ]; then
+    local lb_sdk_line=""
+    if [ "$upstream_name" = "decode_servers" ]; then
+        lb_sdk_line="weighted_least_active on;"
+        zone_line=""
+    elif [ "$use_shm_zone" = true ]; then
         # Each 128k can hold up to 64 servers, round up
         local blocks=$(( (upstream_count + 63) / 64 ))
         local zone_size=$(( blocks * 128 ))
         zone_line="zone $upstream_name ${zone_size}k;"
+    else
+        lb_sdk_line="least_conn;"
     fi
 
     # Compose new upstream block with 8 spaces indentation
-    if [ "$upstream_name" = "prefill_servers" ]; then
-        local upstream_block="    upstream $upstream_name {
-        keepalive 2048;
-        keepalive_timeout 110s;
-        keepalive_requests 20000;
-${upstream_servers}
-    }"
-    elif [ "$upstream_name" = "decode_servers" ]; then
-        local upstream_block="    upstream $upstream_name {
-        weighted_least_active on;
-        keepalive 2048;
-        keepalive_timeout 110s;
-        keepalive_requests 20000;
-${upstream_servers}
-    }"
-    else
-        local upstream_block="    upstream $upstream_name {
-        #length_balance;
+    local upstream_block="    upstream $upstream_name {
         ${zone_line}
-        least_conn;
+        ${lb_sdk_line}
         keepalive 2048;
         keepalive_timeout 110s;
         keepalive_requests 20000;
 ${upstream_servers}
     }"
-    fi
 
     # Remove existing upstream block (simple, not foolproof for nested/complex configs)
     awk -v name="$upstream_name" '
