@@ -21,17 +21,19 @@
 
   environment:
     # Global Configuration 
-    LOG_PATH: "/data/your_path/log"
+    LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
     MODEL_LEN_MAX_PREFILL: "30000"
     MODEL_LEN_MAX_DECODE: "16384"
+    LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
+    LOCAL_CODE_PATH: "/data/local_code_path"
 
     # Configuration for containers 
-    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omni_infer_v1/omni_infer_v1_a3:20250619"
+    DOCKER_IMAGE_ID: "REPOSITORY:TAG"
     DOCKER_NAME_P: "you_name_omni_infer_prefill"
     DOCKER_NAME_D: "you_name_omni_infer_decode"
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
-    SCRIPTS_PATH: "/tmp/your_path/scripts"
+    SCRIPTS_PATH: "/tmp/scripts_path"
 
     # Code path in container
     CODE_PATH: "/workspace"
@@ -41,7 +43,7 @@
 
   vars:
     # Configure the storage path of the ranktable file. 
-    ranktable_save_path: "/tmp/yourpath/ranktable_save_dir"
+    ranktable_save_path: "/tmp/ranktable_save_path"
     docker_run_cmd: |
       docker run -it --shm-size=500g \
         -e CODE_PATH=$CODE_PATH \
@@ -77,7 +79,7 @@
 
       rm -rf ${PREFILL_RANKTABLE_SAVE_PATH}
       mkdir -p ${PREFILL_RANKTABLE_SAVE_PATH}
-      python ${CODE_PATH}/omni_infer/tools/scripts/pd_ranktable_tools.py --mode gen --prefill-server-list "${PREFILL_SERVER_LIST}" --api-server --save-dir ${PREFILL_RANKTABLE_SAVE_PATH}
+      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --prefill-server-list "${PREFILL_SERVER_LIST}" --api-server --save-dir ${PREFILL_RANKTABLE_SAVE_PATH}
 
     generate_decode_ranktable_cmd: |
       #!/bin/bash
@@ -86,7 +88,7 @@
 
       rm -rf ${DECODE_RANKTABLE_SAVE_PATH}
       mkdir -p ${DECODE_RANKTABLE_SAVE_PATH}
-      python ${CODE_PATH}/omni_infer/tools/scripts/pd_ranktable_tools.py --mode gen --decode-server-list ${DECODE_SERVER_LIST} --save-dir ${DECODE_RANKTABLE_SAVE_PATH}
+      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --decode-server-list ${DECODE_SERVER_LIST} --save-dir ${DECODE_RANKTABLE_SAVE_PATH}
       
     generate_global_ranktable_cmd: |
       #!/bin/bash
@@ -102,7 +104,7 @@
       api_server_files=$(ls collect_files_p/api/*.json | head -1)
 
       if [ $DECODE_POD_NUM -gt 1 ]; then
-        python ${CODE_PATH}/omni_infer/tools/scripts/pd_ranktable_tools.py \
+        python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
         --mode merge-local \
         --local-ranktable-list ${decode_ranktable_list} \
         --save-dir ${RANKTABLE_SAVE_PATH}/global
@@ -112,7 +114,7 @@
         decode_local_ranktable_merge="${decode_ranktable_list}"
       fi
 
-      python ${CODE_PATH}/omni_infer/tools/scripts/pd_ranktable_tools.py \
+      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
       --mode merge-all \
       --api-server-list ${api_server_files} \
       --prefill-server-list ${prefill_ranktable_list} \
@@ -128,13 +130,13 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
-      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omni_infer/tests/test_config/test_config_prefill.json"
+      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
 
-      cd ${CODE_PATH}/omni_infer/tools/scripts
-      bash ${CODE_PATH}/omni_infer/tools/scripts/pd_run.sh \
+      cd ${CODE_PATH}/omniinfer/tools/scripts
+      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -181,15 +183,15 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omni_infer/tests/test_config/test_config_decode.json"
+      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32'
       GPU_UTIL=0.95
       ADDITIONAL_CONFIG='{"enable_graph_mode": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
 
-      cd ${CODE_PATH}/omni_infer/tools/scripts
-      bash ${CODE_PATH}/omni_infer/tools/scripts/pd_run.sh \
+      cd ${CODE_PATH}/omniinfer/tools/scripts
+      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -244,7 +246,7 @@
           ((port++))
         done
       done
-      cd ${CODE_PATH}/omni_infer/tools/scripts
+      cd ${CODE_PATH}/omniinfer/tools/scripts
       bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" &
 
     kill_python_processes_cmd: |
@@ -327,8 +329,8 @@
 
     docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omni_infer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omni_infer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e.'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
 
 
   tasks:
@@ -436,25 +438,38 @@
       when: "'C' in group_names"
       tags: 
         - run_docker
-    
+
+    - name: Create a directory to store the code.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOCAL_CODE_PATH }}"
+        state: directory
+      tags: sync_code
+
     - name: The executor synchronizes code to all instances.
       synchronize:
-        src: "/data/your_code_path/omni_infer"
-        dest: "/data/your_code_path/"
+        src: "{{ ansible_env.LOCAL_CODE_PATH }}/omniinfer"
+        dest: "{{ ansible_env.LOCAL_CODE_PATH }}"
       tags: sync_code
 
     - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf /workspace/omni_infer && docker cp /data/your_code_path/omni_infer ${DOCKER_NAME_P}:/workspace/"
+      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_P}:{{ ansible_env.CODE_PATH }}/"
       environment:
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
       when: "'P' in group_names"
       tags: sync_code
 
     - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf /workspace/omni_infer && docker cp /data/your_code_path/omni_infer ${DOCKER_NAME_D}:/workspace/"
+      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_D}:{{ ansible_env.CODE_PATH }}/"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
       when: "'D' in group_names"
+      tags: sync_code
+
+    - name: Copy the file from the host machine to the container
+      command: /bin/bash -c "docker exec $DOCKER_NAME_C rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_C}:{{ ansible_env.CODE_PATH }}/"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      when: "'C' in group_names"
       tags: sync_code
       
     - name: docker_update_prefill_code_cmd.
@@ -865,3 +880,22 @@
       when: "'C' in group_names"
       tags: 
         - run_proxy
+
+    - name: Create a directory on the executor to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
+        state: directory
+      when: "'P' in group_names or 'D' in group_names"
+      delegate_to: localhost
+      tags: 
+        - fetch_log
+
+    - name: Forward logs from all machines to the executor.
+      ansible.builtin.synchronize:
+        mode: pull
+        src: "{{ ansible_env.LOG_PATH }}"
+        dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+      when: "'P' in group_names or 'D' in group_names"
+      delegate_to: localhost
+      tags: 
+        - fetch_log

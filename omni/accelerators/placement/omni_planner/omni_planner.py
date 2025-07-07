@@ -84,10 +84,18 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # Initialize placement manager
         self._init_placement_manager()
 
-        batch_size = getattr(self.config, 'max_batch_size', 256)
-        top_k_count = getattr(self.config, 'max_top_k', 8)
-        selector = torch.arange(batch_size, device=self.device) % self.max_redundant_num  # Shape: (batch_size,)
-        self.selector = selector.view(batch_size, 1).expand(batch_size, top_k_count)  # Broadcast to (batch_size, top_k_count)
+
+        max_moe_layer_num = getattr(self.config, 'max_moe_layer_num', 58)
+        
+        self.selector = [0] * max_moe_layer_num
+        for layer in range(max_moe_layer_num):
+            local_expert_mapping = self.cluster_status.expert_mapping.redundant_expert_mapping[layer]
+            self.n_routed_experts = local_expert_mapping.shape[1]
+            expert_mapping_unique = [ [] for i in range(self.n_routed_experts) ]
+            for i in range(self.n_routed_experts):
+                expert_mapping_unique[i] = torch.unique(local_expert_mapping[:,i]).tolist()
+            expert_mapping_unique = self._init_update_expert_map(expert_mapping_unique)
+            self.selector[layer] = self._init_get_selector(expert_mapping_unique)
 
         self.enable_dump = getattr(self.config, 'enable_dump', False)
 
@@ -148,15 +156,36 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             self.npu_activation_count
         )
 
-        # self.placement_manager = create_placement_manager(
-        #     self.rank,
-        #     self.world_size,
-        #     self.num_devices_per_host,
-        #     self.cluster_activation,
-        #     self.cluster_status.expert_mapping
-        # )
+    def _init_update_expert_map(self, expert_mapping_unique):
+        for i in range(self.n_routed_experts):
+            same_rank_candidates = []
+            same_host_candidates = []
+            distant_candidates = []
+            experts_per_device = self.total_deployed_experts // self.world_size
+            phy_list = expert_mapping_unique[i]
+            for phy in phy_list:
+                phy_device = phy // experts_per_device
+                phy_host = phy_device // self.num_devices_per_host
+                if phy_device == self.rank:
+                    same_rank_candidates.append(phy)
+                elif phy_host == self.rank // self.num_devices_per_host:
+                    same_host_candidates.append(phy)
+                else:
+                    distant_candidates.append(phy)
+            
+            if same_rank_candidates:
+                expert_mapping_unique[i] = [same_rank_candidates[self.rank % len(same_rank_candidates)]]
+            elif same_host_candidates:
+                expert_mapping_unique[i] = [same_host_candidates[self.rank % len(same_host_candidates)]]
+            else:
+                expert_mapping_unique[i] = [distant_candidates[self.rank % len(distant_candidates)]]
+        
+        return expert_mapping_unique
 
-    # @calculate_time
+    def _init_get_selector(self, expert_mapping_unique):
+        selector = torch.tensor(expert_mapping_unique, dtype=torch.int32, device=self.device).view(self.n_routed_experts)
+        return selector
+
     def is_expert_on_current_rank(
         self,
         layer_id: int,
@@ -184,7 +213,9 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         is_prefill=False) -> torch.tensor:
         if layer_idx_moe > 57:
             return None
-        return self.cluster_status.expert_mapping.redundant_expert_mapping[layer_idx_moe]
+        if self.redundant_enable_per_layer[layer_idx_moe]:
+            return self.selector[layer_idx_moe]
+        return self.cluster_status.expert_mapping.redundant_expert_mapping[layer_idx_moe][0]
 
     def plan(
         self,
@@ -214,14 +245,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         """
         if layer_idx_moe > 57:
             return tokens, token_expert_ids, token_expert_scores
-        # Input validation check
-        # if tokens is None or token_expert_ids is None:
-        #     return tokens, token_expert_ids, token_expert_scores
-        if self.redundant_enable_per_layer[layer_idx_moe]:
-            batch_size = token_expert_ids.shape[0]
-            token_expert_ids = expert_mapping[self.selector[:batch_size, :top_k], token_expert_ids]
-        else:
-            token_expert_ids = expert_mapping[0][token_expert_ids]
+
+        token_expert_ids = expert_mapping[token_expert_ids]
 
         return tokens, token_expert_ids, token_expert_scores
 
