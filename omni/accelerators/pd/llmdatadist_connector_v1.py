@@ -379,7 +379,13 @@ class DecodeConnectorWorker:
 
     def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: str):
         self.vllm_config = vllm_config
-        self.datadist_manager = LLMDataDistManager(vllm_config.kv_transfer_config)
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
+        if ENABLED:
+            manager_cls = OmniBiGroupDataDistManager
+            logger.warning(f"DecodeConnector is using Omni datadist manager for KV transfer.")
+        else:
+            manager_cls = LLMDataDistManager
+        self.datadist_manager = manager_cls(vllm_config.kv_transfer_config)
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
