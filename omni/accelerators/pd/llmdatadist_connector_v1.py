@@ -383,8 +383,8 @@ class DecodeConnectorWorker:
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
-        self.queue = {} # cluster_id -> queue.Queue
-        self.thread = {} # cluster_id -> threading.Thread
+        self.queues = {} # cluster_id -> queue.Queue
+        self.threads = {} # cluster_id -> threading.Thread
         self.pull_kv_lock = threading.Lock()
 
 
