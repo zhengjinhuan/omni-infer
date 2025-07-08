@@ -6,7 +6,7 @@ index 4d5f4d3d1..db5dd5c48 100644
  from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
  from vllm.v1.structured_output import StructuredOutputManager
  from vllm.version import __version__ as VLLM_VERSION
-+from vllm.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
++from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
  
  logger = init_logger(__name__)
  
@@ -32,7 +32,7 @@ index 4d5f4d3d1..db5dd5c48 100644
                  scheduler_stats=self.scheduler.make_stats(),
              )
 -        scheduler_output = self.scheduler.schedule()
-+        if self.pull_kv_lock:
++        with self.pull_kv_lock:
 +            scheduler_output = self.scheduler.schedule()
          model_output = self.execute_model(scheduler_output)
          engine_core_outputs = self.scheduler.update_from_output(
