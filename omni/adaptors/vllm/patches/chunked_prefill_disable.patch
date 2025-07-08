@@ -1,0 +1,15 @@
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 4bfcbbc5f..9a227d0ee 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -382,7 +382,9 @@ class Scheduler(SchedulerInterface):
+                             < num_new_tokens):
+                         num_new_tokens = (
+                             self.scheduler_config.long_prefill_token_threshold)
+-                    num_new_tokens = min(num_new_tokens, token_budget)
++                    # num_new_tokens = min(num_new_tokens, token_budget)
++                    if num_new_tokens > token_budget
++                        break
+                     assert num_new_tokens > 0
+ 
+                     # Schedule encoder inputs.

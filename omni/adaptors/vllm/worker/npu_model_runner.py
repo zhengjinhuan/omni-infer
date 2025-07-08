@@ -33,7 +33,7 @@ from vllm.attention import AttentionType, get_attn_backend
 from vllm.attention.layer import Attention
 from vllm.config import CompilationLevel, VllmConfig
 from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size
-from vllm.forward_context import set_forward_context, get_forward_context
+from vllm import forward_context
 from vllm.inputs import INPUT_REGISTRY
 from vllm.logger import logger
 from vllm.model_executor.layers.fused_moe import FusedMoE
@@ -70,7 +70,7 @@ from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 import vllm.envs as envs
 
 from vllm.utils import is_pin_memory_available
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
 
 from abc import abstractmethod, ABCMeta
 
@@ -91,6 +91,28 @@ MAX_GEAR_NUM = 6
 def _get_pad_size(num_seqs):
     tp_size = get_tensor_model_parallel_world_size()
     return (tp_size - num_seqs % tp_size) % tp_size
+
+@contextmanager
+def set_forward_context(attn_metadata: Any,
+                        vllm_config: VllmConfig,
+                        virtual_engine: int = 0,
+                        num_tokens: int = 0):
+    """A context manager that stores the current forward context,
+    can be attention metadata, etc.
+    Here we can inject common logic for every model forward pass.
+    """
+    prev_context = forward_context._forward_context
+    forward_context._forward_context = forward_context.ForwardContext(
+        no_compile_layers=vllm_config.compilation_config.static_forward_context,
+        virtual_engine=virtual_engine,
+        attn_metadata=attn_metadata,
+        dp_metadata=dp_metadata)
+
+    try:
+        yield
+    finally:
+        _forward_context = prev_context
+
 
 class GraphCompileConfiguration:
     """
@@ -550,6 +572,22 @@ class NPUModelRunner(GPUModelRunner):
         cost_fc_exit = start_ret - start_fc_exit
         logger.debug(f" ***** before fc {cost_before_fc:.6f}, fc {cost_fc:.6f}={cost_setup_connector:.6f}+{cost_fc_exit:.6f}")
         return hidden_states, raw_hidden_states, input_ids, finished_sending, finished_recving
+
+    def kv_connector_no_forward(
+            self, scheduler_output: "SchedulerOutput") -> ModelRunnerOutput:
+        # KV send/recv even if no work to do.
+        with set_forward_context(None, self.vllm_config):
+            self.maybe_setup_kv_connector(scheduler_output)
+            finished_sending, finished_recving = (
+                self.get_finished_kv_transfers(scheduler_output))
+
+        if not finished_sending and not finished_recving:
+            return EMPTY_MODEL_RUNNER_OUTPUT
+
+        output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
+        output.finished_sending = finished_sending
+        output.finished_recving = finished_recving
+        return output
 
     @torch.inference_mode()
     def execute_model(

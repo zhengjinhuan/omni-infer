@@ -671,7 +671,6 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.q_a_layernorm = q_a_layernorm
         self.q_b_proj = q_b_proj
 
-        self.num_local_heads = num_heads
         self.qk_head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
         self.scaling = self.qk_head_dim ** -0.5
         self.q_a_proj = q_a_proj
@@ -681,14 +680,14 @@ class AscendMLAImpl(MLAAttentionImpl):
 
         expected_shape = (
             self.kv_lora_rank,
-            self.num_local_heads * (self.qk_nope_head_dim + self.v_head_dim)
+            self.num_heads * (self.qk_nope_head_dim + self.v_head_dim)
         )
         if kv_b_proj_weight.shape != expected_shape:
             raise RuntimeError(f"{kv_b_proj_weight.shape} != {expected_shape}")
 
         kv_b_proj_weight = kv_b_proj_weight.view(
             self.kv_lora_rank,
-            self.num_local_heads,
+            self.num_heads,
             self.qk_nope_head_dim + self.v_head_dim,
         )
         self.W_UK, self.W_UV = kv_b_proj_weight.split(
@@ -742,7 +741,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                 q, latent_cache = torch.split(qkv, [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1)
 
                 q = self.q_a_layernorm(q)
-                q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+                q = self.q_b_proj(q)[0].view(-1, self.num_heads, self.qk_head_dim)
             else:
                 q = self.q_a_proj(hidden_states)[0]
                 latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
@@ -755,9 +754,9 @@ class AscendMLAImpl(MLAAttentionImpl):
                 q_quant = tensor_model_parallel_all_gather(q_quant, dim=0)
                 q_scale = tensor_model_parallel_all_gather(q_scale, dim=0)
                 q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
-                q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+                q = self.q_b_proj(q)[0].view(-1, self.num_heads, self.qk_head_dim)
         else:
-            q = self.q_proj(hidden_states)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+            q = self.q_proj(hidden_states)[0].view(-1, self.num_heads, self.qk_head_dim)
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
             q = tensor_model_parallel_all_gather(q, dim=0)
             latent_cache = tensor_model_parallel_all_gather(latent_cache, dim=0)
@@ -798,7 +797,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
             k_pe = k_pe.squeeze(2)
         attn_output = torch.empty(q.shape[0],
-                        self.num_local_heads,
+                        self.num_heads,
                         self.v_head_dim,
                         device=q_nope.device,
                         dtype=q_nope.dtype)
@@ -830,13 +829,13 @@ class AscendMLAImpl(MLAAttentionImpl):
                 prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
 
                 kv = self.kv_b_proj.forward(prefill_kv_a)[0]
-                kv = kv.view(-1, self.num_local_heads, self.qk_nope_head_dim + self.v_head_dim)
+                kv = kv.view(-1, self.num_heads, self.qk_nope_head_dim + self.v_head_dim)
                 k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
                 if prefill_metadata.max_query_len > 1:
                     attn_mask = self.attn_mask
                 else:
                     attn_mask = None
-                prefill_k_rope = prefill_k_pe.view(-1, 1, self.qk_rope_head_dim).repeat(1, self.num_local_heads, 1)
+                prefill_k_rope = prefill_k_pe.view(-1, 1, self.qk_rope_head_dim).repeat(1, self.num_heads, 1)
                 attn_output[computed_tokens:computed_tokens+actual_seq_qlen[-1]] = \
                     torch.ops.npu.npu_fused_infer_attention_score(
                         q_nope[computed_tokens:computed_tokens+actual_seq_qlen[-1]],
@@ -844,8 +843,8 @@ class AscendMLAImpl(MLAAttentionImpl):
                         v,
                         query_rope=q_pe[computed_tokens:computed_tokens+actual_seq_qlen[-1]],
                         key_rope=prefill_k_rope,
-                        num_heads=self.num_local_heads,
-                        num_key_value_heads=self.num_local_heads,
+                        num_heads=self.num_heads,
+                        num_key_value_heads=self.num_heads,
                         input_layout="TND",
                         atten_mask=attn_mask,
                         sparse_mode=2,
@@ -859,12 +858,12 @@ class AscendMLAImpl(MLAAttentionImpl):
 
         if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
             attn_output = attn_output.reshape(-1)
-            all_to_all_attn_output = torch.empty([sum(prefill_metadata.seq_lens) * self.num_local_heads * self.qk_nope_head_dim], dtype=attn_output.dtype, device=current_platform.device_type)
+            all_to_all_attn_output = torch.empty([sum(prefill_metadata.seq_lens) * self.num_heads * self.qk_nope_head_dim], dtype=attn_output.dtype, device=current_platform.device_type)
             dist.all_to_all_single(all_to_all_attn_output, attn_output)  # (total_experts,) --> (total_ranks * n_routed_experts_per_rank)
-            attn_output = all_to_all_attn_output.view(get_tensor_model_parallel_world_size(), sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(), self.num_local_heads * self.qk_nope_head_dim).transpose(0, 1).contiguous()
+            attn_output = all_to_all_attn_output.view(get_tensor_model_parallel_world_size(), sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(), self.num_heads * self.qk_nope_head_dim).transpose(0, 1).contiguous()
             output, _ = self.o_proj.forward(attn_output.reshape(sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(), -1))
         else:
-            attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
+            attn_output = attn_output.view(-1, self.num_heads * self.v_head_dim)
             output = self.o_proj.forward(attn_output)[0]
         return output
 
@@ -907,8 +906,8 @@ class AscendMLAImpl(MLAAttentionImpl):
 
                 k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // (32 if self.use_faquant else 16), block_size, (32 if self.use_faquant else 16))
                 k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim // 16, block_size, 16)
-                q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
-                q_pe = q_pe.view(bsz, self.num_local_heads, -1)
+                q_nope = q_nope.view(bsz, self.num_heads, self.kv_lora_rank)
+                q_pe = q_pe.view(bsz, self.num_heads, -1)
             else:
                 if self.q_lora_rank is not None:
                     q_lowrank = self.q_a_proj(hidden_states)[0]
@@ -929,14 +928,14 @@ class AscendMLAImpl(MLAAttentionImpl):
                 else:
                     q = q_lowrank
                 bsz, _ = q.shape
-                q = q.view(bsz, self.num_local_heads, 1, self.qk_head_dim)
+                q = q.view(bsz, self.num_heads, 1, self.qk_head_dim)
                 q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1) # b,n,s,d
 
-                q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim).transpose(0, 1) # n, bs, d
+                q_nope = q_nope.view(-1, self.num_heads, self.qk_nope_head_dim).transpose(0, 1) # n, bs, d
                 q_nope = (
                     torch.matmul(q_nope, self.W_UK)
                     .transpose(1, 0)
-                    .view(bsz, q_len, self.num_local_heads, -1)
+                    .view(bsz, q_len, self.num_heads, -1)
                 )
 
                 if model_extra_config.operator_opt_config.moe_multi_stream_tune:
@@ -960,8 +959,8 @@ class AscendMLAImpl(MLAAttentionImpl):
 
                         # cos, sin = self.rotary_emb.get_cos_sin(positions)
                         q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin) # BNSD
-                        q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
-                        q_pe = q_pe.view(bsz, self.num_local_heads, -1)
+                        q_nope = q_nope.view(bsz, self.num_heads, self.kv_lora_rank)
+                        q_pe = q_pe.view(bsz, self.num_heads, -1)
                 else:
                     kv = kv.unsqueeze(1).unsqueeze(1)
                     cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
@@ -980,8 +979,8 @@ class AscendMLAImpl(MLAAttentionImpl):
 
                     # cos, sin = self.rotary_emb.get_cos_sin(positions)
                     q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin) # BNSD
-                    q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
-                    q_pe = q_pe.view(bsz, self.num_local_heads, -1)
+                    q_nope = q_nope.view(bsz, self.num_heads, self.kv_lora_rank)
+                    q_pe = q_pe.view(bsz, self.num_heads, -1)
 
             bsz, _, q_dim = q_nope.size()
             input_layout = "TND_NTD" if model_extra_config.operator_opt_config.use_a3_high_performance_cann else "TND"
@@ -990,7 +989,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                 with tng.scope.super_kernel(self.prefix, 'option_xxx'):
                     attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                             q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                            num_heads=self.num_local_heads,
+                            num_heads=self.num_heads,
                             num_key_value_heads=1, input_layout=input_layout,
                             scale=self.scaling,
                             antiquant_mode=0, antiquant_scale=None,
@@ -1001,19 +1000,19 @@ class AscendMLAImpl(MLAAttentionImpl):
                             )
 
                     # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-                    attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+                    attn_output = attn_output.view(self.num_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
                     attn_output = (
                         torch.matmul(attn_output, self.W_UV)
                         .transpose(1, 0)
                         .reshape(bsz, q_len, -1)
                     )
                     attn_output = attn_output.view(
-                        -1, self.num_local_heads * self.v_head_dim)
+                        -1, self.num_heads * self.v_head_dim)
                     output, _ = self.o_proj.forward(attn_output)
             else:
                 attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                         q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                        num_heads=self.num_local_heads,
+                        num_heads=self.num_heads,
                         num_key_value_heads=1, input_layout=input_layout,
                         scale=self.scaling,
                         antiquant_mode=0, antiquant_scale=None,
@@ -1025,7 +1024,7 @@ class AscendMLAImpl(MLAAttentionImpl):
 
                 # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
                 if model_extra_config.operator_opt_config.use_a3_high_performance_cann:
-                    attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+                    attn_output = attn_output.view(self.num_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
                 else:
                     attn_output = attn_output.squeeze(1).transpose(0, 1)
                 # attn_output = pp_matmul(attn_output, self.W_UV, mm_type=4)
@@ -1035,7 +1034,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                     .reshape(bsz, q_len, -1)
                 )
                 attn_output = attn_output.view(
-                    -1, self.num_local_heads * self.v_head_dim)
+                    -1, self.num_heads * self.v_head_dim)
                 output, _ = self.o_proj.forward(attn_output)
         else:
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
@@ -1057,14 +1056,14 @@ class AscendMLAImpl(MLAAttentionImpl):
                 q = q_lowrank
             bsz, _ = q.shape
             q_len = 1
-            q = q.view(bsz, self.num_local_heads, 1, self.qk_head_dim)
+            q = q.view(bsz, self.num_heads, 1, self.qk_head_dim)
             q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1) # b,n,s,d
 
-            q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim).transpose(0, 1) # n, bs, d
+            q_nope = q_nope.view(-1, self.num_heads, self.qk_nope_head_dim).transpose(0, 1) # n, bs, d
             q_nope = (
                 torch.matmul(q_nope, self.W_UK)
                 .transpose(1, 0)
-                .view(bsz, q_len, self.num_local_heads, -1)
+                .view(bsz, q_len, self.num_heads, -1)
             )
 
             kv = kv.unsqueeze(1).unsqueeze(1)
@@ -1084,13 +1083,13 @@ class AscendMLAImpl(MLAAttentionImpl):
 
             # cos, sin = self.rotary_emb.get_cos_sin(positions)
             q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin) # BNSD
-            q_nope = q_nope.view(bsz, 1, self.num_local_heads, self.kv_lora_rank)
-            q_pe = q_pe.view(bsz, 1, self.num_local_heads, -1)
+            q_nope = q_nope.view(bsz, 1, self.num_heads, self.kv_lora_rank)
+            q_pe = q_pe.view(bsz, 1, self.num_heads, -1)
 
             bsz, q_len, _, q_dim = q_nope.size()
             attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                     q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                    num_heads=self.num_local_heads,
+                    num_heads=self.num_heads,
                     num_key_value_heads=1, input_layout="BSND",
                     scale=self.scaling,
                     antiquant_mode=0, antiquant_scale=None,
@@ -1101,7 +1100,7 @@ class AscendMLAImpl(MLAAttentionImpl):
 
             # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
             attn_output = attn_output.squeeze(1).transpose(0, 1)
-            # attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+            # attn_output = attn_output.view(self.num_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
             # attn_output = pp_matmul(attn_output, self.W_UV, mm_type=4)
             attn_output = (
                 torch.matmul(attn_output, self.W_UV)
@@ -1109,6 +1108,6 @@ class AscendMLAImpl(MLAAttentionImpl):
                 .reshape(bsz, q_len, -1)
             )
             attn_output = attn_output.view(
-                -1, self.num_local_heads * self.v_head_dim)
+                -1, self.num_heads * self.v_head_dim)
             output, _ = self.o_proj.forward(attn_output)
         return output
