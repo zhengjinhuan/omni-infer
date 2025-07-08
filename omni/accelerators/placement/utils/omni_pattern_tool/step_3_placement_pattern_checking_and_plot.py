@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 
 import numpy as np
 import matplotlib.pyplot as plt

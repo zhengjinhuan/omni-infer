@@ -1,35 +1,63 @@
 #!/bin/bash
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025. All rights reserved.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-# run_pipeline.sh
-# Shell script to run pipeline.py with specified or default parameters
+# pattern_generation_pipeline.sh
+# Shell script to run pipeline.py with specified or default parameters. 
+# It provides a workflow for generating placement patterns from log files or text files as well as pattern checking and analysis.
+# Usage: ./pattern_generation_pipeline.sh [options]
+# The pipeline.py script is executed with the specified parameters, and the output is saved to the specified directories. It will run step_1_generate_csv_with_ceiling.py, step_2_placement_pattern_generation.py, step_3_placement_pattern_checking_and_plot.py, and sstep_4_load_analysis_and_plot.py according to the input mode and other specified parameters.
+# More informaiontion about the pipeline.py script can be found in the readme.md file.
 
 # Default parameters
+# TIMESTAMP: Current timestamp in the format YYYYMMDD_HHMMSS, used for naming output files and datasets
 TIMESTAMP=$(date +%Y%m%d_%H%M%S) 
-INPUT_LOG_FILES=("./dump_to_log-1.log" "./dump_to_log-2.log")  # Default to multiple log files, can be overridden
-INPUT_TXT_FOLDERS=("./decoder1" "./decoder2")  # Default to a list of txt folders
+# INPUT_LOG_FILES: Array of default input log files. Can be overridden by command-line arguments.
+INPUT_LOG_FILES=("./dump_to_log-1.log" "./dump_to_log-2.log")  
+# INPUT_TXT_FOLDERS: Array of default input text folders. Can be overridden by command-line arguments.
+INPUT_TXT_FOLDERS=("./decoder1" "./decoder2")  
+# INPUT_MODE: Input mode, either 'log' or 'txt'. Defaults to 'txt'.
 INPUT_MODE="txt" 
+# TOPK_ID_COUNT_DIR: Directory for storing topk ID count results. Defaults to './topk_id_count'.
 TOPK_ID_COUNT_DIR="${TOPK_ID_COUNT_DIR:-./topk_id_count}"
+# PLACEMENT_PATTERN_DIR: Directory for storing placement patterns. Defaults to './placement_pattern'.
 PLACEMENT_PATTERN_DIR="${PLACEMENT_PATTERN_DIR:-./placement_pattern}"
+# PLACEMENT_PATTERN_VIEW_DIR: Directory for storing placement pattern views. Defaults to './placement_pattern_view'.
 PLACEMENT_PATTERN_VIEW_DIR="${PLACEMENT_PATTERN_VIEW_DIR:-./placement_pattern_view}"
+# PLACEMENT_PATTERN_ANALYSIS_DIR: Directory for storing load analysis results. Defaults to './placement_pattern_analysis'.
 PLACEMENT_PATTERN_ANALYSIS_DIR="${PLACEMENT_PATTERN_ANALYSIS_DIR:-./placement_pattern_analysis}"
+# OUTPUT_CSV: Path to the output CSV file. Can be empty.
 OUTPUT_CSV=""
+# NUM_LAYERS: Number of layers. Defaults to 58.
 NUM_LAYERS=58
+# NUM_RANKS_OF_COLLECTING_DATA: Number of ranks for data collection. Defaults to 32.
 NUM_RANKS_OF_COLLECTING_DATA=32
+# NUM_POSITIONS_OF_ROUTED_EXPERTS: Number of positions for routed experts. Defaults to 256.
 NUM_POSITIONS_OF_ROUTED_EXPERTS=256
+# NUM_RANKS_TARGET_PATTERN: Number of ranks for the target pattern. Defaults to 32.
 NUM_RANKS_TARGET_PATTERN=32
+# NUM_REDUNDANT_LAYERS: Number of redundant layers. Defaults to 58.
 NUM_REDUNDANT_LAYERS="58"
+# EXPERT_REDUNDANT_LIMIT: Expert redundant limit. Defaults to 199.
 EXPERT_REDUNDANT_LIMIT=199
+# NUM_LAYERS_TARGET_PATTERN: Number of layers for the target pattern. Defaults to 58.
 NUM_LAYERS_TARGET_PATTERN=58
+# NUM_EPS_TARGET_PATTERN: Number of experts for the target pattern. Defaults to 256.
 NUM_EPS_TARGET_PATTERN=256
-DATASET_NAME="${DATASET_NAME:-$TIMESTAMP}"  # 默认使用统一时间�?
-OUTPUT_FILE_PREFIX="${OUTPUT_FILE_PREFIX:-$TIMESTAMP}"  # 默认使用统一时间�?
+# DATASET_NAME: Name of the dataset. Defaults to the current timestamp if not provided.
+DATASET_NAME="${DATASET_NAME:-$TIMESTAMP}"  
+# OUTPUT_FILE_PREFIX: Prefix for output files. Defaults to the current timestamp if not provided.
+OUTPUT_FILE_PREFIX="${OUTPUT_FILE_PREFIX:-$TIMESTAMP}"  
+# PATTERN_MODE: Pattern generation mode, can be 'rearrange', 'redundant', or 'all'. Defaults to 'all'.
 PATTERN_MODE="all"
+# COLLECTING_MODES: Data collecting modes, can be 'prefill', 'decode', or 'all'. Defaults to 'decode'.
 COLLECTING_MODES="decode"
+# RECORDSTEP_RANGE: Range of recordstep or step values in the format 'start:end'. Can be empty.
 RECORDSTEP_RANGE=""
 
 # Function to display usage
+# This function prints the usage information and available options of the script, then exits with status code 1.
 usage() {
     echo "Usage: $0 [options]"
     echo "Note: Parameters containing spaces (e.g., filenames) must be enclosed in quotes, e.g., --output_csv \"my output.csv\""
@@ -62,6 +90,9 @@ usage() {
 }
 
 # Function to parse command-line arguments using GNU getopt
+# This function parses the command-line arguments passed to the script and updates the global variables accordingly.
+# It uses GNU getopt to handle long and short options. If an argument is provided, it resets the corresponding default value.
+# If the argument parsing fails, it prints an error message and exits with status code 1.
 parse_arguments() {
     TEMP=$(getopt -o h --long input_log_files:,input_txt_folders:,input_mode:,topk_id_count_dir:,placement_pattern_dir:,placement_pattern_view_dir:,placement_pattern_analysis_dir:,output_csv:,num_layers:,num_ranks_of_collecting_data:,num_positions_of_routed_experts:,num_ranks_target_pattern:,num_redundant_layers:,expert_redundant_limit:,num_layers_target_pattern:,num_eps_target_pattern:,dataset_name:,output_file_prefix:,pattern_mode:,collecting_modes:,recordstep_range:,help -n "$0" -- "$@")
     if [ $? != 0 ]; then echo "Error: Failed to parse arguments!" >&2; exit 1; fi
@@ -108,12 +139,12 @@ parse_arguments() {
             --num_eps_target_pattern) NUM_EPS_TARGET_PATTERN="$2"; shift 2 ;;
             --dataset_name)
                 DATASET_NAME="$2"
-                [[ "$DATASET_NAME" == "" ]] && DATASET_NAME="$TIMESTAMP"  # 空字符串使用统一时间�?
+                [[ "$DATASET_NAME" == "" ]] && DATASET_NAME="$TIMESTAMP"  
                 shift 2
                 ;;
             --output_file_prefix)
                 OUTPUT_FILE_PREFIX="$2"
-                [[ "$OUTPUT_FILE_PREFIX" == "" ]] && OUTPUT_FILE_PREFIX="$TIMESTAMP"  # 空字符串使用统一时间�?
+                [[ "$OUTPUT_FILE_PREFIX" == "" ]] && OUTPUT_FILE_PREFIX="$TIMESTAMP"  
                 shift 2
                 ;;
             --pattern_mode) PATTERN_MODE="$2"; shift 2 ;;
@@ -127,6 +158,9 @@ parse_arguments() {
 }
 
 # Function to validate input parameters
+# This function validates the input parameters to ensure they are in the correct format and within the acceptable range.
+# It checks the input mode, input files/folders, pattern mode, collecting modes, number of ranks, and recordstep range.
+# If any validation fails, it prints an error message and exits with status code 1.
 validate_inputs() {
     # Validate input_mode
     if [[ "$INPUT_MODE" != "log" && "$INPUT_MODE" != "txt" ]]; then
@@ -152,9 +186,12 @@ validate_inputs() {
             exit 1
         fi
         for folder in "${INPUT_TXT_FOLDERS[@]}"; do
-            if [[ ! -d "$folder" ]]; then
+            if [ ! -d "$folder" ]; then
+                echo "Error: Text folder '$folder' does not exist." >&2
+            elif [ ! -r "$folder" ]; then
+                echo "Error: Text folder '$folder' exists but is not readable." >&2
+            else
                 echo "Error: Text folder '$folder' is not a valid directory." >&2
-                exit 1
             fi
         done
     fi
@@ -186,13 +223,15 @@ validate_inputs() {
         start=$(echo "$RECORDSTEP_RANGE" | cut -d':' -f1)
         end=$(echo "$RECORDSTEP_RANGE" | cut -d':' -f2)
         if [ "$start" -gt "$end" ]; then
-            echo "Error: recordstep_range start must be less than or equal to end." >&2
+            echo "Error: recordstep_range start ($start) must be less than or equal to end ($end)." >&2
             exit 1
         fi
     fi
 }
 
 # Function to check dependencies
+# This function checks if Python is available and if all the required Python scripts exist.
+# If Python is not found or any required script is missing, it prints an error message and exits with status code 1.
 check_dependencies() {
     # Check Python availability
     if ! command -v python &> /dev/null; then
@@ -218,6 +257,8 @@ check_dependencies() {
 }
 
 # Function to print parameters
+# This function prints all the input parameters that will be used to run the pipeline.py script.
+# It displays different information based on the input mode (log or txt).
 print_parameters() {
     echo "Running pipeline.py with the following parameters:"
     if [[ "$INPUT_MODE" == "log" ]]; then
@@ -247,6 +288,8 @@ print_parameters() {
 }
 
 # Function to run the pipeline
+# This function runs the pipeline.py script with all the input parameters.
+# If the execution is successful, it prints a success message. Otherwise, it prints an error message and exits with status code 1.
 run_pipeline() {
     python pipeline.py \
         --input_log_files "${INPUT_LOG_FILES[@]}" \
@@ -270,7 +313,7 @@ run_pipeline() {
         --pattern_mode "$PATTERN_MODE" \
         --collecting_modes "$COLLECTING_MODES" \
         --recordstep_range "$RECORDSTEP_RANGE" \
-        --timestamp "$TIMESTAMP"  # 传递统一时间�?
+        --timestamp "$TIMESTAMP"  
 
     if [[ $? -eq 0 ]]; then
         echo "Pipeline executed successfully."
@@ -281,6 +324,8 @@ run_pipeline() {
 }
 
 # Main function
+# This function orchestrates the entire process by calling the argument parsing, input validation, dependency checking,
+# parameter printing, and pipeline running functions in sequence.
 main() {
     parse_arguments "$@"
     validate_inputs

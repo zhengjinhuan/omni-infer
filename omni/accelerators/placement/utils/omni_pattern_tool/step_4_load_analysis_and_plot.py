@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
 import numpy as np
@@ -291,7 +292,6 @@ def plot_unbalanced_ratio_comparison_lis(
     for df in optimized_df_lis:
         max_loads = df.max(axis=1)
         avg_loads = df.mean(axis=1)
-        # Avoid division by zero
         ratios = np.where(avg_loads != 0, max_loads / avg_loads, 1.0)
         ratio_lis.append(ratios)
 
@@ -323,9 +323,9 @@ def plot_unbalanced_ratio_comparison_lis(
     max_y = max(ratio_lis[i].max() for i in range(len(ratio_lis)))
     ax.set_ylim(0, max_y * 1.02)
 
-    ax.set_xlabel('层 ID')
-    ax.set_ylabel('负载不均衡度（最大/平均）')
-    ax.set_title(f'每层负载不均衡度比较，数据集：{dataset_name}')
+    ax.set_xlabel('Layer ID')
+    ax.set_ylabel('Load Imbalance Degree (Max/Avg)')
+    ax.set_title(f'Load Imbalance Degree Comparison per Layer, Dataset: {dataset_name}')
     ax.set_xticks(indices)
     ax.set_xticklabels(layers, rotation=45)
     ax.legend()
@@ -481,16 +481,16 @@ def analyze_and_plot_deployments(
 if __name__ == "__main__":
     log_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     analyze_and_plot_deployments(
-        load_file='./topk_id_count/topk_ids_count_20250529_105400_decode_step400to500.csv',
+        load_file='./topk_id_count/topk_ids_count_1.csv',
         pp_path_lis=[
-            './placement_pattern/placement_pattern_20250529_0_rearrange_layers_58_layers_64_ranks_decode_step400to500.npy',
-            './placement_pattern/placement_pattern_20250529_0_redundant_layers_58_layers_64_ranks_epmaxdeploy_12_decode_step400to500.npy',
-            './placement_pattern/placement_pattern_20250529_10_rearrange_layers_58_layers_64_ranks_decode_step400to500.npy',
-            './placement_pattern/placement_pattern_20250529_10_redundant_layers_58_layers_64_ranks_epmaxdeploy_12_decode_step400to500.npy'
+            './placement_pattern/placement_pattern_1.npy',
+            './placement_pattern/placement_pattern_2.npy',
+            './placement_pattern/placement_pattern_3.npy',
+            './placement_pattern/placement_pattern_4.npy'
         ],
-        ppname_lis=['Baseline', 'Pattern_0_rearrange', 'Pattern_0_redundant', 'Pattern_10_rearrange', 'Pattern_10_redundant'],
+        ppname_lis=['Baseline', 'Pattern_1', 'Pattern_2', 'Pattern_3', 'Pattern_4'],
         fig_save_path='./placement_pattern_analysis',
         num_ranks=64,
-        dataset_name='64_Ranks_longbench_3.5k_decode_step400to500',
+        dataset_name='dataset',
         log_timestamp=log_timestamp
     )

@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 
 import os
 import csv
@@ -382,7 +384,7 @@ if __name__ == "__main__":
         input_mode='log',
         output_dir="./topk_id_count",
         collecting_modes="all",
-        output_csv="longbench_3.5k_decode.csv",
+        output_csv="dataset.csv",
         num_layers=58,
         num_ranks_of_collecting_data=64,
         num_positions_of_routed_experts=256,
@@ -390,11 +392,11 @@ if __name__ == "__main__":
     )
     # Example: Text file mode with multiple folders merged into one CSV
     generate_csv(
-        input_txt_folders=["./decode", "./activation_datas/longbench_1k_32die_0428/1step_425"],
+        input_txt_folders=["./decode1", "./decode2"],
         input_mode='txt',
         output_dir="./topk_id_count",
         collecting_modes="decode",
-        output_csv="longbench_combined.csv",
+        output_csv="dataset.csv",
         num_layers=58,
         num_ranks_of_collecting_data=32,
         num_positions_of_routed_experts=256,

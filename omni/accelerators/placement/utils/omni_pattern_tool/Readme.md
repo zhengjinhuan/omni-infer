@@ -1,15 +1,17 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 # 专家部署流水线说明文档
 
 **作者：陶壮**  
-**更新日期：2025年6月30日**  
-**版权所有 (c) 华为技术有限公司 2012-2025**
+**更新日期：2025年7月8日**  
+
 
 ## 概述
 本流水线是为混合专家模型（Mixture of Experts, MoE）设计的专家部署优化工具，旨在从专家激活数据生成跨 rank（如 GPU 或计算节点）的专家放置模式，并分析负载均衡效果。流水线支持两种放置策略：
 - **仅重新排列（rearrange-only）**：确保每个专家在每层仅部署一次，通过优化分配实现负载均衡。
 - **冗余（redundant）**：允许专家在高负载层多次部署，以进一步优化性能。
 
-流水线从日志文件（`.log`）或文本文件（`.txt`）生成激活计数 CSV 文件，基于此生成放置模式 `.npy` 文件，验证模式的有效性，生成可视化视图，并分析负载均衡效果。此外，还提供了一个独立的脚本 `calculate_layer_stats.py`，用于分析指定层的专家激活统计特性，生成包含方差、熵、最大最小差值和均值的 CSV 文件。整个流水线适用于分布式计算环境中 MoE 模型的专家部署优化，广泛应用于高性能计算和深度学习场景。
+流水线从日志文件（`.log`）或文本文件（`.txt`）生成激活计数 CSV 文件，基于此生成放置模式 `.npy` 文件，验证模式的有效性，生成可视化视图，并分析负载均衡效果。整个流水线适用于分布式计算环境中 MoE 模型的专家部署优化，广泛应用于高性能计算和深度学习场景。
 
 流水线包含以下主要步骤：
 1. 从输入文件提取激活数据，生成每层专家激活计数的 CSV 文件。
@@ -28,45 +30,31 @@
   pip install numpy pandas matplotlib seaborn scipy
   ```
 - **系统要求**：
-  - **Linux/MacOS**：支持 Bash 的系统以运行 `run_pipeline.sh` 脚本。
-  - **Windows**：可直接运行 `pipeline.py` 或 `calculate_layer_stats.py`，但需手动配置参数。
+  - **Linux/MacOS**：支持 Bash 的系统以运行 `pattern_generation_pipeline.sh` 脚本。
+  - **Windows**：可直接运行 `pipeline.py`，但需手动配置参数。
 - **字体支持**：
   - 为确保可视化中的中文字符（例如标题和标签）正确显示，建议安装支持中文的字体（如 SimHei、Microsoft YaHei 或 Arial Unicode MS）。
   - 如果未安装相关字体，可视化图像可能显示乱码，但不影响数据处理或文件生成。
 - **输入数据准备**：
   - **日志模式（`input_mode=log`）**：准备 `.log` 文件，记录专家激活数据，格式见“输入文件格式”中的“日志文件格式”。
   - **文本模式（`input_mode=txt`）**：准备包含 `.txt` 文件的文件夹，每个文件对应一个 rank 的激活数据，例如 `D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder`，格式见“输入文件格式”中的“文本文件格式”。
-  - **统计分析**：准备包含 `.txt` 文件的文件夹，文件格式与文本模式一致，用于 `calculate_layer_stats.py` 分析。
 
 ### 2. 配置参数
-流水线通过命令行参数或修改 `run_pipeline.sh` 中的默认参数进行配置。统计分析脚本 `calculate_layer_stats.py` 也支持通过命令行参数或直接修改脚本中的参数进行配置。以下是一些典型的使用示例：
+流水线通过命令行参数或修改 `pattern_generation_pipeline.sh` 中的默认参数进行配置。以下是一些典型的使用示例：
 
 - **文本模式示例（流水线）**：
   ```bash
-  ./run_pipeline.sh \
-    --input_txt_folders "D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder" \
+  ./pattern_generation_pipeline.sh \
+    --input_txt_folders "/path/to/input/txt/folder" \
     --input_mode txt \
     --num_ranks_of_collecting_data 32 \
     --num_ranks_target_pattern 256 \
     --pattern_mode all \
     --collecting_modes decode \
-    --recordstep_range 0:100000
-  ```
-
-- **统计分析示例（calculate_layer_stats.py）**：
-  ```bash
-  python calculate_layer_stats.py \
-    --input_txt_folder "D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder" \
-    --layer_id 15 \
-    --output_dir "./layer_stats" \
-    --num_layers 58 \
-    --num_ranks_of_collecting_data 32 \
-    --num_positions_of_routed_experts 256
   ```
 
 - **参数说明**：
-  - 流水线参数可以直接在 `run_pipeline.sh` 中修改默认值，或通过命令行传递。
-  - 统计分析参数可以通过命令行传递给 `calculate_layer_stats.py`，或直接修改脚本中的默认值。
+  - 流水线参数可以直接在 `pattern_generation_pipeline.sh` 中修改默认值，或通过命令行传递。
   - 参数值中包含空格（如文件路径）需用双引号括起来，例如 `--input_txt_folders "D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder"`.
   - 详见“参数说明”部分，了解每个参数的作用和默认值。
 
@@ -74,18 +62,18 @@
 流水线支持两种运行方式：
 
 - **使用 Bash 脚本（推荐，适用于 Linux/MacOS）**：
-  1. 确保 `run_pipeline.sh` 和所有 Python 脚本（`pipeline.py`, `step_1_generate_csv_with_ceiling.py`, `step_2_placement_pattern_generation.py`, `step_3_placement_pattern_checking_and_plot.py`, `step_4_load_analysis_and_plot.py`）位于同一目录。
+  1. 确保 `pattern_generation_pipeline.sh` 和所有 Python 脚本（`pipeline.py`, `step_1_generate_csv_with_ceiling.py`, `step_2_placement_pattern_generation.py`, `step_3_placement_pattern_checking_and_plot.py`, `step_4_load_analysis_and_plot.py`）位于同一目录。
   2. 赋予脚本执行权限：
      ```bash
-     chmod +x run_pipeline.sh
+     chmod +x pattern_generation_pipeline.sh
      ```
   3. 运行脚本：
      ```bash
-     ./run_pipeline.sh
+     ./pattern_generation_pipeline.sh
      ```
   4. 可通过命令行参数覆盖默认配置，例如：
      ```bash
-     ./run_pipeline.sh --input_txt_folders "D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder" --pattern_mode all
+     ./pattern_generation_pipeline.sh --input_txt_folders "/path/to/input/txt/folder" --pattern_mode all
      ```
 
 - **直接运行 Python 脚本（适用于所有系统）**：
@@ -93,7 +81,7 @@
   2. 使用 `python` 命令运行 `pipeline.py`，并指定参数，例如：
      ```bash
      python pipeline.py \
-       --input_txt_folders "D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder" \
+       --input_txt_folders "/path/to/input/txt/folder" \
        --input_mode txt \
        --num_ranks_of_collecting_data 32 \
        --num_ranks_target_pattern 256 \
@@ -102,57 +90,33 @@
        --recordstep_range 0:100000
      ```
 
-### 4. 运行统计分析脚本
-统计分析脚本 `calculate_layer_stats.py` 用于分析指定层的专家激活统计特性，生成 CSV 文件。运行方式如下：
-
-- **直接运行 Python 脚本**：
-  1. 确保依赖库已安装（包括 `scipy` 用于熵计算）。
-  2. 使用 `python` 命令运行 `calculate_layer_stats.py`，并指定参数，例如：
-     ```bash
-     python calculate_layer_stats.py \
-       --input_txt_folder "D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder" \
-       --layer_id 15 \
-       --output_dir "./layer_stats" \
-       --num_layers 58 \
-       --num_ranks_of_collecting_data 32 \
-       --num_positions_of_routed_experts 256
-     ```
-  3. 可直接修改脚本中的默认参数并运行：
-     ```bash
-     python calculate_layer_stats.py
-     ```
-
 ### 5. 查看输出
 流水线运行完成后，会在指定目录生成以下输出文件：
 
 - **激活计数 CSV 文件**：
   - 路径：`topk_id_count_dir`（默认 `./topk_id_count`）。
-  - 示例：`./topk_id_count/topk_ids_count_20250630_183900_decode_step0to100000.csv`。
+  - 示例：`./topk_id_count/topk_ids_count_<timestamp>_<collecting_modes>_step<start>to<end>.csv`。
   - 内容：每层每个专家的激活计数，用于后续放置模式生成。
 - **放置模式文件**：
   - 路径：`placement_pattern_dir`（默认 `./placement_pattern`）。
   - 示例：
-    - 冗余模式：`./placement_pattern/placement_pattern_20250630_183900_58_redundant_layers_58_layers_256_ranks_epmaxdeploy_200_decode_step0to100000.npy`。
-    - 重新排列模式：`./placement_pattern/placement_pattern_20250630_183900_58_rearrange_layers_58_layers_256_ranks_decode_step0to100000.npy`。
+    - 冗余模式：`./placement_pattern/placement_pattern_<timestamp>_<num_redundant_layers>_redundant_layers_<num_layers_target_pattern>_layers_<num_ranks_target_pattern>_ranks_<suffix>.npy`。
+    - 重新排列模式：`./placement_pattern/placement_pattern_<timestamp>_<num_redundant_layers>_rearrange_layers_<num_layers_target_pattern>_layers_<num_ranks_target_pattern>_ranks_<suffix>.npy`。
   - 内容：三维 NumPy 数组，记录专家在各 rank 和层的部署情况。
 - **放置模式可视化图像**：
   - 路径：`placement_pattern_view_dir`（默认 `./placement_pattern_view`）。
-  - 示例：`./placement_pattern_view/placement_pattern_20250630_183900_58_redundant_layers_58_layers_256_ranks_epmaxdeploy_200_decode_step0to100000.png`。
+  - 示例：`./placement_pattern_view/placement_pattern_<timestamp>_<num_redundant_layers>_<mode>_layers_<num_layers_target_pattern>_layers_<num_ranks_target_pattern>_ranks_<suffix>.png`。
   - 内容：包含两个子图，展示专家部署次数和 rank 专家数量的分布。
 - **负载分析图像**：
   - 路径：`placement_pattern_analysis_dir`（默认 `./placement_pattern_analysis`）。
   - 示例：
-    - 热图：`./placement_pattern_analysis/Heat_256_Ranks_longbench_2k_decode_shuffle_rerun_0625_step0to100000.png`。
-    - 柱状图：`./placement_pattern_analysis/Bars_256_Ranks_longbench_2k_decode_shuffle_rerun_0625_step0to100000.png`。
+    - 热图：`./placement_pattern_analysis/Heat_<num_ranks>_Ranks_<dataset_name>.png`。
+    - 柱状图：`./placement_pattern_analysis/Bars_<num_ranks>_Ranks_<dataset_name>.png`。
   - 内容：展示各层各 rank 的负载分布和最大负载比较。
 - **负载分析 CSV 文件**：
   - 路径：`placement_pattern_analysis_dir`（默认 `./placement_pattern_analysis`）。
-  - 示例：`./placement_pattern_analysis/Max_Load_Reduction_256_Ranks_longbench_2k_decode_shuffle_rerun_0625_step0to100000.csv`。
+  - 示例：`./placement_pattern_analysis/Max_Load_Reduction_<num_ranks>_Ranks_<dataset_name>.csv`。
   - 内容：量化不同放置模式的负载均衡效果，包含负载降低百分比。
-- **层统计 CSV 文件**：
-  - 路径：`output_dir`（默认 `./layer_stats`）。
-  - 示例：`./layer_stats/layer_15_stats_20250630_183900.csv`。
-  - 内容：记录指定层在各 recordstep 的专家激活统计特性（方差、熵、最大最小差值、均值）。
 - **日志文件**：
   - 路径：当前目录。
   - 示例：
@@ -187,7 +151,7 @@
 - **过滤**：通过 `collecting_modes` 参数（`prefill`、`decode` 或 `all`）和 `recordstep_range` 参数（格式如 `0:100000`）过滤所需模式和步骤范围的数据。
 
 ### 2. 文本文件格式（`input_mode=txt`）
-文本文件（`.txt`）位于指定文件夹（如 `D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder`），每个文件对应一个 rank 的激活数据，文件名为 `activation_counts_recordstep_*_rank_<rank_id>.txt`。典型文件内容如下：
+文本文件（`.txt`）位于指定文件夹（如 `/path/to/input/txt/folder`），每个文件对应一个 rank 的激活数据，文件名为 `activation_counts_recordstep_*_rank_<rank_id>.txt`。典型文件内容如下：
 
 ```
 128\t256\t0\t512\t384\t64\t192\t320
@@ -210,13 +174,13 @@
   - **步骤过滤**：通过 `recordstep_range` 参数（如 `0:100000`）过滤特定步骤范围的文件。
 
 ## 参数说明
-以下为 `run_pipeline.sh`、`pipeline.py` 和 `calculate_layer_stats.py` 支持的参数、作用、默认值及说明：
+以下为 `pattern_generation_pipeline.sh`、`pipeline.py` 支持的参数、作用、默认值及说明：
 
-### 流水线参数（run_pipeline.sh 和 pipeline.py）
+### 流水线参数（pattern_generation_pipeline.sh 和 pipeline.py）
 | 参数                              | 作用                                              | 默认值                                   | 说明                                                                 |
 |-----------------------------------|--------------------------------------------------|-----------------------------------------|----------------------------------------------------------------------|
 | `--input_log_files`               | 日志文件路径列表（`input_mode=log` 时使用）       | `./dump_to_log-1.log ./dump_to_log-2.log` | 指定一个或多个 `.log` 文件路径，需用空格分隔，包含空格的路径需加引号。 |
-| `--input_txt_folders`             | 包含 `.txt` 文件的文件夹路径列表（`input_mode=txt` 时使用） | `D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder` | 指定包含 `activation_counts_recordstep_*_rank_<rank_id>.txt` 的文件夹。 |
+| `--input_txt_folders`             | 包含 `.txt` 文件的文件夹路径列表（`input_mode=txt` 时使用） | `/path/to/input/txt/folder` | 指定包含 `activation_counts_recordstep_*_rank_<rank_id>.txt` 的文件夹。 |
 | `--input_mode`                    | 输入模式                                         | `txt`                                   | `log`：使用日志文件；`txt`：使用文本文件。                            |
 | `--topk_id_count_dir`             | 激活计数 CSV 输出目录                            | `./topk_id_count`                       | 存储生成的 CSV 文件，记录每层专家激活计数。                           |
 | `--placement_pattern_dir`         | 放置模式 `.npy` 文件输出目录                     | `./placement_pattern`                   | 存储三维放置模式数组文件。                                           |
@@ -231,22 +195,11 @@
 | `--expert_redundant_limit`        | 每个专家最大额外部署次数                         | `199`                                   | 冗余模式下，专家总部署次数上限为 `1 + expert_redundant_limit`。      |
 | `--num_layers_target_pattern`     | 目标放置模式的层数                               | `58`                                    | 放置模式的层数，通常与 `num_layers` 相同。                           |
 | `--num_eps_target_pattern`        | 每层专家数                                       | `256`                                   | 放置模式的专家数量，需能被 `num_ranks_target_pattern` 整除。         |
-| `--dataset_name`                  | 数据集名称，用于输出文件命名                     | `longbench_2k_decode_shuffle_rerun_0625` | 用于标识输出文件的数据集，影响可视化和分析文件名。                   |
-| `--output_file_prefix`            | 输出文件名前缀                                   | `longbench_2k_decode_shuffle_rerun_0625` | 用于放置模式文件命名，增加文件可读性。                               |
+| `--dataset_name`                  | 数据集名称，用于输出文件命名                     | `dataset_name` | 用于标识输出文件的数据集，影响可视化和分析文件名。                   |
+| `--output_file_prefix`            | 输出文件名前缀                                   | `output_file_prefix` | 用于放置模式文件命名，增加文件可读性。                               |
 | `--pattern_mode`                  | 放置模式生成方式                                 | `all`                                   | `rearrange`：仅重新排列；`redundant`：允许冗余；`all`：两者都生成。   |
 | `--collecting_modes`              | 数据收集模式                                     | `decode`                                | `prefill`：预填充；`decode`：解码；`all`：两者均处理（仅日志模式）。 |
 | `--recordstep_range`              | 步骤范围                                         | `0:100000`                              | 格式为 `start:end`，过滤特定步骤范围的数据（如 `0:100000`）。         |
-
-### 统计分析参数（calculate_layer_stats.py）
-| 参数                              | 作用                                              | 默认值                                   | 说明                                                                 |
-|-----------------------------------|--------------------------------------------------|-----------------------------------------|----------------------------------------------------------------------|
-| `--input_txt_folder`              | 包含 `.txt` 文件的文件夹路径                     | `./ep_data/ep_data_p/prefill`           | 指定包含 `activation_counts_recordstep_*_rank_<rank_id>.txt` 的文件夹。 |
-| `--layer_id`                      | 要分析的层编号                                   | `15`                                    | 指定分析的 MoE 层编号（0 到 `num_layers-1`）。                       |
-| `--output_dir`                    | 输出 CSV 文件目录                                | `./layer_stats`                         | 存储统计分析 CSV 文件。                                              |
-| `--output_csv`                    | 输出 CSV 文件名                                  | 空（自动生成时间戳命名）                | 若为空，生成 `layer_<layer_id>_stats_<timestamp>.csv`。               |
-| `--num_layers`                    | 模型层数                                         | `58`                                    | MoE 模型的层数，需与输入数据匹配。                                   |
-| `--num_ranks_of_collecting_data`  | 数据收集的 rank 数                               | `16`                                    | 输入数据对应的 rank 数量，需为正整数。                               |
-| `--num_positions_of_routed_experts`| 路由专家位置数                                   | `256`                                   | 每层的专家总数，需能被 `num_ranks_of_collecting_data` 整除。          |
 
 - **注意事项**：
   - **输入模式匹配**：
@@ -292,7 +245,6 @@
 - **特点**：
   - **仅重新排列模式**：每个专家每层部署一次，通过排序优化分配。
   - **冗余模式**：允许专家多次部署（最多 `1 + expert_redundant_limit` 次），使用堆排序优化高负载专家的分配。
-  - 支持对数归一化（`load_normalization='log'`），平滑负载分布。
   - 针对高负载层（由 `num_special_layers` 指定）进行优化分配，其余层采用顺序分配。
 
 ### 3. `step_3_placement_pattern_checking_and_plot.py`
@@ -339,7 +291,7 @@
   - 自动创建输出目录，规范化文件路径。
   - 记录详细日志，存储在 `pattern_generation_pipeline_<timestamp>.log`。
 
-### 6. `run_pipeline.sh`
+### 6. `pattern_generation_pipeline.sh`
 - **功能**：
   - 提供简化的命令行接口，运行 `pipeline.py`，支持默认参数和自定义参数。
 - **输入**：
@@ -351,27 +303,12 @@
   - 验证输入参数的有效性（如 `input_mode`、`pattern_mode`、`collecting_modes`）。
   - 检查 Python 环境和脚本文件是否存在，确保运行前准备就绪。
 
-### 7. `calculate_layer_stats.py`
-- **功能**：
-  - 分析指定层的专家激活数据，计算每组 recordstep 文件的统计特性，包括方差、熵、最大最小差值和均值。
-  - 生成 CSV 文件，记录各 recordstep 的统计结果。
-- **输入**：
-  - 包含 `activation_counts_recordstep_*_rank_<rank_id>.txt` 文件的文件夹。
-  - 指定的层编号（`layer_id`）。
-- **输出**：
-  - CSV 文件，存储在 `output_dir`，记录指定层在各 recordstep 的统计特性。
-- **特点**：
-  - 使用 `scipy.stats.entropy` 计算熵，需确保安装 `scipy` 库。
-  - 支持处理缺失 rank 文件（用零填充），并记录警告。
-  - 对输入数据进行严格验证，确保文件格式和参数一致性。
-  - 输出 CSV 文件按 recordstep 排序，便于分析激活数据的时间序列特性。
-
 ## 输出文件详细说明
 流水线和统计分析脚本生成以下输出文件，存储在指定目录中，文件格式和命名规则如下：
 
 ### 1. 激活计数 CSV 文件
 - **路径**：`topk_id_count_dir`（默认 `./topk_id_count`）。
-- **示例**：`./topk_id_count/topk_ids_count_20250630_183900_decode_step0to100000.csv`。
+- **示例**：`./topk_id_count/topk_ids_count_<timestamp>_<collecting_modes>_step<start>to<end>.csv`。
 - **格式**：CSV 文件，包含 `num_layers` 行和 `num_positions_of_routed_experts + 1` 列。
 - **结构**：
   - **第一列**：层编号（`layer_0` 到 `layer_{num_layers-1}`）。
@@ -384,8 +321,8 @@
 ### 2. 放置模式文件
 - **路径**：`placement_pattern_dir`（默认 `./placement_pattern`）。
 - **示例**：
-  - 冗余模式：`./placement_pattern/placement_pattern_20250630_183900_58_redundant_layers_58_layers_256_ranks_epmaxdeploy_200_decode_step0to100000.npy`。
-  - 重新排列模式：`./placement_pattern/placement_pattern_20250630_183900_58_rearrange_layers_58_layers_256_ranks_decode_step0to100000.npy`。
+  - 冗余模式：`./placement_pattern/placement_pattern_<timestamp>_<num_redundant_layers>_redundant_layers_<num_layers_target_pattern>_layers_<num_ranks_target_pattern>_ranks_<suffix>.npy`。
+  - 重新排列模式：`./placement_pattern/placement_pattern_<timestamp>_<num_redundant_layers>_rearrange_layers_<num_layers_target_pattern>_layers_<num_ranks_target_pattern>_ranks_<suffix>.npy`。
 - **格式**：三维 NumPy 数组（`.npy` 文件），形状为 `(num_ranks_target_pattern, num_layers_target_pattern, num_eps_target_pattern)`。
 - **结构**：
   - 值为 `0` 或 `1`，表示某 rank 的某层是否部署了某专家。
@@ -396,7 +333,7 @@
 
 ### 3. 放置模式可视化图像
 - **路径**：`placement_pattern_view_dir`（默认 `./placement_pattern_view`）。
-- **示例**：`./placement_pattern_view/placement_pattern_20250630_183900_58_redundant_layers_58_layers_256_ranks_epmaxdeploy_200_decode_step0to100000.png`。
+- **示例**：`./placement_pattern_view/placement_pattern_<timestamp>_<num_redundant_layers>_<mode>_layers_<num_layers_target_pattern>_layers_<num_ranks_target_pattern>_ranks_<suffix>.png`。
 - **格式**：PNG 图像，包含两个子图。
 - **结构**：
   - **左图**：沿 rank 轴求和，显示每个专家在各层的部署次数。
@@ -409,8 +346,8 @@
 ### 4. 负载分析图像
 - **路径**：`placement_pattern_analysis_dir`（默认 `./placement_pattern_analysis`）。
 - **示例**：
-  - 热图：`./placement_pattern_analysis/Heat_256_Ranks_longbench_2k_decode_shuffle_rerun_0625_step0to100000.png`。
-  - 柱状图：`./placement_pattern_analysis/Bars_256_Ranks_longbench_2k_decode_shuffle_rerun_0625_step0to100000.png`。
+  - 热图：`./placement_pattern_analysis/Heat_<num_ranks>_Ranks_<dataset_name>.png`。
+  - 柱状图：`./placement_pattern_analysis/Bars_<num_ranks>_Ranks_<dataset_name>.png`。
 - **格式**：PNG 图像，包含热图和柱状图。
 - **结构**：
   - **热图**：显示各层各 rank 的负载分布。
@@ -422,7 +359,7 @@
 
 ### 5. 负载分析 CSV 文件
 - **路径**：`placement_pattern_analysis_dir`（默认 `./placement_pattern_analysis`）。
-- **示例**：`./placement_pattern_analysis/Max_Load_Reduction_256_Ranks_longbench_2k_decode_shuffle_rerun_0625_step0to100000.csv`。
+- **示例**：`./placement_pattern_analysis/Max_Load_Reduction_<num_ranks>_Ranks_<dataset_name>.csv`。
 - **格式**：CSV 文件，包含以下列：
   - **Placement Method**：放置模式名称。
   - **Load Balance Degree**：最大负载总和。
@@ -432,25 +369,11 @@
 - **用途**：
   - 量化负载均衡效果，提供精确的性能指标。
 
-### 6. 层统计 CSV 文件
-- **路径**：`output_dir`（默认 `./layer_stats`）。
-- **示例**：`./layer_stats/layer_15_stats_20250630_183900.csv`。
-- **格式**：CSV 文件，包含以下列：
-  - **recordstep**：记录步骤编号。
-  - **variance**：激活计数的方差。
-  - **entropy**：激活计数的熵（基于归一化概率分布）。
-  - **max_min_diff**：激活计数的最大最小差值。
-  - **mean**：激活计数的均值。
-- **命名规则**：
-  - 格式：`layer_<layer_id>_stats_<timestamp>.csv`。
-- **用途**：
-  - 记录指定层在各 recordstep 的统计特性，便于分析激活分布的稳定性和均匀性。
-
-### 7. 日志文件
+### 6. 日志文件
 - **路径**：当前目录。
 - **示例**：
-  - 流水线：`pattern_generation_pipeline_20250630_183900.log`。
-  - 统计分析：`layer_stats_pipeline_20250630_183900.log`。
+  - 流水线：`pattern_generation_pipeline_<timestamp>.log`。
+  - 统计分析：`layer_stats_pipeline_<timestamp>.log`。
 - **格式**：文本文件，记录运行的详细日志。
 - **内容**：
   - 执行信息、警告和错误，包含时间戳和日志级别。

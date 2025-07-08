@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2012-2025. All rights reserved.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
 import argparse
@@ -86,10 +87,10 @@ def main():
 
     pattern_modes = ['rearrange', 'redundant'] if args.pattern_mode == 'all' else [args.pattern_mode]
 
-    # 使用传递的 timestamp，如果未提供则生成新的
+    # Use the passed timestamp; generate a new one if not provided
     timestamp = args.timestamp if args.timestamp else datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # 如果 dataset_name 或 output_file_prefix 为空字符串，使用统一时间戳
+    # If dataset_name or output_file_prefix is an empty string, use the unified timestamp
     if args.dataset_name == "":
         args.dataset_name = timestamp
     if args.output_file_prefix == "":
@@ -104,24 +105,24 @@ def main():
                      args.placement_pattern_view_dir, args.placement_pattern_analysis_dir]:
         dir_path = os.path.normpath(dir_path)
         if not dir_path:
-            raise ValueError(f"目录路径不能为空: {dir_path}")
+            raise ValueError(f"Directory path cannot be empty: {dir_path}")
         print(f"Ensuring directory exists: {dir_path}")
         os.makedirs(dir_path, exist_ok=True)
         if not os.path.exists(dir_path):
-            raise OSError(f"无法创建目录: {dir_path}")
+            raise OSError(f"Failed to create directory: {dir_path}")
 
     # Validate input parameters
     if args.input_mode == 'log':
         input_log_files = [os.path.normpath(f) for f in args.input_log_files]
         for log_file in input_log_files:
             if not os.path.exists(log_file):
-                raise ValueError(f"日志文件 {log_file} 不存在")
+                raise ValueError(f"Log file {log_file} does not exist")
         input_txt_folders = None
     else:  # input_mode == 'txt'
         input_txt_folders = [os.path.normpath(f) for f in args.input_txt_folders]
         for folder in input_txt_folders:
             if not os.path.isdir(folder):
-                raise ValueError(f"文本文件夹 {folder} 不是有效的文件夹路径")
+                raise ValueError(f"Text folder {folder} is not a valid folder path")
         input_log_files = None
     
     if not args.output_csv:
