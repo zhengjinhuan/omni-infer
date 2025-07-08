@@ -403,6 +403,8 @@ class DecodeConnectorWorker:
                 self._read_blocks(**task)
             except Exception as e:
                 logger.error("KV transfer task failed in thread %s: %s", cluster_id, e)
+                self._send_pulled_kv_req_list(task['remote_host_ip'], [task['request_id']])
+                raise RuntimeError(f"Failed to pull kv for request:{task['request_id']} from cluster:{cluster_id}.")
             q.task_done()
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
