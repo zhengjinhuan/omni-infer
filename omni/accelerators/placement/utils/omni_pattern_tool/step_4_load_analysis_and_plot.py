@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# coding: utf-8
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
@@ -270,6 +272,80 @@ def plot_max_load_comparison_lis(
         plt.show()
         logger.info("Bar chart displayed (not saved).")
 
+def plot_unbalanced_ratio_comparison_lis(
+    optimized_df_lis: list,
+    ppname_lis: list,
+    num_ranks=32,
+    dataset_name='Rand',
+    save_path=None,
+    load_array=None,
+    log_timestamp=None
+) -> None:
+    """
+    Plot bar chart comparing unbalanced ratios (max_rank_load / avg_rank_load) across layers.
+    """
+    logger = setup_logging(log_timestamp)
+    logger.info(f"Generating unbalanced ratio comparison bar chart for {len(optimized_df_lis)} patterns: {ppname_lis}")
+
+    # Calculate unbalanced ratio: max_rank_load / avg_rank_load for each layer
+    ratio_lis = []
+    for df in optimized_df_lis:
+        max_loads = df.max(axis=1)
+        avg_loads = df.mean(axis=1)
+        ratios = np.where(avg_loads != 0, max_loads / avg_loads, 1.0)
+        ratio_lis.append(ratios)
+
+    n_layers = optimized_df_lis[0].shape[0]
+    layers = optimized_df_lis[0].index.astype(str)
+    indices = np.arange(n_layers)
+    bar_width = 0.85
+
+    fig_width = max(12, n_layers * 0.3)
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
+
+    bar_pos = - bar_width / 2 + np.array([i * bar_width / len(optimized_df_lis) for i in range(len(optimized_df_lis))])
+
+    for i in range(len(optimized_df_lis)):
+        ax.bar(indices + bar_pos[i], ratio_lis[i], bar_width / len(optimized_df_lis),
+               label=ppname_lis[i], color=f'C{i}')
+
+    # Add ideal line at y=1 (perfect balance)
+    ax.axhline(
+        y=1.0,
+        color='gray',
+        linestyle='--',
+        linewidth=1.9,
+        alpha=0.9,
+        label='Best EP'
+    )
+
+    # Set y-axis limits
+    max_y = max(ratio_lis[i].max() for i in range(len(ratio_lis)))
+    ax.set_ylim(0, max_y * 1.02)
+
+    ax.set_xlabel('Layer ID')
+    ax.set_ylabel('Load Imbalance Degree (Max/Avg)')
+    ax.set_title(f'Load Imbalance Degree Comparison per Layer, Dataset: {dataset_name}')
+    ax.set_xticks(indices)
+    ax.set_xticklabels(layers, rotation=45)
+    ax.legend()
+
+    ax.yaxis.grid(True, linestyle='--', alpha=0.7)
+    if save_path is not None:
+        filename = f'Unbalanced_Ratio_{dataset_name}.png'
+        save_file_path = os.path.join(save_path, filename)
+        try:
+            plt.savefig(save_file_path, bbox_inches='tight', dpi=100)
+            plt.close()
+            logger.info(f"Unbalanced ratio bar chart image saved to: {save_file_path}")
+            print(f"Image generated successfully, saved to: {save_file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save unbalanced ratio bar chart image to {save_file_path}: {e}")
+            raise
+    else:
+        plt.show()
+        logger.info("Unbalanced ratio bar chart displayed (not saved).")
+
 def calculate_max_load_reduction(
     optimized_df_lis: list,
     ppname_lis: list,
@@ -368,8 +444,18 @@ def analyze_and_plot_deployments(
         ppname_lis=ppname_lis,
         figsize=(23, 10),
         num_ranks=num_ranks,
-        dataset_name=f'{num_ranks}_Ranks_{dataset_name}',
+        dataset_name=dataset_name,
         save_path=fig_save_path,
+        log_timestamp=log_timestamp
+    )
+    
+    plot_unbalanced_ratio_comparison_lis(
+        optimized_df_lis=df_lis,
+        ppname_lis=ppname_lis,
+        num_ranks=num_ranks,
+        dataset_name=dataset_name,
+        save_path=fig_save_path,
+        load_array=load_array,
         log_timestamp=log_timestamp
     )
 
@@ -377,7 +463,7 @@ def analyze_and_plot_deployments(
         optimized_df_lis=df_lis,
         ppname_lis=ppname_lis,
         num_ranks=num_ranks,
-        dataset_name=f'{num_ranks}_Ranks_{dataset_name}',
+        dataset_name=dataset_name,
         save_path=fig_save_path,
         load_array=load_array,
         log_timestamp=log_timestamp
@@ -387,24 +473,10 @@ def analyze_and_plot_deployments(
         optimized_df_lis=df_lis,
         ppname_lis=ppname_lis,
         save_path=fig_save_path,
-        dataset_name=f'{num_ranks}_Ranks_{dataset_name}',
+        dataset_name=dataset_name,
         log_timestamp=log_timestamp
     )
     logger.info("Deployment analysis and plotting completed.")
 
 if __name__ == "__main__":
-    log_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    analyze_and_plot_deployments(
-        load_file='./topk_id_count/topk_ids_count_longbench_3.5k_decode.csv',
-        pp_path_lis=[
-            './placement_pattern/DSV3_0430_longbench_1k_decode_rearrangeonly_+58_58_MoELayers_64_dies_epmaxdeploy_12.npy',
-            './placement_pattern/DSV3_0430_longbench_3.5k_decode_rearrangeonly_+58_58_MoELayers_64_dies_epmaxdeploy_12.npy',
-            './placement_pattern/DSV3_0430_longbench_6k_decode_+58_58_MoELayers_64_dies_epmaxdeploy_12.npy',
-            './placement_pattern/DSV3_0506_longbench_1k_decode_redundant+rearrange_only_with_ceiling_+58_58_MoELayers_64_dies_epmaxdeploy_12.npy'
-        ],
-        ppname_lis=['Baseline', 'Pattern_0_rearrange', 'Pattern_0_redundant', 'Pattern_10_rearrange', 'Pattern_10_redundant'],
-        fig_save_path='./',
-        num_ranks=64,
-        dataset_name='longbench_3.5k_all58_test',
-        log_timestamp=log_timestamp
-    )
+    main()
