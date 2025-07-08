@@ -231,9 +231,6 @@ def transform_config_for_inventory(logger, input_data):
 def transform_config_for_playbook(logger, input_data):
     """The core function for executing configuration conversion"""
     updates = {}
-    if "docker_image" not in input_data['deployment']:
-        logger.error("Missing global configuration: %s", "docker_image")
-        return None
     if "model_path" not in input_data['services']:
         logger.error("Missing global configuration: %s", "model_path")
         return None
@@ -243,11 +240,18 @@ def transform_config_for_playbook(logger, input_data):
     if 'max_model_len' not in input_data['services']['decode']:
         logger.error("Missing necessary configuration for decoding: %s", 'max_model_len')
         return None
+    if 'local_code_path' not in input_data['services']:
+        logger.error("Missing global configuration: %s", "local_code_path")
+        return None
+    if "docker_image" not in input_data['deployment']:
+        logger.error("Missing global configuration: %s", "docker_image")
+        return None
 
-    updates["DOCKER_IMAGE_ID"] = input_data['deployment']['docker_image']
     updates["MODEL_PATH"] = input_data['services']['model_path']
     updates["MODEL_LEN_MAX_PREFILL"] = input_data['services']['prefill']['max_model_len']
     updates["MODEL_LEN_MAX_DECODE"] = input_data['services']['decode']['max_model_len']
+    updates["LOCAL_CODE_PATH"] = input_data['services']['local_code_path']
+    updates["DOCKER_IMAGE_ID"] = input_data['deployment']['docker_image']
 
     return updates
 
@@ -308,15 +312,11 @@ def transform_deployment_config(config_path):
         if playbookArges is None:
             return
 
-        # Get the absolute path of the current script 
-        current_file = os.path.abspath(__file__)
-
-        # Get the directory where the current script is located 
-        omni_infer_server_path = os.path.dirname(current_file)
-        update_yml_file(logger, playbookArges, f"{omni_infer_server_path}/omni_infer_server.yml")
+        # update the omni_infer_server.yml
+        update_yml_file(logger, playbookArges, f"{input_data['services']['local_code_path']}/omniinfer/omni/cli/omni_infer_server.yml")
         
         # Write to output file
-        with open('omni_infer_inventory.yml', 'w') as f:
+        with open(f'{os.getcwd()}/omni_infer_inventory.yml', 'w') as f:
             yaml.dump(output_data, f, sort_keys=False, default_flow_style=False, indent=2)
         
         logger.info("Configuration file conversion successful! ")

@@ -690,7 +690,10 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
     expert_parallel_size = get_expert_parallel_world_size()
 
     if expert_parallel_size > 1:
+        # For vllm v1, metadata is a dict {layer_name: metadata}
         attn_metadata = get_forward_context().attn_metadata
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[next(iter(attn_metadata))]
         mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None else None
         global_bs = 0
         act_dtype = hidden_states.dtype

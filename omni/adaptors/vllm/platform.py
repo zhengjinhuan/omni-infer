@@ -59,7 +59,7 @@ origin_stateless_init_dp_group = None
 
 def ascend_destroy_model_parallel():
     """Set the groups to none and destroy them."""
-    
+
     origin_destroy_model_parallel()
     from omni.adaptors.vllm.distributed.parallel_state import \
         destory_ascend_model_parallel
@@ -81,7 +81,7 @@ def init_dp_group(self) -> ProcessGroup:
     return pg;
 
 def update_parallel_state():
-    global origin_destroy_model_parallel 
+    global origin_destroy_model_parallel
     if origin_destroy_model_parallel == None:
         origin_destroy_model_parallel = vllm.distributed.parallel_state.destroy_model_parallel
 
@@ -210,6 +210,7 @@ class ConfigUpdater:
         cls._update_parallel_config(vllm_config)
         cls._update_cache_config(vllm_config)
         cls._enable_custom_ops(vllm_config)
+        cls._may_enable_omni_attn(vllm_config)
 
     @staticmethod
     def _handle_graph_mode(vllm_config: 'VllmConfig') -> None:
@@ -248,6 +249,26 @@ class ConfigUpdater:
     def _enable_custom_ops(vllm_config: 'VllmConfig') -> None:
         vllm_config.compilation_config.custom_ops = ["all"]
 
+    @staticmethod
+    def _may_enable_omni_attn(vllm_config: 'VllmConfig') -> None:
+        if not vllm_config.additional_config:
+            return
+        def to_bool(val):
+            if isinstance(val, int):
+                return val == 1
+            if isinstance(val, str):
+                return val.lower() in ["1", "true"]
+            if isinstance(val, bool):
+                return val
+            raise ValueError(f"Cannot convert variable to bool. Type {type(val)}. Value {val}.")
+        enable_omni_attn = to_bool(vllm_config.additional_config.get("enable_omni_attn", False))
+        omni_attn_config = vllm_config.additional_config.get("omni_attn_config", None)
+        if enable_omni_attn:
+            from omni.accelerators.cache import apply_omni_attn_patch
+            kv_transfer_config = vllm_config.kv_transfer_config
+            is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
+            apply_omni_attn_patch(enable=True, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
+
 
 class NPUPlatform(Platform):
     """Platform implementation for NPU devices in vLLM."""
@@ -266,7 +287,7 @@ class NPUPlatform(Platform):
         EnvironmentSetup.configure_visible_devices()
         update_utils_custom_op()
         super().__init__()
-        
+
 
     def is_sleep_mode_available(self) -> bool:
         """Check if sleep mode is available for NPU.

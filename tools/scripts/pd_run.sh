@@ -321,8 +321,6 @@ if [ $HCCL_BUFFSIZE -gt 0 ] ; then
 fi
 # 随路拷贝
 export TNG_HOST_COPY=1
-# cpu绑核
-export CPU_AFFINITY_CONF=1,npu0:0-11,npu1:12-23,npu2:24-35,npu3:36-47,npu4:48-59,npu5:60-71,npu6:72-83,npu7:84-95,npu8:96-107,npu9:108-119,npu10:120-131,npu11:132-143,npu12:144-155,npu13:156-167,npu14:168-179,npu15:180-191  # cpu精细绑核
 # 使能双页表 pd 分离
 export AUTO_USE_UC_MEMORY=1
 export TASK_QUEUE_ENABLE=2

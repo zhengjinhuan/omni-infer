@@ -206,12 +206,10 @@ def merge_local_ranktable(args):
         raise ValueError("Ensure that there are two local ranktable for merge mode.")
 
     device_id = 0
-    server_ip_list = []
     new_server_list = []
     for ranktable_path in args.local_ranktable_list:
         ranktable = load_json(ranktable_path)
         server_list = ranktable.get("server_list")[0]
-        server_ip_list.append(server_list.get("server_ip"))
         device_list = server_list.get("device")
         new_device_list = []
         for ip_info in device_list:
@@ -233,8 +231,7 @@ def merge_local_ranktable(args):
         "server_list": new_server_list
     }
 
-    merge_name = "_".join(server_ip_list)
-    dump_json(os.path.join(args.save_dir, f"local_ranktable_merge_{merge_name}.json"), local_ranktable)
+    dump_json(os.path.join(args.save_dir, f"local_ranktable_merge.json"), local_ranktable)
 
 
 def merge_all(args):

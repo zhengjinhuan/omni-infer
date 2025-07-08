@@ -21,7 +21,7 @@
 
   environment:
     # Global Configuration
-    LOG_PATH: "/data/omni_infer/log"
+    LOG_PATH: "/data/omniinfer/log"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
     MODEL_LEN_MAX_PREFILL: "30000"
     MODEL_LEN_MAX_DECODE: "16384"
@@ -34,7 +34,7 @@
     SCRIPTS_PATH: "/tmp/scripts"
 
     # Script path in container
-    OMNI_INFER_SCRIPTS: "/workspace/omni_infer/tools/scripts"
+    OMNI_INFER_SCRIPTS: "/workspace/omniinfer/tools/scripts"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -130,7 +130,7 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
-      MODEL_EXTRA_CFG_PATH="/workspace/omni_infer/tests/test_config/test_config_prefill.json"
+      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
@@ -185,7 +185,7 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="/workspace/omni_infer/tests/test_config/test_config_decode.json"
+      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32'
       GPU_UTIL=0.95
       ADDITIONAL_CONFIG='{"enable_graph_mode": true}'
