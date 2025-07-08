@@ -323,6 +323,7 @@ function nginx_set_upstream() {
     local servers_list="$2"
     local upstream_name="$3"
     local use_shm_zone="$4"
+    local lb_sdk_line="$5" 
 
     # Build server lines with 8 spaces indentation
     local upstream_servers=""
@@ -334,23 +335,19 @@ function nginx_set_upstream() {
     echo "Number of upstream servers: $upstream_count"
 
     local zone_line=""
-    local lb_sdk_line=""
-    if [ "$upstream_name" = "decode_servers" ]; then
-        lb_sdk_line="weighted_least_active on;"
-        zone_line=""
-    elif [ "$use_shm_zone" = true ]; then
+    if [ "$use_shm_zone" = true ]; then
         # Each 128k can hold up to 64 servers, round up
-        local blocks=$(( (upstream_count + 63) / 64 ))
-        local zone_size=$(( blocks * 128 ))
-        zone_line="zone $upstream_name ${zone_size}k;"
-    else
-        lb_sdk_line="least_conn;"
+        if [ -z "$lb_sdk_line" ]; then
+            local blocks=$(( (upstream_count + 63) / 64 ))
+            local zone_size=$(( blocks * 128 ))
+            zone_line="zone $upstream_name ${zone_size}k;"
+        fi
     fi
 
     # Compose new upstream block with 8 spaces indentation
     local upstream_block="    upstream $upstream_name {
         ${zone_line}
-        ${lb_sdk_line}
+        ${lb_sdk_line};
         keepalive 2048;
         keepalive_timeout 110s;
         keepalive_requests 20000;
@@ -448,12 +445,14 @@ function nginx_set_load_modules() {
     local load_module_prefill_line="load_module /usr/local/nginx/modules/ngx_http_prefill_module.so;"
     local load_module_upstream_length_balance_line="load_module /usr/local/nginx/modules/ngx_http_upstream_length_balance_module.so;"
     local load_module_upstream_wla_line="load_module /usr/local/nginx/modules/ngx_http_upstream_weighted_least_active_module.so;"
+    local load_module_upstream_psb_line="load_module /usr/local/nginx/modules/ngx_http_upstream_prefill_score_balance_module.so;"
 
     # Add all load module at the top
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
     sed -i "2i ${load_module_prefill_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_length_balance_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_wla_line}" "$nginx_conf_file"
+    sed -i "3i ${load_module_upstream_psb_line}" "$nginx_conf_file"
 
 }
 
@@ -466,6 +465,8 @@ function nginx_configuration() {
     local decode_servers_list="$6"
     local log_file="$7"
     local log_level="$8"
+    local prefill_lb_sdk="$9"
+    local decode_lb_sdk="${10}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
@@ -477,8 +478,8 @@ function nginx_configuration() {
     nginx_set_http_config $nginx_conf_file
     nginx_set_listen_port $nginx_conf_file $listen_port
     nginx_set_reuseport $nginx_conf_file
-    nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers" true
-    nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false
+    nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers" true "$decode_lb_sdk"
+    nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false "$prefill_lb_sdk"
     nginx_set_location_openai_compatible $nginx_conf_file
     nginx_set_load_modules $nginx_conf_file
 }
@@ -527,6 +528,8 @@ rollback=false
 dry_run=false
 log_file=""
 log_level=""
+prefill_lb_sdk="least_conn"
+decode_lb_sdk="weighted_least_active on"
 
 print_help() {
     echo "Usage:"
@@ -541,6 +544,10 @@ print_help() {
     echo "  --decode-servers-list <list>               Comma-separated backend servers for decode (required to start proxy)"
     echo "  --log-file <path>,      -l <path>          Log file path"
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
+    echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"least_conn\""
+    echo "                                             e.g. \"least_conn;\" or \"prefill_score_balance on;\""
+    echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"weighted_least_active\""
+    echo "                                             e.g. \"weighted_least_active on;\""                                                                                       
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
@@ -592,6 +599,14 @@ while [[ $# -gt 0 ]]; do
             decode_servers_list="$2"
             shift 2
             ;;
+        --prefill-lb-sdk)
+            prefill_lb_sdk="$2"
+            shift 2
+            ;;
+        --decode-lb-sdk)
+            decode_lb_sdk="$2"
+            shift 2
+            ;;
         --log-file|-l)
             log_file="$2"
             shift 2
@@ -638,7 +653,7 @@ if ! [[ "$listen_port" =~ ^[0-9]+$ ]] || [[ "$listen_port" -lt 1024 || "$listen_
 fi
 
 function do_start() {
-    nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"
+    nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk"
     if [ "$dry_run" = true ]; then
         echo "Dry run complete. Configuration generated at $nginx_conf_file."
         exit 0
