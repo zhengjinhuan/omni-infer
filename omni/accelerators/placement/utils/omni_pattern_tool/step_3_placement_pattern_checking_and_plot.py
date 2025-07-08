@@ -1,11 +1,15 @@
+#!/usr/bin/env python
+# coding: utf-8
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import logging
 from datetime import datetime
+import argparse
 
 # Configure font to support Unicode characters for plotting
 try:
@@ -148,17 +152,44 @@ def view_patterns(placement_pattern, ppname='', fig_save_path=None, log_timestam
         plt.show()
         logger.info("Visualization displayed (not saved).")
 
-if __name__ == "__main__":
-    sample_shape = (64, 58, 256)
-    sample_mapping = np.zeros(sample_shape, dtype=np.int32)
-    for layer in range(sample_shape[1]):
-        for expert in range(sample_shape[2]):
-            rank = expert % sample_shape[0]
-            sample_mapping[rank, layer, expert] = 1
+def main():
+    parser = argparse.ArgumentParser(description="Test and visualize a placement pattern from an .npy file.")
+    parser.add_argument('--placement_pattern_file', type=str, required=True,
+                        help='Path to the .npy file containing the placement pattern.')
+    parser.add_argument('--pattern_name', type=str, default='Sample Pattern',
+                        help='Name of the placement pattern for visualization title.')
+    parser.add_argument('--save_path', type=str, default=None,
+                        help='Path to save the visualization image; if not provided, image is displayed.')
+    
+    args = parser.parse_args()
 
     log_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    is_valid, test_result = test_expert_mapping(sample_mapping, log_timestamp)
     logger = setup_logging(log_timestamp)
-    logger.info(f"Sample mapping validation: Is valid = {is_valid}, Test result = {test_result}")
 
-    view_patterns(sample_mapping, ppname='Sample Pattern', fig_save_path=None, log_timestamp=log_timestamp)
+    # Load and validate the placement pattern from .npy file
+    if not os.path.exists(args.placement_pattern_file):
+        logger.error(f"Placement pattern file {args.placement_pattern_file} does not exist.")
+        raise ValueError(f"Placement pattern file {args.placement_pattern_file} does not exist.")
+    
+    try:
+        placement_pattern = np.load(args.placement_pattern_file)
+        logger.info(f"Loaded placement pattern from {args.placement_pattern_file} with shape: {placement_pattern.shape}")
+    except Exception as e:
+        logger.error(f"Failed to load placement pattern from {args.placement_pattern_file}: {e}")
+        raise
+
+    # Test the placement pattern
+    is_valid, test_result = test_expert_mapping(placement_pattern, log_timestamp)
+    logger.info(f"Placement pattern validation: Is valid = {is_valid}, Test result = {test_result}")
+    print(f"Placement pattern validation: Is valid = {is_valid}, Test result = {test_result}")
+
+    # Visualize the placement pattern
+    view_patterns(
+        placement_pattern,
+        ppname=args.pattern_name,
+        fig_save_path=args.save_path,
+        log_timestamp=log_timestamp
+    )
+
+if __name__ == "__main__":
+    main()
