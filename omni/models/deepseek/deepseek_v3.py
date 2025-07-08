@@ -751,10 +751,10 @@ class AscendDeepseekAttention_MLA(nn.Module):
 
         self.attn_mla = Attention(
             num_heads=self.num_local_heads,
-            head_size=self.qk_head_dim,
+            head_size=self.kv_lora_rank + self.qk_rope_head_dim,
             scale=self.scaling,
             use_mla=True,
-            num_kv_heads=self.num_local_heads,
+            num_kv_heads=1,
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
@@ -902,7 +902,7 @@ class DeepseekDecoderLayer(nn.Module):
         # hidden : tokens * 7168
 
         # Perform full hidden splitting to avoid OOM
-        if model_extra_config.parall_config.dp_size > 1 and attn_metadata is not None and attn_metadata.prefill is not None:
+        if model_extra_config.parall_config.dp_size > 1 and (attn_metadata is None or attn_metadata.prefill is not None):
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
             local_length = hidden_states.shape[0]
             # global_max_length = torch.tensor(0, dtype=torch.int64)
