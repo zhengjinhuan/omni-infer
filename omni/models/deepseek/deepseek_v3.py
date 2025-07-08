@@ -751,10 +751,10 @@ class AscendDeepseekAttention_MLA(nn.Module):
 
         self.attn_mla = Attention(
             num_heads=self.num_local_heads,
-            head_size=self.qk_head_dim,
+            head_size=self.kv_lora_rank + self.qk_rope_head_dim,
             scale=self.scaling,
             use_mla=True,
-            num_kv_heads=self.num_local_heads,
+            num_kv_heads=1,
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
