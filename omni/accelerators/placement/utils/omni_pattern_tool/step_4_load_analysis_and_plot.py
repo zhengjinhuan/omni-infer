@@ -303,10 +303,10 @@ def plot_unbalanced_ratio_comparison_lis(
     fig_width = max(12, n_layers * 0.3)
     fig, ax = plt.subplots(figsize=(fig_width, 6))
 
-    bar_pos = -bar_width/2 + np.array([i * bar_width/len(optimized_df_lis) for i in range(len(optimized_df_lis))])
+    bar_pos = - bar_width / 2 + np.array([i * bar_width / len(optimized_df_lis) for i in range(len(optimized_df_lis))])
 
     for i in range(len(optimized_df_lis)):
-        ax.bar(indices + bar_pos[i], ratio_lis[i], bar_width/len(optimized_df_lis),
+        ax.bar(indices + bar_pos[i], ratio_lis[i], bar_width / len(optimized_df_lis),
                label=ppname_lis[i], color=f'C{i}')
 
     # Add ideal line at y=1 (perfect balance)
@@ -479,18 +479,4 @@ def analyze_and_plot_deployments(
     logger.info("Deployment analysis and plotting completed.")
 
 if __name__ == "__main__":
-    log_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    analyze_and_plot_deployments(
-        load_file='./topk_id_count/topk_ids_count_1.csv',
-        pp_path_lis=[
-            './placement_pattern/placement_pattern_1.npy',
-            './placement_pattern/placement_pattern_2.npy',
-            './placement_pattern/placement_pattern_3.npy',
-            './placement_pattern/placement_pattern_4.npy'
-        ],
-        ppname_lis=['Baseline', 'Pattern_1', 'Pattern_2', 'Pattern_3', 'Pattern_4'],
-        fig_save_path='./placement_pattern_analysis',
-        num_ranks=64,
-        dataset_name='dataset',
-        log_timestamp=log_timestamp
-    )
+    main()

@@ -37,7 +37,7 @@
   - 如果未安装相关字体，可视化图像可能显示乱码，但不影响数据处理或文件生成。
 - **输入数据准备**：
   - **日志模式（`input_mode=log`）**：准备 `.log` 文件，记录专家激活数据，格式见“输入文件格式”中的“日志文件格式”。
-  - **文本模式（`input_mode=txt`）**：准备包含 `.txt` 文件的文件夹，每个文件对应一个 rank 的激活数据，例如 `D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder`，格式见“输入文件格式”中的“文本文件格式”。
+  - **文本模式（`input_mode=txt`）**：准备包含 `.txt` 文件的文件夹，每个文件对应一个 rank 的激活数据，例如 `/path/to/input/txt/folder`，格式见“输入文件格式”中的“文本文件格式”。
 
 ### 2. 配置参数
 流水线通过命令行参数或修改 `pattern_generation_pipeline.sh` 中的默认参数进行配置。以下是一些典型的使用示例：
@@ -55,7 +55,7 @@
 
 - **参数说明**：
   - 流水线参数可以直接在 `pattern_generation_pipeline.sh` 中修改默认值，或通过命令行传递。
-  - 参数值中包含空格（如文件路径）需用双引号括起来，例如 `--input_txt_folders "D:\0625NewData\shuffle+全量-rerun0\shuffle+全量-rerun0\decoder"`.
+  - 参数值中包含空格（如文件路径）需用双引号括起来，例如 `--input_txt_folders "/path/to/input/txt/folder"`.
   - 详见“参数说明”部分，了解每个参数的作用和默认值。
 
 ### 3. 运行流水线

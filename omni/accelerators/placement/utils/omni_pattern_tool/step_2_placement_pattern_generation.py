@@ -209,7 +209,7 @@ def distribute_experts_to_ranks(
 
     new_placement_matrix = placement_matrix.copy()
     num_ranks_per_host = 16
-    num_hosts = int((num_ranks_target_pattern + 1) / num_ranks_per_host)
+    num_hosts = max(int((num_ranks_target_pattern + 1) / num_ranks_per_host), 1)
     host_cur_rank = [0] * num_hosts
     for i in range(num_ranks_target_pattern) :
         new_host_id = i % num_hosts

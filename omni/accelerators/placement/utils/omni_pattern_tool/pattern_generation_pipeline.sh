@@ -188,10 +188,10 @@ validate_inputs() {
         for folder in "${INPUT_TXT_FOLDERS[@]}"; do
             if [ ! -d "$folder" ]; then
                 echo "Error: Text folder '$folder' does not exist." >&2
+                exit 1
             elif [ ! -r "$folder" ]; then
                 echo "Error: Text folder '$folder' exists but is not readable." >&2
-            else
-                echo "Error: Text folder '$folder' is not a valid directory." >&2
+                exit 1
             fi
         done
     fi

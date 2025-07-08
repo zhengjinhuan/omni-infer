@@ -378,27 +378,43 @@ def generate_csv(
     return output_csv_path
 
 if __name__ == "__main__":
-    # Example: Log file mode with step range
+    # parameters
+    num_ranks = 4
+    num_recordsteps = 2
+    num_experts = 8
+    num_layers = 4
+
+    # make txt files folder
+    output_dir = './input/txt/folder'
+    os.makedirs(output_dir, exist_ok=True)
+
+    # creat txt files
+    for recordstep in range(num_recordsteps):
+        for rank in range(num_ranks):
+            # file names
+            file_name = f'{output_dir}/activation_counts_recordstep_{recordstep}_rank_{rank}.txt'
+
+            with open(file_name, 'w') as file:
+                for _ in range(num_layers):
+                    # random activation data
+                    activation_data = [random.randint(10, 1000) for _ in range(2)]
+
+                    line = '\t'.join(map(str, activation_data))
+
+                    #write to file
+                    file.write(line + '\n')
+
+    print("files created successfully")
+    # Test Example: Text file mode with multiple folders merged into one CSV
+    
     generate_csv(
-        input_log_files=["./dump_to_log-1.log", "./dump_to_log-2.log"],
-        input_mode='log',
-        output_dir="./topk_id_count",
-        collecting_modes="all",
-        output_csv="dataset.csv",
-        num_layers=58,
-        num_ranks_of_collecting_data=64,
-        num_positions_of_routed_experts=256,
-        recordstep_range="400:500"
-    )
-    # Example: Text file mode with multiple folders merged into one CSV
-    generate_csv(
-        input_txt_folders=["./decode1", "./decode2"],
+        input_txt_folders=["./input/txt/folder"],
         input_mode='txt',
         output_dir="./topk_id_count",
         collecting_modes="decode",
         output_csv="dataset.csv",
-        num_layers=58,
-        num_ranks_of_collecting_data=32,
-        num_positions_of_routed_experts=256,
-        recordstep_range="400:500"
+        num_layers=4,
+        num_ranks_of_collecting_data=4,
+        num_positions_of_routed_experts=8,
+        recordstep_range=""
     )
