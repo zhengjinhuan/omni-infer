@@ -397,7 +397,7 @@ class DecodeConnectorWorker:
 
         self.queues = {} # cluster_id -> queue.Queue
         self.threads = {} # cluster_id -> threading.Thread
-        self.pull_kv_lock = threading.Lock()
+        self._pull_kv_lock = threading.Lock()
 
 
         self._transfer_lock = threading.Lock()
