@@ -138,7 +138,7 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             self,
             request: "Request",
             block_ids: list[int],
-            spec_token_ids: Optional[list[int]] = [],
+            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if self.connector_scheduler is None:
             raise RuntimeError("self.connector_scheduler cannot be None")
@@ -210,7 +210,7 @@ class PrefillConnectorScheduler:
             self,
             request: "Request",
             block_ids: list[int],
-            spec_token_ids: Optional[list[int]] = [],
+            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         """
         Once a request is finished, determine whether request blocks
@@ -362,7 +362,7 @@ class DecodeConnectorScheduler:
             self,
             request: "Request",
             block_ids: list[int],
-            spec_token_ids: Optional[list[int]] = [],
+            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if request.request_id in self.processed_request:
             self.processed_request.remove(request.request_id)
@@ -413,7 +413,6 @@ class DecodeConnectorWorker:
 
     # Now go asynchronous pull_kv
     def start_load_kv(self, metadata: DatadistConnectorMetadata):
-        futures = []
         logger.info(f" ***** start_load_kv: {len(metadata.requests)}")
         for req_id, meta in metadata.requests.items():
             if len(meta.local_block_ids) == 0 or \
