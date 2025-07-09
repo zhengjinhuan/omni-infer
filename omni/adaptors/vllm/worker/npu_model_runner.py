@@ -962,7 +962,7 @@ class NPUModelRunner(GPUModelRunner):
             device=self.device,
             pin_memory=is_pin_memory_available(),
             vocab_size=self.model_config.get_vocab_size(),
-            kv_cache_config=kv_cache_config,
+            block_size=self.cache_config.block_size
         )
         self.input_batch.token_ids_cpu_tensor = torch.zeros(
             (self.max_num_reqs, self.model_config.max_model_len),

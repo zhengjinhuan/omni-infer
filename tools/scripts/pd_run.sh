@@ -387,8 +387,8 @@ if [ -n "$ADDITIONAL_CONFIG" ]; then
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
-    --enable-mtp \
     --extra-args "$EXTRA_ARGS"
+#    --enable-mtp \
 else
   python start_api_servers.py \
     --num-servers "$NUM_SERVERS" \
@@ -404,6 +404,6 @@ else
     --log-dir "$LOG_DIR" \
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
-    --enable-mtp \
     --extra-args "$EXTRA_ARGS"
+#    --enable-mtp \
 fi

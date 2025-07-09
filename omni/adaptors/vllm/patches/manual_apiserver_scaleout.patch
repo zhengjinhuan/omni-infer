@@ -73,7 +73,7 @@ index 0cf2383af..4d5f4d3d1 100644
 -                local_unfinished_reqs)
 -
 -            if not self.engines_running:
--                if self.local_dp_rank == 0:
+-                if self.dp_rank == 0:
 -                    # Notify client that we are pausing the loop.
 -                    logger.debug("Wave %d finished, pausing engine loop.",
 -                                 self.current_wave)
@@ -86,7 +86,7 @@ index 0cf2383af..4d5f4d3d1 100644
 +            #     local_unfinished_reqs)
 +
 +            # if not self.engines_running:
-+            #     if self.local_dp_rank == 0:
++            #     if self.dp_rank == 0:
 +            #         # Notify client that we are pausing the loop.
 +            #         logger.debug("Wave %d finished, pausing engine loop.",
 +            #                      self.current_wave)
