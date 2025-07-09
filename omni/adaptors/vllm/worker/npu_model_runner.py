@@ -106,12 +106,12 @@ def set_forward_context(attn_metadata: Any,
         no_compile_layers=vllm_config.compilation_config.static_forward_context,
         virtual_engine=virtual_engine,
         attn_metadata=attn_metadata,
-        dp_metadata=dp_metadata)
+        dp_metadata=None)
 
     try:
         yield
     finally:
-        _forward_context = prev_context
+        forward_context._forward_context = prev_context
 
 
 class GraphCompileConfiguration:
@@ -882,7 +882,10 @@ class NPUModelRunner(GPUModelRunner):
 
 
     def profile_run(self) -> None:
-        hidden_states = self._dummy_run(self.max_num_tokens)
+        if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
+            hidden_states = self._dummy_run(self.max_batch_size * model_extra_config.parall_config.dp_size)
+        else:
+            hidden_states = self._dummy_run(self.max_num_tokens)
 
         NPUPlatform.synchronize()
         del hidden_states
