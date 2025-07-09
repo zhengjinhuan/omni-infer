@@ -621,7 +621,7 @@ class AscendMLAImpl(MLAAttentionImpl):
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
-        self.scale = float(scale)
+
         self.num_kv_heads = num_kv_heads
         self.kv_cache_dtype = kv_cache_dtype
 
@@ -672,7 +672,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.q_b_proj = q_b_proj
 
         self.qk_head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
-        self.scaling = self.qk_head_dim ** -0.5
+        self.scaling = scale
         self.q_a_proj = q_a_proj
         self.kv_scale = None
         self.use_faquant = False
