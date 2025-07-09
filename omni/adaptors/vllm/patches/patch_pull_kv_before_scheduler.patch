@@ -1,5 +1,5 @@
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 4d5f4d3d1..db5dd5c48 100644
+index 4d5f4d3d1..4bef53343 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
 @@ -38,6 +38,7 @@ from vllm.v1.request import Request, RequestStatus
@@ -10,7 +10,15 @@ index 4d5f4d3d1..db5dd5c48 100644
  
  logger = init_logger(__name__)
  
-@@ -182,10 +183,12 @@ class EngineCore:
+@@ -62,6 +63,7 @@ class EngineCore:
+                     VLLM_VERSION, vllm_config)
+ 
+         self.log_stats = log_stats
++        self.pull_kv_lock = threading.Lock()
+ 
+         # Setup Model.
+         self.model_executor = executor_class(vllm_config)
+@@ -182,10 +184,12 @@ class EngineCore:
              # Start grammar compilation asynchronously
              self.structured_output_manager.grammar_init(req)
  
@@ -27,7 +35,7 @@ index 4d5f4d3d1..db5dd5c48 100644
  
          self.scheduler.add_request(req)
  
-@@ -218,7 +221,8 @@ class EngineCore:
+@@ -218,7 +222,8 @@ class EngineCore:
                  outputs=[],
                  scheduler_stats=self.scheduler.make_stats(),
              )
@@ -37,7 +45,7 @@ index 4d5f4d3d1..db5dd5c48 100644
          model_output = self.execute_model(scheduler_output)
          engine_core_outputs = self.scheduler.update_from_output(
              scheduler_output, model_output)  # type: ignore
-@@ -392,6 +396,8 @@ class EngineCoreProc(EngineCore):
+@@ -392,6 +397,8 @@ class EngineCoreProc(EngineCore):
                      "num_gpu_blocks": num_gpu_blocks,
                  }))
  
@@ -46,7 +54,7 @@ index 4d5f4d3d1..db5dd5c48 100644
              # Background Threads and Queues for IO. These enable us to
              # overlap ZMQ socket IO with GPU since they release the GIL,
              # and to overlap some serialization/deserialization with the
-@@ -606,9 +612,49 @@ class EngineCoreProc(EngineCore):
+@@ -606,9 +613,49 @@ class EngineCoreProc(EngineCore):
                  request_type == EngineCoreRequestType.ADD) else generic_decoder
              request = decoder.decode(data_frames)
  
@@ -80,8 +88,8 @@ index 4d5f4d3d1..db5dd5c48 100644
 +                    delay_cache_blocks=load_kv_async,
 +                )
 +            if new_blocks is None:
-+                    # Let's delay to slow path.
-+                    return
++                # Let's delay to slow path.
++                return
 +
 +            req.kv_transfer_params["fast_path"] = True
 +            connector.update_state_after_alloc(
