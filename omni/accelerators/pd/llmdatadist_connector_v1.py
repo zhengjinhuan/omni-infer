@@ -211,7 +211,7 @@ class PrefillConnectorScheduler:
             self,
             request: "Request",
             block_ids: list[int],
-            spec_token_ids: Optional[list[int]] = [],
+            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         """
         Once a request is finished, determine whether request blocks
