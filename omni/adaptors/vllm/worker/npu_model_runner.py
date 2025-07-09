@@ -106,12 +106,12 @@ def set_forward_context(attn_metadata: Any,
         no_compile_layers=vllm_config.compilation_config.static_forward_context,
         virtual_engine=virtual_engine,
         attn_metadata=attn_metadata,
-        dp_metadata=dp_metadata)
+        dp_metadata=None)
 
     try:
         yield
     finally:
-        _forward_context = prev_context
+        forward_context._forward_context = prev_context
 
 
 class GraphCompileConfiguration:
