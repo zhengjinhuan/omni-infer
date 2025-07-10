@@ -672,7 +672,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.q_b_proj = q_b_proj
 
         self.qk_head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
-        self.scaling = scale
+        self.scale = scale
         self.q_a_proj = q_a_proj
         self.kv_scale = None
         self.use_faquant = False
@@ -850,7 +850,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                         sparse_mode=2,
                         actual_seq_lengths=actual_seq_qlen,
                         actual_seq_lengths_kv=actual_seq_kvlen,
-                        scale=self.scaling,
+                        scale=self.scale,
                         next_tokens=0)[0]
                 computed_tokens += actual_seq_qlen[-1]
         else:
@@ -991,7 +991,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                             q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                             num_heads=self.num_heads,
                             num_key_value_heads=1, input_layout=input_layout,
-                            scale=self.scaling,
+                            scale=self.scale,
                             antiquant_mode=0, antiquant_scale=None,
                             block_table=attn_metadata.decode.block_table,
                             block_size=128,
@@ -1014,7 +1014,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                         q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                         num_heads=self.num_heads,
                         num_key_value_heads=1, input_layout=input_layout,
-                        scale=self.scaling,
+                        scale=self.scale,
                         antiquant_mode=0, antiquant_scale=None,
                         block_table=attn_metadata.decode.block_table,
                         block_size=128,
@@ -1091,7 +1091,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                     q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                     num_heads=self.num_heads,
                     num_key_value_heads=1, input_layout="BSND",
-                    scale=self.scaling,
+                    scale=self.scale,
                     antiquant_mode=0, antiquant_scale=None,
                     block_table=attn_metadata.decode.block_table,
                     block_size=128,
