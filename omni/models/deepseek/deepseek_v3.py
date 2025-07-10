@@ -408,7 +408,7 @@ class DeepseekMoE(nn.Module):
                                                             group_list_type=1)[0]
                 
                 gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-                    gate_up_proj, weight_scale=weight_scale1_3, activate_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
+                    gate_up_proj, weight_scale=weight_scale1_3, activation_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
                     group_index=group_list, activate_left=True, quant_mode=1)
 
                 hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],

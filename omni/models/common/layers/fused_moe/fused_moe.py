@@ -535,7 +535,7 @@ def fused_experts_w8a8_allgather_ep(hidden_states: torch.Tensor,
         gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=None, group_list=expert_tokens,
                                                     split_item=3, output_dtype=torch.int32, group_type=0,
                                                     group_list_type=1)[0]
-        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=w1_scale, activate_scale=dynamic_quant_scale, bias=None, quant_scale=scale_2, quant_offset=None, group_index=expert_tokens, activate_left=True, quant_mode=1)
+        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=w1_scale, activation_scale=dynamic_quant_scale, bias=None, quant_scale=scale_2, quant_offset=None, group_index=expert_tokens, activate_left=True, quant_mode=1)
 
         output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2, expert_tokens, scale=w2_scale, bias=None, pertoken_scale=pertoken_scale, shared_input=share_input, logit=sorted_topk_weight, row_index=row_index, output_bs=batch_size, shared_input_weight=1.0, group_list_type=1, shared_input_offset=0).to(torch.bfloat16)
 
@@ -552,15 +552,16 @@ def gmm_expert(x, expert_tokens, w1, w2, w1_scale, w2_scale, dynamic_scale=None,
         pertoken_scale = pertoken_scale.reshape(-1)
         h = h.view(-1, hidden_size)
     # gmm1: gate_up
+    avg_tokens_per_expert = avg_tokens_per_expert or [0]
     mm1_mm3 = torch_npu.npu_grouped_matmul([h], [w1],
                                             group_list=expert_tokens, split_item=3,
                                             output_dtype=torch.int32, group_type=0,
                                             group_list_type=1, tuning_config=avg_tokens_per_expert)[0]
     # dequant_swiglu_quant
-    scale_2 = torch.ones((256, w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
+    scale_2 = torch.ones((expert_tokens.shape[0], w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
     intermediate_h, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
         mm1_mm3, weight_scale=w1_scale,
-        activate_scale=pertoken_scale.squeeze(0), bias=None, quant_scale=scale_2, quant_offset=None,
+        activation_scale=pertoken_scale.squeeze(0), bias=None, quant_scale=scale_2, quant_offset=None,
         group_index=expert_tokens, activate_left=True, quant_mode=1)
 
     if pertoken_scale.dim() > 1:
@@ -594,12 +595,18 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
     max_num_deployed_expert = 256
     if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
         max_num_deployed_expert = w1_scale.shape[0] * get_expert_parallel_world_size()
-    expanded_x, expanded_row_idx, tokens_per_expert, _, pertoken_scale = torch_npu.npu_moe_init_routing_quant_v2(
+    expert_range = [0, max_num_deployed_expert]
+    expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
         hidden_states,
         expert_idx=topk_ids,
         scale=None,
         expert_num=max_num_deployed_expert,
-        expert_tokens_count_or_cumsum_flag=2,
+        active_expert_range=expert_range,
+        expert_tokens_num_type=1,
+        expert_tokens_num_flag=True,
+        active_num=topk_ids.numel(),
+        drop_pad_mode=0,
+        row_idx_type=0,
         quant_mode=1)
  
     tokens_per_expert_group = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
@@ -658,7 +665,7 @@ def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_t
 
     scale_2 = torch.ones((n_routed_experts // get_expert_parallel_world_size(), w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
     gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-        gate_up_proj, weight_scale=w1_scale, activate_scale=pertoken_scale, bias=None, quant_scale=scale_2, quant_offset=None,
+        gate_up_proj, weight_scale=w1_scale, activation_scale=pertoken_scale, bias=None, quant_scale=scale_2, quant_offset=None,
         group_index=expert_tokens, activate_left=True, quant_mode=1)
 
     if not model_extra_config.operator_opt_config.opt_w2_scale_cast:
