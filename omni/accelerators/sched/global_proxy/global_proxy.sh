@@ -344,6 +344,18 @@ function nginx_set_upstream() {
         fi
     fi
 
+    case "$lb_sdk_line" in
+        "weighted_least_active")
+            lb_sdk_line="weighted_least_active on"
+            ;;
+        "greedy_timeout")
+            lb_sdk_line="greedy_timeout on"
+            ;;
+        "prefill_score_balance")
+            lb_sdk_line="prefill_score_balance on"
+            ;;
+    esac
+
     # Compose new upstream block with 8 spaces indentation
     local upstream_block="    upstream $upstream_name {
         ${zone_line}
@@ -529,7 +541,7 @@ dry_run=false
 log_file=""
 log_level=""
 prefill_lb_sdk="least_conn"
-decode_lb_sdk="weighted_least_active on"
+decode_lb_sdk="weighted_least_active"
 
 print_help() {
     echo "Usage:"
