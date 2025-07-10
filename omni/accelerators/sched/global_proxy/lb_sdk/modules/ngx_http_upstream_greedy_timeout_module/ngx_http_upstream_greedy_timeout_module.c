@@ -8,9 +8,9 @@
 #include <math.h>
 
 typedef struct {
-    ngx_flag_t  enable;
-    ngx_uint_t  warmup;
-    double      exp;
+    ngx_flag_t enable;
+    ngx_uint_t warmup;
+    double exp;
 } ngx_http_gts_conf_t;
 
 typedef struct {
@@ -18,64 +18,73 @@ typedef struct {
 } ngx_http_gts_shm_processor_t;
 
 typedef struct {
-    ngx_uint_t                  warmup;
-    double                      exp;
-    ngx_uint_t                  p;
+    ngx_uint_t warmup;
+    double exp;
+    ngx_uint_t p;
     ngx_http_gts_shm_processor_t procs[1];
 } ngx_http_gts_shm_block_t;
 
 typedef struct {
-    ngx_http_upstream_rr_peer_data_t  *rrp;
-    ngx_uint_t                         chosen;
+    ngx_http_upstream_rr_peer_data_t *rrp;
+    ngx_uint_t chosen;
 } ngx_http_gts_peer_data_t;
 
 static ngx_shm_zone_t *ngx_http_gts_shm_zone = NULL;
-static ngx_uint_t      ngx_http_gts_shm_size = 0;
+static ngx_uint_t ngx_http_gts_shm_size = 0;
 static ngx_http_gts_shm_block_t *gts_shm = NULL;
+
+static void *ngx_http_gts_create_srv_conf(ngx_conf_t *cf);
+static char *ngx_http_gts_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 
 static char *ngx_http_gts_set_shm_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_conf_set_double_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
-static ngx_command_t  ngx_http_gts_commands[] = {
+static ngx_int_t ngx_http_gts_postconfig(ngx_conf_t *cf);
+static ngx_int_t ngx_http_gts_upstream_init(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *uscf);
+static ngx_int_t ngx_http_gts_get_peer(ngx_peer_connection_t *pc, void *data);
+static void ngx_http_gts_free_peer(ngx_peer_connection_t *pc, void *data, ngx_uint_t state);
+static ngx_int_t ngx_http_gts_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data);
+
+static char *ngx_http_gts_set_flag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_str_t *value = cf->args->elts;
+    ngx_flag_t *fp = (ngx_flag_t *)((char *)conf + cmd->offset);
+    *fp = ngx_atoi(value[1].data, value[1].len);
+    return NGX_CONF_OK;
+}
+
+static ngx_command_t ngx_http_gts_commands[] = {
     { ngx_string("greedy_timeout"),
-    NGX_HTTP_UPS_CONF|NGX_CONF_FLAG,
-    ngx_conf_set_flag_slot,
-    NGX_HTTP_SRV_CONF_OFFSET,
-    offsetof(ngx_http_gts_conf_t, enable),
-    NULL },
+      NGX_HTTP_UPS_CONF|NGX_CONF_FLAG,
+      ngx_http_gts_set_flag,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_gts_conf_t, enable),
+      NULL },
 
     { ngx_string("greedy_timeout_warmup"),
-    NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
-    ngx_conf_set_num_slot,
-    NGX_HTTP_SRV_CONF_OFFSET,
-    offsetof(ngx_http_gts_conf_t, warmup),
-    NULL },
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_gts_conf_t, warmup),
+      NULL },
 
     { ngx_string("greedy_timeout_exp"),
-    NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
-    ngx_conf_set_double_slot,
-    NGX_HTTP_SRV_CONF_OFFSET,
-    offsetof(ngx_http_gts_conf_t, exp),
-    NULL },
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_double_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_gts_conf_t, exp),
+      NULL },
 
     { ngx_string("greedy_timeout_shm_size"),
-    NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
-    ngx_http_gts_set_shm_size,
-    0,
-    0,
-    NULL },
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_http_gts_set_shm_size,
+      0,
+      0,
+      NULL },
 
     ngx_null_command
 };
 
-static void *ngx_http_gts_create_srv_conf(ngx_conf_t *cf);
-static char *ngx_http_gts_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
-static ngx_int_t ngx_http_gts_postconfig(ngx_conf_t *cf);
-static ngx_int_t ngx_http_gts_upstream_init(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *uscf);
-static ngx_int_t ngx_http_gts_get_peer(ngx_peer_connection_t *pc, void *data);
-static void      ngx_http_gts_free_peer(ngx_peer_connection_t *pc, void *data, ngx_uint_t state);
-
-static ngx_http_module_t  ngx_http_gts_module_ctx = {
+static ngx_http_module_t ngx_http_gts_module_ctx = {
     NULL,
     ngx_http_gts_postconfig,
     NULL, NULL,
@@ -84,7 +93,7 @@ static ngx_http_module_t  ngx_http_gts_module_ctx = {
     NULL, NULL
 };
 
-ngx_module_t  ngx_http_upstream_greedy_timeout_module = {
+ngx_module_t ngx_http_upstream_greedy_timeout_module = {
     NGX_MODULE_V1,
     &ngx_http_gts_module_ctx,
     ngx_http_gts_commands,
@@ -96,13 +105,10 @@ ngx_module_t  ngx_http_upstream_greedy_timeout_module = {
 static char *
 ngx_conf_set_double_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_str_t        *value;
-    double           *dp;
+    ngx_str_t *value = cf->args->elts;
+    double *dp = (double *)((char *)conf + cmd->offset);
 
-    value = cf->args->elts;
-    dp    = (double *) ((char *) conf + cmd->offset);
-
-    *dp = atof((const char *) value[1].data);
+    *dp = atof((const char *)value[1].data);
 
     return NGX_CONF_OK;
 }
@@ -137,11 +143,12 @@ ngx_http_gts_create_srv_conf(ngx_conf_t *cf)
     if (conf == NULL) {
         return NULL;
     }
-    conf->enable  = NGX_CONF_UNSET;
+    conf->enable  = 0;
     conf->warmup  = NGX_CONF_UNSET_UINT;
     conf->exp     = NGX_CONF_UNSET;
     return conf;
 }
+
 static char *
 ngx_http_gts_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -149,7 +156,7 @@ ngx_http_gts_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_gts_conf_t *conf = child;
     ngx_conf_merge_value(conf->enable,  prev->enable,  0);
     ngx_conf_merge_uint_value(conf->warmup, prev->warmup, 5);
-    ngx_conf_merge_value(conf->exp,         prev->exp,    1.8);
+    ngx_conf_merge_value(conf->exp, prev->exp, 1.8);
     return NGX_CONF_OK;
 }
 
@@ -158,7 +165,8 @@ ngx_http_gts_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
 {
     ngx_slab_pool_t *shpool;
     ngx_http_gts_shm_block_t *shm_block;
-    ngx_uint_t i, n;
+    ngx_uint_t i;
+    ngx_uint_t n;
 
     if (data) {
         shm_zone->data = data;
@@ -166,7 +174,7 @@ ngx_http_gts_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
         return NGX_OK;
     }
 
-    shpool = (ngx_slab_pool_t *) shm_zone->shm.addr;
+    shpool = (ngx_slab_pool_t *)shm_zone->shm.addr;
 
     n = 512;
     size_t sz = sizeof(ngx_http_gts_shm_block_t) + (n - 1) * sizeof(ngx_http_gts_shm_processor_t);
@@ -187,35 +195,45 @@ ngx_http_gts_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
 static ngx_int_t
 ngx_http_gts_postconfig(ngx_conf_t *cf)
 {
-    ngx_str_t *shm_name;
-    if (ngx_http_gts_shm_size == 0) {
-        ngx_http_gts_shm_size = 8 * ngx_pagesize;
-    }
-    shm_name = ngx_palloc(cf->pool, sizeof(*shm_name));
-    shm_name->len = sizeof("greedy_timeout") - 1;
-    shm_name->data = (u_char *)"greedy_timeout";
-    ngx_http_gts_shm_zone = ngx_shared_memory_add(
-        cf, shm_name, ngx_http_gts_shm_size, &ngx_http_upstream_greedy_timeout_module);
-    if (ngx_http_gts_shm_zone == NULL) {
-        return NGX_ERROR;
-    }
-    ngx_http_gts_shm_zone->init = ngx_http_gts_init_shm_zone;
-
-    ngx_http_upstream_main_conf_t  *upcf;
-    ngx_http_upstream_srv_conf_t  **uscfp;
-    ngx_http_gts_conf_t            *conf;
-    ngx_uint_t                      i;
+    ngx_http_upstream_main_conf_t *upcf;
+    ngx_http_upstream_srv_conf_t **uscfp;
+    ngx_http_gts_conf_t *conf;
+    ngx_uint_t i;
 
     upcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
-    if (upcf == NULL) return NGX_OK;
+    if (upcf == NULL) {
+        return NGX_OK;
+    }
+
     uscfp = upcf->upstreams.elts;
+
     for (i = 0; i < upcf->upstreams.nelts; i++) {
         conf = ngx_http_conf_upstream_srv_conf(uscfp[i],
-            ngx_http_upstream_greedy_timeout_module);
-        if (conf->enable) {
-            uscfp[i]->peer.init = ngx_http_gts_upstream_init;
+                                               ngx_http_upstream_greedy_timeout_module);
+        if (!conf->enable) {
+            continue;
         }
+
+        if (ngx_http_gts_shm_zone == NULL) {
+            if (ngx_http_gts_shm_size == 0) {
+                ngx_http_gts_shm_size = 8 * ngx_pagesize;
+            }
+
+            ngx_str_t name = ngx_string("greedy_timeout");
+            ngx_http_gts_shm_zone = ngx_shared_memory_add(
+                cf, &name, ngx_http_gts_shm_size,
+                &ngx_http_upstream_greedy_timeout_module);
+            if (ngx_http_gts_shm_zone == NULL) {
+                return NGX_ERROR;
+            }
+            ngx_http_gts_shm_zone->init = ngx_http_gts_init_shm_zone;
+        }
+
+        uscfp[i]->peer.init = ngx_http_gts_upstream_init;
+        ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+                      "[GreedyTimeout] enabled on upstream[%ui]", i);
     }
+
     return NGX_OK;
 }
 
@@ -223,12 +241,17 @@ static ngx_int_t
 ngx_http_gts_upstream_init(ngx_http_request_t *r,
     ngx_http_upstream_srv_conf_t *uscf)
 {
-    ngx_http_upstream_t              *u = r->upstream;
+    ngx_http_upstream_t *u = r->upstream;
     ngx_http_upstream_rr_peer_data_t *rrp;
-    ngx_http_gts_peer_data_t         *gdata;
-    ngx_uint_t                        chosen = 0, i, n;
-    double                            z, cost, now, earliest;
-    ngx_slab_pool_t                  *shpool;
+    ngx_http_gts_peer_data_t *gdata;
+    ngx_uint_t chosen = 0;
+    ngx_uint_t i;
+    ngx_uint_t n;
+    double z;
+    double cost;
+    double now;
+    double earliest;
+    ngx_slab_pool_t *shpool;
 
     if (ngx_http_upstream_init_round_robin_peer(r, uscf) != NGX_OK)
         return NGX_ERROR;
@@ -259,7 +282,7 @@ ngx_http_gts_upstream_init(ngx_http_request_t *r,
 
     ngx_shmtx_unlock(&shpool->mutex);
 
-    gdata = ngx_palloc(r->pool, sizeof(*gdata));
+    gdata = ngx_pcalloc(r->pool, sizeof(*gdata));
     gdata->rrp    = rrp;
     gdata->chosen = chosen;
     u->peer.data  = gdata;
@@ -270,8 +293,8 @@ ngx_http_gts_upstream_init(ngx_http_request_t *r,
     ngx_uint_t port = ntohs(sin->sin_port);
 
     ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-        "[Greedy Timeout]: request assigned to port=%ui, request_length=%O",
-        port, r->request_length);
+        "[GreedyTimeout] assign request to peer #%ui (port=%ui), request_length=%O",
+        chosen, port, r->request_length);
 
     return NGX_OK;
 }
@@ -279,10 +302,10 @@ ngx_http_gts_upstream_init(ngx_http_request_t *r,
 static ngx_int_t
 ngx_http_gts_get_peer(ngx_peer_connection_t *pc, void *data)
 {
-    ngx_http_gts_peer_data_t         *gdata = data;
-    ngx_http_upstream_rr_peer_data_t *rrp   = gdata->rrp;
-    ngx_http_upstream_rr_peers_t     *peers = rrp->peers;
-    ngx_uint_t                        idx   = gdata->chosen;
+    ngx_http_gts_peer_data_t *gdata = data;
+    ngx_http_upstream_rr_peer_data_t *rrp = gdata->rrp;
+    ngx_http_upstream_rr_peers_t *peers = rrp->peers;
+    ngx_uint_t idx = gdata->chosen;
 
     if (idx >= peers->number)
         return ngx_http_upstream_get_round_robin_peer(pc, rrp);
@@ -302,7 +325,7 @@ ngx_http_gts_get_peer(ngx_peer_connection_t *pc, void *data)
 static void
 ngx_http_gts_free_peer(ngx_peer_connection_t *pc, void *data, ngx_uint_t state)
 {
-    ngx_http_gts_peer_data_t         *gdata = data;
-    ngx_http_upstream_rr_peer_data_t *rrp   = gdata->rrp;
+    ngx_http_gts_peer_data_t *gdata = data;
+    ngx_http_upstream_rr_peer_data_t *rrp = gdata->rrp;
     ngx_http_upstream_free_round_robin_peer(pc, rrp, state);
 }
