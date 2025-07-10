@@ -29,6 +29,7 @@ class ModelParallelConfig:
     lm_tp_size: int = 1
     pp_size: int = 1
     dp_size: int = 1
+    o_proj_tp_size: int = 1
     
     redundancy_expert_num: int = 0
     redundancy_shared_expert_num: int = 0
@@ -67,6 +68,7 @@ class ModelOperatorOptConfig:
     use_super_kernel: bool = False
     use_mlaprolog: bool = False
     opt_w2_scale_cast: bool = False
+    enable_mc2_v2: bool = False
     decode_gear_list: list[int] = field(default_factory=lambda: [16])
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
     

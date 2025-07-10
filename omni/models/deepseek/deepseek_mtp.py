@@ -132,7 +132,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
  
         if attn_metadata is None:
-            logits = self.logits_processor._get_logits(hidden_states[-1:, ...], self.shared_head['head'], None)
+            logits = self.compute_lmhead(self.shared_head['head'], hidden_states[-1:, ...], None)
         else:
             logits = self.compute_lmhead(self.shared_head['head'], hidden_states, prefill_padding_or_selected_indices)
  
