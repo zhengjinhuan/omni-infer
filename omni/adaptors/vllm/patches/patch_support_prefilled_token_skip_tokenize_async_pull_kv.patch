@@ -22,8 +22,8 @@ index f96233545..b6e722b37 100644
 +                        new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
 +                        delta_text = tokenizer.convert_tokens_to_string([new_tokens])
 +                        engine_prompt["prefilled_texts"] = delta_text
-+                    else:
-+                        raise ValueError("kv_transfer_params must contain 'prompt_token_ids' for operator_opt_config.reuse_prefilled_token.")
++                    # else:
++                        # raise ValueError("kv_transfer_params must contain 'prompt_token_ids' for operator_opt_config.reuse_prefilled_token.")
                  default_max_tokens = self.max_model_len - len(
                      engine_prompt["prompt_token_ids"])
                  if request.use_beam_search:
@@ -37,8 +37,8 @@ index f96233545..b6e722b37 100644
 +                new_tokens = tokenizer.convert_ids_to_tokens(prompt_token_ids[0])
 +                prompt_text = tokenizer.convert_tokens_to_string([new_tokens])
 +                final_res.outputs[0].text = prompt_text + final_res.outputs[0].text
-+            else:
-+                raise ValueError("kv_transfer_params must contain 'prefilled_token' for operator_opt_config.reuse_prefilled_tokens.")
++            # else:
++                # raise ValueError("kv_transfer_params must contain 'prefilled_token' for operator_opt_config.reuse_prefilled_tokens.")
 +        ## In Prefill node, the response will carry prompt_token_ids with kv_transfer_params
 +        if skip_decode_tokenize:
 +            if final_res.kv_transfer_params:
@@ -57,8 +57,8 @@ index f96233545..b6e722b37 100644
 +        if reuse_prefilled_tokens:
 +            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
 +                num_generated_tokens += 1
-+            else:
-+                raise ValueError("kv_transfer_params must contain 'prefilled_token' for operator_opt_config.reuse_prefilled_tokens.")
++            # else:
++                # raise ValueError("kv_transfer_params must contain 'prefilled_token' for operator_opt_config.reuse_prefilled_tokens.")
          usage = UsageInfo(prompt_tokens=num_prompt_tokens,
                            completion_tokens=num_generated_tokens,
                            total_tokens=num_prompt_tokens +
@@ -91,8 +91,8 @@ index 8b3857fad..4500fbded 100644
 +            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
 +                engine_prompt = TokensPrompt(
 +                    prompt_token_ids=request.kv_transfer_params["prompt_token_ids"])
-+            else:
-+                raise ValueError("kv_transfer_params must contain 'prompt_token_ids' for operator_opt_config.skip_decode_tokenize.") 
++            # else:
++                # raise ValueError("kv_transfer_params must contain 'prompt_token_ids' for operator_opt_config.skip_decode_tokenize.") 
          else:
 -            # For MistralTokenizer
 -            assert is_list_of(request_prompt, int), (
@@ -171,8 +171,8 @@ index 722d85d3b..fe463dfdb 100644
 +            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                request.prompt_token_ids.extend(request.kv_transfer_params["prefilled_token"])
 +                request.append_output_token_ids(request.kv_transfer_params["prefilled_token"])
-+            else:
-+                raise ValueError("kv_transfer_params must contain 'prefilled_token' for operator_opt_config.reuse_prefilled_tokens.")
++            # else:
++                # raise ValueError("kv_transfer_params must contain 'prefilled_token' for operator_opt_config.reuse_prefilled_tokens.")
 +
          # with spec
          if self.vllm_config.speculative_config is not None:
@@ -239,7 +239,7 @@ index 4d5f4d3d1..56018965b 100644
  from vllm.version import __version__ as VLLM_VERSION
  
 +import os; async_pull_kv = os.getenv("OMNI_ASYNC_PULL_KV", "1") == "1"
-+if async_pull_kv :
++if async_pull_kv:
 +    from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 +
  logger = init_logger(__name__)
@@ -249,7 +249,7 @@ index 4d5f4d3d1..56018965b 100644
                      VLLM_VERSION, vllm_config)
  
          self.log_stats = log_stats
-+        if async_pull_kv :
++        if async_pull_kv:
 +            self.pull_kv_lock = threading.Lock()
  
          # Setup Model.
@@ -266,7 +266,7 @@ index 4d5f4d3d1..56018965b 100644
 +            if not self.scheduler.get_kv_connector():
 +                logger.warning("Got kv_transfer_params, but no KVConnector found. "
 +                            "Disabling KVTransfer for this request.")
-+            if async_pull_kv :
++            if async_pull_kv:
 +                if req.kv_transfer_params["fast_path"]:
 +                    req.status = RequestStatus.WAITING_FOR_REMOTE_KVS
  
@@ -277,7 +277,7 @@ index 4d5f4d3d1..56018965b 100644
                  scheduler_stats=self.scheduler.make_stats(),
              )
 -        scheduler_output = self.scheduler.schedule()
-+        if async_pull_kv :
++        if async_pull_kv:
 +            with self.pull_kv_lock:
 +                scheduler_output = self.scheduler.schedule()
 +        else:
@@ -297,7 +297,7 @@ index 4d5f4d3d1..56018965b 100644
                  request_type == EngineCoreRequestType.ADD) else generic_decoder
              request = decoder.decode(data_frames)
  
-+            if async_pull_kv :
++            if async_pull_kv:
 +                if request_type == EngineCoreRequestType.ADD:
 +                    with self.pull_kv_lock:
 +                        self.try_pull_kv_fast_path(request)
