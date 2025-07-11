@@ -70,7 +70,7 @@ index 8b3857fad..4500fbded 100644
  from vllm.utils import (is_list_of, make_async, merge_async_iterators,
                          random_uuid, P, T)
  
-+skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "1") == "1"
++import os; skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "1") == "1"
 +
  logger = init_logger(__name__)
  
@@ -133,7 +133,7 @@ index c83ab73b6..c87891fbb 100644
  if TYPE_CHECKING:
      from vllm.multimodal.inputs import MultiModalDataDict, MultiModalInputs
  
-+reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "1") == "1"
++import os; reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "1") == "1"
  
  class TextPrompt(TypedDict):
      """Schema for a text prompt."""
@@ -159,7 +159,7 @@ index 722d85d3b..fe463dfdb 100644
  from vllm.v1.request import Request, RequestStatus
  from vllm.v1.spec_decode.metrics import SpecDecodingStats
  from vllm.v1.structured_output import StructuredOutputManager
-+reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "1") == "1"
++import os; reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "1") == "1"
  
  logger = init_logger(__name__)
  
@@ -194,7 +194,7 @@ index 5628f0a11..2a635ae90 100644
                                       setup_default_loggers)
  from vllm.v1.metrics.stats import IterationStats, SchedulerStats
  
-+reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "1") == "1"
++import os; reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "1") == "1"
 +
  logger = init_logger(__name__)
  
@@ -238,7 +238,7 @@ index 4d5f4d3d1..56018965b 100644
  from vllm.v1.structured_output import StructuredOutputManager
  from vllm.version import __version__ as VLLM_VERSION
  
-+async_pull_kv = os.getenv("OMNI_ASYNC_PULL_KV", "1") == "1"
++import os; async_pull_kv = os.getenv("OMNI_ASYNC_PULL_KV", "1") == "1"
 +if async_pull_kv :
 +    from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 +
