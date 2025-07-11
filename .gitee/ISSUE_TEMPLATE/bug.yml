@@ -26,16 +26,17 @@ body:
     validations:
       required: true
   - type: markdown
+    id: sw_env
     attributes:
+      label: 软件环境
+      description: 请在下面如何复现的文字框内，提供所使用的软件环境的信息
       value: |
-        | Software | Version(根据实际修改)|
-        | --- | --- |
-        | PyTorch |  |
-        | vLLM |  |
-        | CANN |   |
-        | Python |   |
-        | OS platform |   |
-        |  GCC/Compiler version |  |
+        - PyTorch：版本号
+        - vLLM：版本号
+        - CANN：版本号
+        - Python：版本号
+        - OS platform：操作系统类型及版本号
+        - GCC/Compiler：编译器类型及版本号
   - type: textarea
     attributes:
       label: 如何复现
