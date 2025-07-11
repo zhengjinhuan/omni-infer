@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any, Optional
 import zmq
 import os
 import time
-import pickle
+if model_extra_config.operator_opt_config.async_pull_kv:
+    import pickle
 
 from vllm.envs import VLLM_RPC_TIMEOUT
 from vllm.config import VllmConfig
@@ -38,10 +39,13 @@ from vllm.distributed.parallel_state import (
 
 from vllm.utils import get_open_port
 from vllm.v1.request import RequestStatus
+from omni.models.common.config.model_config import model_extra_config
 
 import os
-
-import queue
+if model_extra_config.operator_opt_config.multi_thread_pull_kv:
+    import queue
+else:
+    from concurrent.futures import ThreadPoolExecutor
 
 GET_META_MSG = b"get_meta_msg"
 
@@ -245,6 +249,7 @@ class PrefillConnectorWorker:
             self.receive_req_list = []
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True)
             self.thread.start()
+            set_thread_affinity(self.thread, 31) # Set affinity to CPU 31
         from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
         if ENABLED:
             manager_cls = OmniBiGroupDataDistManager
@@ -300,9 +305,10 @@ class DecodeConnectorScheduler:
         self._reqs_need_recv: dict[str, tuple[Request, list[int]]] = {}
         self.processed_request: set[str] = set()
 
-        self.context = zmq.Context()
-        self.pub = self.context.socket(zmq.PUB)
-        self.pub.bind(f"ipc:///tmp/sched-pub-{vllm_config.parallel_config.data_parallel_rank_local}")
+        if model_extra_config.operator_opt_config.async_pull_kv:
+            self.context = zmq.Context()
+            self.pub = self.context.socket(zmq.PUB)
+            self.pub.bind(f"ipc:///tmp/sched-pub-{vllm_config.parallel_config.data_parallel_rank_local}")
 
     def get_num_new_matched_tokens(
             self, request: "Request",
@@ -362,10 +368,11 @@ class DecodeConnectorScheduler:
             )
         self._reqs_need_recv.clear()
 
-        if scheduler_output is None:
-            # Let go fast path
-            serialized_data = pickle.dumps(metadata)
-            self.pub.send(serialized_data)
+        if model_extra_config.operator_opt_config.async_pull_kv:
+            if scheduler_output is None:
+                # Let go fast path
+                serialized_data = pickle.dumps(metadata)
+                self.pub.send(serialized_data)
 
         return metadata
 
@@ -395,18 +402,34 @@ class DecodeConnectorWorker:
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
-        self.queues = {} # cluster_id -> queue.Queue
-        self.threads = {} # cluster_id -> threading.Thread
-        self._pull_kv_lock = threading.Lock()
-
+        if model_extra_config.operator_opt_config.multi_thread_pull_kv:
+            self._pull_kv_lock = threading.Lock()
+            self.queues = {} # cluster_id -> queue.Queue
+            self.threads = {} # cluster_id -> threading.Thread
+            num_threads = int(os.environ.get("PREFILL_POD_NUM", "1"))
+            for pod_idx in range(num_threads):
+                with self._pull_kv_lock:
+                    cluster_id = 16 * pod_idx # Use 16 as the base for cluster_id
+                    q = queue.Queue()
+                    self.queues[cluster_id] = q
+                    t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
+                    t.start()
+                    set_thread_affinity(t, 31 + pod_idx) # Set affinity to CPU 31 + pod_idx
+                    self.threads[cluster_id] = t # Store the thread for this cluster_id
+                    logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+        else:
+            max_concurrents = 1
+            self.executor = ThreadPoolExecutor(max_workers=max_concurrents)
 
         self._transfer_lock = threading.Lock()
 
         self.ctx = zmq.Context()
         self.zmq_socket_map = {}
 
-        self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req)
-        self.thread_on_fast_path_req.start()
+        if model_extra_config.operator_opt_config.async_pull_kv:
+            self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req)
+            self.thread_on_fast_path_req.start()
+            set_thread_affinity(self.thread_on_fast_path_req, 31) # Set affinity to CPU 31
 
     def on_fast_path_req(self):
         context = zmq.Context()
@@ -453,26 +476,42 @@ class DecodeConnectorWorker:
                 len(meta.local_block_ids),
                 len(meta.remote_block_ids)
             )
-            
-            cluster_id = int(meta.remote_cluster_id)
-            with self._pull_kv_lock:
-                if cluster_id not in self.queues:
-                    q = queue.Queue()
-                    self.queues[cluster_id] = q
-                    t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
-                    t.start()
-                    self.threads[cluster_id] = t
-                    logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+            if model_extra_config.operator_opt_config.multi_thread_pull_kv:
+                # cluster_id = int(meta.remote_cluster_id)
+                # with self._pull_kv_lock:
+                #     if cluster_id not in self.queues:
+                #         q = queue.Queue()
+                #         self.queues[cluster_id] = q
+                #         t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
+                #         t.start()
+                #         self.threads[cluster_id] = t
+                #         logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
 
-            task = {
-                'request_id': req_id,
-                'dst_cluster_id': meta.remote_cluster_id,
-                'local_block_ids': meta.local_block_ids,
-                'remote_block_ids': meta.remote_block_ids,
-                'remote_host_ip': meta.remote_host,
-            }
-            
-            self.queues[cluster_id].put(task)
+                task = {
+                    'request_id': req_id,
+                    'dst_cluster_id': meta.remote_cluster_id,
+                    'local_block_ids': meta.local_block_ids,
+                    'remote_block_ids': meta.remote_block_ids,
+                    'remote_host_ip': meta.remote_host,
+                }
+                
+                self.queues[cluster_id].put(task)
+            else:
+                # Use ThreadPoolExecutor to handle the task
+                futures = []
+                future = self.executor.submit(
+                                self._read_blocks,
+                                local_block_ids=meta.local_block_ids,
+                                remote_block_ids=meta.remote_block_ids,
+                                dst_cluster_id=meta.remote_cluster_id, 
+                                request_id=req_id,
+                                remote_host_ip=meta.remote_host,
+                            )
+                futures.append(future)
+
+        if not model_extra_config.operator_opt_config.multi_thread_pull_kv:
+            for future in futures:
+                future.add_done_callback(handle_exception)
 
     def _read_blocks(
         self,
@@ -524,3 +563,16 @@ class DecodeConnectorWorker:
             done_req_ids.add(req_id)
         self._recving_transfers.clear()
         return done_req_ids
+
+def handle_exception(future):
+    if future.exception():
+        logger.error(f"Exception occurred in future: {future.exception()}")
+        raise future.exception()
+
+def set_thread_affinity(thread, cpu_id):
+    import threading
+    import ctypes
+    while not hasattr(thread, "native_id"):
+        pass
+    tid = thread.native_id
+    os.sched_setaffinity(tid, {cpu_id})
