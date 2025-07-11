@@ -477,7 +477,7 @@ class DecodeConnectorWorker:
                 len(meta.remote_block_ids)
             )
             if multi_thread_pull_kv:
-                # cluster_id = int(meta.remote_cluster_id)
+                cluster_id = int(meta.remote_cluster_id)
                 # with self._pull_kv_lock:
                 #     if cluster_id not in self.queues:
                 #         q = queue.Queue()
