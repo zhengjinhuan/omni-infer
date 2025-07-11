@@ -414,7 +414,7 @@ class DecodeConnectorWorker:
                     self.queues[cluster_id] = q
                     t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
                     t.start()
-                    set_thread_affinity(t, 31 + pod_idx) # Set affinity to CPU 31 + pod_idx
+                    set_thread_affinity(t, 32 + pod_idx) # Set affinity to CPU 31 + pod_idx
                     self.threads[cluster_id] = t # Store the thread for this cluster_id
                     logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
         else:
@@ -440,8 +440,8 @@ class DecodeConnectorWorker:
         while True:
             serialized_data = sub.recv()
             metadata = pickle.loads(serialized_data)
-
-            self.start_load_kv(metadata)
+            if (len(metadata.local_block_ids) > 0) and (len(metadata.remote_block_ids) > 0):
+                self.start_load_kv(metadata)
 
     def worker(self, cluster_id):
         q = self.queues[cluster_id]
