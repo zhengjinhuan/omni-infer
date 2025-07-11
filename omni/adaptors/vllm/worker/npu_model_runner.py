@@ -654,7 +654,7 @@ class NPUModelRunner(GPUModelRunner):
         if not self.use_spec_decode:
             # Speculative decoding is not enabled.
             spec_tokens_tensor = None
-        elif self.speculative_config.method == 'mtp':
+        elif self.speculative_config.method == 'deepseek_mtp':
             spec_tokens_tensor = self.run_mtp(
                 attn_metadata, scheduler_output, input_ids, raw_hidden_states, mtp_input_tokens, positions, sample_indices, last_accepted_index
             )
@@ -790,7 +790,7 @@ class NPUModelRunner(GPUModelRunner):
                     hidden_states = forward_results
                 else:
                     raw_hidden_states, hidden_states = forward_results
-                if self.use_spec_decode and self.speculative_config.method in ('mtp'):
+                if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
                     self.drafter(
                         input_ids=input_ids,
                         positions=positions,
@@ -840,7 +840,7 @@ class NPUModelRunner(GPUModelRunner):
                         hidden_states = forward_results
                     else:
                         raw_hidden_states, hidden_states = forward_results
-                    if self.use_spec_decode and self.speculative_config.method in ('mtp'):
+                    if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
                         if not self.dummy_drafter_mark_static:
                             torch._dynamo.mark_static(input_ids)
                             torch._dynamo.mark_static(raw_hidden_states)
@@ -868,7 +868,7 @@ class NPUModelRunner(GPUModelRunner):
                                             inputs_embeds=inputs_embeds,
                                             kv_caches=self.kv_caches,
                                             attn_metadata=attn_metadata)
-                    if self.use_spec_decode and self.speculative_config.method in ('mtp'):
+                    if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
                         self.drafter(
                             input_ids=input_ids,
                             positions=positions,
