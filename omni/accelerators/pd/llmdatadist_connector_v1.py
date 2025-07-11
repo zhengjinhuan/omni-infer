@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import zmq
 import os
 import time
+from omni.models.common.config.model_config import model_extra_config
 if model_extra_config.operator_opt_config.async_pull_kv:
     import pickle
 
@@ -39,7 +40,6 @@ from vllm.distributed.parallel_state import (
 
 from vllm.utils import get_open_port
 from vllm.v1.request import RequestStatus
-from omni.models.common.config.model_config import model_extra_config
 
 import os
 if model_extra_config.operator_opt_config.multi_thread_pull_kv:
