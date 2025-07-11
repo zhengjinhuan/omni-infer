@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import zmq
 import os
 import time
-async_pull_kv = os.getenv("OMNI_ASYNC_PULL_KV", "0") == "1"
+async_pull_kv = os.getenv("OMNI_ASYNC_PULL_KV", "1") == "1"
 if async_pull_kv:
     import pickle
 
@@ -41,7 +41,7 @@ from vllm.distributed.parallel_state import (
 from vllm.utils import get_open_port
 from vllm.v1.request import RequestStatus
 
-multi_thread_pull_kv = os.getenv("OMNI_MULTI_THREAD_PULL_KV", "0") == "1"
+multi_thread_pull_kv = os.getenv("OMNI_MULTI_THREAD_PULL_KV", "1") == "1"
 if multi_thread_pull_kv:
     import queue
 else:
