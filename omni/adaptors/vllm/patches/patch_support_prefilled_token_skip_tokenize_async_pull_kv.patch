@@ -1,20 +1,22 @@
 diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
-index f96233545..99187061a 100644
+index f96233545..b6e722b37 100644
 --- a/vllm/entrypoints/openai/serving_chat.py
 +++ b/vllm/entrypoints/openai/serving_chat.py
-@@ -42,6 +42,7 @@ from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer
- from vllm.transformers_utils.tokenizers import (maybe_serialize_tool_calls,
-                                                 truncate_tool_call_ids,
-                                                 validate_request_params)
-+from omni.models.common.config.model_config import model_extra_config
+@@ -45,6 +45,9 @@ from vllm.transformers_utils.tokenizers import (maybe_serialize_tool_calls,
  
  logger = init_logger(__name__)
  
-@@ -211,6 +212,14 @@ class OpenAIServingChat(OpenAIServing):
++import os
++reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
++skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
+ 
+ class OpenAIServingChat(OpenAIServing):
+ 
+@@ -211,6 +214,14 @@ class OpenAIServingChat(OpenAIServing):
          try:
              for i, engine_prompt in enumerate(engine_prompts):
                  sampling_params: Union[SamplingParams, BeamSearchParams]
-+                if model_extra_config.operator_opt_config.reuse_prefilled_tokens:
++                if reuse_prefilled_tokens:
 +                    if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
 +                        engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
 +                        new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
@@ -25,11 +27,11 @@ index f96233545..99187061a 100644
                  default_max_tokens = self.max_model_len - len(
                      engine_prompt["prompt_token_ids"])
                  if request.use_beam_search:
-@@ -916,6 +925,22 @@ class OpenAIServingChat(OpenAIServing):
+@@ -916,6 +927,22 @@ class OpenAIServingChat(OpenAIServing):
  
          assert final_res is not None
  
-+        if model_extra_config.operator_opt_config.reuse_prefilled_tokens:
++        if reuse_prefilled_tokens:
 +            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
 +                prompt_token_ids = request.kv_transfer_params["prefilled_token"]
 +                new_tokens = tokenizer.convert_ids_to_tokens(prompt_token_ids[0])
@@ -38,21 +40,21 @@ index f96233545..99187061a 100644
 +            else:
 +                raise ValueError("kv_transfer_params must contain 'prefilled_token' for operator_opt_config.reuse_prefilled_tokens.")
 +        ## In Prefill node, the response will carry prompt_token_ids with kv_transfer_params
-+        if model_extra_config.operator_opt_config.skip_decode_tokenize:
++        if skip_decode_tokenize:
 +            if final_res.kv_transfer_params:
 +                final_res.kv_transfer_params["prompt_token_ids"] = final_res.prompt_token_ids
-+        if model_extra_config.operator_opt_config.reuse_prefilled_tokens:
++        if reuse_prefilled_tokens:
 +            if final_res.kv_transfer_params:
 +                final_res.kv_transfer_params["prefilled_token"] = [final_res.outputs[0].token_ids[0]]
 +
          choices: list[ChatCompletionResponseChoice] = []
  
          role = self.get_chat_request_role(request)
-@@ -1073,6 +1098,11 @@ class OpenAIServingChat(OpenAIServing):
+@@ -1073,6 +1100,11 @@ class OpenAIServingChat(OpenAIServing):
              num_prompt_tokens += len(final_res.encoder_prompt_token_ids)
          num_generated_tokens = sum(
              len(output.token_ids) for output in final_res.outputs)
-+        if model_extra_config.operator_opt_config.reuse_prefilled_tokens:
++        if reuse_prefilled_tokens:
 +            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
 +                num_generated_tokens += 1
 +            else:
@@ -61,14 +63,14 @@ index f96233545..99187061a 100644
                            completion_tokens=num_generated_tokens,
                            total_tokens=num_prompt_tokens +
 diff --git a/vllm/entrypoints/openai/serving_engine.py b/vllm/entrypoints/openai/serving_engine.py
-index 8b3857fad..dcfb985bb 100644
+index 8b3857fad..4500fbded 100644
 --- a/vllm/entrypoints/openai/serving_engine.py
 +++ b/vllm/entrypoints/openai/serving_engine.py
 @@ -75,6 +75,8 @@ from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer, ge
  from vllm.utils import (is_list_of, make_async, merge_async_iterators,
                          random_uuid, P, T)
  
-+from omni.models.common.config.model_config import model_extra_config
++skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
 +
  logger = init_logger(__name__)
  
@@ -85,7 +87,7 @@ index 8b3857fad..dcfb985bb 100644
 -                truncate_prompt_tokens=truncate_prompt_tokens,
 -                add_special_tokens=add_special_tokens,
 -            )
-+        if model_extra_config.operator_opt_config.skip_decode_tokenize:
++        if skip_decode_tokenize:
 +            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
 +                engine_prompt = TokensPrompt(
 +                    prompt_token_ids=request.kv_transfer_params["prompt_token_ids"])
@@ -124,23 +126,23 @@ index 8b3857fad..dcfb985bb 100644
              engine_prompt["multi_modal_data"] = mm_data
          if request.mm_processor_kwargs is not None:
 diff --git a/vllm/inputs/data.py b/vllm/inputs/data.py
-index c83ab73b6..eba8159d4 100644
+index c83ab73b6..c87891fbb 100644
 --- a/vllm/inputs/data.py
 +++ b/vllm/inputs/data.py
-@@ -7,6 +7,7 @@ from typing_extensions import NotRequired, TypedDict, TypeVar
- 
+@@ -8,6 +8,7 @@ from typing_extensions import NotRequired, TypedDict, TypeVar
  if TYPE_CHECKING:
      from vllm.multimodal.inputs import MultiModalDataDict, MultiModalInputs
-+from omni.models.common.config.model_config import model_extra_config
  
++reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
  
  class TextPrompt(TypedDict):
+     """Schema for a text prompt."""
 @@ -62,7 +63,12 @@ class TokensPrompt(TypedDict):
      """
      Optional cache salt to be used for prefix caching.
      """
 -
-+    if model_extra_config.operator_opt_config.reuse_prefilled_tokens:
++    if reuse_prefilled_tokens:
 +        """
 +        This is used when the model supports reusing prefilled tokens.
 +        """
@@ -150,14 +152,14 @@ index c83ab73b6..eba8159d4 100644
  class EmbedsPrompt(TypedDict):
      """Schema for a prompt provided via token embeddings."""
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 722d85d3b..f762690c9 100644
+index 722d85d3b..fe463dfdb 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -30,6 +30,7 @@ from vllm.v1.outputs import ModelRunnerOutput
  from vllm.v1.request import Request, RequestStatus
  from vllm.v1.spec_decode.metrics import SpecDecodingStats
  from vllm.v1.structured_output import StructuredOutputManager
-+from omni.models.common.config.model_config import model_extra_config
++reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
  
  logger = init_logger(__name__)
  
@@ -165,7 +167,7 @@ index 722d85d3b..f762690c9 100644
          if num_computed_tokens == request.num_tokens:
              num_computed_tokens -= 1
  
-+        if model_extra_config.operator_opt_config.reuse_prefilled_tokens:
++        if reuse_prefilled_tokens:
 +            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                request.prompt_token_ids.extend(request.kv_transfer_params["prefilled_token"])
 +                request.append_output_token_ids(request.kv_transfer_params["prefilled_token"])
@@ -176,7 +178,7 @@ index 722d85d3b..f762690c9 100644
          if self.vllm_config.speculative_config is not None:
              request.spec_token_ids.append(0)
 diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
-index 5628f0a11..4fb92bdbc 100644
+index 5628f0a11..2a635ae90 100644
 --- a/vllm/v1/engine/async_llm.py
 +++ b/vllm/v1/engine/async_llm.py
 @@ -16,7 +16,7 @@ from vllm.inputs.preprocess import InputPreprocessor
@@ -192,7 +194,7 @@ index 5628f0a11..4fb92bdbc 100644
                                       setup_default_loggers)
  from vllm.v1.metrics.stats import IterationStats, SchedulerStats
  
-+from omni.models.common.config.model_config import model_extra_config
++reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
 +
  logger = init_logger(__name__)
  
@@ -201,7 +203,7 @@ index 5628f0a11..4fb92bdbc 100644
          """
  
          try:
-+            if model_extra_config.operator_opt_config.reuse_prefilled_tokens:
++            if reuse_prefilled_tokens:
 +                if "prefilled_token_ids" in prompt and prompt["prefilled_token_ids"] != []:
 +                    if sampling_params.n == 1:
 +                        output = RequestOutput(request_id=request_id,
@@ -229,29 +231,30 @@ index 5628f0a11..4fb92bdbc 100644
              # we can call __init__ before the event loop, which enables us
              # to handle startup failure gracefully in the OpenAI server.
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 4d5f4d3d1..93d4b0c52 100644
+index 4d5f4d3d1..56018965b 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
-@@ -38,6 +38,9 @@ from vllm.v1.request import Request, RequestStatus
- from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
+@@ -39,6 +39,10 @@ from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
  from vllm.v1.structured_output import StructuredOutputManager
  from vllm.version import __version__ as VLLM_VERSION
-+from omni.models.common.config.model_config import model_extra_config
-+if model_extra_config.operator_opt_config.async_pull_kv:
-+    from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
  
++async_pull_kv = os.getenv("OMNI_ASYNC_PULL_KV", "0") == "1"
++if async_pull_kv :
++    from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
++
  logger = init_logger(__name__)
  
-@@ -62,6 +65,8 @@ class EngineCore:
+ POLLING_TIMEOUT_S = 2.5
+@@ -62,6 +66,8 @@ class EngineCore:
                      VLLM_VERSION, vllm_config)
  
          self.log_stats = log_stats
-+        if model_extra_config.operator_opt_config.async_pull_kv:
++        if async_pull_kv :
 +            self.pull_kv_lock = threading.Lock()
  
          # Setup Model.
          self.model_executor = executor_class(vllm_config)
-@@ -182,10 +187,13 @@ class EngineCore:
+@@ -182,10 +188,13 @@ class EngineCore:
              # Start grammar compilation asynchronously
              self.structured_output_manager.grammar_init(req)
  
@@ -263,18 +266,18 @@ index 4d5f4d3d1..93d4b0c52 100644
 +            if not self.scheduler.get_kv_connector():
 +                logger.warning("Got kv_transfer_params, but no KVConnector found. "
 +                            "Disabling KVTransfer for this request.")
-+            if model_extra_config.operator_opt_config.async_pull_kv:
++            if async_pull_kv :
 +                if req.kv_transfer_params["fast_path"]:
 +                    req.status = RequestStatus.WAITING_FOR_REMOTE_KVS
  
          self.scheduler.add_request(req)
  
-@@ -218,7 +226,11 @@ class EngineCore:
+@@ -218,7 +227,11 @@ class EngineCore:
                  outputs=[],
                  scheduler_stats=self.scheduler.make_stats(),
              )
 -        scheduler_output = self.scheduler.schedule()
-+        if model_extra_config.operator_opt_config.async_pull_kv:
++        if async_pull_kv :
 +            with self.pull_kv_lock:
 +                scheduler_output = self.scheduler.schedule()
 +        else:
@@ -282,7 +285,7 @@ index 4d5f4d3d1..93d4b0c52 100644
          model_output = self.execute_model(scheduler_output)
          engine_core_outputs = self.scheduler.update_from_output(
              scheduler_output, model_output)  # type: ignore
-@@ -408,6 +420,7 @@ class EngineCoreProc(EngineCore):
+@@ -408,6 +421,7 @@ class EngineCoreProc(EngineCore):
                  args=(output_address, engine_index),
                  daemon=True)
              self.output_thread.start()
@@ -290,11 +293,11 @@ index 4d5f4d3d1..93d4b0c52 100644
          finally:
              if input_socket is not None:
                  input_socket.close(linger=0)
-@@ -606,9 +619,50 @@ class EngineCoreProc(EngineCore):
+@@ -606,9 +620,50 @@ class EngineCoreProc(EngineCore):
                  request_type == EngineCoreRequestType.ADD) else generic_decoder
              request = decoder.decode(data_frames)
  
-+            if model_extra_config.operator_opt_config.async_pull_kv:
++            if async_pull_kv :
 +                if request_type == EngineCoreRequestType.ADD:
 +                    with self.pull_kv_lock:
 +                        self.try_pull_kv_fast_path(request)
@@ -341,7 +344,7 @@ index 4d5f4d3d1..93d4b0c52 100644
      def process_output_socket(self, output_path: str, engine_index: int):
          """Output socket IO thread."""
  
-@@ -791,3 +845,11 @@ class DPEngineCoreProc(EngineCoreProc):
+@@ -791,3 +846,11 @@ class DPEngineCoreProc(EngineCoreProc):
  
          return ParallelConfig.has_unfinished_dp(self.dp_group,
                                                  local_unfinished)

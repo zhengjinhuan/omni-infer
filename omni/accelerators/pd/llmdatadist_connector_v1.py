@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any, Optional
 import zmq
 import os
 import time
-from omni.models.common.config.model_config import model_extra_config
-if model_extra_config.operator_opt_config.async_pull_kv:
+async_pull_kv = os.getenv("OMNI_ASYNC_PULL_KV", "0") == "1"
+if async_pull_kv:
     import pickle
 
 from vllm.envs import VLLM_RPC_TIMEOUT
@@ -41,8 +41,8 @@ from vllm.distributed.parallel_state import (
 from vllm.utils import get_open_port
 from vllm.v1.request import RequestStatus
 
-import os
-if model_extra_config.operator_opt_config.multi_thread_pull_kv:
+multi_thread_pull_kv = os.getenv("OMNI_MULTI_THREAD_PULL_KV", "0") == "1"
+if multi_thread_pull_kv:
     import queue
 else:
     from concurrent.futures import ThreadPoolExecutor
@@ -305,7 +305,7 @@ class DecodeConnectorScheduler:
         self._reqs_need_recv: dict[str, tuple[Request, list[int]]] = {}
         self.processed_request: set[str] = set()
 
-        if model_extra_config.operator_opt_config.async_pull_kv:
+        if async_pull_kv:
             self.context = zmq.Context()
             self.pub = self.context.socket(zmq.PUB)
             self.pub.bind(f"ipc:///tmp/sched-pub-{vllm_config.parallel_config.data_parallel_rank_local}")
@@ -368,7 +368,7 @@ class DecodeConnectorScheduler:
             )
         self._reqs_need_recv.clear()
 
-        if model_extra_config.operator_opt_config.async_pull_kv:
+        if async_pull_kv:
             if scheduler_output is None:
                 # Let go fast path
                 serialized_data = pickle.dumps(metadata)
@@ -402,7 +402,7 @@ class DecodeConnectorWorker:
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
-        if model_extra_config.operator_opt_config.multi_thread_pull_kv:
+        if multi_thread_pull_kv:
             self._pull_kv_lock = threading.Lock()
             self.queues = {} # cluster_id -> queue.Queue
             self.threads = {} # cluster_id -> threading.Thread
@@ -426,7 +426,7 @@ class DecodeConnectorWorker:
         self.ctx = zmq.Context()
         self.zmq_socket_map = {}
 
-        if model_extra_config.operator_opt_config.async_pull_kv:
+        if async_pull_kv:
             self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req)
             self.thread_on_fast_path_req.start()
             set_thread_affinity(self.thread_on_fast_path_req, 31) # Set affinity to CPU 31
@@ -476,7 +476,7 @@ class DecodeConnectorWorker:
                 len(meta.local_block_ids),
                 len(meta.remote_block_ids)
             )
-            if model_extra_config.operator_opt_config.multi_thread_pull_kv:
+            if multi_thread_pull_kv:
                 # cluster_id = int(meta.remote_cluster_id)
                 # with self._pull_kv_lock:
                 #     if cluster_id not in self.queues:
