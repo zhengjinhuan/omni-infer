@@ -55,7 +55,7 @@
         "opt_w2_scale_cast": true,
         "control_accept_rate": -1,
         "decode_gear_list": [
-            32
+            64
         ]
     }
 }

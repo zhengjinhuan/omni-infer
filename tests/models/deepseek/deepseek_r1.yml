@@ -71,7 +71,7 @@ graph:
     --additional-config: '{"enable_graph_mode": true}'
 mtp:
   api_servers_params:
-    --speculative_config: '{"method": "mtp", "num_speculative_tokens": 1}'
+    --speculative_config: '{"method": "deepseek_mtp", "num_speculative_tokens": 1}'
 mock_model:
   env:
     RANDOM_MODE: "1" # Enable mock model when set to 1 p/d node
