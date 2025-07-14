@@ -32,7 +32,7 @@ def _update_waiting_for_remote_kv(self: Scheduler, request: Request) -> bool:
     if request.request_id not in self.finished_recving_kv_req_ids:
         return False
     if self.vllm_config.speculative_config is not None:
-        request.spec_token_ids.append(0)
+        request.spec_token_ids.append(16426)  # keep the same as mtp patch
     request.num_computed_tokens = request.num_tokens - 1
     # Return that we are ready.
     self.finished_recving_kv_req_ids.remove(request.request_id)
