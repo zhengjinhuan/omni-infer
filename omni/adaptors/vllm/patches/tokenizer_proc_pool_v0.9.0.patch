@@ -47,7 +47,7 @@ index 7beaae287..a162a01ee 100644
                  final_res_batch_checked,
                  request,
 diff --git a/vllm/entrypoints/openai/serving_engine.py b/vllm/entrypoints/openai/serving_engine.py
-index c73575b48..2c90770f3 100644
+index c73575b48..2f35619ca 100644
 --- a/vllm/entrypoints/openai/serving_engine.py
 +++ b/vllm/entrypoints/openai/serving_engine.py
 @@ -6,7 +6,9 @@ import sys
@@ -85,7 +85,7 @@ index c73575b48..2c90770f3 100644
  
  logger = init_logger(__name__)
  
-@@ -229,6 +229,243 @@ class OpenAIServing:
+@@ -229,6 +229,241 @@ class OpenAIServing:
              self._tokenize_prompt_input_or_inputs,
              executor=self._tokenizer_executor)
  
@@ -155,8 +155,6 @@ index c73575b48..2c90770f3 100644
 +                for future in futures:
 +                    future.result()
 +                logger.info("Process pool initialized successfully")
-+                import traceback
-+                traceback.print_stack()
 +            except concurrent.futures.process.BrokenProcessPool as e:
 +                logger.error(f"Process pool initialization failed: {e}")
 +                raise
@@ -329,7 +327,7 @@ index c73575b48..2c90770f3 100644
      async def _preprocess(
          self,
          ctx: ServeContext,
-@@ -472,9 +709,7 @@ class OpenAIServing:
+@@ -472,9 +707,7 @@ class OpenAIServing:
          truncate_prompt_tokens: Optional[Annotated[int, Field(ge=-1)]],
          add_special_tokens: bool,
      ) -> TextTokensPrompt:
@@ -340,7 +338,7 @@ index c73575b48..2c90770f3 100644
              prompt = prompt.lower()
  
          if truncate_prompt_tokens is None:
-@@ -677,6 +912,48 @@ class OpenAIServing:
+@@ -677,6 +910,48 @@ class OpenAIServing:
  
          return inputs_text, inputs_embeds
  
@@ -389,7 +387,7 @@ index c73575b48..2c90770f3 100644
      @overload
      async def _preprocess_completion(
          self,
-@@ -721,14 +998,23 @@ class OpenAIServing:
+@@ -721,14 +996,23 @@ class OpenAIServing:
                  "Prompt embeds with non-completion requests is not"
                  " currently supported.")
  
@@ -421,7 +419,7 @@ index c73575b48..2c90770f3 100644
  
          engine_prompts_text = [
              EngineTokensPrompt(
-@@ -831,13 +1117,22 @@ class OpenAIServing:
+@@ -831,13 +1115,22 @@ class OpenAIServing:
                  request=request)
  
          if isinstance(request_prompt, str):
