@@ -367,7 +367,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         prefill_metadata = None
         if self._num_prefills > 0:
             seq_lens_list = self.runner.seq_lens_cpu[:num_reqs].tolist()
-            query_lens_list = seq_lens_list
+            query_lens_list = (self.runner.seq_lens_np[:num_reqs] - self.runner.input_batch.num_computed_tokens_cpu[:num_reqs]).tolist()
 
             reqs_start = self._num_decodes  # prefill_start
             tokens_start = self._num_decode_tokens
@@ -380,11 +380,11 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 self.runner.max_num_tokens)
 
             # Prepare kv index for prefill get kv_latent from kv_cache
-            kv_index_list = None
-            # if block_table is not None and block_table.numel() > 0:
-            #     for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
-            #         kv_index = self.get_kv_index(seq_lens, block_tables)
-            #         kv_index_list.append(kv_index)
+            kv_index_list = []
+            if block_table is not None and block_table.numel() > 0:
+                for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
+                    kv_index = self.get_kv_index(seq_lens, block_tables)
+                    kv_index_list.append(kv_index)
 
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
