@@ -69,6 +69,7 @@ def initialize_model_parallel(
     initialize_model_parallel_default(
         tensor_model_parallel_size,
         pipeline_model_parallel_size,
+        enable_expert_parallel,
         backend,
     )
 

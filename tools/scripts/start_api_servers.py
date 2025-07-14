@@ -137,7 +137,7 @@ def start_single_node_api_servers(
             "--max-model-len", str(max_tokens)
         ]
         if enable_mtp:
-            cmd.extend(["--speculative_config", '{"method": "deepseek_mtp", "num_speculative_tokens": 1}'])
+            cmd.extend(["--speculative_config", '{"method": "mtp", "num_speculative_tokens": 1}'])
         if kv_transfer_config:
             cmd.extend(["--kv-transfer-config", str(kv_transfer_config)])
         if extra_args:
@@ -217,10 +217,10 @@ if __name__ == "__main__":
     parser.add_argument("--master-ip", type=str, required=True, help="Master IP for data parallelism")
     parser.add_argument("--master-port", type=int, default=8000, help="Master port for data parallelism")
     parser.add_argument(
-        "--gpu-memory-utilization", "--gpu-util",
-        dest='gpu_util',
-        type=float,
-        default=0.9,
+        "--gpu-memory-utilization", "--gpu-util", 
+        dest='gpu_util', 
+        type=float, 
+        default=0.9, 
         help="GPU memory utilization")
     parser.add_argument("--block-size", type=int, default=128, help="Block size for VLLM")
     parser.add_argument("--tp", type=int, default=1, help="Tensor parallelism size")
@@ -229,14 +229,14 @@ if __name__ == "__main__":
     parser.add_argument("--max-port-attempts", type=int, default=20, help="Max attempts to find an available port")
     parser.add_argument("--kv-transfer-config", type=str, default="", help="kv transfer config for VLLM")
     parser.add_argument(
-        "--extra-args",
-        type=str,
-        default="",
+        "--extra-args", 
+        type=str, 
+        default="", 
         help="Additional VLLM arguments (space-separated, e.g., '--enable-expert-parallel')")
     parser.add_argument(
-        "--additional-config",
-        type=str,
-        default="",
+        "--additional-config", 
+        type=str, 
+        default="", 
         help="JSON-formatted additional platform-specific config, e.g., '{\"key\":\"value\"}'")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
     parser.add_argument("--enable-mtp", default=False, action='store_true')
@@ -264,7 +264,7 @@ if __name__ == "__main__":
         log_dir=args.log_dir,
         max_port_attempts=args.max_port_attempts,
         kv_transfer_config=args.kv_transfer_config,
-        max_tokens=args.max_model_len,
+        max_tokens=args.max_model_len, 
         extra_args=args.extra_args,
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp
