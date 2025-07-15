@@ -24,7 +24,6 @@ CFLAGS="-O2" ./configure --sbin-path=${NGINX_SBIN_PATH} \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_set_request_id_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_length_balance_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_greedy_timeout_module \
-    --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_prefill_score_balance_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_upstream_weighted_least_active_module \
     --without-http_gzip_module
 make -j16
