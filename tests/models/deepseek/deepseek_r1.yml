@@ -81,3 +81,6 @@ mock_model:
 async_schedule:
   api_servers_params:
     --additional-config: '{"async_schedule": true}' # Enable async scheduler at D node. DO NOT enable it at P side
+omni_attention:
+  api_servers_params:
+    --additional-config: '{"enable_omni_attn": true}'  # if p/d, set this on both sides
