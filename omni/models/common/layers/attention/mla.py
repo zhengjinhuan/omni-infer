@@ -847,7 +847,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                         num_key_value_heads=self.num_heads,
                         input_layout="TND",
                         atten_mask=attn_mask,
-                        sparse_mode=2,
+                        sparse_mode=3,
                         actual_seq_lengths=actual_seq_qlen,
                         actual_seq_lengths_kv=actual_seq_kvlen,
                         scale=self.scale,
@@ -1010,17 +1010,30 @@ class AscendMLAImpl(MLAAttentionImpl):
                         -1, self.num_heads * self.v_head_dim)
                     output, _ = self.o_proj.forward(attn_output)
             else:
-                attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
-                        q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                        num_heads=self.num_heads,
-                        num_key_value_heads=1, input_layout=input_layout,
-                        scale=self.scale,
-                        antiquant_mode=0, antiquant_scale=None,
-                        block_table=attn_metadata.decode.block_table,
-                        block_size=128,
-                        actual_seq_lengths=self.actual_seq_lengths[bsz],
-                        actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
-                        )
+                if self.enable_graph_mode:
+                    attn_output, _ = tng.ops.npu_fused_infer_attention_score(
+                            q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                            num_heads=self.num_heads,
+                            num_key_value_heads=1, input_layout=input_layout,
+                            scale=self.scale,
+                            antiquant_mode=0, antiquant_scale=None,
+                            block_table=attn_metadata.decode.block_table,
+                            block_size=128,
+                            actual_seq_lengths=self.actual_seq_lengths[bsz],
+                            actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                            )
+                else:
+                    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                            q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                            num_heads=self.num_heads,
+                            num_key_value_heads=1, input_layout=input_layout,
+                            scale=self.scale,
+                            antiquant_mode=0, antiquant_scale=None,
+                            block_table=attn_metadata.decode.block_table,
+                            block_size=128,
+                            actual_seq_lengths=self.actual_seq_lengths[bsz],
+                            actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                            )
 
                 # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
                 if model_extra_config.operator_opt_config.use_a3_high_performance_cann:
@@ -1087,16 +1100,28 @@ class AscendMLAImpl(MLAAttentionImpl):
             q_pe = q_pe.view(bsz, 1, self.num_heads, -1)
 
             bsz, q_len, _, q_dim = q_nope.size()
-            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
-                    q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                    num_heads=self.num_heads,
-                    num_key_value_heads=1, input_layout="BSND",
-                    scale=self.scale,
-                    antiquant_mode=0, antiquant_scale=None,
-                    block_table=attn_metadata.decode.block_table,
-                    block_size=128,
-                    actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
-                    )
+            if self.enable_graph_mode:
+                attn_output, _ = tng.ops.npu_fused_infer_attention_score(
+                        q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                        num_heads=self.num_heads,
+                        num_key_value_heads=1, input_layout="BSND",
+                        scale=self.scale,
+                        antiquant_mode=0, antiquant_scale=None,
+                        block_table=attn_metadata.decode.block_table,
+                        block_size=128,
+                        actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                        )
+            else:
+                attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                        q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                        num_heads=self.num_heads,
+                        num_key_value_heads=1, input_layout="BSND",
+                        scale=self.scale,
+                        antiquant_mode=0, antiquant_scale=None,
+                        block_table=attn_metadata.decode.block_table,
+                        block_size=128,
+                        actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                        )
 
             # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
             attn_output = attn_output.squeeze(1).transpose(0, 1)
