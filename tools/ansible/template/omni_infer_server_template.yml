@@ -495,14 +495,19 @@
       tags: 
         - run_docker
 
-    - name: Get the IP of executor.
-      set_fact:
-        executor_ip: "{{ ansible_default_ipv4.address }}"
-      tags: test
+    - name: Use system commands to obtain the IP address of the executor.
+      command: hostname -I
+      register: ip_output
       run_once: yes
       delegate_to: localhost
-      tags:
-        - sync_code
+      tags: sync_code
+
+    - name: Extract the first valid IP address.
+      set_fact:
+        executor_ip: "{{ ip_output.stdout.split() | first }}"
+      run_once: yes
+      delegate_to: localhost
+      tags: sync_code
 
     - name: Delete the old code on the target machine.
       command: /bin/bash -c "rm -rf {{ ansible_env.CODE_PATH }}/omniinfer/*"
