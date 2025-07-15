@@ -228,7 +228,7 @@ class FusedMoE(torch.nn.Module):
         if self.quant_method is None:
             raise RuntimeError("self.quant_method must not be None")
 
-        #ENABLE_OMNI_PLANNER
+        # ENABLE_OMNI_PLANNER
         num_of_redundant_experts = 0
         if model_extra_config.operator_opt_config.use_omni_placement:
             num_of_redundant_experts = self.planner.get_num_of_redundant_experts(moe_layer_idx = self.moe_layer_idx,
@@ -349,9 +349,7 @@ class FusedMoE(torch.nn.Module):
                                                            tokens=hidden_states, 
                                                            token_expert_ids=topk_ids, 
                                                            token_expert_scores=topk_weights,
-                                                           top_k=layer.top_k,
-                                                           expert_mapping=layer.expert_mapping,
-                                                           is_prefill=is_prefill)
+                                                           expert_mapping=layer.expert_mapping)
 
         if is_prefill and model_extra_config.operator_opt_config.best_ep:
             # Forced load balance

@@ -11,6 +11,8 @@ import os
 # 检查是否为调试模式
 debug_mode = '--debug' in sys.argv
 
+os.environ['ASCEND_TOOLKIT_PATH'] =  os.getenv('ASCEND_TOOLKIT_HOME', None)
+
 # 动态获取 Python 相关路径
 python_include_dir = sysconfig.get_path("include")  # Python 头文件路径
 python_lib_dir = sysconfig.get_path("stdlib")       # Python 标准库路径
@@ -65,7 +67,14 @@ class OmniBuildExt(build_ext):
 ext_modules = [
     Pybind11Extension(
         "omni_placement",
-        sources=["placement_manager.cpp", "expert_activation.cpp", "moe_weights.cpp", "tensor.cpp", "placement_mapping.cpp", "placement_optimizer.cpp"],
+        sources=["placement_manager.cpp",
+                 "expert_activation.cpp",
+                 "moe_weights.cpp",
+                 "tensor.cpp",
+                 "placement_mapping.cpp",
+                 "placement_optimizer.cpp",
+                 "placement_optimizer_for_swap.cpp",
+                 "expert_load_balancer.cpp"],
         include_dirs=include_dirs,
         language='c++',
         extra_link_args=[
@@ -79,7 +88,7 @@ ext_modules = [
             f'-Wl,-rpath={library_dirs[0]}',  # 动态 rpath
         ],
         library_dirs=library_dirs,
-        libraries=['ascendcl', python_version, 'gfortran']  # 动态指定 Python 库
+        libraries=['hccl','ascendcl', python_version, 'gfortran']  # 动态指定 Python 库
     ),
 ]
 

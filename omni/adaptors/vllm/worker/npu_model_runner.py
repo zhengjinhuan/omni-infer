@@ -519,9 +519,8 @@ class NPUModelRunner(GPUModelRunner):
 
             if model_extra_config.operator_opt_config.use_omni_placement:
                 is_prompt = False if attn_state == AscendAttentionState.DecodeOnly else True
-                planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path)
                 global _GLOBAL_STEP
-                planner.dump(0 if is_prompt else _GLOBAL_STEP)
+                self.planner.place_experts()
                 if attn_state == AscendAttentionState.DecodeOnly :
                     _GLOBAL_STEP += 1
                 else :
@@ -1091,6 +1090,10 @@ class NPUModelRunner(GPUModelRunner):
                     self.compile_drafter_list = []
                     for idx in range(self.speculative_config.num_speculative_tokens):
                         self.compile_drafter_list.append(wrap_list[idx](self.drafter_list[idx], self.decode_gear_list))
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            param_dict = dict(self.model.named_parameters())
+            self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
+            self.planner.init_dram_weights(param_dict)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
@@ -1167,7 +1170,9 @@ class NPUModelRunner(GPUModelRunner):
             logger.warning(
                 "Skipping NPU graph capture. Please add "
                 "-O %s to use NPU graphs.", CompilationLevel.PIECEWISE)
-            return
+        
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            self.planner.start_dynamic_optimize_expert_loaded_balance()
 
     def _get_closest_gear(self, max_num_token):
         for gear in self.decode_gear_list:

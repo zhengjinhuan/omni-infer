@@ -43,10 +43,11 @@ class TestPlacementMappingPerRedundancy : public ::testing::Test {
             count_shape_[1] = num_experts_;
 
             // 从有效文件创建 PlacementMapping
-            placement_mapping = new PlacementMapping(placement_pattern_vector_, rank_, num_devices_per_host_,
-                                    redundant_expert_mapping_, redundant_mapping_shape_,
-                                    global_expert_mapping_, mapping_shape_,
-                                    redundant_count_per_expert_, count_shape_);
+            placement_mapping = new PlacementMapping("", rank_, num_devices_per_host_, num_experts_,
+                                        (size_t)redundant_expert_mapping_, redundant_mapping_shape_,
+                                        (size_t)redundant_count_per_expert_, count_shape_,
+                                        (size_t)global_expert_mapping_, mapping_shape_,
+                                        (size_t)redundant_count_per_expert_);
 
             // old_fun = get_memcpy_fun();
             // set_memcpy_fun(&my_mem_fun);
@@ -73,9 +74,9 @@ class TestPlacementMappingPerRedundancy : public ::testing::Test {
         int32_t* redundant_count_per_expert_;
         std::vector<std::vector<std::vector<int>>> placement_pattern_vector_;
         PlacementMapping *placement_mapping;
-        int64_t redundant_mapping_shape_[NUM_DIM_OF_MAPPING];
-        int64_t mapping_shape_[NUM_DIM_OF_MAPPING];
-        int64_t count_shape_[NUM_DIM_OF_COUNT];
+        std::vector<int64_t> redundant_mapping_shape_ = std::vector<std::int64_t>(NUM_DIM_OF_MAPPING, 0);
+        std::vector<int64_t> mapping_shape_ = std::vector<std::int64_t>(NUM_DIM_OF_MAPPING, 0);
+        std::vector<int64_t> count_shape_ = std::vector<std::int64_t>(NUM_DIM_OF_COUNT, 0);
 };
 
 // 测试 construct_per_redundancy_epid_mapping_to_position 函数

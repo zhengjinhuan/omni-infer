@@ -17,6 +17,8 @@
 #include <assert.h>
 #include <atomic>
 #include "tensor.h"
+#include "distribution.h"
+#include <functional>
 
 class ExpertWeights {
     // 专家类， 包含多个权重信息
@@ -31,8 +33,19 @@ class ExpertWeights {
                 }
 
         }
+        ExpertWeights(std::vector<Tensor> weights)
+            : weights_(weights){
+            total_size_ = 0;
+            for (auto& weight : weights_){
+                total_size_ += weight.get_total_size();
+            }
+
+        }
+        void enqueueSwapInformation(Distribution* dist_ptr, size_t t_rank);
+        void enqueueSwapInformation(Distribution* dist_ptr, size_t t_rank, void* recv_buff,bool need_enqueue_recv_buff, size_t localExpertPositionOfsset);
+        void swap(Distribution* dist_ptr, size_t t_rank, bool send_first,aclrtStream stream);
         // 新增公共方法获取私有成员
-        int get_expert_id() const { return expert_id_; }
+        int get_expert_id() const { return expert_id_; } // TODO: 不再维护，后期废弃， 统一在placement_mapping中维护
         size_t get_total_size() const {return total_size_;}
         aclError to_host(char * host_ptr) const{
             aclError ret;
@@ -65,7 +78,7 @@ class ExpertWeights {
             return ret;
         };
     private:
-        int expert_id_;        // FIXME: 初始化时全局专家id，权重替换后并不会更新该值
+        int expert_id_;        // TODO: 不再维护，后期废弃， 统一在placement_mapping中维护
         std::vector<Tensor> weights_;         //该专家的多个权重，包含 bias， weight等信息
         size_t total_size_;           // 该专家权重参数数量
 };
@@ -85,9 +98,13 @@ private:
     void* shm_ptr_;  // Pointer to shared DRAM
     size_t shm_size_;  // Total size in bytes
 
+    size_t rank_;
     size_t world_size_; //总进程数，用于分析共享内存的拷贝是否全部完成
     size_t num_layers_;
     size_t num_experts_;
+    size_t num_deploy_experts_per_rank_;
+    mutable std::mutex mtx_;
+    bool is_initilized_=false;
     // Initialize shared memory
     void init_shared_memory(size_t shm_size);
     void replicate_to_shared_memory();
@@ -95,22 +112,49 @@ private:
     // 创建或附加共享内存
     void* create_or_attach_shmem(const std::string& name, size_t size);
 
+    // 权重分布式通信变量
+    Distribution* dist_ptr_=nullptr;
+
+    // 根据Queue_size, 分配一块显存;
+    void * recv_buff_;
+
 public:
     MoEWeights(size_t num_experts);
     MoEWeights(size_t num_experts, size_t world_size);
+    MoEWeights(size_t num_experts, size_t rank, size_t world_size);
+    MoEWeights(size_t num_experts, size_t rank, size_t world_size, const char* rankTableFile);
+    MoEWeights(size_t num_experts, size_t rank, size_t world_size, Distribution* dist_ptr);
     ~MoEWeights();
 
-    void init_weights(const std::vector<std::vector<std::vector<Tensor>>>& npu_weights, const std::vector<std::vector<int>>& expert_ids);
+    void init_weights(const std::vector<std::vector<std::vector<Tensor>>>& npu_weights,bool init_shm);
+
+    void replacement(Distribution* dist_ptr, size_t layer_idx, size_t rank_a, size_t expert_position_a, size_t rank_b, size_t expert_position_b);
+    void replacement(Distribution* dist_ptr, size_t layer_idx, size_t rank_a, size_t expert_position_a, size_t rank_b, size_t expert_position_b, void* recv_buff_start_address,bool need_enqueue_recv_buff);
+
+    void replacement(Distribution* dist_ptr, aclrtStream stream, size_t layer_idx, size_t local_expert_idx, size_t t_rank);
 
     void replacement(size_t layer_idx, size_t src_global_expert_idx, size_t dst_local_expert_idx);
     std::vector<std::vector<ExpertWeights>> getNpuWeights() const {return npu_weights_;}
+    ExpertWeights getExpert(size_t layer_id, size_t local_expert_idx){
+        return npu_weights_[layer_id][local_expert_idx];
+    }
+    size_t getLocalExpertPositionOffset(size_t layer_id, size_t local_expert_idx) const {
+        // Rank 内部的专家位置 便宜 < layer_id*num_deployed_expert_per_rank + local_expert_idx
+        size_t num_deployed_expert_per_rank = npu_weights_[0].size();
+        return layer_id*num_deployed_expert_per_rank+local_expert_idx;
+    }
     size_t getNumLayers() const {return num_layers_;}
     size_t getNumExperts() const {return num_experts_;}
+    size_t getNumDeployExpertsPerRank() const {return num_deploy_experts_per_rank_;}
     void* getShmPtr() const {return shm_ptr_;}
+    bool isHbmInitialized() const;
+    std::unique_lock<std::mutex> acquire_lock() const { return std::unique_lock<std::mutex>(mtx_);}
     bool isShmInitialized() const;
     size_t getShmSize() const {return shm_size_;}
     std::string getShmName() const {return shm_name_;}
     void unittest_for_init_shared_memory(size_t shm_size) {init_shared_memory(shm_size);} // 仅供Unitest调用
+    size_t get_expert_size();
+
 };
 #endif // MOEWEIGHTS_H
 
