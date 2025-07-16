@@ -1,9 +1,7 @@
-# vllm v0.8.3 Patch README
-
 ## How to Apply and Install the Patch
 
 1. **Apply the Patch**  
-    Run the provided bash script to apply the patch and install dependencies:
+    Run the provided bash script to apply the patch and install vllm:
     ```bash
     bash infer_engines/bash_install_code_v0.8.3.sh
     ```
