@@ -393,6 +393,7 @@ class DecodeConnectorWorker:
 
     def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: int):
         self.vllm_config = vllm_config
+        self.cluster_id = cluster_id
         additional_config = vllm_config.additional_config
         if additional_config:
             self.async_pull_kv = additional_config.get("async_pull_kv", False)
