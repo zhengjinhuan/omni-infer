@@ -12,7 +12,7 @@ NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
 echo "NGINX_SBIN_PATH is $NGINX_SBIN_PATH"
 
 if [ ! -d nginx-${NGINX_VERSION} ]; then
-	wget --no-check-certificate https://mirrors.tools.huawei.com/nginx/nginx-${NGINX_VERSION}.tar.gz
+	wget --no-check-certificate https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
 	tar -zxf nginx-${NGINX_VERSION}.tar.gz
 fi
 
