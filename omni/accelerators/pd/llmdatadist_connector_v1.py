@@ -391,7 +391,7 @@ class DecodeConnectorScheduler:
 class DecodeConnectorWorker:
     """Worker implementation for datadist."""
 
-    def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: str):
+    def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: int):
         self.vllm_config = vllm_config
         additional_config = vllm_config.additional_config
         if additional_config:
@@ -461,8 +461,16 @@ class DecodeConnectorWorker:
         while True:
             serialized_data = sub.recv()
             metadata = pickle.loads(serialized_data)
-            if (len(metadata.local_block_ids) > 0) and (len(metadata.remote_block_ids) > 0):
-                self.start_load_kv(metadata)
+            for req_id, meta in metadata.requests.items():
+                if (len(meta.local_block_ids) > 0) and (len(meta.remote_block_ids) > 0):
+                    self.start_load_kv(metadata)
+                    logger.info(
+                        "Received fast path request for request %s with "
+                        "local_block_ids: %s, remote_block_ids: %s.",
+                        req_id,
+                        len(meta.local_block_ids),
+                        len(meta.remote_block_ids)
+                    )
 
     def worker(self, cluster_id):
         q = self.queues[cluster_id]
@@ -495,6 +503,12 @@ class DecodeConnectorWorker:
                     all(isinstance(group_blk, list) and len(group_blk) == 0 for group_blk in meta.local_block_ids):
                 logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
                 continue
+            elif len(meta.remote_block_ids) < len(meta.local_block_ids):
+                raise RuntimeError(
+                    f"Request {req_id} has fewer remote blocks ({len(meta.remote_block_ids)}) "
+                    f"than local blocks ({len(meta.local_block_ids)}).")
+            elif len(meta.remote_block_ids) > len(meta.local_block_ids):
+                meta.remote_block_ids = meta.remote_block_ids[-len(meta.local_block_ids)：]
             logger.info(
                 " ***** start_load_kv for request %s "
                 "Num local_block_ids: %s. Num remote_block_ids: %s.",

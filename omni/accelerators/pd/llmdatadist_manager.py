@@ -135,7 +135,7 @@ class LLMDataDistManager:
             self.multi_rank_pull_kv = additional_config.get("multi_rank_pull_kv", False)
         else:  # pragma: no cover
             self.multi_rank_pull_kv = False
-         kv_transfer_config = vllm_config.kv_transfer_config
+        kv_transfer_config = vllm_config.kv_transfer_config
         self.data_dist_config = LLMDataDistConfig(vllm_config)
         self.rank = self.data_dist_config.rank
         self.local_rank = self.data_dist_config.local_rank
@@ -207,12 +207,6 @@ class LLMDataDistManager:
         # If this line is not added, the fx mode will report an error.
         # The preliminary reason is that the context is lost when multiple coroutines pull kv.
         torch.npu.set_device(f"npu:{self.local_rank}")
-        num_local_blocks = len(tgt_blocks)
-        num_remote_blocks = len(src_blocks)
-        if num_local_blocks > num_remote_blocks:
-            raise RuntimeError("num_local_blocks must be less than or equal to num_remote_blocks")
-        if num_local_blocks < num_remote_blocks:
-            src_blocks = src_blocks[-num_local_blocks:]
         for model_id, kv_cache in enumerate(self.registerd_kv_caches):
             prompt_cache_key = BlocksCacheKey(
                 prompt_cluster_id=prompt_cluster_id, model_id=model_id)
