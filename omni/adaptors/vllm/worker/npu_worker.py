@@ -236,7 +236,6 @@ class NPUWorker(WorkerBase):
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
         self.model_runner.profile_run()
-
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
         free_npu_memory, total_npu_memory = NPUPlatform.mem_get_info()

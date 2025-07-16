@@ -38,6 +38,10 @@ def patch_sampler():
     rejection_sampler._multinomial = _multinomial
     print("++++++++++++++++++++++patch_sampler++++++++++++++++++++++++++++")
     
+def patch_qwen_attention():
+    from omni.models.qwen.qwen_attention import Qwen2Attention as OmniQwen2Attention
+    import vllm.model_executor.models.qwen2
+    vllm.model_executor.models.qwen2.Qwen2Attention = OmniQwen2Attention
 
 _patch_done = False
 
@@ -49,6 +53,7 @@ def patch_all():
     patch_rope()
     patch_embedding()
     patch_sampler()
+    patch_qwen_attention()
     _patch_done = True
 
 patch_all() 

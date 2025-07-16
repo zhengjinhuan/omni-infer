@@ -390,6 +390,14 @@ class NPUPlatform(Platform):
         Args:
             vllm_config: The vLLM configuration to update.
         """
+        additional_config = vllm_config.additional_config
+        if additional_config and vllm_config.additional_config.get("enable_hybrid_graph_mode", False):
+            from omni.adaptors.vllm.worker.npu_schedule import HybridSchedulerConfig
+            ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
+                vllm_config.scheduler_config)
+            vllm_config.scheduler_config = ascend_scheduler_config
+            logger.info("--------enbale hybrid graph mode----------------")
+            
         ConfigUpdater.update_vllm_config(vllm_config)
 
     @classmethod
