@@ -622,6 +622,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         --decode-lb-sdk)
             decode_lb_sdk="$2"
+            shift 2
+            ;;
         --client-body-buffer-size)
             client_body_buffer_size="$2"
             shift 2
