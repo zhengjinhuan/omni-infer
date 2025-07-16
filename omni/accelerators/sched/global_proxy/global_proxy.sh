@@ -10,6 +10,8 @@ else
     IN_CONTAINER=false
 fi
 
+client_body_buffer_size="1024K"
+
 ######################
 ## os configuration ##
 ######################
@@ -283,7 +285,7 @@ function nginx_set_http_config() {
     local keep_alive_requests_line="keepalive_requests 20000;"
     local client_header_buffer_size_line="client_header_buffer_size 512k;"
     local large_client_header_buffers_line="large_client_header_buffers 4 512k;"
-    local client_body_buffer_size_line="client_body_buffer_size 128K;"
+    local client_body_buffer_size_line="client_body_buffer_size ${client_body_buffer_size};"
     local client_max_body_size_line="client_max_body_size 100m;"
     local proxy_read_timeout_line="proxy_read_timeout 14400s;"
     local subrequest_output_buffer_size_line="subrequest_output_buffer_size 1m;"
@@ -532,6 +534,7 @@ print_help() {
     echo "  --listen-port <PORT>,   -p <PORT>          Listening port"
     echo "  --prefill-servers-list <list>              Comma-separated backend servers for prefill (required to start proxy)"
     echo "  --decode-servers-list <list>               Comma-separated backend servers for decode (required to start proxy)"
+    echo "  --client-body-buffer-size <size>           Set client_body_buffer_size (default: 1024K)"
     echo "  --log-file <path>,      -l <path>          Log file path"
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
@@ -544,12 +547,14 @@ print_help() {
     echo "    $0 --listen-port 8080 \\"
     echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
     echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
+    echo "       --client-body-buffer-size 256K \\"
     echo "       --log-file /var/log/proxy.log --log-level info"
     echo ""
     echo "  Dry run (preview configuration):"
     echo "    $0 --dry-run --listen-port 8080 \\"
     echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
-    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002"
+    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
+    echo "       --client-body-buffer-size 256K"
     echo ""
     echo "  Stop global proxy:"
     echo "    $0 -S"
@@ -583,6 +588,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --decode-servers-list)
             decode_servers_list="$2"
+            shift 2
+            ;;
+        --client-body-buffer-size)
+            client_body_buffer_size="$2"
             shift 2
             ;;
         --log-file|-l)
