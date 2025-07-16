@@ -11,3 +11,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/scheduler_kv_cache_manager_partial_kv_
 git apply --whitespace=nowarn $PATCH_ROOT/tokenizer_proc_pool.patch
 git apply --whitespace=nowarn $PATCH_ROOT/mtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/chunked_prefill_disable.patch
+git apply --whitespace=nowarn $PATCH_ROOT/api_server_keepalive_timeout.patch
