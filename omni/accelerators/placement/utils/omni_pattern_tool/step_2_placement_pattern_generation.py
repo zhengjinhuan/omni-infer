@@ -308,7 +308,8 @@ def process_expert_deployments(
         logger.info("No special allocation applied.")
 
     for layer_idx_moe in range(num_layers_target_pattern):
-        if layer_idx_moe in high_load_layers:
+        if is_redundant or layer_idx_moe in high_load_layers:
+            # Redundant mode or high load layers in rearrange mode: use optimized allocation
             expert_allocation_count = allocate_expert_deployments_improved(
                 ep_activation_counts[layer_idx_moe],
                 expert_redundant_limit=expert_redundant_limit,
@@ -323,6 +324,7 @@ def process_expert_deployments(
             )
             logger.info(f"Layer {layer_idx_moe}: Optimized allocation, number of deployed experts = {sum(expert_allocation_count)}")
         else:
+            # Rearrange mode, non-high load layers: use sequential allocation
             max_load, placement_matrix = distribute_experts_sequentially(
                 num_experts=num_eps_target_pattern,
                 num_ranks_target_pattern=num_ranks_target_pattern
