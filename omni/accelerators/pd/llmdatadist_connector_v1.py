@@ -499,6 +499,7 @@ class DecodeConnectorWorker:
     # Now go asynchronous pull_kv
     def start_load_kv(self, metadata: DatadistConnectorMetadata):
         logger.info(f" ***** start_load_kv: {len(metadata.requests)}")
+        futures = []
         for req_id, meta in metadata.requests.items():
             if len(meta.local_block_ids) == 0 or \
                     all(isinstance(group_blk, list) and len(group_blk) == 0 for group_blk in meta.local_block_ids):
@@ -562,7 +563,6 @@ class DecodeConnectorWorker:
                 self.queues[cluster_id].put(task)
             else:
                 # Use ThreadPoolExecutor to handle the task
-                futures = []
                 future = self.executor.submit(
                                 self._read_blocks,
                                 local_block_ids=meta.local_block_ids,

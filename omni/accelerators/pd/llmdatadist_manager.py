@@ -293,37 +293,61 @@ class LLMDataDistManager:
         d_ser_ip = decode_server.server_ip
         d_clu_id = decode_cluster_id
 
-        if self.data_dist_config.is_prefill:
-            cluster_rank_infos = {
-                rank: {prefill_cluster_id + p_start_rank: 0, decode_cluster_id + d_dp: 1}
-                for rank in selected_p_ranks
-            }
-            comm_names = {
-                rank: f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_start_rank}-d{d_dp}-{i}"
-                for i, rank in enumerate(selected_p_ranks)
-            }
-            ranktables = p_ranktables
+        if self.multi_rank_pull_kv:
+            if self.data_dist_config.is_prefill:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_start_rank: 0, decode_cluster_id + d_dp: 1}
+                    for rank in selected_p_ranks
+                }
+                comm_names = {
+                    rank: f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_start_rank}-d{d_dp}-{i}"
+                    for i, rank in enumerate(selected_p_ranks)
+                }
+                ranktables = p_ranktables
+            else:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_start_rank: 0, decode_cluster_id + d_dp: 1}
+                    for rank in range(d_rank_start, d_rank_end)
+                }
+                comm_names = {
+                    rank: f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_start_rank}-d{d_dp}-{i}"
+                    for i, rank in enumerate(range(d_rank_start, d_rank_end))
+                }
+                ranktables = d_ranktables
         else:
-            cluster_rank_infos = {
-                rank: {prefill_cluster_id + p_start_rank: 0, decode_cluster_id + d_dp: 1}
-                for rank in range(d_rank_start, d_rank_end)
-            }
-            comm_names = {
-                rank: f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_start_rank}-d{d_dp}-{i}"
-                for i, rank in enumerate(range(d_rank_start, d_rank_end))
-            }
-            ranktables = d_ranktables
+            p_dp = 0
+            if self.data_dist_config.is_prefill:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_dp: 0, decode_cluster_id + d_dp: 1}
+                    for rank in selected_p_ranks}
+                comm_names = {rank:
+                    f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_dp}-d{d_dp}-{i}"
+                                for i, rank in
+                                enumerate(selected_p_ranks)}
+                ranktables = p_ranktables
+            else:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_dp: 0, decode_cluster_id + d_dp: 1}
+                    for rank in range(d_rank_start, d_rank_end)}
+                comm_names = {rank:
+                    f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_dp}-d{d_dp}-{i}"
+                                for i, rank in
+                                enumerate(range(d_rank_start, d_rank_end))}
+
+                ranktables = d_ranktables
+
 
         logger.warning(f"create link:{comm_names}")
 
         self._build_device_link(comm_names, cluster_rank_infos, ranktables)
 
-        if not self.data_dist_config.is_prefill:
-            key = decode_cluster_id + d_dp
-            if key in registed_link_info:
-                registed_link_info[key].append(prefill_cluster_id + p_start_rank)
-            else:
-                registed_link_info[key] = [prefill_cluster_id + p_start_rank]
+        if self.multi_rank_pull_kv:
+            if not self.data_dist_config.is_prefill:
+                key = decode_cluster_id + d_dp
+                if key in registed_link_info:
+                    registed_link_info[key].append(prefill_cluster_id + p_start_rank)
+                else:
+                    registed_link_info[key] = [prefill_cluster_id + p_start_rank]
 
         link_num += 1
         if link_num >= SCHEDULER_LINK_BATCH_SIZE:
