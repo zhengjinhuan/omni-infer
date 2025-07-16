@@ -26,17 +26,6 @@
 | OS platform | Ubuntu XXXXXX  |
 |  GCC/Compiler version | XXXXXX |
   
-  bugfix版本问题引入样例：（根据实际修改和增删）
-  
-| Software | Version(根据实际修改，必填)|
-| --- | --- |
-| PyTorch | XXXXXX |
-| vLLM | XXXXXX |
-| CANN |  XXXXXX  |
-| Python | Python XXXXXX  |
-| OS platform | Ubuntu XXXXXX  |
-|  GCC/Compiler version | XXXXXX |
-  
   
 #### 3.Related testcase / 关联用例 (Mandatory / 必填)
 
