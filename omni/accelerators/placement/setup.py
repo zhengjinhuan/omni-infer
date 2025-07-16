@@ -68,7 +68,7 @@ class PathManager:
 paths = PathManager()
 
 
-# 定义扩展模块
+# define the build_ext command
 ext_modules = [
     Pybind11Extension(
         "omni_planner.omni_placement",
@@ -92,9 +92,9 @@ ext_modules = [
 
 
 setup(
-    name='omni_placement',  # 包的名称
-    version='0.6.15.1a3',  # 包的版本
-    description='Package for optimizing MoE layer',  # 简短描述
+    name='omni_placement',  # package name
+    version='0.7.15.1a3',  # package version
+    description='Package for optimizing MoE layer',  # package description
     packages=find_packages(
         exclude=(
             ".cloudbuild",
@@ -110,7 +110,7 @@ setup(
         'torch',
         'transformers',
         'pybind11',
-    ],  # 依赖的其他包
+    ],  # dependencies
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
     include_package_data=True,
