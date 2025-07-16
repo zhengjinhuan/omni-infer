@@ -39,6 +39,7 @@ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.worker.worker_base import WorkerBase
 from vllm.platforms import current_platform
+from vllm.lora.request import LoRARequest
 
 from omni.adaptors.vllm.platform import NPUPlatform
 # from vllm.v1.worker.gpu_model_runner import GPUModelRunner
@@ -299,7 +300,17 @@ class NPUWorker(WorkerBase):
             self.profiler.stop()
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
+    def add_lora(self, lora_request: LoRARequest) -> bool:
+        return self.model_runner.add_lora(lora_request)
 
+    def remove_lora(self, lora_id: int) -> bool:
+        return self.model_runner.remove_lora(lora_id)
+
+    def list_loras(self) -> set[int]:
+        return self.model_runner.list_loras()
+
+    def pin_lora(self, lora_id: int) -> bool:
+        return self.model_runner.pin_lora(lora_id)
     def _init_worker_distributed_environment(self) -> None:
         """Initialize the distributed environment."""
         additional_config = self.vllm_config.additional_config
