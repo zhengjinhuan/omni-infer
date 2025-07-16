@@ -508,7 +508,7 @@ class DecodeConnectorWorker:
                     f"Request {req_id} has fewer remote blocks ({len(meta.remote_block_ids)}) "
                     f"than local blocks ({len(meta.local_block_ids)}).")
             elif len(meta.remote_block_ids) > len(meta.local_block_ids):
-                meta.remote_block_ids = meta.remote_block_ids[-len(meta.local_block_ids)：]
+                meta.remote_block_ids = meta.remote_block_ids[-len(meta.local_block_ids):]
             logger.info(
                 " ***** start_load_kv for request %s "
                 "Num local_block_ids: %s. Num remote_block_ids: %s.",
