@@ -15,7 +15,7 @@
         "lm_dp_size": 14,
         "lm_tp_size": 15,
         "pp_size": 16,
-        "dp_size": 32
+        "dp_size": 64
     },
     "profiling_config": {
         "prof_output_path": ".",
@@ -44,7 +44,7 @@
         "gmm_nz": true,
         "moe_dispatch_combine": true,
         "use_omni_placement": true,
-        "omni_placement_config_path": "/workspace/omni_infer/omni/accelerators/placement/decode_config.yaml",
+        "omni_placement_config_path": "/workspace/omni_infer/omni/accelerators/placement/config_d.yaml",
         "enable_fusion_spec": false,
         "enable_alltoall": false,
         "enable_moe_expert_parallel": true,

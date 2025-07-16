@@ -44,7 +44,7 @@
         "gmm_nz": true,
         "moe_dispatch_combine": false,
         "use_omni_placement": true,
-        "omni_placement_config_path": "/workspace/omni_infer/omni/accelerators/placement/prefill_config.yaml",
+        "omni_placement_config_path": "/workspace/omni_infer/omni/accelerators/placement/config_p.yaml",
         "enable_fusion_spec": false,
         "enable_alltoall": false,
         "enable_moe_expert_parallel": true,
