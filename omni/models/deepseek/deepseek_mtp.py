@@ -226,7 +226,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                     continue
  
                 if name not in params_dict:
-                    breakpoint()
+                    continue
                 param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
@@ -242,7 +242,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                         continue
  
                     if name not in params_dict:
-                        breakpoint()
+                        continue
                     param = params_dict[name]
                     weight_loader = param.weight_loader
                     weight_loader(param,
@@ -260,7 +260,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                         continue
  
                     if name not in params_dict:
-                        breakpoint()
+                        continue
                     param = params_dict[name]
                     weight_loader = getattr(param, "weight_loader",
                                             default_weight_loader)

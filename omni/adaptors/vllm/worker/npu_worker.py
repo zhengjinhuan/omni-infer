@@ -223,6 +223,7 @@ class NPUWorker(WorkerBase):
     def _compute_kv_cache_bytes(self):
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
+        gc.collect()
         NPUPlatform.empty_cache()
 
         # Execute a forward pass with dummy inputs to profile the memory usage

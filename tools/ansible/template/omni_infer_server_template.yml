@@ -23,10 +23,10 @@
     # Global Configuration 
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
-    MODEL_LEN_MAX_PREFILL: "30000"
+    MODEL_LEN_MAX_PREFILL: "32000"
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
-    LOCAL_CODE_PATH: "/data/local_code_path"
+    CODE_PATH: "/data/local_code_path"
 
     # Configuration for containers 
     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
@@ -34,9 +34,6 @@
     DOCKER_NAME_D: "you_name_omni_infer_decode"
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
-
-    # Code path in container
-    CODE_PATH: "/workspace"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -64,9 +61,11 @@
         -v /usr/local/sbin:/usr/local/sbin \
         -v /etc/hccn.conf:/etc/hccn.conf \
         -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \
-        -v /tmp:/tmp \
-        -v /data:/data \
         -v $LOG_PATH:$LOG_PATH \
+        -v $MODEL_PATH:$MODEL_PATH \
+        -v $SCRIPTS_PATH:$SCRIPTS_PATH \
+        -v $CODE_PATH:$CODE_PATH \
+        -v {{ ranktable_save_path }}:{{ ranktable_save_path }} \
         -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime \
 
     docker_exec_cmd: |
@@ -95,11 +94,54 @@
 
       . ~/.bashrc
       cd ${RANKTABLE_SAVE_PATH}/global
-      prefill_ranktable_list="{{ PREFILL_RANKTABLE_LIST }}"
-      prefill_ranktable_list=$(echo "$prefill_ranktable_list" | awk '$1=$1' | tr ',' ' ')
-
       decode_ranktable_list="{{ DECODE_RANKTABLE_LIST }}"
       decode_ranktable_list=$(echo "$decode_ranktable_list" | awk '$1=$1' | tr ',' ' ')
+      prefill_merge_ranktable_list="{{ PREFILL_MERGE_RANKTABLE_LIST }}"
+      prefill_merge_ranktable_list=$(echo "$prefill_merge_ranktable_list" | awk '$1=$1' | tr ',' ' ')
+      prefill_local_ranktable_merge=""
+      IFS=';' read -ra parts <<< ${prefill_merge_ranktable_list}
+
+      for i in "${!parts[@]}"; do
+        part="${parts[$i]}"
+        comma_count=$(grep -o " " <<< "$part" | wc -l)
+        ip_address=""
+
+        if [ "$comma_count" -ge 1 ]; then
+          IFS=',' read -ra subparts <<< "$part"
+          file_name="${subparts[0]}"
+        else
+          file_name="$part"
+        fi
+
+        if [[ "$file_name" =~ local_ranktable_([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})_ ]]; then
+          ip_address="${BASH_REMATCH[1]}"
+        else
+          ip_addresses=($(grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' <<< "$file_name"))
+          ip_address="${ip_addresses[0]}"
+        fi
+
+        mkdir -p "${RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}"
+
+        if [ "$comma_count" -ge 1 ]; then
+          python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
+          --mode merge-local \
+          --local-ranktable-list ${part} \
+          --save-dir ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}
+
+          if [ -z "$prefill_local_ranktable_merge" ]; then
+            prefill_local_ranktable_merge=$(ls collect_files_p/${ip_address}/local*merge.json | tr '\n' ' ')
+          else
+            prefill_local_ranktable_merge="${prefill_local_ranktable_merge} $(ls collect_files_p/${ip_address}/local*merge.json | tr '\n' ' ')"
+          fi
+
+        else
+          if [ -z "$prefill_local_ranktable_merge" ]; then
+            prefill_local_ranktable_merge="${part}"
+          else
+            prefill_local_ranktable_merge="${prefill_local_ranktable_merge} ${part}"
+          fi
+        fi
+      done
 
       api_server_files=$(ls collect_files_p/api/*.json | head -1)
 
@@ -107,33 +149,48 @@
         python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
         --mode merge-local \
         --local-ranktable-list ${decode_ranktable_list} \
-        --save-dir ${RANKTABLE_SAVE_PATH}/global
-      
-        decode_local_ranktable_merge=$(ls ./*.json | tr '\n' ' ')
+        --save-dir ${RANKTABLE_SAVE_PATH}/global/collect_files_d
+
+        decode_local_ranktable_merge=$(ls collect_files_d/local*merge.json | tr '\n' ' ')
       else
         decode_local_ranktable_merge="${decode_ranktable_list}"
       fi
 
       python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
-      --mode merge-all \
-      --api-server-list ${api_server_files} \
-      --prefill-server-list ${prefill_ranktable_list} \
-      --decode-server-list ${decode_local_ranktable_merge} \
-      --save-dir ${RANKTABLE_SAVE_PATH}/global
+        --mode merge-all \
+        --api-server-list ${api_server_files} \
+        --prefill-server-list ${prefill_local_ranktable_merge} \
+        --decode-server-list ${decode_local_ranktable_merge} \
+        --save-dir ${RANKTABLE_SAVE_PATH}/global
 
     run_vllm_server_prefill_cmd: |
       #!/bin/bash
+
       . ~/.bashrc
       HCCL_BUFFSIZE=500
-      tp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
-      ((tp++))
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
-      LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
+      HCCL_OP_EXPANSION_MODE="AIV"
+
+      if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
+        export MASTER_NODE_IP=$HOST_IP
+        export NNODES=$NNODES
+        export NODE_RANK=$NODE_RANK
+        export NODE_IP_LIST=$NODE_IP_LIST
+        export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+        export RAY_CGRAPH_get_timeout=7200
+        ray stop --force
+        LOCAL_RANKTABLE_FLIE=$(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${MASTER_NODE_IP}/local_*merge.json | tr '\n' ' ')
+        EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend ray"
+        node_count=$(( $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) + 1 ))
+        PREFILL_TENSOR_PARALLEL_SIZE=$(( PREFILL_TENSOR_PARALLEL_SIZE * node_count ))
+      else
+        LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
+      fi
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
@@ -160,7 +217,8 @@
         --gpu-util ${GPU_UTIL} \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
-        --hccl-buffsize  "${HCCL_BUFFSIZE}" \
+        --hccl-buffsize "${HCCL_BUFFSIZE}" \
+        --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_prefill.log 2>&1 &
 
     run_vllm_server_decode_cmd: |
@@ -173,7 +231,7 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
 
       if [ $DECODE_POD_NUM -gt 1 ]; then
-        LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/global/local_*.json | tr '\n' ' '))
+        LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json | tr '\n' ' '))
       else
         LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/decode_config/local_*.json | tr '\n' ' '))
       fi
@@ -256,7 +314,7 @@
 
     kill_nginx_processes_cmd: |
       #!/bin/bash
-      
+
       ps aux | grep "nginx" | grep -v "grep" | awk '{print $2}' | xargs kill -9
 
     start_docker_cmd_p: >
@@ -298,13 +356,17 @@
       -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
       -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
-      -e HOST_IP=$HOST_IP 
+      -e IP=$IP
+      -e HOST_IP=$HOST_IP
       -e MASTER_PORT=$NODE_PORT
       -e API_PORT=$API_PORT
       -e SERVER_IP_LIST=$SERVER_IP_LIST
       -e PREFILL_POD_NUM=$PREFILL_POD_NUM
       -e SOCKET_IFNAME=$SOCKET_IFNAME
       -e KV_RANK=$KV_RANK
+      -e NNODES=$NNODES
+      -e NODE_RANK=$NODE_RANK
+      -e NODE_IP_LIST=$NODE_IP_LIST
       -d $DOCKER_NAME_P 
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
@@ -329,9 +391,8 @@
 
     docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
-
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
 
   tasks:
     - name: generate container name.  
@@ -342,11 +403,11 @@
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: 
         - run_docker
+        - sync_code
         - ranktable
         - run_server
         - run_proxy
         - clean_up
-        - sync_code
       
     - name: Check and delete Prefill/Decode group Docker containers.
       block:
@@ -411,11 +472,6 @@
         - run_docker
         - clean_up
 
-    - name: Create the path used to store the log.
-      command: /bin/bash -c "mkdir -p ${LOG_PATH}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: run_docker
-
     - name: Run container for prefill instances.
       command: bash -c "{{ start_docker_cmd_p }}"
       environment:
@@ -439,37 +495,49 @@
       tags: 
         - run_docker
 
+    - name: Use system commands to obtain the IP address of the executor.
+      command: hostname -I
+      register: ip_output
+      run_once: yes
+      delegate_to: localhost
+      tags: sync_code
+
+    - name: Extract the first valid IP address.
+      set_fact:
+        executor_ip: "{{ ip_output.stdout.split() | first }}"
+      run_once: yes
+      delegate_to: localhost
+      tags: sync_code
+
+    - name: Delete the old code on the target machine.
+      command: /bin/bash -c "rm -rf {{ ansible_env.CODE_PATH }}/omniinfer/*"
+      when: hostvars[inventory_hostname].ansible_host != executor_ip
+      tags:
+        - sync_code
+
     - name: Create a directory to store the code.
       ansible.builtin.file:
-        path: "{{ ansible_env.LOCAL_CODE_PATH }}"
+        path: "{{ ansible_env.CODE_PATH }}"
         state: directory
       tags: sync_code
 
     - name: The executor synchronizes code to all instances.
       synchronize:
-        src: "{{ ansible_env.LOCAL_CODE_PATH }}/omniinfer"
-        dest: "{{ ansible_env.LOCAL_CODE_PATH }}"
-      tags: sync_code
-
-    - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_P}:{{ ansible_env.CODE_PATH }}/"
-      environment:
-        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-      when: "'P' in group_names"
-      tags: sync_code
-
-    - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_D}:{{ ansible_env.CODE_PATH }}/"
-      environment:
-        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-      when: "'D' in group_names"
-      tags: sync_code
-
-    - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_C rm -rf {{ ansible_env.CODE_PATH }}/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_C}:{{ ansible_env.CODE_PATH }}/"
-      environment:
-        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-      when: "'C' in group_names"
+        src: "{{ ansible_env.CODE_PATH }}/omniinfer"
+        dest: "{{ ansible_env.CODE_PATH }}/"
+      when: >
+        hostvars[inventory_hostname].ansible_host != executor_ip and 
+        (
+          'P' in group_names or
+          'D' in group_names or
+          (
+            'C' in group_names and 
+            ansible_host not in 
+            (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and 
+            ansible_host not in 
+            (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
+          )
+        )
       tags: sync_code
       
     - name: docker_update_prefill_code_cmd.
@@ -486,26 +554,20 @@
       when: "'D' in group_names"
       tags: sync_code
 
-    - name: Create a directory on the local node.
-      command: bash -c "rm -rf {{ ranktable_save_path }}; mkdir -p {{ ranktable_save_path }}/global {{ ranktable_save_path }}/collect_files_d {{ ranktable_save_path }}/collect_files_p/api;"
+    - name: Create a directory on the executor to store ranktable file.
+      command: bash -c "rm -rf {{ ranktable_save_path }}/*; mkdir -p {{ ranktable_save_path }}/global {{ ranktable_save_path }}/collect_files_d {{ ranktable_save_path }}/collect_files_p/api;"
       delegate_to: localhost
       tags: 
         - run_docker
         - clean_up
 
-    - name: Delete the path used to store the script.
-      command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}"
+    - name: Delete temporary script files.
+      command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}/*"
       register: cmd_result
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: 
         - run_docker
         - clean_up
-
-    - name: Create the path used to store the script.
-      command: /bin/bash -c "mkdir -p ${SCRIPTS_PATH}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: 
-        - run_docker
 
     - name: Register all values. 
       set_fact:  
@@ -513,9 +575,11 @@
           {% set result=[] %}
           {% for host in groups['P']|default([]) %}
             {% set h=hostvars.get(host,{}) %}
-            {% set ip=h.ansible_host|default('') %}
-            {% set port=h.api_port|default('9000') %}
-            {% if ip %}{% set entry=ip~':'~port %}
+            {% set ansible_host_val=h.ansible_host|default('') %}
+            {% set host_ip_val=h.host_ip|default('') %}
+            {% set api_port_val=h.api_port|default('9000') %}
+            {% if ansible_host_val and host_ip_val and ansible_host_val == host_ip_val %}
+              {% set entry=ansible_host_val~':'~api_port_val %}
               {% if entry not in result %}
               {% set _=result.append(entry) %}
               {% endif %}
@@ -537,12 +601,19 @@
             {% endif %}
           {% endfor %}
           {{ result | join(',') }}
-        PREFILL_POD_NUM: "{{ groups['P'] | length }}"
+        PREFILL_POD_NUM: >-
+          {{
+            groups['P'] | 
+            map('extract', hostvars) | 
+            map(attribute='host_ip') | 
+            unique | 
+            length 
+          }}
         DECODE_POD_NUM: "{{ groups['D'] | length }}"
         DECODE_SERVER_IP_LIST: >-
           {% set host_list = [] %}
           {% for host in groups['D'] %}
-            {% if hostvars[host].role == 'M' %}
+            {% if hostvars[host].host_ip == hostvars[host].ansible_host %}
               {% set _ = host_list.insert(0, hostvars[host].ansible_host) %}
             {% else %}
               {% set _ = host_list.append(hostvars[host].ansible_host) %}
@@ -550,20 +621,30 @@
           {% endfor %}         
           {{ host_list | join(',') }}
         DECODE_SERVER_ALL: "{{ groups['D'] | map('extract', hostvars) | map(attribute='ascend_rt_visible_devices') | select('defined') | join(',') }}"
-        PREFILL_RANKTABLE_LIST: >-
+        PREFILL_MERGE_RANKTABLE_LIST: >-
           {% set result=[] %}
+          {% set element = namespace(entry="") %}
+          {% set hi = namespace(hostip="") %}
           {% for host in groups['P']|default([]) %}
             {% set h=hostvars.get(host,{}) %}
-            {% set ip=h.ansible_host|default('') %}
-            {% set list=h.ascend_rt_visible_devices|default('')|replace(',', '')|replace(' ', '') %}
-            {% if ip %}
-              {% set entry="collect_files_p/local_ranktable_"~ip~'_'~list~'.json' %}
-              {% if entry not in result %}
-                {% set _=result.append(entry) %}
+            {% if h.host_ip is defined and (h.host_ip == h.ansible_host or h.host_ip == hi.hostip) %}
+              {% set hi.hostip = h.host_ip | default('') %}
+              {% set ip=h.ansible_host|default('') %}
+              {% set list=h.ascend_rt_visible_devices|default('')|replace(',', '')|replace(' ', '') %}
+              {% if ip %}
+                {% if h.host_ip == h.ansible_host and element.entry == "" %}
+                  {% set element.entry = element.entry + "collect_files_p/local_ranktable_"~ip~'_'~list~'.json' %}
+                {% elif h.host_ip != h.ansible_host and h.host_ip == hi.hostip %}
+                  {% set element.entry = element.entry + "," + "collect_files_p/local_ranktable_"~ip~'_'~list~'.json' %}
+                {% else %}
+                  {% set _=result.append(element.entry) %}
+                  {% set element.entry="collect_files_p/local_ranktable_"~ip~'_'~list~'.json' %}
+                {% endif %}
               {% endif %}
             {% endif %}
           {% endfor %}
-          {{ result | join(',') }}
+          {% set _=result.append(element.entry) %}
+          {{ result | join(';') }}
         DECODE_RANKTABLE_LIST: >-
           {% set result=[] %}
           {% for host in groups['D']|default([]) %}
@@ -585,6 +666,31 @@
         - ranktable
         - run_server
         - run_proxy
+    
+    - name: Register values for prefill.
+      set_fact:
+        NODE_IP_LIST: >-
+          {{
+            groups['P'] | 
+            map('extract', hostvars) | 
+            selectattr('host_ip', '==', host_ip) | 
+            map(attribute='ansible_host') | 
+            unique | 
+            join(',')
+          }}
+        NNODES: >-
+          {{
+            groups['P'] | 
+            map('extract', hostvars) | 
+            selectattr('host_ip', '==', host_ip) | 
+            list | 
+            length 
+          }}
+      when: "'P' in group_names"
+      tags: 
+        - ranktable
+        - run_server
+        - run_proxy
 
     - name: Display all values. 
       debug:
@@ -593,8 +699,7 @@
          DECODE_API_SERVER_LIST: {{ DECODE_API_SERVER_LIST }}
          DECODE_SERVER_IP_LIST: {{ DECODE_SERVER_IP_LIST }}
          PREFILL_POD_NUM: {{ PREFILL_POD_NUM }}
-         DECODE_NUM_DP: {{ DECODE_SERVER_ALL.count(',') + 1 }} 
-         PREFILL_RANKTABLE_LIST: {{ PREFILL_RANKTABLE_LIST }}   
+         DECODE_NUM_DP: {{ DECODE_SERVER_ALL.count(',') + 1 }}
          DECODE_RANKTABLE_LIST: {{ DECODE_RANKTABLE_LIST }}
          DECODE_SERVER_OFFSET: {{ DECODE_SERVER_OFFSET }}
       run_once: yes
@@ -624,8 +729,8 @@
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
       tags: ranktable
 
-    - name: Delete the path used to store the ranktable files.
-      command: /bin/bash -c "rm -rf {{ ranktable_save_path }}"
+    - name: Delete the the ranktable files.
+      command: /bin/bash -c "rm -rf {{ ranktable_save_path }}/*"
       register: cmd_result
       when: "'P' in group_names or 'D' in group_names"
       tags: 
@@ -716,29 +821,18 @@
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
       tags: ranktable
 
-    - name: Get the global ranktable file of the first prefill instances. 
-      ansible.builtin.find:
-        paths: "{{ ranktable_save_path }}/global"
-        patterns: '[\s\S]+.json'
-        use_regex: yes
-      register: merge_json_files
-      when: "'P' in group_names and inventory_hostname == groups['P'][0]"
-      changed_when: false
-      tags: ranktable
-
     - name: Forward the global ranktable file of the first prefill instances to the executor. 
-      ansible.builtin.fetch:
-        src: "{{ item }}"
+      ansible.builtin.synchronize:
+        mode: pull
+        src: "{{ ranktable_save_path }}/global/"
         dest: "{{ ranktable_save_path }}/global/"
-        flat: yes
-      loop: "{{ merge_json_files.files | map(attribute='path') | list }}"
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
       tags: ranktable
 
     - name: The executor synchronizes the global ranktable file to all instances. 
-      copy:
-        src: "{{ ranktable_save_path }}/global"
-        dest: "{{ ranktable_save_path }}"
+      synchronize:
+        src: "{{ ranktable_save_path }}/global/"
+        dest: "{{ ranktable_save_path }}/global/"
       when: "inventory_hostname != groups['P'][0]"
       tags: ranktable
 
@@ -803,6 +897,35 @@
       tags: 
         - run_server
 
+    - name: Run the Omniai service for prefill instances. 
+      command: bash -c "{{ docker_start_vllm_cmd_p }}"
+      environment:
+        ROLE: "P"
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+        NODE_PORT: "{{ node_port }}"
+        PREFILL_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
+        API_PORT: "{{ api_port }}"
+        SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST | replace(' ', '') | trim }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        SOCKET_IFNAME: "{{ default_interface }}"
+        IP: "{{ ansible_host }}"
+        HOST_IP: "{{ host_ip }}"
+        KV_RANK: "{{ kv_rank }}"
+        NODE_RANK: "{{ node_rank }}"
+        PREFILL_TENSOR_PARALLEL_SIZE: "{{ ascend_rt_visible_devices.split(',') | length }}"
+        NNODES: "{{ NNODES }}"
+        NODE_IP_LIST: "{{ NODE_IP_LIST }}"
+      when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length >= 2"
+      tags: 
+        - run_server
+
+    - name: Wait 10 seconds.
+      pause:
+        seconds: 10  # Support decimals（such as 0.5s）
+      when: "(NODE_IP_LIST | string).split(',') | length >= 2"
+      tags: 
+        - run_server
+
     - name: Run the Omniai service for decode instances. 
       command: bash -c "{{ docker_start_vllm_cmd_d }}"
       environment:
@@ -816,7 +939,7 @@
         DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
         SOCKET_IFNAME: "{{ default_interface }}"
         NUM_SERVERS: "{{ ascend_rt_visible_devices.split(',') | length }}"
-        HOST_IP: "{{ groups['D'] | map('extract', hostvars) | selectattr('role', 'equalto', 'M') | map(attribute='ansible_host') | first }}"
+        HOST_IP: "{{ host_ip }}"
         DECODE_DATA_PARALLEL_SIZE: "{{ DECODE_SERVER_ALL }}"
         HOST: "{{ inventory_hostname }}"
       when: "'D' in group_names"
@@ -825,7 +948,8 @@
 
     - name: Wait 45 seconds.
       pause:
-        seconds: 45  # 支持小数（如0.5秒）
+        seconds: 45
+      when: "(NODE_IP_LIST | string).split(',') | length == 1"
       tags: 
         - run_server
 
@@ -840,10 +964,14 @@
         SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST | replace(' ', '') | trim }}"
         PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
         SOCKET_IFNAME: "{{ default_interface }}"
-        HOST_IP: "{{ ansible_host }}"
-        KV_RANK: "{{ node_rank }}"
+        IP: "{{ ansible_host }}"
+        HOST_IP: "{{ host_ip }}"
+        KV_RANK: "{{ kv_rank }}"
+        NODE_RANK: "{{ node_rank }}"
         PREFILL_TENSOR_PARALLEL_SIZE: "{{ ascend_rt_visible_devices.split(',') | length }}"
-      when: "'P' in group_names"
+        NNODES: "{{ NNODES }}"
+        NODE_IP_LIST: "{{ NODE_IP_LIST }}"
+      when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length == 1"
       tags: 
         - run_server
 
