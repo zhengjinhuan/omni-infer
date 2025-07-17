@@ -49,7 +49,7 @@ logger = init_logger(__name__)
 # multi-P deployments on the same machine.
 # This variable should not be set separately unless specifically required for this scenario.
 VLLM_LLMDATADIST_ZMQ_PORT = int(os.environ.get("VLLM_LLMDATADIST_ZMQ_PORT", "5568"))
-thread_json_file_path = os.environ.get("VLLM_THREAD_JSON_FILE_PATH", "/tmp/vllm_thread_info.json")
+thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
 
@@ -246,7 +246,7 @@ class PrefillConnectorWorker:
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True, name=thread_name)
             self.thread.start()
             set_thread_affinity(self.thread, 31)  # Set affinity to CPU 31
-            dump_thread_to_json(self.thread, thread_name, thread_json_file_path)
+            dump_thread_to_file(self.thread, thread_name, thread_dump_path)
         from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
         if ENABLED:
             manager_cls = OmniBiGroupDataDistManager
@@ -441,8 +441,8 @@ class DecodeConnectorWorker:
                         self.threads[cluster_id] = t  # Store the thread for this cluster_id
                         logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
 
-                        # Write thread name and native_id to JSON file
-                        dump_thread_to_json(t, thread_name, thread_json_file_path)
+                        # Write thread name and native_id to file
+                        dump_thread_to_file(t, thread_name, thread_dump_path)
             else:
                 max_concurrents = 1
                 self.executor = ThreadPoolExecutor(max_workers=max_concurrents)
@@ -463,8 +463,8 @@ class DecodeConnectorWorker:
                 set_thread_affinity(self.thread_on_fast_path_req, 60 + self.dp_rank)
             logger.warning(f"DecodeConnectorWorker initialized with self.async_pull_kv enabled.")
 
-            # Write thread name and native_id to JSON file
-            dump_thread_to_json(self.thread_on_fast_path_req, thread_name, thread_json_file_path)
+            # Write thread name and native_id to file
+            dump_thread_to_file(self.thread_on_fast_path_req, thread_name, thread_dump_path)
 
     def on_fast_path_req(self):
         context = zmq.Context()
@@ -547,8 +547,8 @@ class DecodeConnectorWorker:
                             self.threads[cluster_id] = t  # Store the thread for this cluster_id
                             logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
 
-                            # Write thread name and native_id to JSON file
-                            dump_thread_to_json(t, thread_name, thread_json_file_path)
+                            # Write thread name and native_id to file
+                            dump_thread_to_file(t, thread_name, thread_dump_path)
                 block_thre = len(meta.local_block_ids) // 2
                 for idx_cluster, cluster_id in enumerate(cluster_ids):
                     if idx_cluster == 0:
@@ -659,9 +659,8 @@ def set_thread_affinity(thread, cpu_id):
     tid = thread.native_id
     os.sched_setaffinity(tid, {cpu_id})
 
-def dump_thread_to_json(thread, thread_name: str, json_file: str):
-    import time
-    thread_info = {}
+def dump_thread_to_file(thread, thread_name: str, folder_path: str):
+
     timeout = 5  # seconds
     start_time = time.time()
     while not hasattr(thread, "native_id"):
@@ -669,15 +668,18 @@ def dump_thread_to_json(thread, thread_name: str, json_file: str):
             logger.error(f"Timeout waiting for thread {thread_name} to have native_id.")
             return
         time.sleep(0.005)
-    thread_info = {thread_name: thread.native_id}
+
+    # Ensure the folder exists
+    if not os.path.exists(folder_path):
+        try:
+            os.makedirs(folder_path, exist_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to create folder {folder_path}: {e}")
+            return
+
+    file_path = os.path.join(folder_path, thread_name)
     try:
-        if os.path.exists(json_file):
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        else:
-            data = {}
-        data.update(thread_info)
-        with open(json_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(str(thread.native_id))
     except Exception as e:
-        logger.error(f"Failed to write thread info to {json_file}: {e}")
+        logger.error(f"Failed to write thread info to {file_path}: {e}")
