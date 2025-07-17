@@ -364,12 +364,14 @@ class DecodeConnectorScheduler:
         metadata = DatadistConnectorMetadata()
         for req_id, (req, block_ids) in self._reqs_need_recv.items():
             if req.kv_transfer_params is None:
-                raise RuntimeError("req.kv_transfer_params cannot be None")
-            metadata.add_new_req(
-                request_id=req_id,
-                local_block_ids=block_ids,
-                kv_transfer_params=req.kv_transfer_params,
-            )
+                logger.warning(f"For reuqest {req_id}: req.kv_transfer_params cannot be None")
+            else:
+                metadata.add_new_req(
+                    request_id=req_id,
+                    local_block_ids=block_ids,
+                    kv_transfer_params=req.kv_transfer_params,
+                )
+            req.kv_transfer_params = None
         self._reqs_need_recv.clear()
 
         if self.async_pull_kv:
