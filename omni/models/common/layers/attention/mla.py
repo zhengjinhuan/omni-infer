@@ -211,6 +211,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self.block_table = block_table
         self.decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
         self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device=current_platform.device_type)
+        self.already_mark_static = False
 
     def generate_activate_mask(self, actual_seqs_num, batch_size):
         if len(self.decode_gear_list) > 1:
@@ -564,6 +565,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         )
 
     def mark_static_for_attn_metadata(self, attn_metadata):
+        if self.already_mark_static:
+            return
         if attn_metadata.decode.cos is not None:
             torch._dynamo.mark_static(attn_metadata.decode.cos)
         if attn_metadata.decode.sin is not None:
@@ -578,6 +581,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             torch._dynamo.mark_static(attn_metadata.decode.seq_lens)
         if attn_metadata.slot_mapping is not None:
             torch._dynamo.mark_static(attn_metadata.slot_mapping)
+        self.already_mark_static = True
 
 
 class AscendMLAImpl(MLAAttentionImpl):
