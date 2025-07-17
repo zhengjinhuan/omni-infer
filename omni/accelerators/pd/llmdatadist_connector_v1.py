@@ -397,6 +397,7 @@ class DecodeConnectorWorker:
     def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: int):
         self.vllm_config = vllm_config
         self.cluster_id = cluster_id
+        self.dp_rank = vllm_config.parallel_config.data_parallel_rank_local
         additional_config = vllm_config.additional_config
         if additional_config:
             self.async_pull_kv = additional_config.get("async_pull_kv", False)
@@ -431,7 +432,7 @@ class DecodeConnectorWorker:
                     with self._pull_kv_lock:
                         q = queue.Queue()
                         self.queues[cluster_id] = q
-                        thread_name = f"thread_pull_kv_cluster_id_{cluster_id}"
+                        thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
                         t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
                         t.start()
                         idx_tmp = vllm_config.parallel_config.data_parallel_rank_local + pod_idx
@@ -452,14 +453,14 @@ class DecodeConnectorWorker:
         self.zmq_socket_map = {}
 
         if self.async_pull_kv:
-            dp_rank = vllm_config.parallel_config.data_parallel_rank_local
-            thread_name = f"async_pull_kv_{dp_rank}"
+            # dp_rank = vllm_config.parallel_config.data_parallel_rank_local
+            thread_name = f"async_pull_kv_{self.dp_rank}"
             self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req, daemon=True, name=thread_name)
             self.thread_on_fast_path_req.start()
             if vllm_config.parallel_config.data_parallel_rank_local < 11:
-                set_thread_affinity(self.thread_on_fast_path_req, 31 + dp_rank)
+                set_thread_affinity(self.thread_on_fast_path_req, 31 + self.dp_rank)
             else:
-                set_thread_affinity(self.thread_on_fast_path_req, 60 + dp_rank)
+                set_thread_affinity(self.thread_on_fast_path_req, 60 + self.dp_rank)
             logger.warning(f"DecodeConnectorWorker initialized with self.async_pull_kv enabled.")
 
             # Write thread name and native_id to JSON file
@@ -537,10 +538,10 @@ class DecodeConnectorWorker:
                         if cluster_id not in self.queues:
                             q = queue.Queue()
                             self.queues[cluster_id] = q
-                            thread_name = f"thread_pull_kv_cluster_id_{cluster_id}"
+                            thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
                             t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
                             t.start()
-                            idx_tmp = vllm_config.parallel_config.data_parallel_rank_local + pod_idx
+                            idx_tmp = self.vllm_config.parallel_config.data_parallel_rank_local + idx_count
                             idx_core = min((idx_tmp - 1) // 10, len(self.core_bases) - 1)
                             set_thread_affinity(t, self.core_bases[idx_core] + idx_tmp)
                             self.threads[cluster_id] = t  # Store the thread for this cluster_id
