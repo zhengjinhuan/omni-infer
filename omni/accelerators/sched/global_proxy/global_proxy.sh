@@ -354,6 +354,13 @@ function nginx_set_upstream() {
         "prefill_score_balance")
             lb_sdk_line="prefill_score_balance on"
             ;;
+        "pd_score_balance")
+            if [ "$upstream_name" = "prefill_servers" ]; then
+                lb_sdk_line="pd_score_balance prefill"
+            elif [ "$upstream_name" = "decode_servers" ]; then
+                lb_sdk_line="pd_score_balance decode"
+            fi
+            ;;
     esac
 
     # Compose new upstream block with 8 spaces indentation
@@ -458,6 +465,7 @@ function nginx_set_load_modules() {
     local load_module_upstream_length_balance_line="load_module /usr/local/nginx/modules/ngx_http_upstream_length_balance_module.so;"
     local load_module_upstream_wla_line="load_module /usr/local/nginx/modules/ngx_http_upstream_weighted_least_active_module.so;"
     local load_module_upstream_psb_line="load_module /usr/local/nginx/modules/ngx_http_upstream_prefill_score_balance_module.so;"
+    local load_module_upstream_psb_line="load_module /usr/local/nginx/modules/ngx_http_upstream_pd_score_balance_module.so;"
 
     # Add all load module at the top
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
@@ -465,6 +473,7 @@ function nginx_set_load_modules() {
     sed -i "3i ${load_module_upstream_length_balance_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_wla_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_psb_line}" "$nginx_conf_file"
+    sed -i "3i ${load_module_upstream_pds_line}" "$nginx_conf_file"
 
 }
 
@@ -540,8 +549,8 @@ rollback=false
 dry_run=false
 log_file=""
 log_level=""
-prefill_lb_sdk="least_conn"
-decode_lb_sdk="weighted_least_active"
+prefill_lb_sdk="pd_score_balance"
+decode_lb_sdk="pd_score_balance"
 
 print_help() {
     echo "Usage:"
@@ -556,10 +565,8 @@ print_help() {
     echo "  --decode-servers-list <list>               Comma-separated backend servers for decode (required to start proxy)"
     echo "  --log-file <path>,      -l <path>          Log file path"
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
-    echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"least_conn\""
-    echo "                                             e.g. \"least_conn;\" or \"prefill_score_balance on;\""
-    echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"weighted_least_active\""
-    echo "                                             e.g. \"weighted_least_active on;\""                                                                                       
+    echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"pd_score_balance\""
+    echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"pd_score_balance\""
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
