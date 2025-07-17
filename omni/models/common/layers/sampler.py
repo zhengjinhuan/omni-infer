@@ -833,8 +833,11 @@ class SimpleSampler(RejectionSamplerV1):
             accepted =  input_ids[logits_indices].view(batch_size, -1)[:,1:] == forward_tokens.view(batch_size, -1)[:,:-1]  # bool [batch_size, 1]
             if model_extra_config.operator_opt_config.control_accept_rate >= 0 and model_extra_config.operator_opt_config.control_accept_rate <= 1:
                 accepted = torch.empty_like(accepted, dtype=torch.float32).uniform_() < model_extra_config.operator_opt_config.control_accept_rate
-            # TODO support multiple speculative tokens
-            accepted_num = accepted.view(-1).to(torch.int32)
+
+            padding_zero = torch.zeros((batch_size, 1), dtype=torch.int32, device=input_ids.device)
+            accepted_mask = accepted.to(dtype=torch.int32)
+            accepted_mask = torch.cat((accepted_mask, padding_zero), dim=1)
+            accepted_num = accepted_mask.argmin(dim=1).to(dtype=torch.int32)
             offset = torch.arange(num_sampling_tokens_per_req, device = accepted_num.device, dtype = torch.int32)
             output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], forward_tokens, self.minus_one)
             last_accepted_index = torch.arange(batch_size, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num

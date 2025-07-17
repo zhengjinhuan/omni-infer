@@ -168,7 +168,7 @@ class NPUModelRunner(GPUModelRunner):
         self.seq_lens_np = self.seq_lens_cpu.numpy()
         # TODO: support arbitrary spec tokens
         self.graph_block_tables = np.zeros(
-            (self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * 2,
+            (self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * (1 + self.speculative_config.num_speculative_tokens),
              (self.model_config.max_model_len + self.block_size - 1) //
              self.block_size),
             dtype=np.int32)
@@ -199,7 +199,7 @@ class NPUModelRunner(GPUModelRunner):
         self.use_cached_npu_graph = False
         self.decode_gear_list = []
         self.decode_gear_list_ori = []
-        self.max_batch_size = self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * 2
+        self.max_batch_size = self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * (1 + self.speculative_config.num_speculative_tokens)
 
         if additional_config:
             self.enable_torchair_graph_mode = additional_config.get(
@@ -327,7 +327,7 @@ class NPUModelRunner(GPUModelRunner):
             if num_reqs > self.max_batch_size:
                 raise RuntimeError("num_reqs is bigger than max_batch_size")
             if self.use_spec_decode:
-                graph_pad_size = self.max_batch_size - num_reqs * 2 # TODO 根据投机config设置
+                graph_pad_size = self.max_batch_size - num_reqs * (1 + self.speculative_config.num_speculative_tokens)
             else:
                 graph_pad_size = self.max_batch_size - num_reqs
         else:
@@ -822,42 +822,60 @@ class NPUModelRunner(GPUModelRunner):
     @torch.inference_mode()
     def run_mtp(self, attn_metadata, scheduler_output, input_ids, raw_hidden_states, mtp_input_tokens, positions, sample_indices, last_accepted_index):
         attn_state = next(iter(attn_metadata.values())).attn_state
+        mtp_forward_token_list = []
         if self.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly:
             with set_forward_context(attn_metadata,
                                     self.vllm_config,
                                     num_tokens=scheduler_output.total_num_scheduled_tokens):
-                if not self.drafter_mark_static:
-                    torch._dynamo.mark_static(input_ids)
-                    torch._dynamo.mark_static(raw_hidden_states)
-                    self.drafter_mark_static = True
-                mtp_hidden_states = self.compile_drafter(
-                    input_ids=mtp_input_tokens.to(torch.long),
-                    positions=positions,
-                    kv_caches=self.kv_caches[-1:],
-                    attn_metadata=attn_metadata,
-                    previous_hidden_states=raw_hidden_states,
-                    intermediate_tensors=None,
-                    inputs_embeds=None
-                )
+                for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                    if not self.drafter_mark_static:
+                        torch._dynamo.mark_static(mtp_input_tokens)
+                        torch._dynamo.mark_static(raw_hidden_states)
+                    mtp_logits, mtp_hidden_states = self.compile_drafter_list[layer_idx](
+                        input_ids=mtp_input_tokens.to(torch.long),
+                        positions=positions,
+                        kv_caches=self.kv_caches[-self.speculative_config.num_speculative_tokens + layer_idx:],
+                        attn_metadata=attn_metadata,
+                        previous_hidden_states=raw_hidden_states,
+                        intermediate_tensors=None,
+                        inputs_embeds=None,
+                        require_hidden_states=True,
+                    )
+                    mtp_forward_tokens = mtp_logits[last_accepted_index].argmax(dim=-1)
+                    mtp_forward_token_list.append(mtp_forward_tokens)
+                    if layer_idx == self.speculative_config.num_speculative_tokens - 1:
+                        continue
+                    mtp_input_tokens[:-1] = mtp_input_tokens.clone()[1:]
+                    mtp_input_tokens[last_accepted_index] = mtp_forward_tokens
+                    raw_hidden_states = mtp_hidden_states
+                
+                self.drafter_mark_static = True
         else:
             # prefill or nograph
             with set_forward_context(attn_metadata,
                                     self.vllm_config,
                                     num_tokens=scheduler_output.total_num_scheduled_tokens):
-                mtp_hidden_states = self.drafter(
-                    input_ids=mtp_input_tokens.to(torch.long),
-                    positions=positions,
-                    kv_caches=self.kv_caches[-1:],
-                    attn_metadata=attn_metadata,
-                    previous_hidden_states=raw_hidden_states,
-                    prefill_padding_or_selected_indices=sample_indices,
-                    intermediate_tensors=None,
-                    inputs_embeds=None
-                )
-
-        mtp_logits =self.drafter.compute_logits(mtp_hidden_states[last_accepted_index], None)
-        return mtp_logits.argmax(dim=-1, keepdim=True)
-
+                for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                    mtp_logits, mtp_hidden_states = self.drafter_list[layer_idx](
+                        input_ids=mtp_input_tokens.to(torch.long),
+                        positions=positions,
+                        kv_caches=self.kv_caches[-self.speculative_config.num_speculative_tokens + layer_idx:],
+                        attn_metadata=attn_metadata,
+                        previous_hidden_states=raw_hidden_states,
+                        prefill_padding_or_selected_indices=sample_indices,
+                        intermediate_tensors=None,
+                        inputs_embeds=None,
+                        require_hidden_states=True,
+                    )
+                    mtp_forward_tokens = mtp_logits[last_accepted_index].argmax(dim=-1)
+                    mtp_forward_token_list.append(mtp_forward_tokens)
+                    if layer_idx == self.speculative_config.num_speculative_tokens - 1:
+                        continue
+                    mtp_input_tokens[:-1] = mtp_input_tokens.clone()[1:]
+                    mtp_input_tokens[sample_indices] = mtp_forward_tokens
+                    raw_hidden_states = mtp_hidden_states
+    
+        return torch.stack(mtp_forward_token_list, dim=1)
 
     @torch.inference_mode()
     def _dummy_run(self, num_tokens: int) -> torch.Tensor:
@@ -900,15 +918,17 @@ class NPUModelRunner(GPUModelRunner):
                 else:
                     raw_hidden_states, hidden_states = forward_results
                 if self.use_spec_decode and self.speculative_config.method in ('mtp'):
-                    self.drafter(
-                        input_ids=input_ids,
-                        positions=positions,
-                        kv_caches=None,
-                        attn_metadata=None,
-                        previous_hidden_states=raw_hidden_states,
-                        intermediate_tensors=None,
-                        inputs_embeds=None
-                    )
+                    for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                        self.drafter_list[layer_idx](
+                            input_ids=input_ids,
+                            positions=positions,
+                            kv_caches=None,
+                            attn_metadata=None,
+                            previous_hidden_states=raw_hidden_states,
+                            intermediate_tensors=None,
+                            inputs_embeds=None,
+                            require_hidden_states=True,
+                        )
         else:
             fake_input = torch.zeros(self.max_batch_size,
                                      dtype=input_ids.dtype,
@@ -954,15 +974,17 @@ class NPUModelRunner(GPUModelRunner):
                             torch._dynamo.mark_static(input_ids)
                             torch._dynamo.mark_static(raw_hidden_states)
                             self.dummy_drafter_mark_static = True
-                        self.compile_drafter(
-                            input_ids=input_ids,
-                            positions=positions,
-                            kv_caches=self.kv_caches[-1:] if self.kv_caches else None,
-                            attn_metadata=attn_metadata,
-                            previous_hidden_states=raw_hidden_states,
-                            intermediate_tensors=None,
-                            inputs_embeds=None
-                        )
+                        for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                            self.compile_drafter_list[layer_idx](
+                                input_ids=input_ids,
+                                positions=positions,
+                                kv_caches=self.kv_caches[-self.speculative_config.num_speculative_tokens + layer_idx:] if self.kv_caches else None,
+                                attn_metadata=attn_metadata,
+                                previous_hidden_states=raw_hidden_states,
+                                intermediate_tensors=None,
+                                inputs_embeds=None,
+                                require_hidden_states=True,
+                            )
                 else:
                     logger.debug("Start running dummy eager model.")
                     if not omni_use_dsv3:
@@ -978,15 +1000,17 @@ class NPUModelRunner(GPUModelRunner):
                                             kv_caches=self.kv_caches,
                                             attn_metadata=attn_metadata)
                     if self.use_spec_decode and self.speculative_config.method in ('mtp'):
-                        self.drafter(
-                            input_ids=input_ids,
-                            positions=positions,
-                            kv_caches=self.kv_caches[-1:] if self.kv_caches else None,
-                            attn_metadata=attn_metadata,
-                            previous_hidden_states=raw_hidden_states,
-                            intermediate_tensors=None,
-                            inputs_embeds=None
-                        )
+                        for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                            self.drafter_list[layer_idx](
+                                input_ids=input_ids,
+                                positions=positions,
+                                kv_caches=self.kv_caches[-self.speculative_config.num_speculative_tokens + layer_idx:] if self.kv_caches else None,
+                                attn_metadata=attn_metadata,
+                                previous_hidden_states=raw_hidden_states,
+                                intermediate_tensors=None,
+                                inputs_embeds=None,
+                                require_hidden_states=True,
+                            )
         return hidden_states
 
 
@@ -1013,11 +1037,16 @@ class NPUModelRunner(GPUModelRunner):
                 original_arch = self.model_config.hf_config.architectures # ['DeepseekV3ForCausalLM']
                 original_type = self.model_config.hf_config.model_type    # 'deepseek_v3'
 
-                self.model_config.hf_config.architectures = ["DeepSeekMTPModel"]
-                self.model_config.hf_config.model_type = "deepseek_mtp"
-                self.drafter = get_model(vllm_config=self.vllm_config)
-                self.drafter.embed_tokens = self.model.model.embed_tokens
-                self.drafter.shared_head['head'] = self.model.lm_head
+                self.drafter_list = []
+                architecture_list = ["DeepSeekMTPModel", "DeepSeekMTPModelDuo", "DeepSeekMTPModelTres"]
+                for mtp_layer_idx in range(self.model_config.hf_config.num_nextn_predict_layers):
+                    if self.speculative_config.num_speculative_tokens > mtp_layer_idx:                                    
+                        self.model_config.hf_config.architectures = architecture_list[mtp_layer_idx : mtp_layer_idx + 1]
+                        self.model_config.hf_config.model_type = "deepseek_mtp"
+                        drafter = get_model(vllm_config=self.vllm_config)
+                        drafter.embed_tokens = self.model.model.embed_tokens
+                        drafter.shared_head['head'] = self.model.lm_head
+                        self.drafter_list.append(drafter)
                 self.model_config.hf_config.architectures = original_arch
                 self.model_config.hf_config.model_type = original_type
                 # zxp TODO: check if fusion_spec.py from line 90 needed?
@@ -1046,16 +1075,21 @@ class NPUModelRunner(GPUModelRunner):
                     fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,
                     backend=npu_backend)
                 if hasattr(self, "drafter"):
-                    self.compile_drafter = torch.compile(
-                        self.drafter,
-                        dynamic=True,
-                        fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,
-                        backend=npu_backend)
+                    self.compile_drafter_list = []
+                    for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                        self.compile_drafter_list.append(torch.compile(
+                            self.drafter_list[layer_idx],
+                            dynamic=True,
+                            fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,
+                            backend=npu_backend))
             else:
                 logger.debug("[use cache npu graph]")
                 self.compile_model = WrapModel(self.model, self.decode_gear_list)
                 if hasattr(self, "drafter"):
-                    self.compile_drafter = WrapDrafter(self.drafter, self.decode_gear_list)
+                    wrap_list = [WrapDrafter, WrapDrafterDuo, WrapDrafterTres]
+                    self.compile_drafter_list = []
+                    for idx in range(self.speculative_config.num_speculative_tokens):
+                        self.compile_drafter_list.append(wrap_list[idx](self.drafter_list[idx], self.decode_gear_list))
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
@@ -1292,3 +1326,71 @@ class WrapDrafter(nn.Module):
                                            intermediate_tensors=intermediate_tensors,
                                            **kwargs)
         return hidden_states
+
+class WrapDrafterDuo(WrapDrafter):
+    def __init__(self, model, decode_gear_list) -> None:
+        super(WrapDrafter, self).__init__()
+        self.model = model
+        self.decode_gear_list = decode_gear_list
+        from torchair.configs.compiler_config import CompilerConfig
+        import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce
+        torch._dynamo.reset()
+        config = CompilerConfig()
+        config.experimental_config.keep_inference_input_mutations = True
+        config.experimental_config.tiling_schedule_optimize = True
+        torch.npu.set_compile_mode(jit_compile=False)
+        self.cached_decode_dict = {}
+        for i, gear in enumerate(self.decode_gear_list):
+            self.cached_decode_dict[gear] = torchair.inference.cache_compile(getattr(self, f"draft_decode_batch_duo_{i}"), config=config, dynamic=True, ge_cache=True, fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,)
+
+    def draft_decode_batch_duo_0(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_duo_1(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_duo_2(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_duo_3(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_duo_4(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_duo_5(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+class WrapDrafterTres(WrapDrafter):
+    def __init__(self, model, decode_gear_list) -> None:
+        super(WrapDrafter, self).__init__()
+        self.model = model
+        self.decode_gear_list = decode_gear_list
+        from torchair.configs.compiler_config import CompilerConfig
+        import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce
+        torch._dynamo.reset()
+        config = CompilerConfig()
+        config.experimental_config.keep_inference_input_mutations = True
+        config.experimental_config.tiling_schedule_optimize = True
+        torch.npu.set_compile_mode(jit_compile=False)
+        self.cached_decode_dict = {}
+        for i, gear in enumerate(self.decode_gear_list):
+            self.cached_decode_dict[gear] = torchair.inference.cache_compile(getattr(self, f"draft_decode_batch_tres_{i}"), config=config, dynamic=True, ge_cache=True, fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,)
+
+    def draft_decode_batch_tres_0(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_tres_1(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_tres_2(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_tres_3(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_tres_4(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)
+
+    def draft_decode_batch_tres_5(self, *args, **kwargs):
+        return self._forward(*args, **kwargs)

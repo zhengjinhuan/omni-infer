@@ -388,6 +388,7 @@ if [ -n "$ADDITIONAL_CONFIG" ]; then
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
     --enable-mtp \
+    --num-speculative-tokens 2 \
     --extra-args "$EXTRA_ARGS"
 else
   python start_api_servers.py \
@@ -405,5 +406,6 @@ else
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
     --enable-mtp \
+    --num-speculative-tokens 2 \
     --extra-args "$EXTRA_ARGS"
 fi

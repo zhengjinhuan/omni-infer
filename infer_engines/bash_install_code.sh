@@ -15,3 +15,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/mtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/num_token_for_proxy.patch
 git apply --whitespace=nowarn $PATCH_ROOT/chunked_prefill_disable.patch
 git apply --whitespace=nowarn $PATCH_ROOT/multi_step.patch
+git apply --whitespace=nowarn $PATCH_ROOT/multiple_mtp.patch

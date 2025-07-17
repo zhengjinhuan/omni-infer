@@ -51,7 +51,7 @@ import vllm.envs as envs
 import os
 import ray
 
-BLOCK_NUM_FLOATING_RANGE = 200
+BLOCK_NUM_FLOATING_RANGE = 32768
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
 class NPUDeviceProperties:

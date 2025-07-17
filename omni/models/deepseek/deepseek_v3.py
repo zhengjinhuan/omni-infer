@@ -1230,9 +1230,8 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
                 continue
 
             if self.config.architectures[0] == 'DeepseekV3ForCausalLM' and self.config.num_nextn_predict_layers > 0:
-                assert self.config.num_nextn_predict_layers == 1
-                layer_idx = self.config.num_hidden_layers
-                if name.startswith(f"model.layers.{layer_idx}"):
+                mtp_prefix = [f"model.layers.{self.config.num_hidden_layers + layer_idx}" for layer_idx in range(self.config.num_nextn_predict_layers)]
+                if name.startswith(tuple(mtp_prefix)):
                     continue
 
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
