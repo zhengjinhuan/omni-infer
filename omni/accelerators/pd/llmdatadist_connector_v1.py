@@ -49,6 +49,7 @@ logger = init_logger(__name__)
 # multi-P deployments on the same machine.
 # This variable should not be set separately unless specifically required for this scenario.
 VLLM_LLMDATADIST_ZMQ_PORT = int(os.environ.get("VLLM_LLMDATADIST_ZMQ_PORT", "5568"))
+thread_json_file_path = os.environ.get("VLLM_THREAD_JSON_FILE_PATH", "/tmp/vllm_thread_info.json")
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
 
@@ -241,9 +242,11 @@ class PrefillConnectorWorker:
             self.input_socket.bind(f"tcp://{self.host_ip}:{self.host_port}")
             self._transfer_lock = threading.Lock()
             self.receive_req_list = []
-            self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True)
+            thread_name = "prefill_connector_get_pulled_kv_req_list"
+            self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True, name=thread_name)
             self.thread.start()
-            set_thread_affinity(self.thread, 31) # Set affinity to CPU 31
+            set_thread_affinity(self.thread, 31)  # Set affinity to CPU 31
+            dump_thread_to_json(self.thread, thread_name, thread_json_file_path)
         from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
         if ENABLED:
             manager_cls = OmniBiGroupDataDistManager
@@ -424,17 +427,21 @@ class DecodeConnectorWorker:
             if self.multi_thread_pull_kv:
                 num_threads = int(os.environ.get("PREFILL_POD_NUM", "1"))
                 for pod_idx in range(num_threads):
-                    cluster_id = 16 * pod_idx # Use 16 as the base for cluster_id
+                    cluster_id = 16 * pod_idx  # Use 16 as the base for cluster_id
                     with self._pull_kv_lock:
                         q = queue.Queue()
                         self.queues[cluster_id] = q
-                        t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
+                        thread_name = f"thread_pull_kv_cluster_id_{cluster_id}"
+                        t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
                         t.start()
                         idx_tmp = vllm_config.parallel_config.data_parallel_rank_local + pod_idx
                         idx_core = min((idx_tmp - 1) // 10, len(self.core_bases) - 1)
                         set_thread_affinity(t, self.core_bases[idx_core] + idx_tmp)
-                        self.threads[cluster_id] = t # Store the thread for this cluster_id
+                        self.threads[cluster_id] = t  # Store the thread for this cluster_id
                         logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+
+                        # Write thread name and native_id to JSON file
+                        dump_thread_to_json(t, thread_name, thread_json_file_path)
             else:
                 max_concurrents = 1
                 self.executor = ThreadPoolExecutor(max_workers=max_concurrents)
@@ -445,13 +452,18 @@ class DecodeConnectorWorker:
         self.zmq_socket_map = {}
 
         if self.async_pull_kv:
-            self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req)
+            dp_rank = vllm_config.parallel_config.data_parallel_rank_local
+            thread_name = f"async_pull_kv_{dp_rank}"
+            self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req, daemon=True, name=thread_name)
             self.thread_on_fast_path_req.start()
             if vllm_config.parallel_config.data_parallel_rank_local < 11:
-                set_thread_affinity(self.thread_on_fast_path_req, 31 + vllm_config.parallel_config.data_parallel_rank_local)
+                set_thread_affinity(self.thread_on_fast_path_req, 31 + dp_rank)
             else:
-                set_thread_affinity(self.thread_on_fast_path_req, 60 + vllm_config.parallel_config.data_parallel_rank_local)
+                set_thread_affinity(self.thread_on_fast_path_req, 60 + dp_rank)
             logger.warning(f"DecodeConnectorWorker initialized with self.async_pull_kv enabled.")
+
+            # Write thread name and native_id to JSON file
+            dump_thread_to_json(self.thread_on_fast_path_req, thread_name, thread_json_file_path)
 
     def on_fast_path_req(self):
         context = zmq.Context()
@@ -525,13 +537,17 @@ class DecodeConnectorWorker:
                         if cluster_id not in self.queues:
                             q = queue.Queue()
                             self.queues[cluster_id] = q
-                            t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
+                            thread_name = f"thread_pull_kv_cluster_id_{cluster_id}"
+                            t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
                             t.start()
-                            idx_tmp = self.vllm_config.parallel_config.data_parallel_rank_local + idx_count
+                            idx_tmp = vllm_config.parallel_config.data_parallel_rank_local + pod_idx
                             idx_core = min((idx_tmp - 1) // 10, len(self.core_bases) - 1)
                             set_thread_affinity(t, self.core_bases[idx_core] + idx_tmp)
-                            self.threads[cluster_id] = t
-                            logger.warning(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+                            self.threads[cluster_id] = t  # Store the thread for this cluster_id
+                            logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+
+                            # Write thread name and native_id to JSON file
+                            dump_thread_to_json(t, thread_name, thread_json_file_path)
                 block_thre = len(meta.local_block_ids) // 2
                 for idx_cluster, cluster_id in enumerate(cluster_ids):
                     if idx_cluster == 0:
@@ -641,3 +657,20 @@ def set_thread_affinity(thread, cpu_id):
         pass
     tid = thread.native_id
     os.sched_setaffinity(tid, {cpu_id})
+
+def dump_thread_to_json(thread, thread_name: str, json_file_path: str):
+    thread_info = {}
+    while not hasattr(thread, "native_id"):
+        pass
+    thread_info = {thread_name: thread.native_id}
+    try:
+        if os.path.exists(json_file):
+            with open(json_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = {}
+        data.update(thread_info)
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to write thread info to {json_file}: {e}")
