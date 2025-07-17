@@ -195,7 +195,9 @@ class LLMDataDistManager:
         num_local_blocks = len(tgt_blocks)
         num_remote_blocks = len(src_blocks)
         if num_local_blocks > num_remote_blocks:
-            raise RuntimeError("num_local_blocks must be less than or equal to num_remote_blocks")
+            # raise RuntimeError("num_local_blocks must be less than or equal to num_remote_blocks")
+            tgt_blocks = tgt_blocks[:num_remote_blocks]
+            logger.debug("Look ahead tokens > 0")
         if num_local_blocks < num_remote_blocks:
             src_blocks = src_blocks[-num_local_blocks:]
         for model_id, kv_cache in enumerate(self.registerd_kv_caches):

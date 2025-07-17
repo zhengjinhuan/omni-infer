@@ -9,10 +9,22 @@ index 257234430..de5a111e6 100644
 +
 +    num_step: Optional[int] = 1
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 5b54e6e26..bff9f53f9 100644
+index 5b54e6e26..370a0d982 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -698,149 +698,162 @@ class Scheduler(SchedulerInterface):
+@@ -197,6 +197,11 @@ class Scheduler(SchedulerInterface):
+ 
+             num_new_tokens = (request.num_tokens_with_spec -
+                               request.num_computed_tokens)
++
++            # In async schedule, the num_tokens_with_spec is updated behind schedule(). Here clear the incorrect value
++            if self.async_schedule and num_new_tokens < 0:
++                num_new_tokens = 0
++
+             if (0 < self.scheduler_config.long_prefill_token_threshold <
+                     num_new_tokens):
+                 num_new_tokens = (
+@@ -698,149 +703,162 @@ class Scheduler(SchedulerInterface):
          self,
          scheduler_output: SchedulerOutput,
          model_runner_output: ModelRunnerOutput,
@@ -310,7 +322,7 @@ index 5b54e6e26..bff9f53f9 100644
          return engine_core_outputs
  
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 900786c4d..1b5be750f 100644
+index 900786c4d..ffb80f4db 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
 @@ -97,10 +97,14 @@ class EngineCore:
@@ -328,6 +340,15 @@ index 900786c4d..1b5be750f 100644
          self.scheduler: SchedulerInterface = Scheduler(
              vllm_config=vllm_config,
              kv_cache_config=kv_cache_config,
+@@ -109,7 +113,7 @@ class EngineCore:
+             > 1,
+             log_stats=self.log_stats,
+         )
+-
++        self.scheduler.num_lookahead_tokens = (self.step_num - 1) * (1 + self.scheduler.num_spec_tokens)
+         # Setup MM Input Mapper.
+         self.mm_input_cache_server = MirroredProcessingCache(
+             vllm_config.model_config)
 @@ -249,9 +253,12 @@ class EngineCore:
                  scheduler_stats=self.scheduler.make_stats(),
              )
@@ -342,54 +363,45 @@ index 900786c4d..1b5be750f 100644
  
          return engine_core_outputs
  
-@@ -274,6 +281,7 @@ class EngineCore:
+@@ -274,26 +281,32 @@ class EngineCore:
                  scheduler_stats=self.scheduler.make_stats(),
              )
          self.cur_batch = self.scheduler.schedule()
 +        self.cur_batch.num_step = self.step_num
++        for req_id, num_scheduled_token in self.cur_batch.num_scheduled_tokens.items():
++            self.scheduler.requests[req_id].num_computed_tokens += num_scheduled_token * (self.step_num - 1)
  
          output = None
          if self._slow_future is not None:
-@@ -281,27 +289,30 @@ class EngineCore:
+             output = self._slow_future.result()
              for each_cached_req in self.cur_batch.scheduled_cached_reqs:
                  if each_cached_req.req_id in output.req_ids:
-                     req_id = output.req_id_to_index[each_cached_req.req_id]
+-                    req_id = output.req_id_to_index[each_cached_req.req_id]
 -                    new_tokens = output.sampled_token_ids[req_id]
--                    spec_tokens = None
--                    len_spec_tokens = 0
--                    if output.spec_token_ids is not None:
++                    req_idx = output.req_id_to_index[each_cached_req.req_id]
++                    new_tokens = output.sampled_token_ids[-1][req_idx]
+                     spec_tokens = None
+                     len_spec_tokens = 0
+                     if output.spec_token_ids is not None:
 -                        spec_tokens = output.spec_token_ids[req_id]
--                        len_spec_tokens = len(spec_tokens)
--                    if len(each_cached_req.new_token_ids) != self.cur_batch.num_scheduled_tokens[each_cached_req.req_id]:
--                        self.cur_batch.total_num_scheduled_tokens = self.cur_batch.total_num_scheduled_tokens - self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] + len(new_tokens[-1:]) + len_spec_tokens
--                        self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] = len(new_tokens[-1:]) + len_spec_tokens
--                        each_cached_req.new_token_ids = new_tokens[-1:]
--                        each_cached_req.num_computed_tokens =  \
++                        spec_tokens = output.spec_token_ids[-1][req_idx]
+                         len_spec_tokens = len(spec_tokens)
+                     if len(each_cached_req.new_token_ids) != self.cur_batch.num_scheduled_tokens[each_cached_req.req_id]:
+                         self.cur_batch.total_num_scheduled_tokens = self.cur_batch.total_num_scheduled_tokens - self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] + len(new_tokens[-1:]) + len_spec_tokens
+                         self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] = len(new_tokens[-1:]) + len_spec_tokens
+                         each_cached_req.new_token_ids = new_tokens[-1:]
++                        actual_computed_tokens = 0
++                        for i in range(self.step_num):
++                            actual_computed_tokens += len(output.sampled_token_ids[i][req_idx])
+                         each_cached_req.num_computed_tokens =  \
 -                            each_cached_req.num_computed_tokens + len(new_tokens) \
 -                            - self.last_batch.num_scheduled_tokens[each_cached_req.req_id]
--                        if spec_tokens is not None:
--                            self.cur_batch.scheduled_spec_decode_tokens[each_cached_req.req_id] = spec_tokens[:]
--
-+                    for i in range(self.step_num):
-+                        new_tokens = output.sampled_token_ids[i][req_id]
-+                        spec_tokens = None
-+                        len_spec_tokens = 0
-+                        if output.spec_token_ids is not None:
-+                            spec_tokens = output.spec_token_ids[i][req_id]
-+                            len_spec_tokens = len(spec_tokens)
-+                        if len(each_cached_req.new_token_ids) != self.cur_batch.num_scheduled_tokens[each_cached_req.req_id]:
-+                            self.cur_batch.total_num_scheduled_tokens = self.cur_batch.total_num_scheduled_tokens - self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] + len(new_tokens[-1:]) + len_spec_tokens
-+                            self.cur_batch.num_scheduled_tokens[each_cached_req.req_id] = len(new_tokens[-1:]) + len_spec_tokens
-+                            each_cached_req.new_token_ids = new_tokens[-1:]
-+                            each_cached_req.num_computed_tokens =  \
-+                                each_cached_req.num_computed_tokens + len(new_tokens) \
-+                                - self.last_batch.num_scheduled_tokens[each_cached_req.req_id]
-+                            if spec_tokens is not None:
-+                                self.cur_batch.scheduled_spec_decode_tokens[each_cached_req.req_id] = spec_tokens[:]
-+
-+        for req_id, num_scheduled_token in self.cur_batch.num_scheduled_tokens.items():
-+            self.scheduler.requests[req_id].num_computed_tokens += num_scheduled_token * (self.step_num - 1)
-         self._slow_future = self._slow_executor.submit(self.model_executor.execute_model, self.cur_batch)
++                            each_cached_req.num_computed_tokens + actual_computed_tokens \
++                            - self.last_batch.num_scheduled_tokens[each_cached_req.req_id] * self.step_num
+                         if spec_tokens is not None:
+                             self.cur_batch.scheduled_spec_decode_tokens[each_cached_req.req_id] = spec_tokens[:]
+ 
+@@ -301,7 +314,7 @@ class EngineCore:
          time.sleep(0.005) # 5ms
  
          if output is not None:
@@ -398,4 +410,3 @@ index 900786c4d..1b5be750f 100644
  
          self.last_batch = self.cur_batch
          # By wcd, return None or not?
-

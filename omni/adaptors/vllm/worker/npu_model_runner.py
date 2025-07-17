@@ -463,17 +463,15 @@ class NPUModelRunner(GPUModelRunner):
             for layer_name in kv_cache_group_spec.layer_names:
                 attn_metadata[layer_name] = attn_metadata_i
 
-        last_tokens_cpu = torch.from_numpy(np.array([tokens[-1] for tokens in cached_token]))
-        last_tokens = last_tokens_cpu.to(device=positions.device)
+        index = torch.argmin(torch.cat([cached_token, torch.full((num_reqs, 1), -1, device=self.device)], dim = 1), dim = 1) - 1
+        last_tokens = cached_token[torch.arange(num_reqs), index]
         if token_each_reqs == 1:
             self.input_ids = last_tokens
         else:
-            spec_tokens_cpu = torch.from_numpy(np.stack(cached_spec, axis=0))
-            spec_tokens = spec_tokens_cpu.to(device=positions.device)
 
             input_ids_2d = self.input_ids.reshape(-1, token_each_reqs)
             input_ids_2d[:num_reqs, 0] = last_tokens
-            input_ids_2d[:num_reqs, 1:] = spec_tokens
+            input_ids_2d[:num_reqs, 1:] = cached_spec
 
         return attn_metadata, positions
 
@@ -681,6 +679,7 @@ class NPUModelRunner(GPUModelRunner):
         attn_metadata = None
         positions = None
         graph_pad_size = None
+        sampled_tokens = None
         sample_indices = None
         has_spec_tokens = None
 
@@ -704,8 +703,8 @@ class NPUModelRunner(GPUModelRunner):
                 hidden_states, raw_hidden_states, input_ids, temp_finished_sending, temp_finished_recving = self._execute_model(scheduler_output,
                                                    attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
             else:
-                attn_metadata, positions = self._simple_prepare_inputs(attn_metadata, positions, 
-                        cached_sampled_token_ids[-1], cached_spec_token[-1], graph_pad_size, accepted_num)
+                attn_metadata, positions = self._simple_prepare_inputs(attn_metadata, positions,
+                        sampled_tokens, cached_spec_token[-1], graph_pad_size, accepted_num)
                 hidden_states, raw_hidden_states, input_ids, temp_finished_sending, temp_finished_recving = self._execute_model(scheduler_output,
                                                    attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
             finished_sending.update(temp_finished_sending)
@@ -783,8 +782,8 @@ class NPUModelRunner(GPUModelRunner):
                     sampled_token_ids,
                     self.input_batch.vocab_size,
                 )
-
-            spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
+            sampled_tokens = sampled_token_ids
+            spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor
 
             # Mask out the sampled tokens that should not be sampled.
             for i in discard_sampled_tokens_req_indices:
@@ -807,11 +806,13 @@ class NPUModelRunner(GPUModelRunner):
             cost_output = time.time() - start_6
             cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_output
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
+        return_spec_token = [None] * (self.total_step - 1)
+        return_spec_token.append(None if cached_spec_token is None else cached_spec_token[-1].tolist())
         model_runner_output = ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
             sampled_token_ids=cached_sampled_token_ids,
-            spec_token_ids=cached_spec_token,
+            spec_token_ids=return_spec_token,
             logprobs=cached_logprobs,
             prompt_logprobs_dict=cached_prompt_logprobs_dict,
             finished_sending=finished_sending,
