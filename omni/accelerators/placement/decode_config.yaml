@@ -1,0 +1,44 @@
+# Patterns: Path to the pattern file specifying expert deployment configuration.
+
+#     The placement pattern is represented as a three-dimensional binary matrix (`expert_mapping`) indicating
+#     the presence (`1`) or absence (`0`) of experts (EPs) across dimensions of devices, layers, and expert IDs (`epid`).
+#     Specifically, the three dimensions are:
+
+#         - deviceid: Identifier of the device.
+#         - layerid: Identifier of the MoE layer.
+#         - epid: Identifier of the expert within a layer.
+#                 Note that experts in different layers may share the same `epid`, but they represent distinct experts.
+
+#     Thus, `expert_mapping[deviceid][layerid][epid] = 1` indicates that the expert identified by `epid` at layer `layerid`
+#     is deployed on device `deviceid`. Conversely, a value of `0` indicates the absence of that expert on the specified device and layer.
+
+#     Note: The same `epid` within the same `layerid` can have multiple entries with the value `1` across different devices.
+#     This means the combination `(layerid, epid)` alone does not uniquely identify a deployment;
+#     rather, experts may be replicated across multiple devices to enable parallelism or redundancy.
+
+#     Defaults to None.
+pattern_path: "/workspace/omni_infer/omni/accelerators/placement/patterns/base_patterns/DSV3_baseline_32_devices_58_MoE_Layers.npy"
+# pattern_path: "/workspace/omni_infer/omni/accelerators/placement/patterns/placement_pattern_4p1d_4+4_30002_0626_20250628_230625_58_redundant_layers_58_layers_64_ranks.npy"
+# pattern_path: "/workspace/omni_infer/omni/accelerators/placement/patterns/placement_pattern_20250703_181509_58_redundant_layers_58_layers_32_ranks_epmaxdeploy_200_decode.npy"
+# pattern_path: "/workspace//omni_infer/omni/accelerators/placement/patterns/placement_pattern_20250620_104409_58_rearrange_layers_58_layers_32_ranks_decode.npy"
+
+#define max_layer_num as a constant 58 (for deepseek moe layer num 58)
+max_moe_layer_num: 58
+
+enable_dynamic: True
+max_redundant_per_expert: 10 #1 # 10
+max_redundant_per_rank: 1 #0 # 1
+
+
+enable_dump: True
+dump_dir: "/data/kww/dump_data/20250710"
+
+# Optimizers
+Optimizers:
+  - expert_balance_optimizer.ExpertsBalanceOptimizer:
+      batch_size: 48
+      top_k_count: 8
+  - heat_optimizer.HEAT_ExpertsBalancer:
+      is_global_maximum_offset: True
+  - resdispatch_optimizer.ResDis_ExpertsBalancer:
+      is_rand_op: False

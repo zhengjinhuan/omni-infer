@@ -34,7 +34,7 @@ int32_t* BuildExpertMappingWithFrozenSetting(
     int num_device_per_host);
 
 /** @brief A no-op memory copy function that mimics ACL memcpy behavior. */
-aclError my_memcpy_no_op(void* dst, size_t destMax, const void* src,
+aclError my_memcpy_no_op_1(void* dst, size_t destMax, const void* src,
     size_t count, aclrtMemcpyKind kind) {
     memcpy(dst, src, count);
     return ACL_ERROR_NONE;
@@ -97,8 +97,8 @@ protected:
     int64_t mock_data_shape[2] = {58, 272};
 
     void SetUp() override {
-        old_fun = get_memcpy_fun();
-        set_memcpy_fun(&my_memcpy_no_op);
+        // old_fun = get_memcpy_fun();
+        // set_memcpy_fun(&my_memcpy_no_op_1);
 
         if (!is_initialized) {
             // Load and cache placement pattern
@@ -150,6 +150,7 @@ protected:
             // Create PlacementMapping
             shared_placement_mapping = new PlacementMapping(
                 rank, num_devices_per_host,
+                shared_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                 shared_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                 shared_placement_pattern_ptr, cached_placement_pattern_shape, ScalarType_Int
             );
@@ -450,7 +451,7 @@ protected:
 
     void SetUp() override {
         old_fun = get_memcpy_fun();
-        set_memcpy_fun(&my_memcpy_no_op);
+        set_memcpy_fun(&my_memcpy_no_op_1);
 
         if (!is_initialized_small) {
             // Load and cache placement pattern
@@ -496,6 +497,7 @@ protected:
             // Create PlacementMapping
             shared_placement_mapping_small = new PlacementMapping(
                 rank, num_devices_per_host,
+                shared_expert_mapping_ptr_small, expert_mapping_shape, ScalarType_Int,
                 shared_expert_mapping_ptr_small, expert_mapping_shape, ScalarType_Int,
                 shared_placement_pattern_ptr_small, cached_placement_pattern_shape_small, ScalarType_Int
             );

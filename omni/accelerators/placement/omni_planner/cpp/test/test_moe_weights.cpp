@@ -273,7 +273,7 @@ TEST_F(MoEWeightsInitTest, NormalInitialization) {
     };
     std::vector<std::vector<int>> expert_ids = {{0, 1}, {2, 3}};
 
-    moe->init_weights(npu_weights, expert_ids);
+    moe->init_weights(npu_weights, expert_ids,true);
 
     EXPECT_EQ(moe->getNumLayers(), 2);
     EXPECT_TRUE(moe->isShmInitialized());
@@ -289,7 +289,7 @@ TEST_F(MoEWeightsInitTest, EmptyInput) {
     std::vector<std::vector<std::vector<Tensor>>> npu_weights;
     std::vector<std::vector<int>> expert_ids;
 
-    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids), std::runtime_error);
+    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids,true), std::runtime_error);
 }
 
 // 零长度张量测试
@@ -299,7 +299,7 @@ TEST_F(MoEWeightsInitTest, ZeroLengthTensor) {
     };
     std::vector<std::vector<int>> expert_ids = {{0}};
 
-    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids), std::runtime_error);
+    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids, true), std::runtime_error);
 }
 
 // 维度不匹配测试
@@ -309,7 +309,7 @@ TEST_F(MoEWeightsInitTest, MismatchedDimensions) {
     };
     std::vector<std::vector<int>> expert_ids = {{0, 1}};
 
-    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids), std::out_of_range);
+    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids, true), std::out_of_range);
 }
 
 // 边界条件，验证expert_ids为空
@@ -319,7 +319,7 @@ TEST_F(MoEWeightsInitTest, EmptyExpertIds) {
     };
     std::vector<std::vector<int>> expert_ids = {{}};
 
-    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids), std::out_of_range);
+    EXPECT_THROW(moe->init_weights(npu_weights, expert_ids, true), std::out_of_range);
 }
 
 // 多权重测试
@@ -330,7 +330,7 @@ TEST_F(MoEWeightsInitTest, MultipleWeightsPerExpert) {
     };
     std::vector<std::vector<int>> expert_ids = {{0, 1}};
 
-    moe->init_weights(npu_weights, expert_ids);
+    moe->init_weights(npu_weights, expert_ids, true);
 
     EXPECT_EQ(moe->getNpuWeights()[0][0].get_total_size(), 24);  // 2*4 + 3*4 + 1*4
 }
@@ -344,7 +344,7 @@ TEST_F(MoEWeightsInitTest, LastRankForMultiWorldSize) {
     MoEWeights cur_moe(64,4);
     std::vector<std::vector<int>> expert_ids = {{62, 63}};
 
-    cur_moe.init_weights(npu_weights, expert_ids);
+    cur_moe.init_weights(npu_weights, expert_ids,true);
 
     EXPECT_EQ(cur_moe.getNpuWeights()[0][0].get_total_size(), 24);  // 2*4 + 3*4 + 1*4
 }
@@ -356,7 +356,7 @@ TEST_F(MoEWeightsInitTest, MultipleWeightsWithShm) {
          {create_tensor(2, 1,"w4"), create_tensor(3,1, "w5"), create_tensor(1,1, "w6")}}
     };
     std::vector<std::vector<int>> expert_ids = {{0, 1}};
-    moe->init_weights(npu_weights, expert_ids);
+    moe->init_weights(npu_weights, expert_ids,true);
     size_t expert_size = moe->getNpuWeights()[0][0].get_total_size();
     EXPECT_EQ(expert_size, 24);
     // 验证 shm_ptr_
@@ -390,7 +390,7 @@ TEST_F(MoEWeightsInitTest, MultipleThreadsWriteToShmWithSamePlace) {
                     {create_tensor(2, 1,"w4"), create_tensor(3,1, "w5"), create_tensor(1,1, "w6")}}
                 };
                 std::vector<std::vector<int>> expert_ids = {{0, 1}};
-                weights_vec[i]->init_weights(npu_weights, expert_ids);
+                weights_vec[i]->init_weights(npu_weights, expert_ids,true);
                 std::string error_message;
                 verify_shm_ptr(*weights_vec[i], expert_ids, error_message);
             } catch (...) {
@@ -428,7 +428,7 @@ TEST_F(MoEWeightsInitTest, MultipleThreadsWriteToShmWithDiffPlace) {
                     {create_tensor(2, 1,"w4"), create_tensor(3,1, "w5"), create_tensor(1,1, "w6")}}
                 };
                 std::vector<std::vector<int>> expert_ids = {{2*i, 2*i+1}};
-                weights_vec[i]->init_weights(npu_weights, expert_ids);
+                weights_vec[i]->init_weights(npu_weights, expert_ids,true);
                 std::string error_message;
                 verify_shm_ptr(*weights_vec[i], expert_ids, error_message);
             } catch (...) {
@@ -464,7 +464,7 @@ TEST_F(MoEWeightsInitTest, VerifyAllThreadsCompleteWrite) {
                      {create_tensor(2, 1, "w4"), create_tensor(3, 1, "w5"), create_tensor(1, 1, "w6")}}
                 };
                 std::vector<std::vector<int>> expert_ids = {{2 * i, 2 * i + 1}};
-                weights_vec[i]->init_weights(npu_weights, expert_ids);
+                weights_vec[i]->init_weights(npu_weights, expert_ids,true);
                 std::string error_message;
                 verify_shm_ptr(*weights_vec[i], expert_ids, error_message);
                 completed_threads.fetch_add(1); // 线程完成后递增计数器
@@ -511,7 +511,7 @@ TEST_F(MoEWeightsInitTest, AllProcessesInitCompleteReturnsTrue) {
                      {create_tensor(2, 1, "w4"), create_tensor(3, 1, "w5"), create_tensor(1, 1, "w6")}}
                 };
                 std::vector<std::vector<int>> expert_ids = {{2 * i, 2 * i + 1}};
-                weights_vec[i]->init_weights(npu_weights, expert_ids);
+                weights_vec[i]->init_weights(npu_weights, expert_ids,true);
                 std::string error_message;
                 verify_shm_ptr(*weights_vec[i], expert_ids, error_message);
             } catch (...) {
@@ -555,7 +555,7 @@ TEST_F(MoEWeightsInitTest, OneProcessesNotInitReturnsFalse) {
                 };
                 std::vector<std::vector<int>> expert_ids = {{2 * i, 2 * i + 1}};
                 if (i != num_threads-1){
-                    weights_vec[i]->init_weights(npu_weights, expert_ids);
+                    weights_vec[i]->init_weights(npu_weights, expert_ids,true);
                     std::string error_message;
                     verify_shm_ptr(*weights_vec[i], expert_ids, error_message);
                 }
@@ -607,7 +607,7 @@ protected:
                     weights_vec[i] = std::make_unique<MoEWeights>(2 * num_threads_,num_threads_);
                     std::vector<std::vector<std::vector<Tensor>>> npu_weights = construct_npu_weights(i);
                     std::vector<std::vector<int>> expert_ids = construct_expert_ids(i);
-                    weights_vec[i]->init_weights(npu_weights, expert_ids);
+                    weights_vec[i]->init_weights(npu_weights, expert_ids,true);
                 } catch (...) {
                     error_occurred = true;
                 }

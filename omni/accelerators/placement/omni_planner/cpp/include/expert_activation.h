@@ -20,45 +20,36 @@
 #include <sys/types.h> // New include for POSIX types
 #include <fstream>
 #include <sstream>
+#include "hccl/hccl.h"
+#include "hccl/hccl_types.h"
+#include "distribution.h"
+#include "placement_mapping.h"
 
 class ExpertActivation {
 private:
-    struct Activation {
-        double timestamp; // Time of the activation in seconds
-        int64_t count;        // Number of activations at this timestamp
-        Activation() : timestamp(0.0), count(0) {};
-        Activation(double ts, int c);
-    };
-
-    Activation activationArray[12]; // Array to store activations with timestamps
-    const size_t maxActivations;             // Maximum number of activations (x)
-    size_t startIdx;                         // Start index for circular buffer
-    size_t currentSize;                      // Current number of elements in the array
-    const double timeThreshold;              // Time threshold in seconds (y)
-    double lastActivationTime;               // Timestamp of the last processed activation
-    int64_t pendingCount;                        // Accumulated count for activations < y seconds
-    int __padding__[4];
-
-    // Get current time in seconds (for simulation, using a simple system clock)
-    double getCurrentTime() const;
+    size_t length_ = 20;
+    std::vector<int64_t> activated_values;
+    size_t idx = 0;
 
 public:
-    ExpertActivation() : maxActivations(12), startIdx(0), currentSize(0), timeThreshold(5),
-    lastActivationTime(0.0), pendingCount(0) {
-        // activationArray.resize(maxActivations, Activation(0.0, 0)); // Pre-allocate array
-    };
-
-    // Constructor: x = max activations, y = time threshold in seconds
-    ExpertActivation(size_t x, double y);
-
-    // Add a new activation with a given count (default = 1)
-    void addActivation(int64_t count = 1);
-
-    // Get the total sum of activations in the activation array plus pending activations
-    int64_t getTotalActivationCount() const;
-
-    // For debugging: Print the current state of the activation array
-    void printState() const;
+    ExpertActivation(){
+        activated_values.resize(length_,0);
+    }
+    void update(int64_t value){
+        activated_values[idx] = value;
+        idx = (idx+1)%length_;
+    }
+    int64_t get_last_value(){
+        size_t tmp_index = (length_+idx-1)%length_;
+        return activated_values[tmp_index];
+    }
+    int64_t getTotalValue(){
+        int64_t result = 0;
+        for(size_t idx=0;idx<activated_values.size();++idx){
+            result = result +activated_values[idx];
+        }
+        return result;
+    }
 };
 
 
@@ -66,16 +57,25 @@ class ClusterActivation
 {
 private:
     Tensor npu_count_;
+    int64_t max_activation_count_;
     size_t num_layers_;
     size_t num_deploy_experts_;
+    size_t num_experts_;
+    size_t num_deploy_experts_per_rank_;
     int activation_window_size_;
     size_t world_size_;
     size_t rank_;
     void* total_count_ptr_;
-    void* last_count_ptr_;
+    
     std::thread thread_;            // 工作线程
     bool enable_dump_ = false;
     std::string dump_dir_ = ""; // Fixed: Removed the reference, initialized an empty string
+    Tensor* expert_activation_counts_=nullptr;    // activation all rank reduced
+    void* deployed_experts_counts_host_;
+    void* last_count_ptr_;
+    void* delta_experts_counts_;
+    std::vector<ExpertActivation> all_logit_experts_activation_;
+    
 
     enum ThreadState{
         INIT,
@@ -91,22 +91,31 @@ private:
     size_t act_shm_size_;
 
     void* create_or_attach_shmem(const std::string& name, size_t size);
-    void init_activation_shmem();
+    void init_activation_hbm();
+    void free_activation_hbm();
     bool is_enbale_dump() const {return enable_dump_;}
 
 public:
-    ClusterActivation(Tensor npu_count,size_t num_layers, size_t num_deploy_experts, int activation_window_size,size_t world_size, size_t rank);
+    ClusterActivation(Tensor npu_count,int64_t max_activation_count,size_t num_layers, size_t num_deploy_experts_per_rank, int activation_window_size,size_t world_size, size_t rank);
     ~ClusterActivation();
-    void collect_activation(size_t layer_idx, size_t deploy_expert_idx, int64_t count);
+    int64_t getLayerActivationCount(size_t layer_id = 0);    
     int64_t getClusterTotalActivationCount(size_t layer_idx, size_t deploy_expert_idx);
+    int64_t getExpertActivationCount(int32_t layer_idx, int32_t deploy_expert_idx, void* activation_ptr);
+    int64_t getExpertActivationCount(int32_t layer_idx, int32_t deploy_expert_idx);
+    void updateDeltaActivationCount();
     void print_activations();
     void setDumpDir(const std::string& dump_dir);
     void stopDump();
-    void dumpActivationCounts(size_t dump_count, int64_t* total_count_ptr, int64_t* last_count_ptr);
+    void dumpActivationCounts(size_t dump_count);
+    void dumpActivationCountsPerRank(size_t dump_count, int64_t* total_count_ptr);
     size_t get_num_layers() const { return num_layers_; }
     size_t get_num_deploy_experts() const { return num_deploy_experts_; }
+    size_t get_num_deploy_experts_per_rank() const { return num_deploy_experts_per_rank_; }
     size_t get_rank() const { return rank_; }
     size_t get_world_size() const { return world_size_; }
+    void set_params(size_t num_experts);
+    int64_t getLogitExpertShiftActivateion(int32_t layer_id, int32_t expert_id, int this_expert_deployed_num);
+    void updateShiftWindows(PlacementMapping* placement_mapping);
 
     //For Unittest
     Tensor& get_npu_count() { return npu_count_; }
@@ -114,7 +123,9 @@ public:
     void* get_last_count_ptr() { return last_count_ptr_; }
 
     // 线程控制相关操作
-    void collect_wrapper();
+    void collect_from_txt(const std::string& txt_path);
+    void collect(Distribution* dist_ptr, aclrtStream stream);
+    void dump_and_collect(Distribution* dist_ptr, aclrtStream stream, size_t dump_count);
     void start_thread();
     void stop_thread();
 };

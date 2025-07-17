@@ -183,8 +183,7 @@ class Redundant2ExpertsBalancer(Optimizer):
 
         # --- 3b. 向量化条件检查 ---
         # 确保 num_devices > 0 且 num_epids 可被 num_devices 整除（或处理好边界）
-        if num_devices <= 0:
-            raise RuntimeError("num_devices must be positive")
+        assert num_devices > 0, "num_devices must be positive"
         experts_per_device_ideal = num_epids // num_devices
         if experts_per_device_ideal == 0:
             # 处理 num_epids < num_devices 的情况，可能需要调整逻辑或报错
