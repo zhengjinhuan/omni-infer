@@ -506,7 +506,8 @@ class DecodeConnectorWorker:
         if self.multi_rank_pull_kv:
             self.registed_link_infos, _ = self.datadist_manager.register_link()
             logger.info(f" ***** registed_link_infos: {self.registed_link_infos}")
-            for remote_cluster_id, cluster_ids in self.registed_link_infos.items():
+            for remote_cluster_id, cluster_ids_dict in self.registed_link_infos.items():
+                cluster_ids = cluster_ids_dict[self.cluster_id + self.datadist_manager.local_rank]
                 for idx_count, cluster_id in enumerate(cluster_ids):
                     with self._pull_kv_lock:
                         if cluster_id in self.queues:
