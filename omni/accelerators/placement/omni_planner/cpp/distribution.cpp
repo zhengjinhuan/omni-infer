@@ -31,6 +31,7 @@ Distribution::Distribution(size_t  rank, size_t world_size, const char* infoStr,
             HcclCommConfig config;
             HcclCommConfigInit(&config);
             config.hcclBufferSize = 100;
+            config.hcclOpExpansionMode = 1;
             HCCLCHECK(HcclCommInitRootInfoConfig(world_size, &rootInfo, rank, &config, &hcclComm_));
     } else {
         HCCLCHECK(HcclCommInitClusterInfo(infoStr, rank, &hcclComm_));
