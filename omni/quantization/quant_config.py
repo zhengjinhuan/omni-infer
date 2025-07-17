@@ -89,9 +89,6 @@ class AscendQuantConfig(QuantizationConfig):
                          prefix: str) -> Optional["QuantizeMethodBase"]:
         from vllm.attention.layer import Attention
         if isinstance(layer, LinearBase):
-            if self.is_layer_skipped_ascend(prefix,
-                                            self.packed_modules_mapping):
-                return UnquantizedLinearMethod()
             return AscendLinearMethod(self, prefix,
                                       self.packed_modules_mapping)
         elif isinstance(layer, Attention) and \
@@ -99,42 +96,9 @@ class AscendQuantConfig(QuantizationConfig):
             self.quant_description['fa_quant_type'] is not None:
             return AscendKVCacheMethod(self, prefix)
         elif isinstance(layer, FusedMoE):
-            if self.is_layer_skipped_ascend(prefix,
-                                            self.packed_modules_mapping):
-                return UnquantizedFusedMoEMethod()
             return AscendFusedMoEMethod(self, prefix,
                                         self.packed_modules_mapping)
         return None
-
-    def is_layer_skipped_ascend(
-        self,
-        prefix: str,
-        fused_mapping: Mapping[str, List[str]] = MappingProxyType({})):
-        # adapted from vllm.model_executor.layers.quantization.utils.quant_utils.is_layer_skipped
-        proj_name = prefix.split(".")[-1]
-        if proj_name in fused_mapping:
-            shard_prefixes = [
-                prefix.replace(proj_name, shard_proj_name)
-                for shard_proj_name in fused_mapping[proj_name]
-            ]
-
-            is_skipped = None
-            for shard_prefix in shard_prefixes:
-                is_shard_skipped = self.quant_description[shard_prefix +
-                                                          '.weight'] == "FLOAT"
-
-                if is_skipped is None:
-                    is_skipped = is_shard_skipped
-                elif is_shard_skipped != is_skipped:
-                    raise ValueError(
-                        f"Detected some but not all shards of {prefix} "
-                        "are quantized. All shards of fused layers "
-                        "to have the same precision.")
-        else:
-            is_skipped = self.quant_description[prefix + '.weight'] == "FLOAT"
-
-        assert is_skipped is not None
-        return is_skipped
 
     def get_scaled_act_names(self) -> List[str]:
         return []
