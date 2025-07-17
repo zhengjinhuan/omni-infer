@@ -68,7 +68,7 @@ graph:
     HCCL_OP_EXPANSION_MODE: "AIV" # use is AIV
     VLLM_ENABLE_MC2: "1"
   api_servers_params:
-    --additional-config: '{"enable_graph_mode": true}'
+    --additional-config: '{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true, "block_num_floating_range":50}}'
 mtp:
   api_servers_params:
     --speculative_config: '{"method": "deepseek_mtp", "num_speculative_tokens": 1}'
