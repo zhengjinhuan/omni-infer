@@ -377,8 +377,9 @@ class DecodeConnectorScheduler:
         if self.async_pull_kv:
             if scheduler_output is None:
                 # Let go fast path
-                serialized_data = pickle.dumps(metadata)
-                self.pub.send(serialized_data)
+                if metadata.requests:
+                    serialized_data = pickle.dumps(metadata)
+                    self.pub.send(serialized_data)
 
         return metadata
 
