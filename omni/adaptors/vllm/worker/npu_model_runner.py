@@ -717,12 +717,13 @@ class NPUModelRunner(GPUModelRunner):
             with set_forward_context(attn_metadata,
                                     self.vllm_config,
                                     num_tokens=scheduler_output.total_num_scheduled_tokens):
+                mtp_input_tokens = mtp_input_tokens.to(torch.long)
                 if not self.drafter_mark_static:
-                    torch._dynamo.mark_static(input_ids)
+                    torch._dynamo.mark_static(mtp_input_tokens)
                     torch._dynamo.mark_static(raw_hidden_states)
                     self.drafter_mark_static = True
                 mtp_hidden_states = self.compile_drafter(
-                    input_ids=mtp_input_tokens.to(torch.long),
+                    input_ids=mtp_input_tokens,
                     positions=positions,
                     kv_caches=self.kv_caches[-1:],
                     attn_metadata=attn_metadata,

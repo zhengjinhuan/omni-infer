@@ -108,10 +108,12 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
     ) -> torch.Tensor:
         #ENABLE_OMNI_PLANNER
         max_num_deployed_expert_per_rank = self.n_routed_experts
+        if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
+            max_num_deployed_expert_per_rank = layer.planner.get_max_num_deployed_expert_per_rank()
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
             is_prefill = attn_metadata is None or attn_metadata.prefill is not None
-            if model_extra_config.operator_opt_config.prefill_dispatch_combine or (model_extra_config.operator_opt_config.moe_dispatch_combine and is_prefill):
+            if model_extra_config.operator_opt_config.prefill_dispatch_combine or (model_extra_config.operator_opt_config.moe_dispatch_combine and not is_prefill):
                 if is_prefill and model_extra_config.operator_opt_config.enable_pd_separated:
                     row_idx = torch.arange(topk_ids.numel(), device=current_platform.device_type,
                                        dtype=torch.int32).view(-1,x.shape[0]).transpose(0,1)
@@ -120,15 +122,11 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
                 else:
                     out = fused_experts_w8a8_moe_dispatch_combine(layer,
                                                                     x,
-                                                                    layer.w13_weight,
-                                                                    layer.w2_weight,
-                                                                    layer.w13_weight_scale,
-                                                                    layer.w2_weight_scale,
                                                                     topk_weights,
                                                                     topk_ids,
-                                                                    n_routed_experts=self.n_routed_experts * get_expert_parallel_world_size(), 
                                                                     max_num_deployed_expert=max_num_deployed_expert_per_rank * get_expert_parallel_world_size(),
-                                                                    is_prefill=is_prefill #ENABLE_OMNI_PLANNER
+                                                                    is_prefill=is_prefill, #ENABLE_OMNI_PLANNER
+                                                                    is_route_expert=True #ENABLE_OMNI_PLANNER
                                                                     )
             else:
                 if model_extra_config.operator_opt_config.best_ep and (
