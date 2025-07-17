@@ -506,6 +506,22 @@ class DecodeConnectorWorker:
         if self.multi_rank_pull_kv:
             self.registed_link_infos, _ = self.datadist_manager.register_link()
             logger.info(f" ***** registed_link_infos: {self.registed_link_infos}")
+            for remote_cluster_id, cluster_ids in self.registed_link_infos.items():
+                for idx_count, cluster_id in enumerate(cluster_ids):
+                    with self._pull_kv_lock:
+                        if cluster_id in self.queues:
+                            continue
+                        q = queue.Queue()
+                        self.queues[cluster_id] = q
+                        thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
+                        t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
+                        t.start()
+                        idx_tmp = self.vllm_config.parallel_config.data_parallel_rank_local + idx_count
+                        idx_core = min((idx_tmp - 1) // 10, len(self.core_bases) - 1)
+                        set_thread_affinity(t, self.core_bases[idx_core] + idx_tmp)
+                        self.threads[cluster_id] = t
+                        logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+                        dump_thread_to_file(t, thread_name, thread_dump_path)
         else:
             self.datadist_manager.register_link()
 
@@ -533,22 +549,6 @@ class DecodeConnectorWorker:
             )
             if self.multi_rank_pull_kv:
                 cluster_ids =  self.registed_link_infos[meta.remote_cluster_id][self.cluster_id + self.datadist_manager.local_rank]
-                for idx_count, cluster_id in enumerate(cluster_ids):
-                    with self._pull_kv_lock:
-                        if cluster_id not in self.queues:
-                            q = queue.Queue()
-                            self.queues[cluster_id] = q
-                            thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
-                            t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
-                            t.start()
-                            idx_tmp = self.vllm_config.parallel_config.data_parallel_rank_local + idx_count
-                            idx_core = min((idx_tmp - 1) // 10, len(self.core_bases) - 1)
-                            set_thread_affinity(t, self.core_bases[idx_core] + idx_tmp)
-                            self.threads[cluster_id] = t  # Store the thread for this cluster_id
-                            logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
-
-                            # Write thread name and native_id to file
-                            dump_thread_to_file(t, thread_name, thread_dump_path)
                 block_thre = len(meta.local_block_ids) // 2
                 for idx_cluster, cluster_id in enumerate(cluster_ids):
                     if idx_cluster == 0:
