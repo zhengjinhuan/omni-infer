@@ -658,10 +658,16 @@ def set_thread_affinity(thread, cpu_id):
     tid = thread.native_id
     os.sched_setaffinity(tid, {cpu_id})
 
-def dump_thread_to_json(thread, thread_name: str, json_file_path: str):
+def dump_thread_to_json(thread, thread_name: str, json_file: str):
+    import time
     thread_info = {}
+    timeout = 5  # seconds
+    start_time = time.time()
     while not hasattr(thread, "native_id"):
-        pass
+        if time.time() - start_time > timeout:
+            logger.error(f"Timeout waiting for thread {thread_name} to have native_id.")
+            return
+        time.sleep(0.005)
     thread_info = {thread_name: thread.native_id}
     try:
         if os.path.exists(json_file):
