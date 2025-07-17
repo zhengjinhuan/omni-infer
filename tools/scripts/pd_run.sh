@@ -403,13 +403,22 @@ if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
     sleep 5s
     command="ray start --address='$HOST_IP:6379' --num-gpus=16 &> /dev/null"
     echo $command
+    cost_time=0
+    end_time=300
     while true; do
+      if [ $cost_time -ge $end_time ]; then
+        echo "error, conneciton timeout"
+        exit 1
+      fi
+
       eval $command
       if [ $? -eq 0 ]; then
         echo "succeed to connect to ray head node"
+        break
       else
         echo "failed to connect to ray head node, wait 5s....."
         sleep 5
+        cost_time=$((cost + 5))
       fi
     done
   fi
