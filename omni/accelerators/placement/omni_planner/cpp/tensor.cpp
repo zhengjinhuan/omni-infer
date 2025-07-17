@@ -64,3 +64,38 @@ aclError Tensor::to_device(void * host_ptr) const {
     }
     return ret;
 }
+
+aclError Tensor::to_host(void * host_ptr,aclrtStream stream) const {
+    size_t tensor_size = get_total_size();
+    if (host_ptr == nullptr || data_ptr_ == nullptr) {
+        throw std::runtime_error("Invalid pointers: npu_ptr or host_ptr is null");
+    }
+    // std::cout<<"device:" <<data_ptr_<<" uint64_t_npu: "<<(uint64_t)(data_ptr_)<<" host: "<<(void*)(host_ptr)<<" tensor_size:"<<get_total_size()<<std::endl;
+    // std::cout<<"host-from: "<<(uint64_t)(host_ptr)<<" to: "<<(uint64_t)(host_ptr)+get_total_size()<<std::endl;
+    // std::cout<<"weight.get_total_size():"<<get_total_size()<<std::endl;
+    aclError ret = aclrtMemcpyAsync(host_ptr, tensor_size, data_ptr_, tensor_size, ACL_MEMCPY_DEVICE_TO_HOST,stream);
+    if (ret != ACL_ERROR_NONE) {
+        throw std::runtime_error("aclrtMemcpy failed, error code: " + std::to_string(ret));
+    }
+    ret = aclrtSynchronizeStream(stream);
+    if (ret != ACL_ERROR_NONE) {
+        throw std::runtime_error("aclrtMemcpy aclrtSynchronizeStream failed, error code: " + std::to_string(ret));
+    }
+    return ret;
+}
+
+aclError Tensor::to_device(void * host_ptr,aclrtStream stream) const {
+    size_t tensor_size = get_total_size();
+    if (host_ptr == nullptr || data_ptr_ == nullptr) {
+        throw std::runtime_error("Invalid pointers: npu_ptr or host_ptr is null");
+    }
+    aclError ret = aclrtMemcpyAsync(data_ptr_, tensor_size, host_ptr, tensor_size, ACL_MEMCPY_HOST_TO_DEVICE,stream);
+    if (ret != ACL_ERROR_NONE) {
+        throw std::runtime_error("aclrtMemcpy failed, error code: " + std::to_string(ret));
+    }
+    ret = aclrtSynchronizeStream(stream);
+    if (ret != ACL_ERROR_NONE) {
+        throw std::runtime_error("aclrtMemcpy aclrtSynchronizeStream failed, error code: " + std::to_string(ret));
+    }
+    return ret;
+}

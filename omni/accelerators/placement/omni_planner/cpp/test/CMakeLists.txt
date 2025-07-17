@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(ExpertActivationProject)
 
 # 设置 C++ 标准
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 编译器标志
@@ -32,7 +32,8 @@ include_directories(
 # 支持 Ascend 的动态路径（通过环境变量或默认值）
 set(ASCEND_TOOLKIT_PATH $ENV{ASCEND_TOOLKIT_PATH})
 if (NOT ASCEND_TOOLKIT_PATH)
-    set(ASCEND_TOOLKIT_PATH "/usr/local/Ascend/ascend-toolkit/latest/arm64-linux")
+    set(ASCEND_TOOLKIT_PATH "/usr/local/Ascend/latest/aarch64-linux")
+    # set(ASCEND_TOOLKIT_PATH "/usr/local/Ascend/ascend-toolkit/latest/arm64-linux")
 endif()
 include_directories(${ASCEND_TOOLKIT_PATH}/include)
 link_directories(${ASCEND_TOOLKIT_PATH}/lib64)
@@ -86,23 +87,29 @@ set(LIBS
     rt
     ${Python3_LIBRARIES}  # 动态 Python 库
     ascendcl
+    hccl
 )
 
 # 可执行文件
 add_executable(test_placement
+    test_dynamic_eplb_greedy.cpp
     test_placement_mapping.cpp
-    test_expert_mapping_per_redundancy.cpp
     test_tensor.cpp
-    test_moe_weights.cpp
-    test_placement_manager.cpp
-    test_placement_optimizer.cpp
-    test_expert_activation.cpp
+    test_expert_mapping_per_redundancy.cpp
+    # test_placement_optimizer.cpp
+    test_expert_swap_optimizer.cpp
+    # test_placement_optimizer_for_swap.cpp
+    test_expert_load_balancer.cpp
+    ../distribution.cpp
     ../placement_manager.cpp
     ../placement_mapping.cpp
+    ../dynamic_eplb_greedy.cpp
     ../placement_optimizer.cpp
     ../expert_activation.cpp
     ../tensor.cpp
     ../moe_weights.cpp
+    ../placement_optimizer_for_swap.cpp
+    ../expert_load_balancer.cpp
 )
 target_link_libraries(test_placement ${LIBS})
 

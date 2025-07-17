@@ -25,14 +25,80 @@
 #include "moe_weights.h"
 #include <fstream>  // 用于文件操作
 
+// #include <torch/extension.h>
+#include "hccl/hccl.h"
+#include "hccl/hccl_types.h"
+
 
 
 namespace py = pybind11;
+
+void ExpertWeights::swap(Distribution* dist_ptr, size_t t_rank, bool send_first, aclrtStream stream){
+
+    if (stream==nullptr){
+        ACLCHECK(aclrtCreateStream(&stream));
+    }
+    for (auto& weight : weights_){
+        size_t data_size = weight.get_total_size();
+        std::string dtype = weight.get_dtype();
+        // std::cout<<"length: "<< weight.get_length()<<" dtype: "<<dtype<<" "<< std::endl;
+        void *recv_buf;
+        ACLCHECK(aclrtMalloc(&recv_buf, data_size, ACL_MEM_MALLOC_HUGE_FIRST));
+        void * send_buf = weight.get_data_ptr();
+        dist_ptr->swap(send_buf, recv_buf, data_size, dtype, t_rank, send_first, stream);
+        ACLCHECK(aclrtMemcpy(send_buf, data_size, recv_buf, data_size, ACL_MEMCPY_DEVICE_TO_DEVICE));
+    }
+}
+
+void ExpertWeights::enqueueSwapInformation(Distribution* dist_ptr, size_t t_rank){
+    std::vector<size_t> lengths;  // No pre-allocation needed; it will grow as required.
+    std::vector<std::string> dtypes;
+    std::vector<void*> address;
+    std::vector<size_t> sizes;
+    for (auto& weight : weights_){
+        lengths.push_back(weight.get_length());
+        dtypes.push_back(weight.get_dtype());
+        address.push_back(weight.get_data_ptr());
+        sizes.push_back(weight.get_total_size());
+    }
+    TransDesc expert_trans_desc;
+    expert_trans_desc.address = address;
+    expert_trans_desc.lengths = lengths;
+    expert_trans_desc.dtypes = dtypes;
+    expert_trans_desc.sizes = sizes;
+    dist_ptr->enqueue(&expert_trans_desc, t_rank,true);
+}
+
+void ExpertWeights::enqueueSwapInformation(Distribution* dist_ptr, size_t t_rank, void* recv_buff,bool need_enqueue_recv_buff, size_t localExpertPositionOfsset){
+    std::vector<size_t> lengths;  // No pre-allocation needed; it will grow as required.
+    std::vector<std::string> dtypes;
+    std::vector<void*> address;
+    std::vector<size_t> sizes;
+    std::vector<void*> recv_buffs;
+    uint8_t* tmp = static_cast<uint8_t*>(recv_buff);
+    for (auto& weight : weights_){
+        lengths.push_back(weight.get_length());
+        dtypes.push_back(weight.get_dtype());
+        address.push_back(weight.get_data_ptr());
+        sizes.push_back(weight.get_total_size());
+        recv_buffs.push_back((void*)tmp);
+        tmp += weight.get_total_size();
+    }
+    TransDesc expert_trans_desc;
+    expert_trans_desc.address = address;
+    expert_trans_desc.lengths = lengths;
+    expert_trans_desc.dtypes = dtypes;
+    expert_trans_desc.sizes = sizes;
+    expert_trans_desc.recv_buffs = recv_buffs;
+    expert_trans_desc.localExpertPositionOfsset = localExpertPositionOfsset;
+    dist_ptr->enqueue(&expert_trans_desc, t_rank, need_enqueue_recv_buff);
+}
 
 MoEWeights::MoEWeights(size_t num_experts):num_experts_(num_experts){
     shm_ptr_ = nullptr;
     count_ptr_ = nullptr;
     world_size_ = 1;
+    num_deploy_experts_per_rank_ = num_experts_/world_size_;
     shm_unlink(shm_name_.c_str());
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
@@ -40,12 +106,39 @@ MoEWeights::MoEWeights(size_t num_experts):num_experts_(num_experts){
 MoEWeights::MoEWeights(size_t num_experts, size_t world_size):world_size_(world_size),num_experts_(num_experts){
     shm_ptr_ = nullptr;
     count_ptr_ = nullptr;
+    num_deploy_experts_per_rank_ = num_experts_/world_size_;
     shm_unlink(shm_name_.c_str());
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
+MoEWeights::MoEWeights(size_t num_experts,size_t rank, size_t world_size):rank_(rank),world_size_(world_size),num_experts_(num_experts){
+    shm_ptr_ = nullptr;
+    count_ptr_ = nullptr;
+    num_deploy_experts_per_rank_ = num_experts_/world_size_;
+    shm_unlink(shm_name_.c_str());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+MoEWeights::MoEWeights(size_t num_experts, size_t rank, size_t world_size,const char* rankTableFile):rank_(rank),world_size_(world_size),num_experts_(num_experts){
+    dist_ptr_ = new Distribution(rank_,world_size_,rankTableFile,HcclCommInitType::RankTableFile);
+    dist_ptr_->printCommInfo();
+    shm_ptr_ = nullptr;
+    count_ptr_ = nullptr;
+    num_deploy_experts_per_rank_ = num_experts_/world_size_;
+    shm_unlink(shm_name_.c_str());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+MoEWeights::MoEWeights(size_t num_experts, size_t rank, size_t world_size, Distribution* dist_ptr):rank_(rank),world_size_(world_size),num_experts_(num_experts), dist_ptr_(dist_ptr) {
+    dist_ptr_->printCommInfo();
+    shm_ptr_ = nullptr;
+    count_ptr_ = nullptr;
+    shm_unlink(shm_name_.c_str());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
 
 MoEWeights::~MoEWeights() {
+    delete dist_ptr_;
     // 清理控制共享内存
     if (shm_ptr_) {
         munmap(shm_ptr_, shm_size_);
@@ -54,19 +147,19 @@ MoEWeights::~MoEWeights() {
     }
 }
 
-void MoEWeights::init_weights(const std::vector<std::vector<std::vector<Tensor>>>& npu_weights, const std::vector<std::vector<int>>& expert_ids) {
+void MoEWeights::init_weights(const std::vector<std::vector<std::vector<Tensor>>>& npu_weights, bool init_shm) {
 
+    
     if (npu_weights.size()== 0){
         throw std::runtime_error("npu_weights.size() is 0, which is the layer dimension");
     }
-    if (npu_weights.size()!=expert_ids.size()){
-        throw std::out_of_range("npu_weights.size() is not equals to expert_ids.size(), which is the layer dimension");
-    }
+
     if (npu_weights[0].size() == 0){
         throw std::runtime_error("npu_weights[0].size() is 0, which is the experts dimension");
     }
-    if (npu_weights[0].size()!=expert_ids[0].size()){
-        throw std::out_of_range("npu_weights[0].size() is not equals to expert_ids[0].size(), which is the expert dimension");
+ 
+    if (npu_weights[0].size() != num_deploy_experts_per_rank_){
+        throw std::runtime_error("npu_weights[0].size() is: "+std::to_string(npu_weights[0].size()) +" while num_deploy_experts_per_rank_ is:"+std::to_string(num_deploy_experts_per_rank_));
     }
 
     npu_weights_.resize(npu_weights.size()); // 预分配层数
@@ -75,8 +168,7 @@ void MoEWeights::init_weights(const std::vector<std::vector<std::vector<Tensor>>
         layer_experts.resize(npu_weights[layer_idx].size()); // 预分配专家数
         for (size_t expert_idx = 0; expert_idx < npu_weights[layer_idx].size(); ++expert_idx) {
             // 为每个专家创建 ExpertWeights 对象
-            layer_experts.at(expert_idx) = ExpertWeights(expert_ids[layer_idx][expert_idx], npu_weights[layer_idx][expert_idx]);
-            // layer_experts.emplace_back(expert_ids[layer_idx][expert_idx], npu_weights[layer_idx][expert_idx]);
+            layer_experts.at(expert_idx) = ExpertWeights(npu_weights[layer_idx][expert_idx]);
         }
         npu_weights_.at(layer_idx) = std::move(layer_experts);
     }
@@ -90,8 +182,18 @@ void MoEWeights::init_weights(const std::vector<std::vector<std::vector<Tensor>>
         throw std::runtime_error("Invalid size: size cannot be 0");
     }
 
+    std::cout<<"The Bytes of one Experts is: "<<expert_size<<std::endl;
     size_t total_size = num_layers_ * num_experts_ * expert_size;
-    init_shared_memory(total_size);
+
+    // TODO: 根据Queue Size 先分配一块显存
+    is_initilized_ = true;
+    if (!init_shm){
+        std::unique_lock<std::mutex> lock = acquire_lock();
+        lock.unlock();
+        return;
+    }
+
+    init_shared_memory(total_size); // TODO: 不需要 初始化SHM
     replicate_to_shared_memory();   // Initial copy to shared memory
 
     // 拷贝完成计数
@@ -99,6 +201,19 @@ void MoEWeights::init_weights(const std::vector<std::vector<std::vector<Tensor>>
     count_ptr->completed_processes.fetch_add(1);
 }
 
+size_t MoEWeights::get_expert_size(){
+    ExpertWeights expert = getExpert(0, 0);
+    return  expert.get_total_size();
+}
+
+bool MoEWeights::isHbmInitialized() const {
+    // std::unique_lock<std::mutex> lock(mMutex);
+    std::unique_lock<std::mutex> lock = acquire_lock();
+    bool result = is_initilized_;
+    lock.unlock();
+    return result;
+
+}
 
 bool MoEWeights::isShmInitialized() const {
     if (count_ptr_==nullptr){
@@ -240,6 +355,60 @@ void MoEWeights::replicate_to_shared_memory() {
             shm_ptr_current += expert_size;
         }
     }
+}
+
+void MoEWeights::replacement(Distribution* dist_ptr, size_t layer_idx, size_t rank_a, size_t expert_position_a, size_t rank_b, size_t expert_position_b){
+    // TODO: Disused on Next Version
+    size_t local_expert_idx;
+    size_t t_rank;
+    if (rank_ == rank_a){
+        local_expert_idx = expert_position_a;
+        t_rank = rank_b;
+    }
+    else if (rank_ == rank_b){
+        local_expert_idx = expert_position_b;
+        t_rank = rank_a;
+    }
+    else{
+        return;
+    }
+    local_expert_idx = local_expert_idx%getNumDeployExpertsPerRank();
+    ExpertWeights expert = getExpert(layer_idx, local_expert_idx);
+    expert.enqueueSwapInformation(dist_ptr, t_rank);
+}
+
+void MoEWeights::replacement(Distribution* dist_ptr, size_t layer_idx, size_t rank_a, size_t expert_position_a, size_t rank_b, size_t expert_position_b, void* recv_buff_start_address,bool need_enqueue_recv_buff){
+    size_t local_expert_idx;
+    size_t t_rank;
+    if (rank_ == rank_a){
+        local_expert_idx = expert_position_a;
+        t_rank = rank_b;
+    }
+    else if (rank_ == rank_b){
+        local_expert_idx = expert_position_b;
+        t_rank = rank_a;
+    }
+    else{
+        return;
+    }
+    local_expert_idx = local_expert_idx%getNumDeployExpertsPerRank();
+    ExpertWeights expert = getExpert(layer_idx, local_expert_idx);
+    size_t localExpertPositionOfsset = getLocalExpertPositionOffset(layer_idx, local_expert_idx); // 第几层的第几个位置
+    expert.enqueueSwapInformation(dist_ptr, t_rank, recv_buff_start_address,need_enqueue_recv_buff, localExpertPositionOfsset); // 往队里传入专家替换信息， 异步线程处理,不进行同步等待, TODO 
+}
+
+void MoEWeights::replacement(Distribution* dist_ptr, aclrtStream stream, size_t layer_idx, size_t local_expert_idx, size_t t_rank){
+
+    assert(dist_ptr != nullptr && "Distribution pointer is not initialized");
+    if (stream==nullptr){
+        ACLCHECK(aclrtCreateStream(&stream));
+    }
+
+    // 获取当前层的所有专家权重
+    auto& layer_experts = npu_weights_[layer_idx];
+    ExpertWeights source_expert = layer_experts[local_expert_idx];
+    bool send_first = (rank_ < t_rank);
+    source_expert.swap(dist_ptr, t_rank, send_first,stream);
 }
 
 /**
