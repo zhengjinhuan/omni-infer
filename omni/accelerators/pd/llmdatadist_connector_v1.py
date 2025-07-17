@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, Optional
 import zmq
 import os
 import time
-import pickle
 
 from vllm.envs import VLLM_RPC_TIMEOUT
 from vllm.config import VllmConfig
@@ -41,7 +40,7 @@ from vllm.v1.request import RequestStatus
 
 import os
 
-import queue
+from concurrent.futures import ThreadPoolExecutor
 
 GET_META_MSG = b"get_meta_msg"
 
@@ -61,7 +60,6 @@ class ReqMeta:
     remote_block_ids: list[int]
     remote_host: str
     remote_cluster_id: str
-    spec_token_ids: Optional[list[int]]
 
 
 class DatadistConnectorMetadata(KVConnectorMetadata):
@@ -81,7 +79,6 @@ class DatadistConnectorMetadata(KVConnectorMetadata):
             remote_block_ids=kv_transfer_params["remote_block_ids"],
             remote_host=kv_transfer_params["remote_host_ip"],
             remote_cluster_id=kv_transfer_params["remote_cluster_id"],
-            spec_token_ids=kv_transfer_params["spec_token_ids"],
         )
 
 
@@ -139,11 +136,10 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             self,
             request: "Request",
             block_ids: list[int],
-            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if self.connector_scheduler is None:
             raise RuntimeError("self.connector_scheduler cannot be None")
-        return self.connector_scheduler.request_finished(request, block_ids, spec_token_ids)
+        return self.connector_scheduler.request_finished(request, block_ids)
 
     ############################################################
     # Worker Side Methods
@@ -211,7 +207,6 @@ class PrefillConnectorScheduler:
             self,
             request: "Request",
             block_ids: list[int],
-            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         """
         Once a request is finished, determine whether request blocks
@@ -224,8 +219,7 @@ class PrefillConnectorScheduler:
         return delay_free_blocks, dict(
             remote_block_ids=block_ids,
             remote_cluster_id=self.cluster_id,
-            remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}",
-            spec_token_ids=spec_token_ids
+            remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}"
         )
 
 
@@ -300,10 +294,6 @@ class DecodeConnectorScheduler:
         self._reqs_need_recv: dict[str, tuple[Request, list[int]]] = {}
         self.processed_request: set[str] = set()
 
-        self.context = zmq.Context()
-        self.pub = self.context.socket(zmq.PUB)
-        self.pub.bind(f"ipc:///tmp/sched-pub-{vllm_config.parallel_config.data_parallel_rank_local}")
-
     def get_num_new_matched_tokens(
             self, request: "Request",
             num_computed_tokens: int) -> tuple[int, bool]:
@@ -361,19 +351,12 @@ class DecodeConnectorScheduler:
                 kv_transfer_params=req.kv_transfer_params,
             )
         self._reqs_need_recv.clear()
-
-        if scheduler_output is None:
-            # Let go fast path
-            serialized_data = pickle.dumps(metadata)
-            self.pub.send(serialized_data)
-
         return metadata
 
     def request_finished(
             self,
             request: "Request",
             block_ids: list[int],
-            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if request.request_id in self.processed_request:
             self.processed_request.remove(request.request_id)
@@ -384,7 +367,6 @@ class DecodeConnectorWorker:
     """Worker implementation for datadist."""
 
     def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: str):
-        self.vllm_config = vllm_config
         from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
         if ENABLED:
             manager_cls = OmniBiGroupDataDistManager
@@ -395,44 +377,12 @@ class DecodeConnectorWorker:
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
-        self.queues = {} # cluster_id -> queue.Queue
-        self.threads = {} # cluster_id -> threading.Thread
-        self._pull_kv_lock = threading.Lock()
-
-
+        max_concurrents = 1
+        self.executor = ThreadPoolExecutor(max_workers=max_concurrents)
         self._transfer_lock = threading.Lock()
 
         self.ctx = zmq.Context()
         self.zmq_socket_map = {}
-
-        self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req)
-        self.thread_on_fast_path_req.start()
-
-    def on_fast_path_req(self):
-        context = zmq.Context()
-        sub = context.socket(zmq.SUB)
-        sub.connect(f"ipc:///tmp/sched-pub-{self.vllm_config.parallel_config.data_parallel_rank_local}")
-        sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        
-        while True:
-            serialized_data = sub.recv()
-            metadata = pickle.loads(serialized_data)
-
-            self.start_load_kv(metadata)
-
-    def worker(self, cluster_id):
-        q = self.queues[cluster_id]
-        while True:
-            task = q.get()
-            if task is None:
-                break
-            try:
-                self._read_blocks(**task)
-            except Exception as e:
-                logger.error("KV transfer task failed in thread %s: %s", cluster_id, e)
-                self._send_pulled_kv_req_list(task['remote_host_ip'], [task['request_id']])
-                raise RuntimeError(f"Failed to pull kv for request:{task['request_id']} from cluster:{cluster_id}.")
-            q.task_done()
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.datadist_manager.register_memory(kv_caches)
@@ -440,7 +390,8 @@ class DecodeConnectorWorker:
 
     # Now go asynchronous pull_kv
     def start_load_kv(self, metadata: DatadistConnectorMetadata):
-        logger.info(f" ***** start_load_kv: {len(metadata.requests)}")
+        futures = []
+        logger.info(f" ***** start_load_kv:{len(metadata.requests)}")
         for req_id, meta in metadata.requests.items():
             if len(meta.local_block_ids) == 0 or \
                     all(isinstance(group_blk, list) and len(group_blk) == 0 for group_blk in meta.local_block_ids):
@@ -453,26 +404,22 @@ class DecodeConnectorWorker:
                 len(meta.local_block_ids),
                 len(meta.remote_block_ids)
             )
-            
-            cluster_id = int(meta.remote_cluster_id)
-            with self._pull_kv_lock:
-                if cluster_id not in self.queues:
-                    q = queue.Queue()
-                    self.queues[cluster_id] = q
-                    t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
-                    t.start()
-                    self.threads[cluster_id] = t
-                    logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+            future = self.executor.submit(
+                self._read_blocks,
+                request_id=req_id,
+                dst_cluster_id=meta.remote_cluster_id,
+                local_block_ids=meta.local_block_ids,
+                remote_block_ids=meta.remote_block_ids,
+                remote_host_ip=meta.remote_host,
+            )
+            futures.append(future)
 
-            task = {
-                'request_id': req_id,
-                'dst_cluster_id': meta.remote_cluster_id,
-                'local_block_ids': meta.local_block_ids,
-                'remote_block_ids': meta.remote_block_ids,
-                'remote_host_ip': meta.remote_host,
-            }
-            
-            self.queues[cluster_id].put(task)
+        def handle_exception(future):
+            if future.exception():
+                logger.error("KV transfer task failed: %s", future.exception())
+
+        for future in futures:
+            future.add_done_callback(handle_exception)
 
     def _read_blocks(
         self,

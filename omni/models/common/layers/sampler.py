@@ -827,7 +827,8 @@ class SimpleSampler(RejectionSamplerV1):
         # all prefill
         if num_decodes == 0:
             last_accepted_index = torch.arange(batch_size, dtype=torch.int32, device = logits_indices.device)
-            output_token_ids = forward_tokens.clone().view(-1, 1)
+            output_token_ids = forward_tokens.view(-1, 1)
+            accepted_num = 0
         else:
             accepted =  input_ids[logits_indices].view(batch_size, -1)[:,1:] == forward_tokens.view(batch_size, -1)[:,:-1]  # bool [batch_size, 1]
             if model_extra_config.operator_opt_config.control_accept_rate >= 0 and model_extra_config.operator_opt_config.control_accept_rate <= 1:
@@ -843,7 +844,7 @@ class SimpleSampler(RejectionSamplerV1):
             logprobs_tensors = None
         )
 
-        return sampler_output, mtp_input_tokens, last_accepted_index
+        return sampler_output, mtp_input_tokens, last_accepted_index, accepted_num
 
 def _multinomial(
     probs: torch.Tensor,
