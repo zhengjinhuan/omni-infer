@@ -593,7 +593,6 @@ class DecodeConnectorWorker:
                                 remote_host_ip=meta.remote_host,
                             )
                 futures.append(future)
-                time.sleep(0)
 
         if not self.multi_thread_pull_kv:
             for future in futures:
