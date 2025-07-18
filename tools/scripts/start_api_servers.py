@@ -80,6 +80,7 @@ def start_single_node_api_servers(
     extra_args=None,
     additional_config=None,
     enable_mtp=False,
+    num_speculative_tokens=1,
 ):
     """Start multiple VLLM API servers with specified configurations."""
 
@@ -137,7 +138,7 @@ def start_single_node_api_servers(
             "--max-model-len", str(max_tokens)
         ]
         if enable_mtp:
-            cmd.extend(["--speculative_config", '{"method": "mtp", "num_speculative_tokens": 1}'])
+            cmd.extend(["--speculative_config", '{"method": "mtp", "num_speculative_tokens": ' + str(num_speculative_tokens) + '}'])
         if kv_transfer_config:
             cmd.extend(["--kv-transfer-config", str(kv_transfer_config)])
         if extra_args:
@@ -240,7 +241,7 @@ if __name__ == "__main__":
         help="JSON-formatted additional platform-specific config, e.g., '{\"key\":\"value\"}'")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
     parser.add_argument("--enable-mtp", default=False, action='store_true')
-
+    parser.add_argument("--num-speculative-tokens", type=int, default=1)
     args = parser.parse_args()
     if not args.num_dp:
         args.num_dp = args.num_servers
@@ -267,7 +268,8 @@ if __name__ == "__main__":
         max_tokens=args.max_model_len, 
         extra_args=args.extra_args,
         additional_config=args.additional_config,
-        enable_mtp=args.enable_mtp
+        enable_mtp=args.enable_mtp,
+        num_speculative_tokens=args.num_speculative_tokens,
     )
 
     # Register SIGINT handler for Ctrl+C

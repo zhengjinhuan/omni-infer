@@ -595,7 +595,7 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
         topk_ids = topk_ids.int()
     max_num_deployed_expert = get_expert_parallel_world_size() * layer.num_experts
     if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
-        max_num_deployed_expert = layer.planner.get_max_num_deployed_expert_per_rank() * get_world_group().world_size
+        max_num_deployed_expert = w1_scale.shape[0] * get_expert_parallel_world_size()
     expert_range = [0, max_num_deployed_expert]
     expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
         hidden_states,
@@ -641,11 +641,8 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
     )
     group_list = tokens_per_local_expert.to(torch.int64)
     if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and layer.moe_layer_idx < 58:
-        if is_prefill:
-            layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-        else:
-            with tng.scope.npu_stream_switch('22'):
-                layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+        layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
+        
     hidden_states_ordered_by_experts = gmm_expert(hidden_states_sorted_by_experts, tokens_per_local_expert.to(torch.int64), w1, w2, w1_scale, w2_scale, gathered_pertoken_scale, None, warm_up)
 
     new_x = torch.index_select(hidden_states_ordered_by_experts, 0, gathered_idxs_unsort.to(torch.float32).argsort().to(torch.int32))
@@ -736,11 +733,7 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
         group_list = expert_token_nums.to(torch.int64)
 
         if model_extra_config.operator_opt_config.use_omni_placement and is_route_expert and layer.planner.enable_dump and layer.moe_layer_idx < 58:
-            if is_prefill:
-                layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-            else:
-                with tng.scope.npu_stream_switch('22'):
-                    layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+            layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
         if shared_expert_rank_num > 0 and global_rank // experts_tp_size < shared_expert_rank_num:
             x = {"x_int8": expand_x, "pertoken_scale": dynamic_scale}

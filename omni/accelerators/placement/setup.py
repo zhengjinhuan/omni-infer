@@ -35,10 +35,13 @@ class PathManager:
             "omni_planner/cpp/placement_manager.cpp",
             "omni_planner/cpp/placement_mapping.cpp",
             "omni_planner/cpp/placement_optimizer.cpp",
+            "omni_planner/cpp/expert_load_balancer.cpp",
+            "omni_planner/cpp/dynamic_eplb_greedy.cpp",
             "omni_planner/cpp/expert_activation.cpp",
             "omni_planner/cpp/tensor.cpp",
             "omni_planner/cpp/moe_weights.cpp",
-            "omni_planner/cpp/utils.cpp",
+            "omni_planner/cpp/distribution.cpp",
+            "omni_planner/cpp/utils.cpp"
         ]
 
         self.check()
@@ -68,7 +71,7 @@ class PathManager:
 paths = PathManager()
 
 
-# define the build_ext command
+# 定义扩展模块
 ext_modules = [
     Pybind11Extension(
         "omni_planner.omni_placement",
@@ -86,15 +89,15 @@ ext_modules = [
             '-ltorch_python',
         ] + paths.get_extra_link_args(),
         library_dirs=paths.get_library_dirs(),
-        libraries=['torch', 'torch_python', 'ascendcl']
+        libraries=['hccl', 'torch', 'torch_python', 'ascendcl']
     ),
 ]
 
 
 setup(
-    name='omni_placement',  # package name
-    version='0.7.15.1a3',  # package version
-    description='Package for optimizing MoE layer',  # package description
+    name='omni_placement',  # 包的名称
+    version='0.6.27+dynamic',  # 包的版本
+    description='Package for optimizing MoE layer',  # 简短描述
     packages=find_packages(
         exclude=(
             ".cloudbuild",
@@ -110,7 +113,7 @@ setup(
         'torch',
         'transformers',
         'pybind11',
-    ],  # dependencies
+    ],  # 依赖的其他包
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
     include_package_data=True,

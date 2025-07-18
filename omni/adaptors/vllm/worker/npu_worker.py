@@ -50,8 +50,9 @@ from omni.adaptors.vllm.utils import (
 import vllm.envs as envs
 import os
 import ray
+from omni.models.common.config.model_config import model_extra_config
 
-BLOCK_NUM_FLOATING_RANGE = 200
+BLOCK_NUM_FLOATING_RANGE = 32768
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
 class NPUDeviceProperties:
@@ -300,6 +301,8 @@ class NPUWorker(WorkerBase):
             self.profiler.stop()
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            self.model_runner.planner.place_experts()
 
     def _init_worker_distributed_environment(self) -> None:
         """Initialize the distributed environment."""

@@ -436,11 +436,7 @@ class DeepseekMoE(nn.Module):
 
                 group_list = expert_token_nums.to(torch.int64)
                 if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
-                    if is_prefill:
-                        layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-                    else:
-                        with tng.scope.npu_stream_switch('21'):
-                            layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+                    layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
                 # cal experts
                 weight1_3 = self.experts.w13_weight
@@ -1368,9 +1364,8 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
                 continue
 
             if self.config.architectures[0] == 'DeepseekV3ForCausalLM' and self.config.num_nextn_predict_layers > 0:
-                assert self.config.num_nextn_predict_layers == 1
-                layer_idx = self.config.num_hidden_layers
-                if name.startswith(f"model.layers.{layer_idx}"):
+                mtp_prefix = [f"model.layers.{self.config.num_hidden_layers + layer_idx}" for layer_idx in range(self.config.num_nextn_predict_layers)]
+                if name.startswith(tuple(mtp_prefix)):
                     continue
 
             for (param_name, weight_name, shard_id) in stacked_params_mapping:

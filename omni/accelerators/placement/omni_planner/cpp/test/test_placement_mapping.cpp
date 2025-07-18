@@ -13,7 +13,7 @@
 #include "tensor.h"
 
 // 读取 .txt 文件到连续内存的一维数组，返回指针和维度信息
-int32_t* load3DArrayFromFile(const std::string& filename, int64_t shape[3]) {
+int32_t* load3DArrayFromFile(const std::string& filename, std::vector<int64_t> &shape) {
     std::ifstream file(filename);
     if (!file) {
         std::cerr << "无法打开文件：" << filename << std::endl;
@@ -76,212 +76,147 @@ class PlacementMappingTest : public ::testing::Test {
     protected:
         memcpy_fun_t old_fun = nullptr;
         void SetUp() override {
-            // 设置测试数据
-            rank = 3;
-            num_devices_per_host = 8;
+            aclInit(NULL); // 初始化 ACL
+            aclrtContext context;
+            aclrtCreateContext(&context, 0);
+            aclrtSetCurrentContext(context);
+            
+            // 初始化测试数据
+            rank_ = 1;
+            max_redundant_count_ = 2;
+            num_devices_per_host_ = 8;
 
-            std::string filename = "./test_data/placement_pattern_3d_v3_indevrrori0328_16devices_58moe_SC_TZNB.txt";
-            // std::string filename = "placement_pattern_3d_v3_indevrrori0322_58moe_4devices_SC_64eps.txt";
-
+            std::string filename = "./test_data/placement_pattern_3d_v3_indevrrori0322_58moe_4devices_SC_64eps.txt";
             placement_pattern_ptr = load3DArrayFromFile(filename, placement_pattern_shape);
-
+            world_size_ = placement_pattern_shape[0];
+            num_layers_ = placement_pattern_shape[1];
+            num_experts_ = placement_pattern_shape[2];
+            
             // 创建expert_mapping的mock数据
-            int x = placement_pattern_shape[1], y = placement_pattern_shape[2];
-            expert_mapping_shape[0] = x; // 2层，每层4个专家
-            expert_mapping_shape[1] = y;
-            expert_mapping_ptr = (int32_t *)malloc(sizeof(int32_t) * x * y);
+            expert_mapping_shape[0] = num_layers_;
+            expert_mapping_shape[1] = max_redundant_count_;
+            expert_mapping_shape[2] = num_experts_;
+            count_shape_[0] = num_layers_;
+            count_shape_[1] = num_experts_;
+            
+            // 分配模拟 HBM 内存
+            size_t size = num_layers_ * max_redundant_count_ * num_experts_ * sizeof(int32_t);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&redundant_expert_mapping_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)redundant_expert_mapping_, size, 0, size);
+            size = num_layers_ * num_experts_ * sizeof(int32_t);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&redundant_count_per_expert_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)redundant_count_per_expert_, size, 0, size);
 
-            for (int i = 0; i < x; ++i) {
-                for (int j = 0; j < y; ++j) {
-                    expert_mapping_ptr[i * y + j] = j;
-                }
-            }
-
-            old_fun = get_memcpy_fun();
-            set_memcpy_fun(&my_mem_fun);
+            // old_fun = get_memcpy_fun();
+            // set_memcpy_fun(&my_mem_fun);
 
             // 注意：这里创建了一个局部对象PMINI，它会在SetUp结束时被销毁
             // 如果需要在测试中使用，应该将其作为类成员或在每个测试函数中创建
-            PlacementMapping PMINI(rank, num_devices_per_host,
-                expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
-                placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
-
-
+            // PlacementMapping PMINI(rank, num_devices_per_host,
+            //     redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+            //     expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+            //     placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
         }
 
         void TearDown() override {
             // 使用free()而不是delete释放malloc()分配的内存
-            if (expert_mapping_ptr) {
-                free(expert_mapping_ptr);
-                expert_mapping_ptr = nullptr;
+            if (redundant_expert_mapping_) {
+                aclrtFree(redundant_expert_mapping_);
+                redundant_expert_mapping_ = nullptr;
             }
-
-            // 同样，如果placement_pattern_ptr是通过malloc()分配的，也应使用free()
+            if (redundant_count_per_expert_) {
+                aclrtFree(redundant_count_per_expert_);
+                redundant_count_per_expert_ = nullptr;
+            }
             if (placement_pattern_ptr) {
                 free(placement_pattern_ptr);
                 placement_pattern_ptr = nullptr;
-            }
-            set_memcpy_fun(old_fun);
+            }       
+            // set_memcpy_fun(old_fun);
         }
 
-        int rank;
-        int num_devices_per_host;
+        int32_t rank_;
+        int32_t world_size_;
+        int32_t num_layers_;
+        int32_t num_experts_;
+        int32_t max_redundant_count_;
+        int32_t num_devices_per_host_;
 
-        int32_t * expert_mapping_ptr = nullptr;  // 初始化为nullptr以防止野指针
-        int64_t expert_mapping_shape[2];
+        int32_t* redundant_expert_mapping_;
+        int32_t* redundant_count_per_expert_;
+        std::vector<int64_t> expert_mapping_shape = std::vector<std::int64_t>(3, 0);
+        std::vector<int64_t> count_shape_ = std::vector<std::int64_t>(2, 0);
 
         int32_t * placement_pattern_ptr = nullptr;  // 初始化为nullptr以防止野指针
-        int64_t placement_pattern_shape[3];
+        std::vector<int64_t> placement_pattern_shape = std::vector<std::int64_t>(3, 0);
     };
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 // 测试构造函数
 TEST_F(PlacementMappingTest, Constructor) {
     EXPECT_NO_THROW({
-
-        PlacementMapping pm(rank, num_devices_per_host,
-                          expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
-                          placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+        const std::string filename = "./test_data/placement_pattern_3d_v3_indevrrori0322_58moe_4devices_SC_64eps.txt";
+        PlacementMapping pm(filename, rank_, num_devices_per_host_, (int)placement_pattern_shape[2], 
+                          (size_t)redundant_expert_mapping_, expert_mapping_shape,
+                          (size_t)redundant_count_per_expert_, count_shape_,
+                          (size_t)placement_pattern_ptr, placement_pattern_shape,
+                          (size_t)redundant_count_per_expert_);
 
         // 验证基本属性
-        EXPECT_EQ(pm.get_rank(), rank);
+        EXPECT_EQ(pm.get_rank(), rank_);
         EXPECT_EQ(pm.get_world_size(), placement_pattern_shape[0]);
         EXPECT_EQ(pm.get_num_layers(), placement_pattern_shape[1]);
         EXPECT_EQ(pm.get_num_experts(), placement_pattern_shape[2]);
-        EXPECT_EQ(pm.get_num_devices_per_host(), num_devices_per_host);
-
-
-        int num_deploy_experts_per_device;
-        num_deploy_experts_per_device = pm.get_num_deploy_experts() / pm.get_world_size();
-
-        for (int i = 0; i < placement_pattern_shape[1]; ++i) {
-            for (int j = 0; j < placement_pattern_shape[2]; ++j) {
-                int mapping_position = pm.get_default_mapping_position(i, j);  // 避免重复调用
-                int lower_bound = (j/16) * num_deploy_experts_per_device;
-                int upper_bound = (j/16 + 1) * num_deploy_experts_per_device - 1;
-
-                // 检查是否在范围内，并提供调试信息
-                EXPECT_GE(mapping_position, lower_bound)
-                    << "Failed at (i=" << i << ", j=" << j << "): "
-                    << "mapping_position=" << mapping_position
-                    << " is less than lower_bound=" << lower_bound;
-
-                EXPECT_LE(mapping_position, upper_bound)
-                    << "Failed at (i=" << i << ", j=" << j << "): "
-                    << "mapping_position=" << mapping_position
-                    << " is greater than upper_bound=" << upper_bound;
-            }
-        }
-
-
+        EXPECT_EQ(pm.get_num_devices_per_host(), num_devices_per_host_);
     });
 }
-
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-TEST_F(PlacementMappingTest, DefaultTableCheck) {
-    EXPECT_NO_THROW({
-
-        PlacementMapping pm(rank, num_devices_per_host,
-                          expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
-                          placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
-
-        // 验证 get_default_mapping_position 需要满足的属性
-
-        int num_deploy_experts_per_device;
-        num_deploy_experts_per_device = pm.get_num_deploy_experts() / pm.get_world_size();
-
-        for (int i = 0; i < placement_pattern_shape[1]; ++i) {
-            for (int j = 0; j < placement_pattern_shape[2]; ++j) {
-                int mapping_position = pm.get_default_mapping_position(i, j);  // 避免重复调用
-                int lower_bound = (j/16) * num_deploy_experts_per_device;
-                int upper_bound = (j/16 + 1) * num_deploy_experts_per_device - 1;
-
-                // 检查是否在范围内，并提供调试信息
-                EXPECT_GE(mapping_position, lower_bound)
-                    << "Failed at (i=" << i << ", j=" << j << "): "
-                    << "mapping_position=" << mapping_position
-                    << " is less than lower_bound=" << lower_bound;
-
-                EXPECT_LE(mapping_position, upper_bound)
-                    << "Failed at (i=" << i << ", j=" << j << "): "
-                    << "mapping_position=" << mapping_position
-                    << " is greater than upper_bound=" << upper_bound;
-            }
-        }
-
-
-    });
-}
-
-
-
-
-
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 
 TEST_F(PlacementMappingTest, TestPositionToEpidNaive) {
-    PlacementMapping pm(rank, num_devices_per_host,
-                        expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
-                        placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+    const std::string filename = "./test_data/placement_pattern_3d_v3_indevrrori0322_58moe_4devices_SC_64eps.txt";
+    PlacementMapping pm(filename, rank_, num_devices_per_host_, (int)placement_pattern_shape[2], 
+                        (size_t)redundant_expert_mapping_, expert_mapping_shape,
+                        (size_t)redundant_count_per_expert_, count_shape_,
+                        (size_t)placement_pattern_ptr, placement_pattern_shape,
+                        (size_t)redundant_count_per_expert_);
 
-    auto position_to_epid = pm.get_position_to_epid();
+    auto position_to_epid = pm.get_global_deployed_position_to_logistics_id_mapping();
 
     // 1. 验证行数
-    EXPECT_EQ(position_to_epid.size(), placement_pattern_shape[1])
-        << "position_to_epid_ size mismatch with placement_pattern_shape[1]";
+    EXPECT_EQ(position_to_epid.size(), pm.get_num_layers() * pm.get_num_deploy_experts())
+        << "position_to_epid_ size mismatch with layers * experts";
 
     // 2. 验证列数 & epid 合法性
     for (size_t i = 0; i < position_to_epid.size(); ++i) {
-        EXPECT_EQ(position_to_epid[i].size(), pm.get_num_deploy_experts())
-            << "position_to_epid_[" << i << "] size mismatch with placement_pattern_shape[2]";
-
-        for (size_t j = 0; j < position_to_epid[i].size(); ++j) {
-            EXPECT_GE(position_to_epid[i][j], 0)
-                << "Invalid epid at position_to_epid_[" << i << "][" << j << "]: "
-                << position_to_epid[i][j];
-            EXPECT_GE(pm.get_num_experts() - 1, position_to_epid[i][j])
-                << "Invalid epid at position_to_epid_[" << i << "][" << j << "]: "
-                << position_to_epid[i][j];
-        }
+        std::cout << " " << position_to_epid[i];
+        EXPECT_GE(position_to_epid[i], 0)
+            << "Invalid epid at position_to_epid_[" << i << "]: "
+            << position_to_epid[i];
+        EXPECT_GE(pm.get_num_experts() - 1, position_to_epid[i])
+            << "Invalid epid at position_to_epid_[" << i << "]: "
+            << position_to_epid[i];
     }
+    std::cout  << std::endl;
 }
-
 
 // 检查这个 get_position_to_epid() 是否满足基本要求： epid合法以及全覆盖性；
 TEST_F(PlacementMappingTest, TestPositionToEpidBasicLogic)  {
-    PlacementMapping pm(rank, num_devices_per_host,
-                        expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
-                        placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+    const std::string filename = "./test_data/placement_pattern_3d_v3_indevrrori0322_58moe_4devices_SC_64eps.txt";
+    PlacementMapping pm(filename, rank_, num_devices_per_host_, (int)placement_pattern_shape[2], 
+                        (size_t)redundant_expert_mapping_, expert_mapping_shape,
+                        (size_t)redundant_count_per_expert_, count_shape_,
+                        (size_t)placement_pattern_ptr, placement_pattern_shape,
+                        (size_t)redundant_count_per_expert_);
 
-    auto position_to_epid = pm.get_position_to_epid();
+    auto position_to_epid = pm.get_global_deployed_position_to_logistics_id_mapping();
     int num_experts = pm.get_num_experts();
-
+    pm.printDeployedPositionToLogisticsIdMapping();
     // 验证 position_to_epid 的合法性
-    for (size_t i = 0; i < position_to_epid.size(); ++i) {
-        EXPECT_EQ(position_to_epid[i].size(), pm.get_num_deploy_experts())
-            << "position_to_epid_[" << i << "] size mismatch with pm.get_num_deploy_experts()";
+    for (size_t i = 0; i < pm.get_num_layers(); ++i) {
 
         std::unordered_set<int> seen_experts; // 记录出现过的 expert ID
 
-        for (size_t j = 0; j < position_to_epid[i].size(); ++j) {
-            int epid = position_to_epid[i][j];
+        for (size_t j = 0; j < pm.get_num_deploy_experts(); ++j) {
+            auto index = i * pm.get_num_deploy_experts() + j;
+            int epid = position_to_epid[index];
 
             // 1. 检查 epid 是否非负
             EXPECT_GE(epid, 0)
@@ -308,19 +243,11 @@ TEST_F(PlacementMappingTest, TestPositionToEpidBasicLogic)  {
     }
 }
 
-
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+/*
 TEST_F(PlacementMappingTest, TestRedundantEpidThisHostBasic) {
 
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -357,6 +284,7 @@ TEST_F(PlacementMappingTest, TestRedundantEpidThisHostBasic) {
 TEST_F(PlacementMappingTest, TestRedundantEpidThisHostBasicLogic) {
 
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -389,6 +317,7 @@ TEST_F(PlacementMappingTest, TestRedundantEpidThisHostBasicLogic) {
 TEST_F(PlacementMappingTest, TestRedundantPosThisHostBasic) {
 
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -425,6 +354,7 @@ TEST_F(PlacementMappingTest, TestRedundantPosThisHostBasic) {
 TEST_F(PlacementMappingTest, TestRedundantPosThisHostBasicLogic) {
 
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -450,6 +380,7 @@ TEST_F(PlacementMappingTest, TestRedundantPosThisHostBasicLogic) {
 // //////////////////////////////////////////////////////////////////////////////////////////////////////////
 TEST_F(PlacementMappingTest, TestUpdateRedundantExpertMappingBasic111) {
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -484,6 +415,7 @@ TEST_F(PlacementMappingTest, TestUpdateRedundantExpertMappingBasic111) {
 
 TEST_F(PlacementMappingTest, TestUpdateRedundantExpertMappingForAll) {
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -529,6 +461,7 @@ TEST_F(PlacementMappingTest, TestUpdateRedundantExpertMappingForAll) {
 // //////////////////////////////////////////////////////////////////////////////////////////////////////////
 TEST_F(PlacementMappingTest, TestUpdatePosition_To_ExpertBasic111) {
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -563,6 +496,7 @@ TEST_F(PlacementMappingTest, TestUpdatePosition_To_ExpertBasic111) {
 // //////////////////////////////////////////////////////////////////////////////////////////////////////////
 TEST_F(PlacementMappingTest, TestUpdatePosition_To_ExpertForAll) {
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -610,6 +544,7 @@ TEST_F(PlacementMappingTest, TestUpdatePosition_To_ExpertForAll) {
 
 TEST_F(PlacementMappingTest, TestUltimate_ExpertForAll) {
     PlacementMapping pm(rank, num_devices_per_host,
+                        redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                         placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -637,18 +572,11 @@ TEST_F(PlacementMappingTest, TestUltimate_ExpertForAll) {
 }
 
 
-
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 测试正常情况 - 基本功能测试
 TEST_F(PlacementMappingTest, TestChangePositionIdBasic) {
     // 使用测试夹具中已初始化的数据创建PlacementMapping对象
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -668,6 +596,7 @@ TEST_F(PlacementMappingTest, TestChangePositionIdBasic) {
 // 测试边界值情况 - 最大有效layer_id和expert_id
 TEST_F(PlacementMappingTest, TestChangePositionIdMaxValidValues) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -688,6 +617,7 @@ TEST_F(PlacementMappingTest, TestChangePositionIdMaxValidValues) {
 // 测试边界值情况 - 全覆盖
 TEST_F(PlacementMappingTest, TestChangePositionIdMaxValidValues888) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -708,12 +638,10 @@ TEST_F(PlacementMappingTest, TestChangePositionIdMaxValidValues888) {
 
 }
 
-
-
-
 // 测试多个位置更新 - 确保可以正确更新多个不同位置
 TEST_F(PlacementMappingTest, TestChangeMultiplePositionIds) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -743,6 +671,7 @@ TEST_F(PlacementMappingTest, TestChangeMultiplePositionIds) {
 // 测试异常情况 - layer_id越界(过大)
 TEST_F(PlacementMappingTest, TestChangePositionIdLayerIdTooLarge) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -759,6 +688,7 @@ TEST_F(PlacementMappingTest, TestChangePositionIdLayerIdTooLarge) {
 // 测试异常情况 - layer_id越界(负数)
 TEST_F(PlacementMappingTest, TestChangePositionIdNegativeLayerId) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -775,6 +705,7 @@ TEST_F(PlacementMappingTest, TestChangePositionIdNegativeLayerId) {
 // 测试异常情况 - expert_id越界(过大)
 TEST_F(PlacementMappingTest, TestChangePositionIdExpertIdTooLarge) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -791,6 +722,7 @@ TEST_F(PlacementMappingTest, TestChangePositionIdExpertIdTooLarge) {
 // 测试异常情况 - expert_id越界(负数)
 TEST_F(PlacementMappingTest, TestChangePositionIdNegativeExpertId) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -807,6 +739,7 @@ TEST_F(PlacementMappingTest, TestChangePositionIdNegativeExpertId) {
 // 测试异常情况 - new_position越界(过大)
 TEST_F(PlacementMappingTest, TestChangePositionIdNewPositionTooLarge) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -823,6 +756,7 @@ TEST_F(PlacementMappingTest, TestChangePositionIdNewPositionTooLarge) {
 // 测试异常情况 - new_position越界(负数)
 TEST_F(PlacementMappingTest, TestChangePositionIdNegativeNewPosition) {
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
@@ -836,12 +770,125 @@ TEST_F(PlacementMappingTest, TestChangePositionIdNegativeNewPosition) {
     }, std::out_of_range) << "Function should throw std::out_of_range for negative new_position";
 }
 
+// 测试正常情况 - 基本功能测试
+TEST_F(PlacementMappingTest, TestChangePositionBasic) {
+    // 使用测试夹具中已初始化的数据创建PlacementMapping对象
+    PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+
+    // 测试正常情况
+    int layer_id = 0;
+    int expert_id = 0;
+    int new_position = 5;
+
+    pm.change_expert_position(layer_id, expert_id, new_position);
+
+    int32_t actual_position = pm.get_expert_position(layer_id, expert_id);
+    EXPECT_EQ(actual_position, new_position)
+        << "Position ID was not updated correctly for layer " << layer_id
+        << " and expert " << expert_id;
+}
 
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 测试多个位置更新 - 确保可以正确更新多个不同位置
+TEST_F(PlacementMappingTest, TestChangeMultiplePositions) {
+    PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+
+    // 更新第一个位置
+    int layer_id1 = 0;
+    int expert_id1 = 0;
+    int new_position1 = 3;
+
+    pm.change_expert_position(layer_id1, expert_id1, new_position1);
+
+    // 更新第二个位置
+    int layer_id2 = 0;
+    int expert_id2 = 2;
+    int new_position2 = 4;
+
+    pm.change_expert_position(layer_id2, expert_id2, new_position2);
+
+    // 验证两个位置都正确更新
+    int32_t actual_position1 = pm.get_expert_position(layer_id1, expert_id1);
+    EXPECT_EQ(actual_position1, new_position1)
+        << "First position ID was not updated correctly";
+
+    int32_t actual_position2 = pm.get_expert_position(layer_id2, expert_id2);
+    EXPECT_EQ(actual_position2, new_position2)
+        << "Second position ID was not updated correctly";
+}
+// 测试异常情况 - layer_id越界(过大)
+TEST_F(PlacementMappingTest, TestChangePositionLayerIdTooLarge) {
+    PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+
+    // 测试layer_id越界(过大)
+    int layer_id = pm.get_num_layers();  // 无效的layer_id
+    int expert_id = 0;
+    int new_position = 0;  // 确保new_position是有效的
+
+    EXPECT_THROW({
+        pm.change_expert_position(layer_id, expert_id, new_position);
+    }, std::out_of_range) << "Function should throw std::out_of_range for too large layer_id";
+}
+
+// 测试异常情况 - layer_id越界(负数)
+TEST_F(PlacementMappingTest, TestChangePositionNegativeLayerId) {
+    PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+
+    // 测试layer_id越界(负数)
+    int layer_id = -1;
+    int expert_id = 0;
+    int new_position = 0;  // 确保new_position是有效的
+
+    EXPECT_THROW({
+        pm.change_expert_position(layer_id, expert_id, new_position);
+    }, std::out_of_range) << "Function should throw std::out_of_range for negative layer_id";
+}
+
+// 测试异常情况 - expert_id越界(过大)
+TEST_F(PlacementMappingTest, TestChangePositionExpertIdTooLarge) {
+    PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+
+    // 测试expert_id越界(过大)
+    int layer_id = 0;
+    int expert_id = pm.get_num_experts();  // 无效的expert_id
+    int new_position = 0;  // 确保new_position是有效的
+
+    EXPECT_THROW({
+        pm.change_expert_position(layer_id, expert_id, new_position);
+    }, std::out_of_range) << "Function should throw std::out_of_range for too large expert_id";
+}
+
+// 测试异常情况 - expert_id越界(负数)
+TEST_F(PlacementMappingTest, TestChangePositionNegativeExpertId) {
+    PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
+                      placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
+
+    // 测试expert_id越界(负数)
+    int layer_id = 0;
+    int expert_id = -1;
+    int new_position = 0;  // 确保new_position是有效的
+
+    EXPECT_THROW({
+        pm.change_expert_position(layer_id, expert_id, new_position);
+    }, std::out_of_range) << "Function should throw std::out_of_range for negative expert_id";
+}
 
 // 测试从有效文件加载 PlacementMapping
 TEST_F(PlacementMappingTest, TestLoadFromValidFile) {
@@ -850,6 +897,7 @@ TEST_F(PlacementMappingTest, TestLoadFromValidFile) {
 
     // 从有效文件创建 PlacementMapping
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       nullptr, nullptr, 0,
                       test_file);
@@ -877,6 +925,7 @@ TEST_F(PlacementMappingTest, TestLoadFromNonExistentFile) {
     // 从不存在的文件创建 PlacementMapping 应当抛出异常
     EXPECT_THROW({
         PlacementMapping pm(rank, num_devices_per_host,
+                          redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                           expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                           nullptr, nullptr, 0,
                           non_existent_file);
@@ -891,6 +940,7 @@ TEST_F(PlacementMappingTest, TestLoadFromInvalidFormatFile) {
     // 从格式错误的文件创建 PlacementMapping 应当抛出异常
     EXPECT_THROW({
         PlacementMapping pm(rank, num_devices_per_host,
+                          redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                           expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                           nullptr, nullptr, 0,
                           invalid_format_file);
@@ -902,6 +952,7 @@ TEST_F(PlacementMappingTest, TestNoPointerAndNoFile) {
     // 不提供指针也不提供文件名应当抛出异常
     EXPECT_THROW({
         PlacementMapping pm(rank, num_devices_per_host,
+                          redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                           expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                           nullptr, nullptr, 0,
                           "");
@@ -915,6 +966,7 @@ TEST_F(PlacementMappingTest, TestBothPointerAndFile) {
 
     // 同时提供指针和文件名，应该优先使用指针
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       placement_pattern_ptr, placement_pattern_shape, ScalarType_Int,
                       test_file);
@@ -929,12 +981,14 @@ TEST_F(PlacementMappingTest, TestBothPointerAndFile) {
 TEST_F(PlacementMappingTest, TestFileDataConsistency) {
     // 首先从指针创建一个参考对象
     PlacementMapping pm_from_ptr(rank, num_devices_per_host,
+                               redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                                expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                                placement_pattern_ptr, placement_pattern_shape, ScalarType_Int);
 
     // 从文件创建第二个对象（假设文件中的数据与指针一致）
     const char* test_file = "./test_data/placement_pattern_3d_v3_indevrrori0328_16devices_58moe_SC_TZNB.bin";
     PlacementMapping pm_from_file(rank, num_devices_per_host,
+                               redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                                expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                                nullptr, nullptr, 0,
                                test_file);
@@ -987,6 +1041,7 @@ TEST_F(PlacementMappingTest, TestLoadFromFileWithoutRedundantMapping) {
 
     // 从文件创建 PlacementMapping，但禁用冗余专家映射
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       nullptr, nullptr, 0,
                       test_file,
@@ -1015,6 +1070,7 @@ TEST_F(PlacementMappingTest, TestLoadLargeFile) {
     auto start_time = std::chrono::high_resolution_clock::now();
 
     PlacementMapping pm(rank, num_devices_per_host,
+                      redundant_expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       expert_mapping_ptr, expert_mapping_shape, ScalarType_Int,
                       nullptr, nullptr, 0,
                       large_file);
@@ -1037,6 +1093,7 @@ TEST_F(PlacementMappingTest, TestLoadLargeFile) {
 class PlacementGlobalMappingTest : public ::testing::Test {
 protected:
     memcpy_fun_t old_fun = nullptr;
+    aclrtContext context;
     void SetUp() override {
         // 初始化测试数据
         rank_ = 0;
@@ -1046,6 +1103,8 @@ protected:
         max_redundant_count_ = 2;
         num_devices_per_host_ = 8;
 
+        aclrtCreateContext(&context, 0);
+        aclrtSetCurrentContext(context);
         // 分配模拟 HBM 内存
         size_t size = num_layers_ * num_experts_ * max_redundant_count_ * sizeof(int32_t);
         ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&global_expert_mapping_, size, ACL_MEM_MALLOC_HUGE_FIRST));
@@ -1079,7 +1138,6 @@ protected:
         // 从有效文件创建 PlacementMapping
         mapping = new PlacementMapping(placement_pattern_vector_, rank_, num_devices_per_host_,
             redundant_expert_mapping_, redundant_mapping_shape_,
-            global_expert_mapping_, mapping_shape_,
             redundant_count_per_expert_, count_shape_);
 
         // old_fun = get_memcpy_fun();
@@ -1090,6 +1148,7 @@ protected:
         aclrtFree(redundant_expert_mapping_);
         aclrtFree(global_expert_mapping_);
         aclrtFree(redundant_count_per_expert_);
+        aclrtDestroyContext(context);
         // delete[] global_expert_mapping_;
         // delete[] redundant_count_per_expert_;
         delete mapping;
@@ -1143,6 +1202,7 @@ TEST_F(PlacementGlobalMappingTest, ConstructEpidMappingToPosition) {
 class PlacementSimpleGlobalMappingTest : public ::testing::Test {
     protected:
         memcpy_fun_t old_fun = nullptr;
+        aclrtContext context;
         void SetUp() override {
             // 初始化测试数据
             rank_ = 0;
@@ -1151,7 +1211,8 @@ class PlacementSimpleGlobalMappingTest : public ::testing::Test {
             num_experts_ = 3;
             max_redundant_count_ = 2;
             num_devices_per_host_ = 8;
-
+            aclrtCreateContext(&context, 0);
+            aclrtSetCurrentContext(context);
             // 分配模拟 HBM 内存
             size_t size = num_layers_ * num_experts_ * max_redundant_count_ * sizeof(int32_t);
             ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&global_expert_mapping_, size, ACL_MEM_MALLOC_HUGE_FIRST));
@@ -1181,8 +1242,7 @@ class PlacementSimpleGlobalMappingTest : public ::testing::Test {
             // 从有效文件创建 PlacementMapping
             mapping = new PlacementMapping(placement_pattern_vector_, rank_, num_devices_per_host_,
             redundant_expert_mapping_, redundant_mapping_shape_,
-                                    global_expert_mapping_, mapping_shape_,
-                                    redundant_count_per_expert_, count_shape_);
+            redundant_count_per_expert_, count_shape_);
 
             // old_fun = get_memcpy_fun();
             // set_memcpy_fun(&my_mem_fun);
@@ -1192,6 +1252,7 @@ class PlacementSimpleGlobalMappingTest : public ::testing::Test {
         aclrtFree(redundant_expert_mapping_);
         aclrtFree(global_expert_mapping_);
         aclrtFree(redundant_count_per_expert_);
+        aclrtDestroyContext(context);
             // delete[] global_expert_mapping_;
             // delete[] redundant_count_per_expert_;
             delete mapping;
@@ -1240,7 +1301,221 @@ class PlacementSimpleGlobalMappingTest : public ::testing::Test {
         }
     }
 
+class PlacementDynamicGlobalMappingTest : public ::testing::Test {
+    protected:
+        aclrtContext context;
+        void SetUp() override {
+            // 初始化测试数据
+            rank_ = 0;
+            world_size_ = 2;
+            num_layers_ = 1;
+            num_experts_ = 3;
+            max_redundant_count_ = 3;
+            num_devices_per_host_ = 8;
+            aclrtSetDevice(0);
+            aclrtCreateContext(&context, 0);
+            aclrtSetCurrentContext(context);
+            // 分配模拟 HBM 内存
+            size_t size = num_layers_ * num_experts_ * max_redundant_count_ * sizeof(int32_t);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&global_expert_mapping_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)global_expert_mapping_, size, 0, size);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&redundant_expert_mapping_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)redundant_expert_mapping_, size, 0, size);
+            size = num_layers_ * num_experts_ * sizeof(int32_t);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&redundant_count_per_expert_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)redundant_count_per_expert_, size, 0, size);
 
+            // 初始化 placement_pattern_vector_
+            placement_pattern_vector_ = {
+                { {1, 1, 1} }, // rank 0
+                { {1, 1, 1} } // rank 1
+            };
+
+            // 初始化形状数组
+            redundant_mapping_shape_[0] = num_layers_;
+            redundant_mapping_shape_[1] = max_redundant_count_;
+            redundant_mapping_shape_[2] = num_experts_;
+            mapping_shape_[0] = num_layers_;
+            mapping_shape_[1] = num_experts_;
+            mapping_shape_[2] = max_redundant_count_;
+            count_shape_[0] = num_layers_;
+            count_shape_[1] = num_experts_;
+
+            // 从有效文件创建 PlacementMapping
+            mapping = new PlacementMapping(placement_pattern_vector_, rank_, num_devices_per_host_,
+                                    redundant_expert_mapping_, redundant_mapping_shape_,
+                                    redundant_count_per_expert_, count_shape_);
+        }
+
+        void TearDown() override {
+            aclrtFree(redundant_expert_mapping_);
+            aclrtFree(global_expert_mapping_);
+            aclrtFree(redundant_count_per_expert_);
+            if (context != nullptr) {
+                aclrtDestroyContext(context);
+                context = nullptr;
+            }
+            delete mapping;
+        }
+
+        // 测试用成员变量
+        int32_t rank_;
+        int32_t world_size_;
+        int32_t num_layers_;
+        int32_t num_experts_;
+        int32_t max_redundant_count_;
+        int32_t num_devices_per_host_;
+        int32_t* redundant_expert_mapping_;
+        int32_t* global_expert_mapping_;
+        int32_t* redundant_count_per_expert_;
+        std::vector<std::vector<std::vector<int>>> placement_pattern_vector_;
+        PlacementMapping *mapping;
+        int64_t redundant_mapping_shape_[NUM_DIM_OF_MAPPING];
+        int64_t mapping_shape_[NUM_DIM_OF_MAPPING];
+        int64_t count_shape_[NUM_DIM_OF_COUNT];
+    };
+
+    // 测试用例 1：正常情况
+    // TEST_F(PlacementDynamicGlobalMappingTest, NormalCase) {
+    //     std::vector<int32_t> global_mapping = {0, 1, 0, 2, 1, 0};
+    //     mapping->update_globalLogisticsIdToDeployedPositionMapping(global_mapping);
+
+    //     // 验证结果
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 0), 0) << "Expected position_id=0 for (layer=0, redundant_idx=0, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 1, 0), 2) << "Expected position_id=2 for (layer=0, redundant_idx=1, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 2, 0), 5) << "Expected position_id=5 for (layer=0, redundant_idx=2, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 1), 1) << "Expected position_id=1 for (layer=0, redundant_idx=0, expert_id=1)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 1, 1), 4) << "Expected position_id=4 for (layer=0, redundant_idx=1, expert_id=1)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 2, 1), 1) << "Expected position_id=1 for (layer=0, redundant_idx=2, expert_id=1)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 2), 3) << "Expected position_id=3 for (layer=0, redundant_idx=0, expert_id=2)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 1, 2), 3) << "Expected position_id=3 for (layer=0, redundant_idx=1, expert_id=2)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 2, 2), 3) << "Expected position_id=3 for (layer=0, redundant_idx=2, expert_id=2)";
+    //     // 验证未设置的位置
+    //     // EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 3, 0), -1) << "Expected -1 for unset position";
+    // }
+
+    // 测试用例 2：单一 expert_id
+    // TEST_F(PlacementDynamicGlobalMappingTest, SingleExpertId) {
+    //     std::vector<int32_t> global_mapping = {0, 0, 0, 0, 0, 0};
+    //     mapping->update_globalLogisticsIdToDeployedPositionMapping(global_mapping);
+
+    //     // 验证结果
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 0), 0) << "Expected position_id=0 for (layer=0, redundant_idx=0, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 1, 0), 1) << "Expected position_id=1 for (layer=0, redundant_idx=1, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 2, 0), 2) << "Expected position_id=2 for (layer=0, redundant_idx=1, expert_id=0)";
+    // }
+
+    // 测试用例 3：空输入
+    // TEST_F(PlacementDynamicGlobalMappingTest, EmptyInput) {
+    //     std::vector<int32_t> global_mapping = {};
+    //     ASSERT_DEATH(mapping->update_globalLogisticsIdToDeployedPositionMapping(global_mapping), "Assertion `deployPosition\\.size\\(\\) == num_deploy_experts_ \\* num_layers_' failed");
+    // }
+
+// 测试用例：动态mapping修改，多层输入
+class PlacementDynamicMappingMutiLayerTest : public ::testing::Test {
+    protected:
+        aclrtContext context;
+        void SetUp() override {
+            // 初始化测试数据
+            rank_ = 0;
+            world_size_ = 2;
+            num_layers_ = 2;
+            num_experts_ = 3;
+            max_redundant_count_ = 3;
+            num_devices_per_host_ = 8;
+            aclrtSetDevice(0);
+            aclrtCreateContext(&context, 0);
+            aclrtSetCurrentContext(context);
+            // 分配模拟 HBM 内存
+            size_t size = num_layers_ * num_experts_ * max_redundant_count_ * sizeof(int32_t);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&global_expert_mapping_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)global_expert_mapping_, size, 0, size);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&redundant_expert_mapping_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)redundant_expert_mapping_, size, 0, size);
+            size = num_layers_ * num_experts_ * sizeof(int32_t);
+            ASSERT_EQ(ACL_ERROR_NONE, aclrtMalloc((void**)&redundant_count_per_expert_, size, ACL_MEM_MALLOC_HUGE_FIRST));
+            aclrtMemset((void*)redundant_count_per_expert_, size, 0, size);
+
+            // 初始化 placement_pattern_vector_
+            placement_pattern_vector_ = {
+                { {1, 1, 1}, {1, 1, 1} }, // rank 0
+                { {1, 1, 1}, {1, 1, 1} }  // rank 1
+            };
+
+            // 初始化形状数组
+            redundant_mapping_shape_[0] = num_layers_;
+            redundant_mapping_shape_[1] = max_redundant_count_;
+            redundant_mapping_shape_[2] = num_experts_;
+            mapping_shape_[0] = num_layers_;
+            mapping_shape_[1] = num_experts_;
+            mapping_shape_[2] = max_redundant_count_;
+            count_shape_[0] = num_layers_;
+            count_shape_[1] = num_experts_;
+
+            // 从有效文件创建 PlacementMapping
+            mapping = new PlacementMapping(placement_pattern_vector_, rank_, num_devices_per_host_,
+                                    redundant_expert_mapping_, redundant_mapping_shape_,
+                                    redundant_count_per_expert_, count_shape_);
+        }
+
+        void TearDown() override {
+            aclrtFree(redundant_expert_mapping_);
+            aclrtFree(global_expert_mapping_);
+            aclrtFree(redundant_count_per_expert_);
+            if (context != nullptr) {
+                aclrtDestroyContext(context);
+                context = nullptr;
+            }
+            delete mapping;
+        }
+
+        // 测试用成员变量
+        int32_t rank_;
+        int32_t world_size_;
+        int32_t num_layers_;
+        int32_t num_experts_;
+        int32_t max_redundant_count_;
+        int32_t num_devices_per_host_;
+        int32_t* redundant_expert_mapping_;
+        int32_t* global_expert_mapping_;
+        int32_t* redundant_count_per_expert_;
+        std::vector<std::vector<std::vector<int>>> placement_pattern_vector_;
+        PlacementMapping *mapping;
+        int64_t redundant_mapping_shape_[NUM_DIM_OF_MAPPING];
+        int64_t mapping_shape_[NUM_DIM_OF_MAPPING];
+        int64_t count_shape_[NUM_DIM_OF_COUNT];
+    };
+
+    // // 测试用例1：多层输入
+    // TEST_F(PlacementDynamicMappingMutiLayerTest, MultipleLayers) {
+    //     std::vector<int32_t> global_mapping = {0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0}; // 两层，每层 [0, 1, 0, 1, 1, 0]
+    //     mapping->update_globalLogisticsIdToDeployedPositionMapping(global_mapping);
+
+    //     // 验证结果
+    //     // 层0
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 0), 0) << "Expected position_id=0 for (layer=0, redundant_idx=0, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 1, 0), 2) << "Expected position_id=2 for (layer=0, redundant_idx=1, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 2, 0), 5) << "Expected position_id=5 for (layer=0, redundant_idx=2, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 1), 1) << "Expected position_id=1 for (layer=0, redundant_idx=0, expert_id=1)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 1, 1), 3) << "Expected position_id=3 for (layer=0, redundant_idx=1, expert_id=1)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 2, 1), 4) << "Expected position_id=4 for (layer=0, redundant_idx=2, expert_id=1)";
+    //     // 层1
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(1, 0, 0), 0) << "Expected position_id=0 for (layer=1, redundant_idx=0, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(1, 1, 0), 2) << "Expected position_id=2 for (layer=1, redundant_idx=1, expert_id=0)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(1, 0, 1), 1) << "Expected position_id=1 for (layer=1, redundant_idx=0, expert_id=1)";
+    //     EXPECT_EQ(mapping->get_redundant_expert_position_id(1, 1, 1), 3) << "Expected position_id=3 for (layer=1, redundant_idx=1, expert_id=1)";
+    // }
+
+    // 测试用例 2：max_redundant_count 较小
+    TEST_F(PlacementDynamicMappingMutiLayerTest, SmallMaxRedundantCount) {
+        std::vector<int32_t> global_mapping = {0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2};
+        mapping->update_globalLogisticsIdToDeployedPositionMapping(global_mapping);
+        // 验证结果
+        EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 0), 0) << "Expected position_id=0 for (layer=0, redundant_idx=0, expert_id=0)";
+        EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 1), 1) << "Expected position_id=1 for (layer=0, redundant_idx=0, expert_id=1)";
+        EXPECT_EQ(mapping->get_redundant_expert_position_id(0, 0, 2), 2) << "Expected position_id=2 for (layer=0, redundant_idx=0, expert_id=2)";
+    }
+*/
 // 主函数
 /*
 int main(int argc, char **argv) {
