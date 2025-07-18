@@ -496,7 +496,7 @@ class DecodeConnectorWorker:
             try:
                 task = q.get_nowait()
                 if task is None:
-                    break
+                    continue
             except queue.Empty:
                 time.sleep(0.001)
                 continue
