@@ -493,9 +493,13 @@ class DecodeConnectorWorker:
         q = self.queues[cluster_id]
         time.sleep(0)
         while True:
-            task = q.get()
-            if task is None:
-                break
+            try:
+                task = q.get_nowait()
+                if task is None:
+                    break
+            except queue.Empty:
+                time.sleep(0.001)
+                continue
             try:
                 self._read_blocks(**task)
             except Exception as e:
