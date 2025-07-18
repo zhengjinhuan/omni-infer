@@ -54,10 +54,6 @@
         "use_mlaprolog": false,
         "opt_w2_scale_cast": false,
         "control_accept_rate": -1,
-        "reuse_prefilled_tokens": true,
-        "skip_decode_tokenize": true,
-        "async_pull_kv": true,
-        "multi_thread_pull_kv": true,
         "decode_gear_list": [
             16
         ]
