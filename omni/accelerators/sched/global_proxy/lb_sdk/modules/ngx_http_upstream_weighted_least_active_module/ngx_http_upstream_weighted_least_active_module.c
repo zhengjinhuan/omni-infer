@@ -76,14 +76,14 @@ static char *ngx_http_weighted_least_active_set_flag(ngx_conf_t *cf, ngx_command
 
 static ngx_command_t ngx_http_weighted_least_active_commands[] = {
     { ngx_string("weighted_least_active"),
-      NGX_HTTP_UPS_CONF|NGX_CONF_FLAG,
+      NGX_HTTP_UPS_CONF | NGX_CONF_FLAG,
       ngx_http_weighted_least_active_set_flag,
       NGX_HTTP_SRV_CONF_OFFSET,
       offsetof(ngx_http_weighted_least_active_conf_t, enable),
       NULL },
 
     { ngx_string("weighted_least_active_shm_size"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       0,
       0,
