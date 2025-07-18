@@ -375,8 +375,8 @@ void PlacementMapping::update_selector_layer(
     int layer_id, std::vector<int> finish_table,
     std::vector<std::vector<int32_t>> same_host_candidates,
     std::vector<std::vector<int32_t>> distant_candidates) {
-    size_t position_offset = layer_id * num_deploy_experts_;
-    size_t logits_offset = layer_id * num_experts_;
+    size_t position_offset = layer_id * this->num_deploy_experts_;
+    size_t logits_offset = layer_id * this->num_experts_;
 
     for (int i = 0; i < num_experts_; ++i) {
         finish_table[i] = 0;
