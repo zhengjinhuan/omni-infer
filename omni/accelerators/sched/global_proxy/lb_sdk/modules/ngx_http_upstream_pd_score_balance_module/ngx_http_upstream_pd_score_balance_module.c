@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <float.h>
 
-extern ngx_module_t ngx_http_upstream_pd_score_balance_module;
+ngx_module_t ngx_http_upstream_pd_score_balance_module;
 
 #define MAX_ACTIVE_REQ_PER_PEER 1024
 #define MAX_TOTAL_ACTIVE_REQS 8192
