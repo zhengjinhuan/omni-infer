@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -5,8 +8,6 @@
 #include <ngx_atomic.h>
 #include <stdlib.h>
 #include <float.h>
-
-ngx_module_t ngx_http_upstream_pd_score_balance_module;
 
 #define MAX_ACTIVE_REQ_PER_PEER 1024
 #define MAX_TOTAL_ACTIVE_REQS 8192
@@ -64,17 +65,67 @@ typedef struct {
     ngx_uint_t last_total_tokens;
 } ngx_http_pd_score_peer_data_t;
 
-static ngx_int_t ngx_http_pd_score_get_peer(ngx_peer_connection_t *pc,
-                                            void *data);
-static void ngx_http_pd_score_free_peer_P(ngx_peer_connection_t *pc, void *data,
-                                          ngx_uint_t state);
-static void ngx_http_pd_score_free_peer_D(ngx_peer_connection_t *pc, void *data,
-                                          ngx_uint_t state);
 static ngx_shm_zone_t *ngx_http_pd_score_shm_zone = NULL;
 static ngx_http_pd_score_shm_block_t *pd_shm = NULL;
 static ngx_uint_t ngx_http_pd_score_shm_size = 0;
 static ngx_uint_t ngx_http_pd_score_req_lim_D = 0;
 static ngx_http_output_body_filter_pt ngx_http_next_body_filter = NULL;
+
+static void *ngx_http_pd_score_create_main_conf(ngx_conf_t *cf);
+static void *ngx_http_pd_score_create_srv_conf(ngx_conf_t *cf);
+static char *ngx_http_pd_score_set_mode(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static ngx_int_t ngx_http_pd_score_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data);
+static ngx_int_t ngx_http_pd_score_postconfig(ngx_conf_t *cf);
+
+static ngx_int_t ngx_http_pd_score_upstream_init(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *uscf);
+static ngx_int_t ngx_http_pd_score_get_peer(ngx_peer_connection_t *pc, void *data);
+static void ngx_http_pd_score_free_peer_P(ngx_peer_connection_t *pc, void *data, ngx_uint_t state);
+static void ngx_http_pd_score_free_peer_D(ngx_peer_connection_t *pc, void *data, ngx_uint_t state);
+static ngx_int_t ngx_http_pd_score_prefill_strategy(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *uscf);
+static ngx_int_t ngx_http_pd_score_decode_strategy(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *uscf);
+static ngx_int_t ngx_http_pd_score_body_filter(ngx_http_request_t *r, ngx_chain_t *in);
+
+void ngx_http_pd_score_add_decoded_tokens(ngx_http_request_t *r, ngx_uint_t num_tokens);
+
+static ngx_command_t ngx_http_upstream_pd_score_commands[] = {
+    { ngx_string("pd_score_balance_shm_size"),
+      NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1, ngx_conf_set_size_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET, offsetof(ngx_http_pd_score_main_conf_t, shm_size),
+      NULL },
+
+    { ngx_string("pd_score_balance"),
+      NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
+      ngx_http_pd_score_set_mode, NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_pd_score_srv_conf_t, mode), NULL },
+
+    { ngx_string("pd_score_balance_decode_req_limit"),
+      NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot, NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_pd_score_srv_conf_t, n_req_limit),
+      NULL },
+
+    ngx_null_command
+};
+
+static ngx_http_module_t ngx_http_upstream_pd_score_balance_module_ctx = {
+    NULL,
+    ngx_http_pd_score_postconfig,
+    ngx_http_pd_score_create_main_conf,
+    NULL,
+    ngx_http_pd_score_create_srv_conf,
+    NULL,
+    NULL,
+    NULL
+};
+
+ngx_module_t ngx_http_upstream_pd_score_balance_module = {
+    NGX_MODULE_V1,
+    &ngx_http_upstream_pd_score_balance_module_ctx,
+    ngx_http_upstream_pd_score_commands,
+    NGX_HTTP_MODULE,
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+    NGX_MODULE_V1_PADDING
+};
 
 static void *ngx_http_pd_score_create_main_conf(ngx_conf_t *cf) {
     ngx_http_pd_score_main_conf_t *conf = ngx_pcalloc(cf->pool, sizeof(*conf));
@@ -160,10 +211,63 @@ static ngx_int_t ngx_http_pd_score_init_shm_zone(ngx_shm_zone_t *shm_zone,
     return NGX_OK;
 }
 
-void ngx_http_pd_score_add_decoded_tokens(ngx_http_request_t *r,
-                                          ngx_uint_t num_tokens) {
-    ngx_http_pd_score_peer_data_t *pdata =
-        r->upstream ? r->upstream->peer.data : NULL;
+static ngx_int_t ngx_http_pd_score_postconfig(ngx_conf_t *cf) {
+    ngx_http_pd_score_main_conf_t *pmcf = ngx_http_conf_get_module_main_conf(
+        cf, ngx_http_upstream_pd_score_balance_module);
+    if (pmcf == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "Failed to get main conf");
+        return NGX_ERROR;
+    }
+    if (pmcf->shm_size == 0 || pmcf->shm_size == NGX_CONF_UNSET_SIZE) {
+        pmcf->shm_size = 256 * ngx_pagesize;
+    }
+    ngx_http_pd_score_shm_size = pmcf->shm_size;
+    ngx_log_error(NGX_LOG_WARN, cf->log, 0, "Set shm_size: %uz bytes", ngx_http_pd_score_shm_size);
+
+    ngx_http_next_body_filter = ngx_http_top_body_filter;
+    ngx_http_top_body_filter = ngx_http_pd_score_body_filter;
+
+    ngx_str_t *shm_name = ngx_palloc(cf->pool, sizeof(*shm_name));
+    shm_name->len = sizeof("pd_score_balance") - 1;
+    shm_name->data = (u_char *)"pd_score_balance";
+    ngx_http_pd_score_shm_zone =
+        ngx_shared_memory_add(cf, shm_name, ngx_http_pd_score_shm_size,
+                              &ngx_http_upstream_pd_score_balance_module);
+    if (ngx_http_pd_score_shm_zone == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_http_pd_score_shm_zone->init = ngx_http_pd_score_init_shm_zone;
+
+    ngx_http_upstream_main_conf_t *upcf;
+    ngx_http_upstream_srv_conf_t **uscfp;
+    ngx_http_pd_score_srv_conf_t *conf;
+    ngx_uint_t i;
+    upcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
+    if (upcf == NULL) {
+        return NGX_OK;
+    }
+    uscfp = upcf->upstreams.elts;
+    for (i = 0; i < upcf->upstreams.nelts; i++) {
+        conf = ngx_http_conf_upstream_srv_conf(
+            uscfp[i], ngx_http_upstream_pd_score_balance_module);
+        if (conf->mode != PD_MODE_NONE) {
+            uscfp[i]->peer.init = ngx_http_pd_score_upstream_init;
+        }
+        if (conf->mode == PD_MODE_DECODE) {
+            ngx_http_pd_score_req_lim_D = conf->n_req_limit;
+            ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+                          "[PDScoreBalance] request limit set to %ui", ngx_http_pd_score_req_lim_D);
+        }
+        ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+                      "[PDScoreBalance] upstream[%ui] mode=%d", i, conf->mode);
+    }
+    return NGX_OK;
+}
+
+void ngx_http_pd_score_add_decoded_tokens(ngx_http_request_t *r, ngx_uint_t num_tokens) {
+    ngx_http_pd_score_peer_data_t *pdata = 
+    r->upstream ? r->upstream->peer.data : NULL;
     ngx_slab_pool_t *shpool;
     if (pd_shm == NULL || pdata == NULL) {
         return;
@@ -460,6 +564,19 @@ static ngx_int_t ngx_http_pd_score_get_peer(ngx_peer_connection_t *pc,
     return NGX_OK;
 }
 
+static ngx_int_t ngx_http_pd_score_upstream_init(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *uscf) {
+    ngx_http_pd_score_srv_conf_t *conf = ngx_http_conf_upstream_srv_conf(
+        uscf, ngx_http_upstream_pd_score_balance_module);
+    switch (conf->mode) {
+    case PD_MODE_PREFILL:
+        return ngx_http_pd_score_prefill_strategy(r, uscf);
+    case PD_MODE_DECODE:
+        return ngx_http_pd_score_decode_strategy(r, uscf);
+    default:
+        return NGX_ERROR;
+    }
+}
+
 static void ngx_http_pd_score_free_peer_P(ngx_peer_connection_t *pc, void *data,
                                           ngx_uint_t state) {
     ngx_log_error(NGX_LOG_INFO, pc->log, 0, "Freeing peer P req.%p", pc->data);
@@ -530,117 +647,3 @@ static void ngx_http_pd_score_free_peer_D(ngx_peer_connection_t *pc, void *data,
     ngx_http_upstream_rr_peer_data_t *rrp = pdata->rrp;
     ngx_http_upstream_free_round_robin_peer(pc, rrp, state);
 }
-
-static ngx_int_t
-ngx_http_pd_score_upstream_init(ngx_http_request_t *r,
-                                ngx_http_upstream_srv_conf_t *uscf) {
-    ngx_http_pd_score_srv_conf_t *conf = ngx_http_conf_upstream_srv_conf(
-        uscf, ngx_http_upstream_pd_score_balance_module);
-
-    switch (conf->mode) {
-    case PD_MODE_PREFILL:
-        return ngx_http_pd_score_prefill_strategy(r, uscf);
-    case PD_MODE_DECODE:
-        return ngx_http_pd_score_decode_strategy(r, uscf);
-    default:
-        return NGX_ERROR;
-    }
-}
-
-static ngx_int_t ngx_http_pd_score_postconfig(ngx_conf_t *cf) {
-    ngx_http_pd_score_main_conf_t *pmcf = ngx_http_conf_get_module_main_conf(
-        cf, ngx_http_upstream_pd_score_balance_module);
-
-    if (pmcf == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "Failed to get main conf");
-        return NGX_ERROR;
-    }
-    if (pmcf->shm_size == 0 || pmcf->shm_size == NGX_CONF_UNSET_SIZE) {
-        pmcf->shm_size = 256 * ngx_pagesize;
-    }
-    
-    ngx_http_pd_score_shm_size = pmcf->shm_size;
-    ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-                    "Set shm_size: %uz bytes", ngx_http_pd_score_shm_size);
-
-    ngx_http_next_body_filter = ngx_http_top_body_filter;
-    ngx_http_top_body_filter = ngx_http_pd_score_body_filter;
-
-    ngx_str_t *shm_name = ngx_palloc(cf->pool, sizeof(*shm_name));
-    shm_name->len = sizeof("pd_score_balance") - 1;
-    shm_name->data = (u_char *)"pd_score_balance";
-    ngx_http_pd_score_shm_zone =
-        ngx_shared_memory_add(cf, shm_name, ngx_http_pd_score_shm_size,
-                              &ngx_http_upstream_pd_score_balance_module);
-    if (ngx_http_pd_score_shm_zone == NULL) {
-        return NGX_ERROR;
-    }
-
-    ngx_http_pd_score_shm_zone->init = ngx_http_pd_score_init_shm_zone;
-
-    ngx_http_upstream_main_conf_t *upcf;
-    ngx_http_upstream_srv_conf_t **uscfp;
-    ngx_http_pd_score_srv_conf_t *conf;
-    ngx_uint_t i;
-    upcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
-    if (upcf == NULL) {
-        return NGX_OK;
-    }
-    uscfp = upcf->upstreams.elts;
-    for (i = 0; i < upcf->upstreams.nelts; i++) {
-        conf = ngx_http_conf_upstream_srv_conf(
-            uscfp[i], ngx_http_upstream_pd_score_balance_module);
-        if (conf->mode != PD_MODE_NONE) {
-            uscfp[i]->peer.init = ngx_http_pd_score_upstream_init;
-        }
-        if (conf->mode == PD_MODE_DECODE) {
-            ngx_http_pd_score_req_lim_D = conf->n_req_limit;
-            ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-                      "[PDScoreBalance] request limit set to %ui", ngx_http_pd_score_req_lim_D);
-        }
-        ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-                      "[PDScoreBalance] upstream[%ui] mode=%d", i, conf->mode);
-    }
-    return NGX_OK;
-}
-
-static ngx_command_t ngx_http_upstream_pd_score_commands[] = {
-    {ngx_string("pd_score_balance_shm_size"),
-     NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1, ngx_conf_set_size_slot,
-     NGX_HTTP_MAIN_CONF_OFFSET, offsetof(ngx_http_pd_score_main_conf_t, shm_size),
-     NULL},
-    {ngx_string("pd_score_balance"),
-     NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
-     ngx_http_pd_score_set_mode, NGX_HTTP_SRV_CONF_OFFSET,
-     offsetof(ngx_http_pd_score_srv_conf_t, mode), NULL},
-    {ngx_string("pd_score_balance_decode_req_limit"),
-     NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot, NGX_HTTP_SRV_CONF_OFFSET,
-     offsetof(ngx_http_pd_score_srv_conf_t, n_req_limit),
-     NULL},
-    ngx_null_command
-};
-
-static ngx_http_module_t ngx_http_upstream_pd_score_balance_module_ctx = {
-    NULL,
-    ngx_http_pd_score_postconfig,
-    ngx_http_pd_score_create_main_conf,
-    NULL,
-    ngx_http_pd_score_create_srv_conf,
-    NULL,
-    NULL,
-    NULL};
-
-ngx_module_t ngx_http_upstream_pd_score_balance_module = {
-    NGX_MODULE_V1,
-    &ngx_http_upstream_pd_score_balance_module_ctx,
-    ngx_http_upstream_pd_score_commands,
-    NGX_HTTP_MODULE,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NGX_MODULE_V1_PADDING};

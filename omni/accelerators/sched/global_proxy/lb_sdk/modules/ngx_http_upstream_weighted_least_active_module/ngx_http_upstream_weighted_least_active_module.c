@@ -300,7 +300,6 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     ngx_uint_t i;
     ngx_uint_t n;
     ngx_slab_pool_t *shpool;
-    ngx_http_weighted_least_active_conf_t *conf;
 
     if (ngx_http_upstream_init_round_robin_peer(r, uscf) != NGX_OK) {
         return NGX_ERROR;
@@ -316,8 +315,6 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     if (n > wla_shm->peer_count) {
         n = wla_shm->peer_count;
     }
-
-    conf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_weighted_least_active_module);
 
     ngx_shmtx_lock(&shpool->mutex);
 
