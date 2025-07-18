@@ -296,7 +296,7 @@ if __name__ == "__main__":
         help="JSON-formatted additional platform-specific config, e.g., '{\"key\":\"value\"}'")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
     parser.add_argument("--enable-mtp", default=False, action='store_true')
-    parser.add_argument("--no-enable-prefix-caching", action="store_true")
+    parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
 
     args = parser.parse_args()
     if not args.num_dp:
