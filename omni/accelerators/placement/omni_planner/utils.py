@@ -9,6 +9,28 @@ import ctypes
 from omni_planner import omni_placement
 from collections import defaultdict
 
+def get_expert_ids(local_rank_pattern):
+    """
+    临时提供
+    将字典转换为列表，列表索引由layer_func提取的layer_idx决定
+
+    Args:
+        local_rank_pattern (torch.Tensor): pattern, dtype:bool, shape: [num_layers, num_experts]
+    Returns:
+        list: 转换后的列表[list[list]]，索引为layer_idx对应的整数, local_expert_idx
+    """
+    if not isinstance(local_rank_pattern, torch.Tensor):
+        raise TypeError("placement_pattern_current_rank must be a torch.Tensor")
+    if local_rank_pattern.dtype != torch.bool:
+        raise ValueError("placement_pattern_current_rank must have dtype torch.bool")
+    if local_rank_pattern.dim() != 2:
+        raise ValueError("placement_pattern_current_rank must be a 2D tensor")
+
+    layer_expert_ids_list = []
+    for layer_id, experts in enumerate(local_rank_pattern):
+        global_expert_idxs = torch.where(experts)[0].sort()[0].tolist()
+        layer_expert_ids_list.append(global_expert_idxs)
+    return layer_expert_ids_list
 
 
 def filter_dict_keys(param_dict, filter_func, filter_param={}):

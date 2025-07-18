@@ -706,8 +706,10 @@ class NPUModelRunner(GPUModelRunner):
                         sampled_tokens, cached_spec_token[-1], graph_pad_size, accepted_num)
                 hidden_states, raw_hidden_states, input_ids, temp_finished_sending, temp_finished_recving = self._execute_model(scheduler_output,
                                                    attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
-            finished_sending.update(temp_finished_sending)
-            finished_recving.update(temp_finished_recving)
+            if temp_finished_sending is not None:  
+                finished_sending.update(temp_finished_sending)
+            if temp_finished_recving is not None: 
+                finished_recving.update(temp_finished_recving)
             start_2 = time.time()
             logits = self.model.compute_logits(hidden_states[sample_indices], None)
             start_3 = time.time()
@@ -806,7 +808,7 @@ class NPUModelRunner(GPUModelRunner):
             cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_output
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
         return_spec_token = [None] * (self.total_step - 1)
-        return_spec_token.append(None if cached_spec_token is None else cached_spec_token[-1].tolist())
+        return_spec_token.append(None if cached_spec_token[-1] is None else cached_spec_token[-1].tolist())
         model_runner_output = ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
