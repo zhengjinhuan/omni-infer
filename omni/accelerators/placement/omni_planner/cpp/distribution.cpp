@@ -35,7 +35,7 @@ Distribution::Distribution(size_t rank, size_t world_size, const char *infoStr,
     }
     HCCLCHECK(HcclGetRankId(hcclComm_, &rank_));
     HCCLCHECK(HcclGetRankSize(hcclComm_, &world_size_));
-    if (world_size == world_size_) {
+    if (world_size != world_size_) {
         std::cout << "[DynamicEplb-Error], The world size from rank tables "
                      "does not correspond with input parameters"
                   << std::endl;
