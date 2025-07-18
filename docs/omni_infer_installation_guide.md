@@ -233,9 +233,18 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
     export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
     export PYTHONPATH=/data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/:$PYTHONPATH
     cd /data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/example/DeepSeek
-    python quant_deepseek_w8a8.py --model_path /data/models/DeepSeek-R1 --save_path /data/models/DeepSeek-R1-Quant --dynamic --disable_anti --quant_mtp
+    python quant_deepseek_w8a8.py --model_path /data/models/DeepSeek-R1 --save_path /data/models/DeepSeek-R1-Quant --from_fp8 --dynamic --disable_anti --quant_mtp --cloud_vllm
     ```
-
+9. 修改转换后的config.json文件中的字段
+    将
+    ```
+    "architectures":"DeepseekV3Fusion",
+    ```
+    替换为
+    ```
+    "architectures":["DeepseekV3ForCausalLM"],
+    ```
+    并将num_hidden_layers从62改为61
 ### 部署框架介绍
 
 以**4机2P1D**进行示例
