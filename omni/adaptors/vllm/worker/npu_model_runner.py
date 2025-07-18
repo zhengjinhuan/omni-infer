@@ -1055,10 +1055,9 @@ class WrapModel(nn.Module):
         self.model = model
         self.decode_gear_list = decode_gear_list
         from torchair.configs.compiler_config import CompilerConfig
-        import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce
+        import torchair
         torch._dynamo.reset()
         config = CompilerConfig()
-        config.experimental_config.keep_inference_input_mutations = True
         config.experimental_config.tiling_schedule_optimize = True
         torch.npu.set_compile_mode(jit_compile=False)
         self.cached_decode_dict = {}
@@ -1114,10 +1113,10 @@ class WrapDrafter(nn.Module):
         self.model = model
         self.decode_gear_list = decode_gear_list
         from torchair.configs.compiler_config import CompilerConfig
-        import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce
+        import torchair
         torch._dynamo.reset()
         config = CompilerConfig()
-        config.experimental_config.keep_inference_input_mutations = True
+        config.experimental_config.frozen_parameter = True
         config.experimental_config.tiling_schedule_optimize = True
         torch.npu.set_compile_mode(jit_compile=False)
         self.cached_decode_dict = {}

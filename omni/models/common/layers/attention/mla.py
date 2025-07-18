@@ -621,7 +621,6 @@ class AscendMLAImpl(MLAAttentionImpl):
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
-
         self.num_kv_heads = num_kv_heads
         self.kv_cache_dtype = kv_cache_dtype
 
@@ -717,7 +716,6 @@ class AscendMLAImpl(MLAAttentionImpl):
         if not self.is_init:
             self.W_UK = torch.nn.Parameter(self.W_UK.contiguous(), requires_grad=False)
             self.W_UV = torch.nn.Parameter(self.W_UV.contiguous(), requires_grad=False)
-            self.empty_out = torch.empty(1, dtype=torch.bfloat16)
             self.is_init = True
         if attn_metadata is None or attn_metadata.prefill is not None:
             output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata)

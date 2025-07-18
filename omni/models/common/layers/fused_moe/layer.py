@@ -348,7 +348,7 @@ class FusedMoE(torch.nn.Module):
         #ENABLE_OMNI_PLANNER
         if model_extra_config.operator_opt_config.use_omni_placement and layer is not None:
             hidden_states, topk_ids, topk_weights = layer.planner.plan(layer_idx_moe=layer.moe_layer_idx, 
-                                                           tokens=hidden_states, 
+                                                           tokens=hidden_states,
                                                            token_expert_ids=topk_ids, 
                                                            token_expert_scores=topk_weights,
                                                            top_k=layer.top_k,

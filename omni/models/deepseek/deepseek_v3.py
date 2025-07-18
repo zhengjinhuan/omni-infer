@@ -1205,7 +1205,7 @@ class DeepseekV3Model(nn.Module):
                     'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
                     'W_UK': self.layers[i + 1].self_attn.attn_mla.impl.W_UK
                 }
-            else: 
+            else:
                 next_attention_weights = {
                     'q_a_proj_weight': None,
                     'kv_a_proj_with_mqa_weight': None,
