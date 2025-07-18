@@ -291,7 +291,7 @@ index 5628f0a11..d0f5fa508 100644
              # we can call __init__ before the event loop, which enables us
              # to handle startup failure gracefully in the OpenAI server.
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 4d5f4d3d1..e6a7b5346 100644
+index 4d5f4d3d1..e5f6d221e 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
 @@ -39,6 +39,8 @@ from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
@@ -411,25 +411,16 @@ index 4d5f4d3d1..e6a7b5346 100644
      def process_output_socket(self, output_path: str, engine_index: int):
          """Output socket IO thread."""
  
-@@ -791,3 +853,21 @@ class DPEngineCoreProc(EngineCoreProc):
+@@ -791,3 +853,12 @@ class DPEngineCoreProc(EngineCoreProc):
  
          return ParallelConfig.has_unfinished_dp(self.dp_group,
                                                  local_unfinished)
 +
-+def dump_thread_to_json(thread, thread_name: str, json_file_path: str):
-+    thread_info = {}
++def set_thread_affinity(thread, cpu_id):
++    import threading
++    import ctypes
 +    while not hasattr(thread, "native_id"):
 +        pass
-+    thread_info = {thread_name: thread.native_id}
-+    try:
-+        if os.path.exists(json_file):
-+            with open(json_file, "r", encoding="utf-8") as f:
-+                data = json.load(f)
-+        else:
-+            data = {}
-+        data.update(thread_info)
-+        with open(json_file, "w", encoding="utf-8") as f:
-+            json.dump(data, f, ensure_ascii=False, indent=2)
-+    except Exception as e:
-+        logger.error(f"Failed to write thread info to {json_file}: {e}")
++    tid = thread.native_id
++    os.sched_setaffinity(tid, {cpu_id})
 +
