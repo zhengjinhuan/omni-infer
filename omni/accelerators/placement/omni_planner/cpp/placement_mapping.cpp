@@ -9,7 +9,7 @@
 #include <tensor.h>
 #include <tuple>
 
-const int ScalarType_Int = 3;
+const int global_ScalarType_Int = 3;
 PlacementMapping::PlacementMapping(
     const std::string &placement_pattern_filename, int rank,
     int num_devices_per_host, int max_redundant_per_expert,
@@ -70,7 +70,7 @@ void PlacementMapping::init_placement_pattern(
         // placement_pattern_ 指针设为 nullptr，因为我们直接使用 vector
         placement_pattern_ = nullptr;
         placement_pattern_dtype_ =
-            ScalarType_Int; // 假设文件中的数据是 int32 类型
+            global_ScalarType_Int; // 假设文件中的数据是 int32 类型
     } else {
         // 原来的方式：从内存指针构造
         if (placement_pattern_ptr == 0) {
@@ -165,7 +165,7 @@ PlacementMapping::torch_tensor_to_3d_vector_int32() {
     std::vector<std::vector<std::vector<int>>> result(
         world_size_, std::vector<std::vector<int>>(
                          num_layers_, std::vector<int>(num_experts_)));
-    if (placement_pattern_dtype_ == ScalarType_Int) {
+    if (placement_pattern_dtype_ == global_ScalarType_Int) {
         int32_t *data_ptr = placement_pattern_;
         for (int i = 0; i < world_size_; i++) {
             for (int j = 0; j < num_layers_; j++) {

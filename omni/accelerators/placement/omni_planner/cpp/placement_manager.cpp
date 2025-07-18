@@ -83,7 +83,7 @@ struct TimeTracker {
 #define TRACK_START() TimeTracker::instance().reset()
 #define TRACK_POINT(tag) TimeTracker::instance().check_and_print(tag)
 
-OmniConfig config;
+OmniConfig global_omni_config;
 
 namespace py = pybind11;
 
@@ -201,8 +201,8 @@ void Placement::check_shm_weights() {
             start_thread();
             break;
         }
-        std::this_thread::sleep_for(
-            std::chrono::seconds(config.activation_quiesce)); // Check every 30s
+        std::this_thread::sleep_for(std::chrono::seconds(
+            global_omni_config.activation_quiesce)); // Check every 30s
     }
 }
 

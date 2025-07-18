@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+#pragma once
+
 #ifndef TENSOR_H
 #define TENSOR_H
 
@@ -57,6 +59,7 @@ class Tensor {
         name_ = name;
         element_size_ = element_size;
     }
+    ~Tensor() {} // 指针不在此处销毁
     std::string get_dtype() const { return dtype_; }
     size_t get_length() const { return length_; }
     size_t get_element_size() const { return element_size_; }

@@ -35,8 +35,13 @@ Distribution::Distribution(size_t rank, size_t world_size, const char *infoStr,
     }
     HCCLCHECK(HcclGetRankId(hcclComm_, &rank_));
     HCCLCHECK(HcclGetRankSize(hcclComm_, &world_size_));
-    assert(world_size == world_size_ && "The world size from rank tables does "
-                                        "not correspond with input parameters");
+    if (world_size == world_size_) {
+        std::cout << "[DynamicEplb-Error], The world size from rank tables "
+                     "does not correspond with input parameters"
+                  << std::endl;
+        exit(0);
+    }
+
     warmup();
 
     void *data_ptr;
@@ -79,8 +84,10 @@ bool Distribution::isCompletedQueueFull() {
 
 void *Distribution::get_recv_buff_address() {
     if (recv_buff_ == nullptr) {
-        throw std::runtime_error(
-            "Pls initilization recv_buff_ by allocate_recv_buffs");
+        std::cout << "[DynamicEplb-Error], Pls initilization recv_buff_ by "
+                     "allocate_recv_buffs"
+                  << std::endl;
+        exit(0);
     }
     size_t queue_idx = getCompletedQueueEnqueuePosition();
     size_t offset_idx = queue_idx * expert_size_;
@@ -91,7 +98,13 @@ void Distribution::release_recv_buffs() { ACLCHECK(aclrtFree(recv_buff_)); }
 
 void Distribution::enqueue(TransDesc *desc, size_t t_rank,
                            bool need_enqueue_recv_buff) {
-    assert(desc != nullptr && "Adding an empty TransDesc ptr to the Queue");
+
+    if (desc == nullptr) {
+        std::cout
+            << "[DynamicEplb-Error], Adding an empty TransDesc ptr to the Queue"
+            << std::endl;
+        exit(0);
+    }
     bool send_first = rank_ < t_rank;
     desc->t_rank = t_rank;
     TransDesc *position_recv_desc =

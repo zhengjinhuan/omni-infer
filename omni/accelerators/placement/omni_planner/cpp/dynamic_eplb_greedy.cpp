@@ -27,8 +27,8 @@ GreedyExpertLoadBalancer::GreedyExpertLoadBalancer(
 }
 
 void GreedyExpertLoadBalancer::init_infomation(
-    int layer_id, std::vector<int> placement,
-    std::vector<int64_t> activations) {
+    int layer_id, const std::vector<int> &placement,
+    const std::vector<int64_t> &activations) {
 
     std::vector<int> allRanksValue;
     for (int rank = 0; rank < world_size_; ++rank) {
@@ -106,7 +106,7 @@ std::vector<int> GreedyExpertLoadBalancer::getAllRanksValue(int layer_id) {
 }
 
 RankActivateInformation *GreedyExpertLoadBalancer::getTheHighestOffloadRank(
-    int layer_id, std::vector<int> exclude_ranks) {
+    int layer_id, const std::vector<int> &exclude_ranks) {
     RankActivateInformation *result = nullptr;
     int max_value = -1;
     for (int rank = 0; rank < world_size_; ++rank) {
@@ -125,7 +125,7 @@ RankActivateInformation *GreedyExpertLoadBalancer::getTheHighestOffloadRank(
 }
 
 RankActivateInformation *GreedyExpertLoadBalancer::getTheLowestOffloadRank(
-    int layer_id, std::vector<int> exclude_ranks) {
+    int layer_id, const std::vector<int> &exclude_ranks) {
     RankActivateInformation *result = nullptr;
     int min = std::numeric_limits<int>::max();
     for (int rank = 0; rank < world_size_; ++rank) {
@@ -579,8 +579,8 @@ void GreedyExpertLoadBalancer::update(ChangeInstruction instruction) {
 }
 
 int GreedyExpertLoadBalancer::getTheHighestOffload(
-    std::vector<int> allRanksValues, int bestEPValue,
-    std::vector<int> include_ranks) {
+    const std::vector<int> &allRanksValues, int bestEPValue,
+    const std::vector<int> &include_ranks) {
     int result = 0;
     if (include_ranks.size() == 0) {
         for (size_t rank = 0; rank < allRanksValues.size(); ++rank) {
@@ -602,7 +602,7 @@ int GreedyExpertLoadBalancer::getTheHighestOffload(
 }
 
 float GreedyExpertLoadBalancer::getUnbalancedRatio(
-    std::vector<int> all_ranks_values) {
+    const std::vector<int> &all_ranks_values) {
     assert(all_ranks_values.size() == world_size_ &&
            "size of input parameters is not equals to world_Size");
     int max = 1;
@@ -616,7 +616,7 @@ float GreedyExpertLoadBalancer::getUnbalancedRatio(
 }
 
 int GreedyExpertLoadBalancer::getBestEPValue(
-    std::vector<int> all_ranks_values) {
+    const std::vector<int> &all_ranks_values) {
     assert(all_ranks_values.size() == world_size_ &&
            "size of input parameters is not equals to world_Size");
     int result = 0;
@@ -634,7 +634,8 @@ std::string floatToString(float num) {
 
 std::vector<ChangeInstruction>
 GreedyExpertLoadBalancer::optimize_and_generate_instructions(
-    std::vector<int> placement, std::vector<int64_t> activations) {
+    const std::vector<int> &placement,
+    const std::vector<int64_t> &activations) {
     std::vector<ChangeInstruction> instructions;
     std::string logging = "";
     for (int layer_id = 0; layer_id < num_layers_; ++layer_id) {

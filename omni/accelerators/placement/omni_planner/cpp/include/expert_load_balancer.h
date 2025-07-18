@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+#pragma once
+
 #ifndef EXPERT_LOAD_BALANCER_H
 #define EXPERT_LOAD_BALANCER_H
 

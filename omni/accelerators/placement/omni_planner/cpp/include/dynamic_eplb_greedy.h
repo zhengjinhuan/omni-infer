@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+#pragma once
+
 #ifndef DYNAMIC_EPLB_GREEDY_H
 #define DYNAMIC_EPLB_GREEDY_H
 
@@ -195,11 +197,11 @@ class GreedyExpertLoadBalancer {
     std::vector<RankActivateInformation *>
         rankinfo_ptrs_; // 所有layer的各个Rank的激活信息
     float alpha_ = 0.6; // 0.6; // activation 保留速率
-    void init_infomation(int layer_id, std::vector<int> placement,
-                         std::vector<int64_t> activations);
-    float getUnbalancedRatio(std::vector<int> all_ranks_values);
+    void init_infomation(int layer_id, const std::vector<int> &placement,
+                         const std::vector<int64_t> &activations);
+    float getUnbalancedRatio(const std::vector<int> &all_ranks_values);
     std::vector<int> getAllRanksValue(int layer_id);
-    int getBestEPValue(std::vector<int> all_ranks_values);
+    int getBestEPValue(const std::vector<int> &all_ranks_values);
     LogitExpertInformation *getLogitExpertInfo(int layer_id, int expert_id) {
         if (expert_id < 0 || expert_id >= num_experts_) {
             throw std::out_of_range("expert_id " + std::to_string(expert_id) +
@@ -213,14 +215,17 @@ class GreedyExpertLoadBalancer {
         int offset = layer_id * world_size_ + rank;
         return rankinfo_ptrs_[offset];
     }
-    int getTheHighestOffload(std::vector<int> subset_ranks_values,
-                             int bestEPValue, std::vector<int> include_ranks);
+    int getTheHighestOffload(const std::vector<int> &subset_ranks_values,
+                             int bestEPValue,
+                             const std::vector<int> &include_ranks);
     std::vector<ChangeInstruction>
     generate_remove_instructions_per_layer(int layer_id, int bestEP_value);
     RankActivateInformation *
-    getTheHighestOffloadRank(int layer_id, std::vector<int> exclude_ranks);
+    getTheHighestOffloadRank(int layer_id,
+                             const std::vector<int> &exclude_ranks);
     RankActivateInformation *
-    getTheLowestOffloadRank(int layer_id, std::vector<int> exclude_ranks);
+    getTheLowestOffloadRank(int layer_id,
+                            const std::vector<int> &exclude_ranks);
     void update(ChangeInstruction instruction);
     ChangeInstruction optimizeTheHighestOffload(int layer_id);
     ChangeInstruction optimizeTheLowestOffload(int layer_id);
@@ -234,7 +239,7 @@ class GreedyExpertLoadBalancer {
                              int expert_redundant_limit, int rank);
     ~GreedyExpertLoadBalancer();
     std::vector<ChangeInstruction>
-    optimize_and_generate_instructions(std::vector<int> placement,
-                                       std::vector<int64_t> activations);
+    optimize_and_generate_instructions(const std::vector<int> &placement,
+                                       const std::vector<int64_t> &activations);
 };
 #endif // DYNAMIC_EPLB_GREEDY_H
