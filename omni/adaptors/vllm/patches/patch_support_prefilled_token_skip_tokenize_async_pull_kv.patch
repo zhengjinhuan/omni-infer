@@ -223,7 +223,7 @@ index 5628f0a11..d0f5fa508 100644
              # we can call __init__ before the event loop, which enables us
              # to handle startup failure gracefully in the OpenAI server.
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 4d5f4d3d1..8786d6f3b 100644
+index 4d5f4d3d1..b4cc10bce 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
 @@ -39,6 +39,8 @@ from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
@@ -281,18 +281,19 @@ index 4d5f4d3d1..8786d6f3b 100644
          model_output = self.execute_model(scheduler_output)
          engine_core_outputs = self.scheduler.update_from_output(
              scheduler_output, model_output)  # type: ignore
-@@ -408,6 +425,10 @@ class EngineCoreProc(EngineCore):
+@@ -408,6 +425,11 @@ class EngineCoreProc(EngineCore):
                  args=(output_address, engine_index),
                  daemon=True)
              self.output_thread.start()
-+            if vllm_config.parallel_config.data_parallel_rank_local < 10:
-+                set_thread_affinity(self.output_thread, 51+vllm_config.parallel_config.data_parallel_rank_local)
-+            else:
-+                set_thread_affinity(self.output_thread, 64+vllm_config.parallel_config.data_parallel_rank_local)
++            if self.async_pull_kv:
++                if vllm_config.parallel_config.data_parallel_rank_local < 10:
++                    set_thread_affinity(self.output_thread, 51+vllm_config.parallel_config.data_parallel_rank_local)
++                else:
++                    set_thread_affinity(self.output_thread, 64+vllm_config.parallel_config.data_parallel_rank_local)
          finally:
              if input_socket is not None:
                  input_socket.close(linger=0)
-@@ -606,9 +627,50 @@ class EngineCoreProc(EngineCore):
+@@ -606,9 +628,50 @@ class EngineCoreProc(EngineCore):
                  request_type == EngineCoreRequestType.ADD) else generic_decoder
              request = decoder.decode(data_frames)
  
@@ -343,7 +344,7 @@ index 4d5f4d3d1..8786d6f3b 100644
      def process_output_socket(self, output_path: str, engine_index: int):
          """Output socket IO thread."""
  
-@@ -791,3 +853,11 @@ class DPEngineCoreProc(EngineCoreProc):
+@@ -791,3 +854,11 @@ class DPEngineCoreProc(EngineCoreProc):
  
          return ParallelConfig.has_unfinished_dp(self.dp_group,
                                                  local_unfinished)
@@ -355,4 +356,3 @@ index 4d5f4d3d1..8786d6f3b 100644
 +        pass
 +    tid = thread.native_id
 +    os.sched_setaffinity(tid, {cpu_id})
-\ No newline at end of file
