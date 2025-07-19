@@ -191,12 +191,14 @@ class FusedMoE(torch.nn.Module):
         # ENABLE_OMNI_PLANNER
         # OMNI_PLANNER: import omni planner instance, all layers share the same instance(singleton instance)
         if model_extra_config.operator_opt_config.use_omni_placement:
-            self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
+            self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
+                                       rank=get_world_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num,
+                                       world_size=get_expert_parallel_world_size() - model_extra_config.parall_config.redundancy_shared_expert_num)
             self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(prefix)
             self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
-            ep_size = get_expert_parallel_world_size()
+            ep_size = get_expert_parallel_world_size() - model_extra_config.parall_config.redundancy_shared_expert_num
             num_experts = int(num_experts / ep_size)
             tp_size = 1
 
@@ -228,12 +230,12 @@ class FusedMoE(torch.nn.Module):
         if self.quant_method is None:
             raise RuntimeError("self.quant_method must not be None")
 
-        #ENABLE_OMNI_PLANNER
+        # ENABLE_OMNI_PLANNER
         num_of_redundant_experts = 0
         if model_extra_config.operator_opt_config.use_omni_placement:
             num_of_redundant_experts = self.planner.get_num_of_redundant_experts(moe_layer_idx = self.moe_layer_idx,
                                                                                  num_expert_per_device_origin = num_experts,
-                                                                                 rank_device = get_expert_parallel_rank())
+                                                                                 rank_device = get_expert_parallel_rank() - model_extra_config.parall_config.redundancy_shared_expert_num)
         self.quant_method.create_weights(
             layer=self,
             num_experts=num_experts + num_of_redundant_experts,  #ENABLE_OMNI_PLANNER
@@ -349,9 +351,7 @@ class FusedMoE(torch.nn.Module):
                                                            tokens=hidden_states, 
                                                            token_expert_ids=topk_ids, 
                                                            token_expert_scores=topk_weights,
-                                                           top_k=layer.top_k,
-                                                           expert_mapping=layer.expert_mapping,
-                                                           is_prefill=is_prefill)
+                                                           expert_mapping=layer.expert_mapping)
 
         if is_prefill and model_extra_config.operator_opt_config.best_ep:
             # Forced load balance
@@ -408,7 +408,7 @@ class FusedMoE(torch.nn.Module):
 
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
-            ep_rank = get_expert_parallel_rank()
+            ep_rank = get_expert_parallel_rank() - model_extra_config.parall_config.redundancy_shared_expert_num
             # ENABLE_OMNI_PLANNER
             if model_extra_config.operator_opt_config.use_omni_placement:
                 # OMNI_PLANNER: determine the expert deployment based on the pattern
@@ -425,7 +425,7 @@ class FusedMoE(torch.nn.Module):
             tp_rank = 0
             expert_id -= ep_rank * self.num_experts
         else:
-            tp_rank = get_expert_parallel_rank()
+            tp_rank = get_expert_parallel_rank() - model_extra_config.parall_config.redundancy_shared_expert_num
         # compressed-tensors checkpoints with packed weights are stored flipped
         loaded_weight = loaded_weight.t().contiguous() if (
             self.quant_method.__class__.__name__

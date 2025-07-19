@@ -26,3 +26,6 @@ The SDK focuses on two primary goals to enhance performance:
 
 ## High Availability via Dynamic Redundant Expert Placement
 OmniPlacement enhances system reliability by supporting dynamic redundant expert placement on existing NPU devices without service interruptions. This capability significantly reduces **Recovery Time Objective (RTO)** for large-scale MoE systems, ensuring rapid recovery from failures and maintaining service continuity.
+
+## Deployment and Configuration Guide
+[OmniPlacement Guideline](./Guideline.md) provides a clear, structured guide for deploying, enabling, and configuration expert load balancing for OmniPlacement, ensuring optimal performance, scalability, and dependability across diverse technical environments.

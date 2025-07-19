@@ -12,7 +12,7 @@ NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
 echo "NGINX_SBIN_PATH is $NGINX_SBIN_PATH"
 
 if [ ! -d nginx-${NGINX_VERSION} ]; then
-	wget --no-check-certificate https://mirrors.tools.huawei.com/nginx/nginx-${NGINX_VERSION}.tar.gz
+	wget --no-check-certificate https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
 	tar -zxf nginx-${NGINX_VERSION}.tar.gz
 fi
 
@@ -26,6 +26,7 @@ CFLAGS="-O2" ./configure --sbin-path=${NGINX_SBIN_PATH} \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_greedy_timeout_module \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_prefill_score_balance_module \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_weighted_least_active_module \
+    --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_pd_score_balance_module \
     --without-http_gzip_module \
     --with-ld-opt="-lm"
 make -j16

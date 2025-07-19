@@ -426,7 +426,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
                 best_topk = None
                 if model_extra_config.operator_opt_config.best_ep:
-                    best_topk = self.cal_best_topk(num_reqs + graph_pad_size)
+                    best_topk = self.cal_best_topk(num_actual_tokens + graph_pad_size)
             else:
                 raise NotImplementedError("Chunked prefill mode is not supported currently.")
 
@@ -987,7 +987,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             # FIA super kernel wait for support
             if False and model_extra_config.operator_opt_config.use_super_kernel:
                 with tng.scope.super_kernel(self.prefix, 'option_xxx'):
-                    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                    attn_output, _ = tng.ops.npu_fused_infer_attention_score(
                             q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                             num_heads=self.num_heads,
                             num_key_value_heads=1, input_layout=input_layout,

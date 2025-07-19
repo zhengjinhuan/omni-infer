@@ -319,6 +319,9 @@ if [ $HCCL_BUFFSIZE -gt 0 ] ; then
     export HCCL_BUFFSIZE
     echo "HCCL_BUFFSIZE: $HCCL_BUFFSIZE"
 fi
+
+export HCCL_CONNECT_TIMEOUT=1800
+export HCCL_EXEC_TIMEOUT=120
 # 随路拷贝
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离

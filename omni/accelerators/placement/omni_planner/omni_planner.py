@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-
+ 
 import csv
 import sys
 import os
@@ -9,16 +9,19 @@ from typing import Optional, Tuple, cast
 import numpy as np
 import torch
 import torch_npu
+import torchair as tng
 import ctypes
 
 from typing import Optional
 from omni_planner.cluster_status import ClusterStatus
-from omni_planner.placement_handler import create_cluster_activation, create_placement_manager, init_dram_weights
+from omni_planner.placement_handler import create_cluster_activation, create_placement_manager, init_dram_weights, do_placement_optimizer
 from omni_planner.optim.optimizers import Optimizer
 from omni_planner.optim.optimizers_loader import _create_optimizers
 from omni_planner.config import Config
 from omni_planner.expert_mapping import ExpertMapping
 from omni_planner.utils import calculate_time
+from omni_planner import omni_placement
+from datetime import datetime
 
 import time
 
@@ -51,7 +54,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         expert_mapping: Expert deployment pattern mapping
     """
     def __init__(self, config_file: str = "/etc/omni/config.yaml", device: str = "npu",
-                 rank: int = 0, world_size: int = 16, num_devices_per_host: int = 8):
+                 rank: int = None, world_size: int = None, num_devices_per_host: int = 16):
         """Initialize OmniPlanner with configuration and distributed settings.
 
         Args:
@@ -69,41 +72,34 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self._init_distributed(rank, world_size, num_devices_per_host)
 
         # Load and validate placement pattern
-        self.expert_mapping = ExpertMapping(self.config.pattern_path, self.device, self.rank, self.num_devices_per_host)
-        self.total_deployed_experts = self.expert_mapping.get_total_deployed_experts()
-
-        # Calculate max_num_redundant_expert
-        self.max_num_deployed_expert_per_rank = max(max(self.get_deployed_experts_per_layer()) // self.world_size, 1)
-        self.max_redundant_num = self.expert_mapping.get_max_redundant_expert_num()
-
+        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.num_devices_per_host)
+        if (self.expert_mapping.get_world_size() != self.world_size):
+            print(f"Pattern world_size should be {self.world_size}.")
+        
+        # TODO: 无效代码
         """Initialize cluster status and optimizers."""
         self.cluster_status = ClusterStatus(self.config, self.expert_mapping, self.rank)
-        self.optimizers = _create_optimizers(self.config.Optimizers, self.cluster_status)
-        self.optimizer = self.optimizers[0]
-
+        # self.optimizers = _create_optimizers(self.config.Optimizers, self.cluster_status)
+        # self.optimizer = self.optimizers[0]
+        
         # Initialize placement manager
         self._init_placement_manager()
 
+        self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
 
-        max_moe_layer_num = getattr(self.config, 'max_moe_layer_num', 58)
-        
-        self.selector = [0] * max_moe_layer_num
-        for layer in range(max_moe_layer_num):
-            local_expert_mapping = self.cluster_status.expert_mapping.redundant_expert_mapping[layer]
-            self.n_routed_experts = local_expert_mapping.shape[1]
-            expert_mapping_unique = [ [] for i in range(self.n_routed_experts) ]
-            for i in range(self.n_routed_experts):
-                expert_mapping_unique[i] = torch.unique(local_expert_mapping[:,i]).tolist()
-            expert_mapping_unique = self._init_update_expert_map(expert_mapping_unique)
-            self.selector[layer] = self._init_get_selector(expert_mapping_unique)
+        # Get selector
+        self.selector = self.expert_mapping.get_selector()
 
-        self.enable_dump = getattr(self.config, 'enable_dump', False)
+        dump_dir = getattr(self.config, 'dump_dir', None)
+        self.enable_dump = getattr(self.config, 'enable_dump', False) if dump_dir else False
+        if self.enable_dump:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dump_dir = os.path.join(dump_dir,timestamp)
+            os.makedirs(dump_dir, exist_ok=True)
+            self.cluster_activation.setDumpDir(dump_dir)
 
         # redundant_enable_per_layer, True is redundant layer, False is Origin Layer
         self.redundant_enable_per_layer = self.expert_mapping.get_redundant_enable_per_layer()
-        self.num_logits_expert_per_rank = max(self.expert_mapping.get_total_num_expert()//self.world_size, 1)
-
-
         print("OmniPlanner successfully initialized.")
 
     @classmethod
@@ -114,10 +110,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
     def __del__(self):
         if hasattr(self, 'cluster_activation'):
             self.cluster_activation.stop_thread()
-            del self.cluster_activation # 显示析构 C++对象
-            time.sleep(1) # 等待C++对象析构以及其创建的线程被回收
+            del self.cluster_activation
+            del self.placement_manager
+            time.sleep(1)
 
-    def _init_distributed(self, rank: int, world_size: int, num_devices_per_host: int) -> None:
+    def _init_distributed(self, rank: int = None, world_size: int = None, num_devices_per_host: int = 16) -> None:
         """Initialize distributed settings with fallback to provided values.
 
         Args:
@@ -125,14 +122,16 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             world_size: Total number of processes in distributed environment
             num_devices_per_host: Number of devices per host machine
         """
-        try:
+        # Get rank and world size from distributed environment if not provided
+        if rank is None or world_size is None:
             self.rank = torch.distributed.get_rank()
             self.world_size = torch.distributed.get_world_size()
-        except RuntimeError:
+        else:
             self.rank, self.world_size = rank, world_size
 
         self.num_devices_per_host = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")  # omni_planner config file
         self.num_devices_per_host = len(self.num_devices_per_host.split(",")) if self.num_devices_per_host else num_devices_per_host
+
         # Validate that world_size is consistent with num_devices_per_host
         if self.world_size % self.num_devices_per_host != 0:
             print(f"Warning: world_size ({self.world_size}) is not evenly divisible by "
@@ -141,51 +140,37 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
     def _init_placement_manager(self) -> None:
         """Initialize placement handler, and activation tracking."""
         num_layers = self.expert_mapping.get_total_num_layers()
+
         self.npu_activation_count = torch.zeros(
             (num_layers, self.get_max_num_deployed_expert_per_rank()),
             device=self.device,
             dtype=torch.int64
         )
-        torch.npu.synchronize() # 确保 npu_activatio_count在显存中已经完成初始化
+        self.max_activation_count = int(1e16)
 
         self.cluster_activation = create_cluster_activation(
             self.rank,
             self.world_size,
             self.expert_mapping.get_total_num_layers(),
             self.get_max_num_deployed_expert_per_rank(),
-            self.npu_activation_count
+            self.npu_activation_count,
+            self.max_activation_count
         )
 
-    def _init_update_expert_map(self, expert_mapping_unique):
-        for i in range(self.n_routed_experts):
-            same_rank_candidates = []
-            same_host_candidates = []
-            distant_candidates = []
-            experts_per_device = self.total_deployed_experts // self.world_size
-            phy_list = expert_mapping_unique[i]
-            for phy in phy_list:
-                phy_device = phy // experts_per_device
-                phy_host = phy_device // self.num_devices_per_host
-                if phy_device == self.rank:
-                    same_rank_candidates.append(phy)
-                elif phy_host == self.rank // self.num_devices_per_host:
-                    same_host_candidates.append(phy)
-                else:
-                    distant_candidates.append(phy)
-            
-            if same_rank_candidates:
-                expert_mapping_unique[i] = [same_rank_candidates[self.rank % len(same_rank_candidates)]]
-            elif same_host_candidates:
-                expert_mapping_unique[i] = [same_host_candidates[self.rank % len(same_host_candidates)]]
-            else:
-                expert_mapping_unique[i] = [distant_candidates[self.rank % len(distant_candidates)]]
-        
-        return expert_mapping_unique
+        self.placement_manager = create_placement_manager(
+            self.rank,
+            self.world_size,
+            self.num_devices_per_host,
+            self.cluster_activation,
+            self.cluster_status.expert_mapping
+        )
 
-    def _init_get_selector(self, expert_mapping_unique):
-        selector = torch.tensor(expert_mapping_unique, dtype=torch.int32, device=self.device).view(self.n_routed_experts)
-        return selector
+    def start_dynamic_optimize_expert_loaded_balance(self):
+        if self.enable_dynamic:
+            self.placement_manager.start_thread()
 
+    def get_max_num_deployed_expert_per_rank(self)-> int:
+        return self.expert_mapping.get_max_num_deployed_expert_per_rank()
     def is_expert_on_current_rank(
         self,
         layer_id: int,
@@ -213,9 +198,23 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         is_prefill=False) -> torch.tensor:
         if layer_idx_moe > 57:
             return None
-        if self.redundant_enable_per_layer[layer_idx_moe]:
-            return self.selector[layer_idx_moe]
-        return self.cluster_status.expert_mapping.redundant_expert_mapping[layer_idx_moe][0]
+        return self.selector[layer_idx_moe]
+
+    # @calculate_time
+    def place_experts(self, layer_idx_moe: Optional[int] = None) :
+        """Dynamically places expert weights across ranks based on activation status.
+
+        Args:
+            layer_idx_moe: Identifier for the current layer (optional)
+
+        Returns:
+            int: 0 on success, error code on failure.
+
+        Raises:
+            RuntimeError: If HCCL operations (e.g., memory allocation, communication) fail.
+        """
+        if self.enable_dynamic:
+            omni_placement.do_placement_optimizer(self.placement_manager)
 
     def plan(
         self,
@@ -243,46 +242,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         Returns:
             Tuple containing (original tokens, optimized expert IDs, optimized scores)
         """
+        # Input validation check
         if layer_idx_moe > 57:
             return tokens, token_expert_ids, token_expert_scores
-
-        token_expert_ids = expert_mapping[token_expert_ids]
-
+        token_expert_ids = torch.nn.functional.embedding(token_expert_ids,expert_mapping).squeeze(-1)
         return tokens, token_expert_ids, token_expert_scores
-
-
-    def _validate_input(
-        self,
-        tokens: torch.Tensor,
-        expert_ids: torch.Tensor,
-        scores: Optional[torch.Tensor] = None
-    ) -> None:
-        """Validate dimensional consistency of input parameters"""
-        if expert_ids.ndim != 2:
-            raise ValueError("token_expert_ids must be 2-dimensional")
-        if scores is None:
-            return
-        if scores.shape != expert_ids.shape:
-            raise ValueError("token_expert_scores must match the shape of token_expert_ids")
-        for token_scores in scores:
-            for score in token_scores:
-                if score.dtype not in (torch.int, torch.float32) or score < 0:
-                    raise ValueError("Scores must be non-negative numbers")
-
-    def _compute_expert_loads(
-        self,
-        layer_idx_moe: Optional[int] = None,
-        token_expert_ids: Optional[torch.Tensor] = None
-    ) -> None:
-        """
-        Compute current load distribution across experts.
-        Args:
-            token_expert_ids (torch.Tensor): optimized expert assignments, shape [num_tokens, top_k], -1 indicates unassigned
-        Returns:
-            None
-        """
-        self.npu_activation_count[layer_idx_moe] += torch.histc(token_expert_ids,
-                                            bins=self.total_deployed_experts, min=0, max=self.total_deployed_experts-1)
 
 
     @staticmethod
@@ -338,61 +302,18 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             return 0
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
-    def get_local_expert_indices_offset(self, layer_idx_moe: int, current_rank: int, default_experts_per_rank: int) -> int:
-        return self.expert_mapping.get_local_expert_indices_offset(layer_idx_moe, current_rank, default_experts_per_rank)
-
-    def get_deployed_experts_per_layer(self) -> list:
-        return self.expert_mapping.get_deployed_experts_per_layer()
-
-    def get_max_num_deployed_expert_per_rank(self)-> int:
-        return self.max_num_deployed_expert_per_rank
-
     def init_dram_weights(self, param_dict, first_k_dense_replace=3):
-        return
-        moe_weights = self.placement_manager.get_moe_weights()
-        local_rank_pattern = self.expert_mapping.placement_pattern[self.rank].bool()
-        init_dram_weights(moe_weights, param_dict, local_rank_pattern, first_k_dense_replace)
+        if self.enable_dynamic:
+            moe_weights = self.placement_manager.get_moe_weights()
+            init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
 
-    def dump(self,step):
-        enable_dump = self.enable_dump
-        dump_dir = getattr(self.config, 'dump_dir', None)
-        if not enable_dump:
-            if dump_dir is not None:
-                print(f"Warning: dump_dir is setting to {dump_dir}, If You Want to Dump Experts Activation Pls set enable_dump to True")
-            return
-        if dump_dir is None:
-            raise RuntimeError("dump_dir must not be None, Pls Set dump_dir")
-
-        if step==0:
-            self.cluster_activation.stopDump()
-            if not hasattr(self, "prefill_count"):
-                # 属性不存在，初始化为 0
-                self.prefill_count  = 0
-            if not hasattr(self, "last_npu_activation_count"):
-                self.last_npu_activation_count = torch.zeros_like(self.npu_activation_count)
-
-        if step==0 or step==1:
-            self.prefill_count  += 1
-            prefill_dump_dir = os.path.join(dump_dir, "prefill")
-            os.makedirs(prefill_dump_dir, exist_ok=True)
-            file_path = os.path.join(prefill_dump_dir, f"activation_counts_recordstep_{self.prefill_count}_rank_{self.rank}.txt")
-            npu_activation_count = self.npu_activation_count-self.last_npu_activation_count
-            # 打开文件进行写入
-            with open(file_path, 'w') as f:
-                # 遍历每一行
-                for row in npu_activation_count:
-                    # 将每一行的元素转换为字符串，用 \t 分隔
-                    row_str = '\t'.join(str(x.item()) for x in row)
-                    # 写入一行并添加 \n
-                    f.write(row_str + '\n')
-
-        elif step >=32:
-            decoder_dump_dir = os.path.join(dump_dir, "decoder")
-            os.makedirs(decoder_dump_dir, exist_ok=True)
-            self.cluster_activation.setDumpDir(decoder_dump_dir)
-
-        self.last_npu_activation_count = self.npu_activation_count.clone() # 置到最新的激活值
-
+    def record_activation(self, layer_idx_moe, expert_token_num, is_prefill):
+        if self.enable_dump and layer_idx_moe < 58:
+            if is_prefill:
+                self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
+            else:
+                with tng.scope.npu_stream_switch('21'):
+                    self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
 
 # Example usage
 if __name__ == "__main__":

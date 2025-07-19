@@ -145,10 +145,12 @@ def convert_param_to_ctype(param_list):
         #     print("1"*100)
         #     print(address,"length:",length,"element_size: ",element_size)
         #     print("1"*100)
+        dtype = str(tensor.dtype)[len('torch.'):]
         weight = omni_placement.Tensor(
             data_ptr=address,
             length=length,
             element_size=element_size,
+            dtype = dtype,
             name=tensor_name
         )
         return weight
@@ -165,6 +167,7 @@ def convert_param_to_ctype(param_list):
 def calculate_time(func):
     @wraps(func)  # 保留原始函数的元信息
     def wrapper(*args, **kwargs):
+        prefix = kwargs.pop('prefix', "")
         start_time =  time.perf_counter()  # 记录开始时间
         result = func(*args, **kwargs)  # 执行被装饰的函数
         torch.npu.synchronize()
@@ -175,6 +178,6 @@ def calculate_time(func):
         except:
             rank = 0
         if rank ==0:
-            print(f"Function '{func.__name__}' took {elapsed_time:.6f} seconds to execute")
+            print(f"rank: {rank}:, {prefix}Function '{func.__name__}' took {elapsed_time:.6f} seconds to execute",flush=True)
         return result  # 返回原函数的结果
     return wrapper

@@ -78,3 +78,6 @@ mock_model:
     KV_CACHE_MODE: "1" # Enable mock model when set to 1 p/d node
     PREFILL_PROCESS: "1" # Enable mock model when set to 1 only p node
     FORWARD: "10" # Forward time in ms
+async_schedule:
+  api_servers_params:
+    --additional-config: '{"async_schedule": true}' # Enable async scheduler at D node. DO NOT enable it at P side

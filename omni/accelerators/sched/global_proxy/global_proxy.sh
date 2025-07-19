@@ -10,6 +10,8 @@ else
     IN_CONTAINER=false
 fi
 
+client_body_buffer_size="1024K"
+
 ######################
 ## os configuration ##
 ######################
@@ -283,7 +285,7 @@ function nginx_set_http_config() {
     local keep_alive_requests_line="keepalive_requests 20000;"
     local client_header_buffer_size_line="client_header_buffer_size 512k;"
     local large_client_header_buffers_line="large_client_header_buffers 4 512k;"
-    local client_body_buffer_size_line="client_body_buffer_size 128K;"
+    local client_body_buffer_size_line="client_body_buffer_size ${client_body_buffer_size};"
     local client_max_body_size_line="client_max_body_size 100m;"
     local proxy_read_timeout_line="proxy_read_timeout 14400s;"
     local subrequest_output_buffer_size_line="subrequest_output_buffer_size 1m;"
@@ -344,6 +346,7 @@ function nginx_set_upstream() {
         fi
     fi
 
+    local lb_sdk_extra=""
     case "$lb_sdk_line" in
         "weighted_least_active")
             lb_sdk_line="weighted_least_active on"
@@ -354,11 +357,20 @@ function nginx_set_upstream() {
         "prefill_score_balance")
             lb_sdk_line="prefill_score_balance on"
             ;;
+        "pd_score_balance")
+            if [ "$upstream_name" = "prefill_servers" ]; then
+                lb_sdk_line="pd_score_balance prefill"
+            elif [ "$upstream_name" = "decode_servers" ]; then
+                lb_sdk_line="pd_score_balance decode"
+                lb_sdk_extra="pd_score_balance_decode_req_limit 25;"
+            fi
+            ;;
     esac
 
     # Compose new upstream block with 8 spaces indentation
     local upstream_block="    upstream $upstream_name {
         ${zone_line}
+        ${lb_sdk_extra}
         ${lb_sdk_line};
         keepalive 2048;
         keepalive_timeout 110s;
@@ -458,6 +470,7 @@ function nginx_set_load_modules() {
     local load_module_upstream_length_balance_line="load_module /usr/local/nginx/modules/ngx_http_upstream_length_balance_module.so;"
     local load_module_upstream_wla_line="load_module /usr/local/nginx/modules/ngx_http_upstream_weighted_least_active_module.so;"
     local load_module_upstream_psb_line="load_module /usr/local/nginx/modules/ngx_http_upstream_prefill_score_balance_module.so;"
+    local load_module_upstream_pds_line="load_module /usr/local/nginx/modules/ngx_http_upstream_pd_score_balance_module.so;"
 
     # Add all load module at the top
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
@@ -465,6 +478,7 @@ function nginx_set_load_modules() {
     sed -i "3i ${load_module_upstream_length_balance_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_wla_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_psb_line}" "$nginx_conf_file"
+    sed -i "3i ${load_module_upstream_pds_line}" "$nginx_conf_file"
 
 }
 
@@ -540,8 +554,8 @@ rollback=false
 dry_run=false
 log_file=""
 log_level=""
-prefill_lb_sdk="least_conn"
-decode_lb_sdk="weighted_least_active"
+prefill_lb_sdk="pd_score_balance"
+decode_lb_sdk="pd_score_balance"
 
 print_help() {
     echo "Usage:"
@@ -554,12 +568,11 @@ print_help() {
     echo "  --listen-port <PORT>,   -p <PORT>          Listening port"
     echo "  --prefill-servers-list <list>              Comma-separated backend servers for prefill (required to start proxy)"
     echo "  --decode-servers-list <list>               Comma-separated backend servers for decode (required to start proxy)"
+    echo "  --client-body-buffer-size <size>           Set client_body_buffer_size (default: 1024K)"
     echo "  --log-file <path>,      -l <path>          Log file path"
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
-    echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"least_conn\""
-    echo "                                             e.g. \"least_conn;\" or \"prefill_score_balance on;\""
-    echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"weighted_least_active\""
-    echo "                                             e.g. \"weighted_least_active on;\""                                                                                       
+    echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"pd_score_balance\""
+    echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"pd_score_balance\""
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
@@ -570,12 +583,14 @@ print_help() {
     echo "    $0 --listen-port 8080 \\"
     echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
     echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
+    echo "       --client-body-buffer-size 256K \\"
     echo "       --log-file /var/log/proxy.log --log-level info"
     echo ""
     echo "  Dry run (preview configuration):"
     echo "    $0 --dry-run --listen-port 8080 \\"
     echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
-    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002"
+    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
+    echo "       --client-body-buffer-size 256K"
     echo ""
     echo "  Stop global proxy:"
     echo "    $0 -S"
@@ -617,6 +632,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --decode-lb-sdk)
             decode_lb_sdk="$2"
+            shift 2
+            ;;
+        --client-body-buffer-size)
+            client_body_buffer_size="$2"
             shift 2
             ;;
         --log-file|-l)
