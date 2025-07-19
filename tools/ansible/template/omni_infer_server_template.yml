@@ -63,6 +63,7 @@
         -v /etc/hccn.conf:/etc/hccn.conf \
         -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \
         -v $LOG_PATH:$LOG_PATH \
+        -v /data:/data \
         -v $MODEL_PATH:$MODEL_PATH \
         -v $SCRIPTS_PATH:$SCRIPTS_PATH \
         -v $CODE_PATH:$CODE_PATH \
