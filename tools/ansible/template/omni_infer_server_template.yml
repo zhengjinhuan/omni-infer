@@ -198,7 +198,7 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
@@ -262,7 +262,7 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
