@@ -20,5 +20,6 @@ git apply --whitespace=nowarn $PATCH_ROOT/num_token_for_proxy.patch
 git apply --whitespace=nowarn $PATCH_ROOT/chunked_prefill_disable.patch
 git apply --whitespace=nowarn $PATCH_ROOT/multi_step.patch
 git apply --whitespace=nowarn $PATCH_ROOT/multiple_mtp.patch
-git apply --whitespace=nowarn $PATCH_ROOT/patch_support_prefilled_token_skip_tokenize_async_pull_kv.patch
+git apply --whitespace=nowarn $PATCH_ROOT/patch_support_prefilled_token_skip_tokenize.patch
+git apply --whitespace=nowarn $PATCH_ROOT/patch_support_fast_path_pull_kv.patch
 git apply --whitespace=nowarn $PATCH_ROOT/freeze_numpy.patch

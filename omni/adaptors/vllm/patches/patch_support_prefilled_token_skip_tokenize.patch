@@ -145,30 +145,30 @@ index c83ab73b6..d0aeff466 100644
  class EmbedsPrompt(TypedDict):
      """Schema for a prompt provided via token embeddings."""
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 722d85d3b..cf81292e9 100644
+index 123d9f627..b83489f6d 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -30,6 +30,8 @@ from vllm.v1.outputs import ModelRunnerOutput
- from vllm.v1.request import Request, RequestStatus
- from vllm.v1.spec_decode.metrics import SpecDecodingStats
- from vllm.v1.structured_output import StructuredOutputManager
-+import os
-+reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+@@ -33,6 +33,8 @@ from vllm.v1.structured_output import StructuredOutputManager
  
  logger = init_logger(__name__)
  
-@@ -979,6 +981,11 @@ class Scheduler(SchedulerInterface):
++import os
++reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+ 
+ class Scheduler(SchedulerInterface):
+ 
+@@ -1005,6 +1007,11 @@ class Scheduler(SchedulerInterface):
+         num_computed_tokens = len(block_ids) * self.block_size
          if num_computed_tokens == request.num_tokens:
              num_computed_tokens -= 1
- 
++        
 +        if reuse_prefilled_tokens:
 +            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                request.prompt_token_ids.extend(request.kv_transfer_params["prefilled_token"])
 +                request.append_output_token_ids(request.kv_transfer_params["prefilled_token"])
-+
+ 
          # with spec
          if self.vllm_config.speculative_config is not None:
-             request.spec_token_ids.append(0)
 diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
 index 5628f0a11..d0f5fa508 100644
 --- a/vllm/v1/engine/async_llm.py
@@ -222,137 +222,3 @@ index 5628f0a11..d0f5fa508 100644
              # We start the output_handler on the first call to generate() so
              # we can call __init__ before the event loop, which enables us
              # to handle startup failure gracefully in the OpenAI server.
-diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 4d5f4d3d1..b4cc10bce 100644
---- a/vllm/v1/engine/core.py
-+++ b/vllm/v1/engine/core.py
-@@ -39,6 +39,8 @@ from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
- from vllm.v1.structured_output import StructuredOutputManager
- from vllm.version import __version__ as VLLM_VERSION
- 
-+from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
-+
- logger = init_logger(__name__)
- 
- POLLING_TIMEOUT_S = 2.5
-@@ -62,6 +64,14 @@ class EngineCore:
-                     VLLM_VERSION, vllm_config)
- 
-         self.log_stats = log_stats
-+        additional_config = vllm_config.additional_config
-+        if additional_config:
-+            self.async_pull_kv = additional_config.get(
-+                "async_pull_kv", False)
-+        else:
-+            self.async_pull_kv = False
-+        if self.async_pull_kv:
-+            self.pull_kv_lock = threading.Lock()
- 
-         # Setup Model.
-         self.model_executor = executor_class(vllm_config)
-@@ -182,10 +192,13 @@ class EngineCore:
-             # Start grammar compilation asynchronously
-             self.structured_output_manager.grammar_init(req)
- 
--        if req.kv_transfer_params is not None and (
--                not self.scheduler.get_kv_connector()):
--            logger.warning("Got kv_transfer_params, but no KVConnector found. "
--                           "Disabling KVTransfer for this request.")
-+        if req.kv_transfer_params is not None:
-+            if not self.scheduler.get_kv_connector():
-+                logger.warning("Got kv_transfer_params, but no KVConnector found. "
-+                            "Disabling KVTransfer for this request.")
-+            if self.async_pull_kv:
-+                if req.kv_transfer_params["fast_path"]:
-+                    req.status = RequestStatus.WAITING_FOR_REMOTE_KVS
- 
-         self.scheduler.add_request(req)
- 
-@@ -218,7 +231,11 @@ class EngineCore:
-                 outputs=[],
-                 scheduler_stats=self.scheduler.make_stats(),
-             )
--        scheduler_output = self.scheduler.schedule()
-+        if self.async_pull_kv:
-+            with self.pull_kv_lock:
-+                scheduler_output = self.scheduler.schedule()
-+        else:
-+            scheduler_output = self.scheduler.schedule()
-         model_output = self.execute_model(scheduler_output)
-         engine_core_outputs = self.scheduler.update_from_output(
-             scheduler_output, model_output)  # type: ignore
-@@ -408,6 +425,11 @@ class EngineCoreProc(EngineCore):
-                 args=(output_address, engine_index),
-                 daemon=True)
-             self.output_thread.start()
-+            if self.async_pull_kv:
-+                if vllm_config.parallel_config.data_parallel_rank_local < 10:
-+                    set_thread_affinity(self.output_thread, 51+vllm_config.parallel_config.data_parallel_rank_local)
-+                else:
-+                    set_thread_affinity(self.output_thread, 64+vllm_config.parallel_config.data_parallel_rank_local)
-         finally:
-             if input_socket is not None:
-                 input_socket.close(linger=0)
-@@ -606,9 +628,50 @@ class EngineCoreProc(EngineCore):
-                 request_type == EngineCoreRequestType.ADD) else generic_decoder
-             request = decoder.decode(data_frames)
- 
-+            if self.async_pull_kv:
-+                if request_type == EngineCoreRequestType.ADD:
-+                    with self.pull_kv_lock:
-+                        self.try_pull_kv_fast_path(request)
-+
-             # Push to input queue for core busy loop.
-             self.input_queue.put_nowait((request_type, request))
- 
-+    def try_pull_kv_fast_path(self, request: EngineCoreRequest):
-+        req = Request.from_engine_core_request(request)
-+        
-+        if req.kv_transfer_params is not None:
-+            req.kv_transfer_params["fast_path"] = False
-+
-+            connector = self.scheduler.connector
-+            num_external_computed_tokens, load_kv_async = (
-+                    (0, False) if connector is None else
-+                    connector.get_num_new_matched_tokens(
-+                        req, 0))
-+
-+            new_computed_blocks = KVCacheBlocks.create_empty()
-+
-+            new_blocks = self.scheduler.kv_cache_manager.allocate_slots(
-+                    req,
-+                    num_external_computed_tokens,
-+                    0,
-+                    new_computed_blocks,
-+                    num_lookahead_tokens=0,
-+                    delay_cache_blocks=load_kv_async,
-+                )
-+            if new_blocks is None:
-+                # Let's delay to slow path.
-+                return
-+
-+            req.kv_transfer_params["fast_path"] = True
-+            connector.update_state_after_alloc(
-+                        req,
-+                        new_blocks,
-+                        num_external_computed_tokens,
-+                    )
-+           
-+            # Kick off pulling kv directly to worker thread
-+            connector.build_connector_meta(None)
-+
-     def process_output_socket(self, output_path: str, engine_index: int):
-         """Output socket IO thread."""
- 
-@@ -791,3 +854,11 @@ class DPEngineCoreProc(EngineCoreProc):
- 
-         return ParallelConfig.has_unfinished_dp(self.dp_group,
-                                                 local_unfinished)
-+
-+def set_thread_affinity(thread, cpu_id):
-+    import threading
-+    import ctypes
-+    while not hasattr(thread, "native_id"):
-+        pass
-+    tid = thread.native_id
-+    os.sched_setaffinity(tid, {cpu_id})
