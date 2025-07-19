@@ -76,14 +76,14 @@ static char *ngx_http_weighted_least_active_set_flag(ngx_conf_t *cf, ngx_command
 
 static ngx_command_t ngx_http_weighted_least_active_commands[] = {
     { ngx_string("weighted_least_active"),
-      NGX_HTTP_UPS_CONF|NGX_CONF_FLAG,
+      NGX_HTTP_UPS_CONF | NGX_CONF_FLAG,
       ngx_http_weighted_least_active_set_flag,
       NGX_HTTP_SRV_CONF_OFFSET,
       offsetof(ngx_http_weighted_least_active_conf_t, enable),
       NULL },
 
     { ngx_string("weighted_least_active_shm_size"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       0,
       0,
@@ -300,7 +300,6 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     ngx_uint_t i;
     ngx_uint_t n;
     ngx_slab_pool_t *shpool;
-    ngx_http_weighted_least_active_conf_t *conf;
 
     if (ngx_http_upstream_init_round_robin_peer(r, uscf) != NGX_OK) {
         return NGX_ERROR;
@@ -316,8 +315,6 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     if (n > wla_shm->peer_count) {
         n = wla_shm->peer_count;
     }
-
-    conf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_weighted_least_active_module);
 
     ngx_shmtx_lock(&shpool->mutex);
 

@@ -17,7 +17,7 @@ class SiluAndMul(nn.Module):
             kwargs = {
                         "weight_scale": x.get('out_scale').to(torch.float32),
                         "quant_scale": x.get('in_scale', None),  #.to(torch.float32), for smooth quant scale
-                        "activate_scale": x.get('pertoken_scale', None),  # or activation_scale if error
+                        "activation_scale": x.get('pertoken_scale', None),  # or activation_scale if error
                         "bias": None,
                         "quant_offset": None,
                         "group_index": None,

@@ -29,7 +29,9 @@
 
 * `ansible_ssh_private_key_file`: 连接目标机的私钥文件路径。也可以使用密码登录目标机的方式， 则使用 `ansible_password` 字段并将密码填入， 如：`ansible_password: "passwod"` 。
 
-* `node_rank`: Prefill 和 Decode 实例的索引， 一是用于 Prefill 和 Decode 实例的端口区分， 二是用于 prefill 实例 kv_rank 的区分。索引从0开始。
+* `node_rank`: 用于多机组 P 的场景，多机的节点排序，主 P 节点的 node_rank 为0，其他节点的顺序值在此基础上依次递增。
+
+* `kv_rank`: 用于 prefill 实例 kv_rank 的区分。索引从0开始。
 
 * `node_port`: 即 Prefill 和 Decode 的实际 `master-port`。 
     Prefill 实例的默认端口: `global_port_base + port_offset.P + node_rank`。
@@ -39,7 +41,7 @@
     Prefill 实例的 API Server 默认端口: `base_api_port + port_offset.P + node_rank`。
     Decode 实例的 API Server 默认端口: `base_api_port + port_offset.D + node_rank`。
 
-* `role`: Decode 实例的角色，如 `M` 表示 Master， `S` 表示 Slave。 
+* `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。 
 
 * `ascend_rt_visible_devices`: 每个 Prefill 或 Decode 实例需要使用的卡号， 参数值需要严格按照以下格式: `"x,x,x,x"` (用英文逗号分隔的连续值) ， 不能有多余逗号和空格。
 
@@ -51,7 +53,7 @@
 
 * `LOG_PATH_IN_EXECUTOR`: 执行机上存放 Decode/Prefill/Global Proxy 实例日志的路径。
 
-* `LOCAL_CODE_PATH`: 执行机上的代码路径，即用户通过 git clone 拉取的代码存放路径。例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`。
+* `CODE_PATH`: 执行机上的 omniinfer 源码路径，即用户通过 `git clone` 拉取的代码存放路径；例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`；脚本会将执行机上的源码同步到目标机内相同路径下，并且将路径挂载到容器中。
 
 * `MODEL_PATH`: 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致。
 
@@ -68,8 +70,6 @@
 * `DOCKER_NAME_C`: Proxy 节点的容器别名， 默认前缀 `omni_infer_proxy_`。 如 `omni_infer_proxy_c0` 表示 Proxy 第一个实例的容器名。
 
 * `SCRIPTS_PATH`: ansible 运行过程中自动生成的脚本文件存放路径， 用户可以不关注， ansible 执行过程中会自动生成。
-
-* `CODE_PATH`: 容器内的 omni_infer 源码路径。开发人员通过 ansible 脚本将执行机上的源码同步到容器内，存储路径即 `CODE_PATH`。
 
 * `DECODE_TENSOR_PARALLEL_SIZE`: Decode 实例 tensor parallel 参数 tp， 默认值为1。
 

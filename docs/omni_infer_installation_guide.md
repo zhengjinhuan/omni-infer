@@ -69,7 +69,7 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
 
 ## 下载 omni_infer 以及 vllm 源码并安装 vllm
 可以选择在宿主机或者容器内下载源码，如果在容器内下载，应在主机挂载在容器的目录下下载；在宿主机内下载则无此约束。
-执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm，如果用户参考 **通过 ansible 部署** 章节，可以不用执行 4 到 6 步；
+执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm；如果用户参考 **通过 ansible 部署**章节，执行完前两步，进入 omniinfer/infer_engines 下执行 `bash bash_install_code.sh` 即可；另外需要注意当前 omni_cli 和 ansible 还不支持 omni_placement 重新编包。
 1. git clone 拉取 omni_infer 源码；
 2. 在目录 omniinfer/infer_engines 下 git clone 拉取 vllm v0.9.0 源码，注意文件夹名改为 "vllm"；infer_engines下的目录结构如下:
     ![alt text](./figures/20250702_141938.png)
@@ -233,9 +233,18 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
     export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
     export PYTHONPATH=/data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/:$PYTHONPATH
     cd /data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/example/DeepSeek
-    python quant_deepseek_w8a8.py --model_path /data/models/DeepSeek-R1 --save_path /data/models/DeepSeek-R1-Quant --dynamic --disable_anti --quant_mtp
+    python quant_deepseek_w8a8.py --model_path /data/models/DeepSeek-R1 --save_path /data/models/DeepSeek-R1-Quant --from_fp8 --dynamic --disable_anti --quant_mtp --cloud_vllm
     ```
-
+9. 修改转换后的config.json文件中的字段
+    将
+    ```
+    "architectures":"DeepseekV3Fusion",
+    ```
+    替换为
+    ```
+    "architectures":["DeepseekV3ForCausalLM"],
+    ```
+    并将num_hidden_layers从62改为61
 ### 部署框架介绍
 
 以**4机2P1D**进行示例
@@ -249,7 +258,7 @@ ansible 详细说明参考：**omniinfer**/**tools**/**ansible**/**template**/**
 3. omniinfer/omni/cli 路径下的这两种文件即用于 `omni_cli` 一键部署服务，参考 **omni_cli 一键部署**章节。
 
 ### 准备密钥文件
-首先介绍执行机和目标机的概念，执行机就是运行 `omni_cli` 和 `ansible` 命令的主机，而目标机就是被 `omni_cli` 和 `ansible` 管理的远程主机，也就是用户部署服务所用到的机器。在使用一键式部署命令前，用户需要准备好密钥文件，密钥文件用于执行机通过 `ansible` 去登录目标机，如果你已经有登录目标机的密钥文件，就不需要执行下列操作：
+首先介绍执行机和目标机的概念，执行机就是运行 `omni_cli` 和 `ansible` 命令的主机，而目标机就是被 `omni_cli` 和 `ansible` 管理的远程主机，也就是用户部署服务所用到的机器。在使用一键式部署命令前，用户需要准备好密钥文件，执行机使用 `ansible` 命令时就可以通过密钥文件去登录目标机，密钥文件的部署可以参考如下步骤，如果你已经有登录目标机的密钥文件，就不需要执行下列步骤：
 
 1. 首先在执行机生成秘钥对：
     ```bash
@@ -409,6 +418,8 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 ```
 
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --》默认按照task全部任务顺序执行
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_docker --》指定镜像创建并启动新的容器实例
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags ranktable --》生成ranktable文件
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_server --》只执行pd分离服务拉起
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_proxy --》只执行global_proxy分离服务拉起
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags sync_code --》只执行代码同步更新任务

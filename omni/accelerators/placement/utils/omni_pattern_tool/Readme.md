@@ -191,7 +191,7 @@
 | `--num_ranks_of_collecting_data`  | 数据收集的 rank 数                               | `32`                                    | 输入数据对应的 rank 数量，需为正整数。                               |
 | `--num_positions_of_routed_experts`| 路由专家位置数                                   | `256`                                   | 每层的专家总数，需能被 `num_ranks_of_collecting_data` 整除。          |
 | `--num_ranks_target_pattern`      | 目标放置模式的 rank 数                           | `256`                                   | 放置模式的目标 rank 数量，需为正整数。                               |
-| `--num_redundant_layers`          | 冗余或重新排列的层数列表                         | `58`                                    | 指定优化分配的层数，支持多个值，空格分隔。                           |
+| `--num_redundant_layers` | 指定优化分配的层数列表 | `58` | 在 redundant 模式下，指定哪些层被视为高负载层（high_load_layers），这些层将允许专家多次部署（最多 1 + expert_redundant_limit 次），通过 allocate_expert_deployments_improved 和 distribute_experts_to_ranks 分配，budget_limit 设为 num_ranks_target_pattern；非高负载层同样使用优化分配，但 budget_limit=0，限制为每个专家部署一次。在 rearrange 模式下，指定哪些层为高负载层，使用 allocate_expert_deployments_improved 和 distribute_experts_to_ranks 进行优化分配（每个专家部署一次）；非高负载层使用 distribute_experts_sequentially 进行顺序分配。支持多个值，空格分隔。 |
 | `--expert_redundant_limit`        | 每个专家最大额外部署次数                         | `199`                                   | 冗余模式下，专家总部署次数上限为 `1 + expert_redundant_limit`。      |
 | `--num_layers_target_pattern`     | 目标放置模式的层数                               | `58`                                    | 放置模式的层数，通常与 `num_layers` 相同。                           |
 | `--num_eps_target_pattern`        | 每层专家数                                       | `256`                                   | 放置模式的专家数量，需能被 `num_ranks_target_pattern` 整除。         |

@@ -23,7 +23,7 @@
     # Global Configuration 
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
-    MODEL_LEN_MAX_PREFILL: "30000"
+    MODEL_LEN_MAX_PREFILL: "16384"
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     LOCAL_CODE_PATH: "/data/local_code_path"
@@ -132,8 +132,14 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
-      GPU_UTIL=0.92
+      GPU_UTIL=0.88
       VLLM_ENABLE_MC2=1
+
+      # install omni_placement
+      pip install pybind11
+      pip uninstall omni_placement -y 
+      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
@@ -184,11 +190,17 @@
           {% endfor %}
       )
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode.json"
-      EXTRA_ARGS='--enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32'
-      GPU_UTIL=0.95
-      ADDITIONAL_CONFIG='{"enable_graph_mode": true}'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32'
+      GPU_UTIL=0.88
+      ADDITIONAL_CONFIG='{"enable_graph_mode": true, "use_cached_npu_graph": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
+
+      # install omni_placement
+      pip install pybind11
+      pip uninstall omni_placement -y 
+      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
@@ -246,8 +258,13 @@
           ((port++))
         done
       done
+
+      cd ${CODE_PATH}/omniinfer/omni/accelerators/sched/global_proxy
+      bash build.sh
+
       cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" &
+      bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" --log-file /dev/shm/trace/logs/nginx_error.log --log-level notice --core-num 4 --start-core-index 16 
+      echo "The default value for 'pd_score_balance_decode_req_limit' is now 25. If the concurrent batch size for each die is n, it is recommended to set 'pd_score_balance_decode_req_limit' to n+1. Please enter the container for the proxy, modify this value in /usr/local/nginx/conf/nginx.conf, and then execute 'nginx -c /usr/local/nginx/conf/nginx.conf -s reload' to apply the changes." &
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -298,7 +315,7 @@
       -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
       -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
-      -e HOST_IP=$HOST_IP 
+      -e HOST_IP=$HOST_IP
       -e MASTER_PORT=$NODE_PORT
       -e API_PORT=$API_PORT
       -e SERVER_IP_LIST=$SERVER_IP_LIST
@@ -329,8 +346,8 @@
 
     docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ &&pip install -e .'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && bash bash_install_code.sh  && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
 
 
   tasks:
@@ -586,7 +603,7 @@
         - run_server
         - run_proxy
 
-    - name: Display all values. 
+    - name: Display all values.
       debug:
         msg: |
          PREFILL_API_SERVER_LIST: {{ PREFILL_API_SERVER_LIST }}
@@ -608,7 +625,7 @@
       when: "'P' in group_names"
       tags: ranktable
 
-    - name: Generate a script to generate the ranktable file for the decode instances. 
+    - name: Generate a script to generate the ranktable file for the decode instances.
       copy:
         content: "{{ generate_decode_ranktable_cmd }}"
         dest: "$SCRIPTS_PATH/generate_decode_ranktable.sh"

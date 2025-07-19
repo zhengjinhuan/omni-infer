@@ -31,6 +31,7 @@ class ModelParallelConfig:
     dp_size: int = 1
     
     redundancy_expert_num: int = 0
+    redundancy_shared_expert_num: int = 0
     
 @dataclass    
 class ModelProfilingConfig:

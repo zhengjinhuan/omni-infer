@@ -22,10 +22,10 @@
   environment:
     # Global Configuration 
     LOG_PATH: "/data/omniinfer/log"
-    MODEL_PATH: "/path/to/your_model"
+    MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
     MODEL_LEN_MAX_PREFILL: "30000"
     MODEL_LEN_MAX_DECODE: "16384"
-    LOCAL_CODE_PATH: "/data/local_code_path"
+    CODE_PATH: "/data/code_path"
 
     # Configuration for containers 
     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
@@ -33,9 +33,6 @@
     DOCKER_NAME_D: "omni_infer_decode"
     DOCKER_NAME_C: "omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts"
-
-    # code path in container 
-    CODE_PATH: "/workspace"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -69,9 +66,11 @@
         -v /usr/local/sbin:/usr/local/sbin \
         -v /etc/hccn.conf:/etc/hccn.conf \
         -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \
-        -v /tmp:/tmp \
-        -v /data:/data \
         -v $LOG_PATH:$LOG_PATH \
+        -v $MODEL_PATH:$MODEL_PATH \
+        -v $SCRIPTS_PATH:$SCRIPTS_PATH \
+        -v $CODE_PATH:$CODE_PATH \
+        -v {{ ranktable_save_path }}:{{ ranktable_save_path }} \
         -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime \
 
     docker_exec_cmd: |
@@ -114,7 +113,7 @@
         --local-ranktable-list ${decode_ranktable_list} \
         --save-dir ${RANKTABLE_SAVE_PATH}/global
       
-        decode_local_ranktable_merge=$(ls ./*.json | tr '\n' ' ')
+        decode_local_ranktable_merge=$(ls ./local*.json | tr '\n' ' ')
       else
         decode_local_ranktable_merge="${decode_ranktable_list}"
       fi
@@ -128,11 +127,9 @@
 
     run_vllm_server_prefill_cmd: |
       #!/bin/bash
-      
+
       . ~/.bashrc
       HCCL_BUFFSIZE=500
-      tp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
-      ((tp++))
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
@@ -265,12 +262,12 @@
         --core-num $GLOBAL_PROXY_CORE_NUM \
         &
 
-    kill_python_processes_cmd:
+    kill_python_processes_cmd: |
       #!/bin/bash
 
       ps aux | grep "python" | grep -v "grep" | awk '{print $2}' | xargs kill -9
 
-    kill_nginx_processes_cmd:
+    kill_nginx_processes_cmd: |
       #!/bin/bash
 
       ps aux | grep "nginx" | grep -v "grep" | awk '{print $2}' | xargs kill -9
@@ -309,7 +306,7 @@
       /bin/bash -c $SCRIPTS_PATH/generate_global_ranktable.sh
 
     docker_start_vllm_cmd_p: >
-      {{ docker_exec_cmd }} 
+      {{ docker_exec_cmd }}
       -e MODEL_PATH=$MODEL_PATH
       -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
@@ -325,7 +322,7 @@
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
     docker_start_vllm_cmd_d: >
-      {{ docker_exec_cmd }} 
+      {{ docker_exec_cmd }}
       -e MODEL_PATH=$MODEL_PATH
       -e MODEL_LEN_MAX_DECODE=$MODEL_LEN_MAX_DECODE
       -e DECODE_SERVER_LIST=$DECODE_SERVER_LIST
@@ -345,8 +342,8 @@
 
     docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall vllm_ascend -y && pip uninstall omni_infer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && pip uninstall omni_placement -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && pip uninstall vllm -y && pip uninstall omni_infer -y && pip uninstall omni_placement -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e .'"
 
   tasks:
     - name: generate container name.  
@@ -426,11 +423,6 @@
         - run_docker
         - clean_up
 
-    - name: Create the path used to store the log. 
-      command: /bin/bash -c "mkdir -p ${LOG_PATH}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: run_docker
-
     - name: Run container for prefill instances.
       command: bash -c "{{ start_docker_cmd_p }}"
       environment:
@@ -453,31 +445,26 @@
       when: "'C' in group_names"
       tags: run_docker
 
+    - name: Create a directory to store the code.
+      ansible.builtin.file:
+        path: "{{ ansible_env.CODE_PATH }}"
+        state: directory
+      tags: sync_code
+
     - name: The executor synchronizes code to all instances.
       synchronize:
-        src: "{{ ansible_env.LOCAL_CODE_PATH }}/omniinfer"
-        dest: "{{ ansible_env.LOCAL_CODE_PATH }}/"
-      tags: sync_code
-
-    - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_P}:/workspace/"
-      environment:
-        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-      when: "'P' in group_names"
-      tags: sync_code
-
-    - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_D}:/workspace/"
-      environment:
-        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-      when: "'D' in group_names"
-      tags: sync_code
-
-    - name: Copy the file from the host machine to the container
-      command: /bin/bash -c "docker exec $DOCKER_NAME_C rm -rf /workspace/omniinfer && docker cp {{ ansible_env.LOCAL_CODE_PATH }}/omniinfer ${DOCKER_NAME_C}:/workspace/"
-      environment:
-        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-      when: "'C' in group_names"
+        src: "{{ ansible_env.CODE_PATH }}/omniinfer"
+        dest: "{{ ansible_env.CODE_PATH }}/"
+      when: >
+        'P' in group_names or
+        'D' in group_names or
+        (
+          'C' in group_names and 
+          ansible_host not in 
+          (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and 
+          ansible_host not in 
+          (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
+        )
       tags: sync_code
       
     - name: docker_update_prefill_code_cmd.
@@ -494,26 +481,20 @@
       when: "'D' in group_names"
       tags: sync_code
 
-    - name: Create a directory on the local node. 
-      command: bash -c "rm -rf {{ ranktable_save_path }}; mkdir -p {{ ranktable_save_path }}/global {{ ranktable_save_path }}/collect_files_d {{ ranktable_save_path }}/collect_files_p/api;"
+    - name: Create a directory on the executor to store ranktable file.
+      command: bash -c "rm -rf {{ ranktable_save_path }}/*; mkdir -p {{ ranktable_save_path }}/global {{ ranktable_save_path }}/collect_files_d {{ ranktable_save_path }}/collect_files_p/api;"
       delegate_to: localhost
       tags: 
         - run_docker
         - clean_up
 
-    - name: Delete the path used to store the script.
-      command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}"
+    - name: Delete temporary script files.
+      command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}/*"
       register: cmd_result
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: 
         - run_docker
         - clean_up
-
-    - name: Create the path used to store the script.
-      command: /bin/bash -c "mkdir -p ${SCRIPTS_PATH}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: 
-        - run_docker
 
     - name: Register all values. 
       set_fact:  
@@ -630,10 +611,10 @@
         dest: "$SCRIPTS_PATH/generate_global_ranktable.sh"
         mode: '0750'
       when: "'P' in group_names and inventory_hostname == groups['P'][0]"
-      tags: server
+      tags: ranktable
 
-    - name: Delete the path used to store the ranktable files.
-      command: /bin/bash -c "rm -rf {{ ranktable_save_path }}"
+    - name: Delete the the ranktable files.
+      command: /bin/bash -c "rm -rf {{ ranktable_save_path }}/*"
       register: cmd_result
       when: "'P' in group_names or 'D' in group_names"
       tags: 
