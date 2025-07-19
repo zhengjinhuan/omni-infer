@@ -67,6 +67,7 @@ from omni.models.common.layers.linear import (
     AscendMergedColumnParallelLinear,
     AscendRowParallelLinear,
     DP2TPRowParallelLinear,
+    Tp2DpAndTpRowParallelLinear
 )
 from omni.models.common.layers.vocab_parallel_embedding import (
     ParallelLMHead, 
@@ -232,7 +233,7 @@ class ParallelDeepseekMLP(nn.Module):
         is_prefill = attn_metadata is None or attn_metadata.prefill
         if not is_prefill:
             # P and D are both cut, and are concave at the node
-            x = mlp_all_gather(x, dim=0)
+            x = mlp_all_gather(x, dim=0) if model_extra_config.operator_opt_config.enable_node_mlp else x
         else:
             pad_size = 0
             # pd mix use
@@ -246,14 +247,14 @@ class ParallelDeepseekMLP(nn.Module):
                 x = torch.nn.functional.pad(
                     x, (0, 0, 0, pad_size)
                 )
-            x = mlp_all_gather(x, dim=0, comm_group=comm_group)
+            x = mlp_all_gather(x, dim=0, comm_group=comm_group) if model_extra_config.operator_opt_config.enable_node_mlp else x
 
         gate_up, _ = self.gate_up_proj.forward(x)
         x = self.act_fn(gate_up, self.quant_symbol)
         x, _ = self.down_proj.forward(x)
 
         # P and D are both cut, and are concave at the node (16)
-        x = mlp_reduce_scatter(x, comm_group=comm_group)
+        x = mlp_reduce_scatter(x, comm_group=comm_group) if model_extra_config.operator_opt_config.enable_node_mlp else x
         if is_prefill and pad_size > 0:
             x = x[:local_length, :]
         return x, residual
@@ -1048,7 +1049,20 @@ class AscendDeepseekAttention_MLA(nn.Module):
             quant_config=None,
             prefix=f"{prefix}.kv_b_proj")
         # O projection.
-        if model_extra_config.parall_config.o_proj_tp_size > 1:
+        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
+            if model_extra_config.parall_config.o_proj_tp_size > 1:
+                self.o_proj = Tp2DpAndTpRowParallelLinear(self.num_heads * self.v_head_dim,
+                                           hidden_size,
+                                           bias=False,
+                                           quant_config=quant_config,
+                                           prefix=f"{prefix}.o_proj")
+            else:
+                self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
+                                            hidden_size,
+                                            bias=False,
+                                            quant_config=quant_config,
+                                            prefix=f"{prefix}.o_proj")
+        elif model_extra_config.parall_config.o_proj_tp_size > 1:
             self.o_proj = DP2TPRowParallelLinear(self.num_heads * self.v_head_dim,
                                                  hidden_size,
                                                  bias=False,

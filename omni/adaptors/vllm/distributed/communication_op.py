@@ -13,7 +13,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_local_group_from_list,
     get_cross_group_from_list,
     get_mlp_world_group,
-    get_o_proj_world_group,
+    get_o_proj_tp_world_group,
     get_far_cross_group_from_list,
     get_round_cross_group_from_list,
     get_near_cross_group_from_list,
@@ -106,7 +106,7 @@ def mla_tensor_model_parallel_all_gather(input_: torch.Tensor, dim: int = -1, co
         return comm_group.all_gather(input_, dim)
 
 def o_proj_reduce_scatter(input_: torch.Tensor) -> torch.Tensor:
-    return get_o_proj_world_group().reduce_scatter(input_)
+    return get_o_proj_tp_world_group().reduce_scatter(input_)
 def reduce_scatter_world(input_: torch.Tensor, idx:int) -> torch.Tensor:
     return get_world_group_from_list(idx).reduce_scatter(input_)
 

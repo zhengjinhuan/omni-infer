@@ -24,7 +24,7 @@ from vllm.model_executor.layers.linear import (
 )
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding
-from vllm.distributed import get_world_group
+from vllm.distributed import get_world_group, get_tp_group
 from vllm.distributed.communication_op import tensor_model_parallel_all_gather
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_world_size,
@@ -45,6 +45,10 @@ if TYPE_CHECKING:
 
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
 
+from omni.adaptors.vllm.distributed.parallel_state import (
+    get_o_proj_dp_world_group,
+    get_o_proj_tp_size
+)
 
 KVCACHE_NZ_DIM = 16
 
@@ -839,9 +843,13 @@ class AscendMLAImpl(MLAAttentionImpl):
             k_pe = k_pe.unsqueeze(2)
             k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
             k_pe = k_pe.squeeze(2)
+
+        is_attn_output_reshape = model_extra_config.operator_opt_config.prefill_enable_mla_alltoall and attn_metadata is None
+        o_proj_rank_size = get_o_proj_dp_world_group().world_size \
+            if model_extra_config.parall_config.o_proj_tp_size > 1 else get_tensor_model_parallel_world_size()
         attn_output = torch.empty(
-            q.shape[0],
-            self.num_heads,
+            q.shape[0] // o_proj_rank_size if is_attn_output_reshape else q.shape[0],
+            self.num_heads * o_proj_rank_size if is_attn_output_reshape else self.num_heads,
             self.v_head_dim,
             device=q_nope.device,
             dtype=q_nope.dtype)
@@ -902,11 +910,40 @@ class AscendMLAImpl(MLAAttentionImpl):
         else:
             attn_output.fill_(0)
 
-        attn_output = attn_output.view(-1, self.num_heads * self.v_head_dim)
-        if model_extra_config.parall_config.o_proj_tp_size > 1:
-            output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_heads, self.v_head_dim)
+        # if only set prefill_enable_mla_alltoall means prefill o_proj tp to dp
+        # if also set o_proj_tp_size means prefill o_proj tp to dp + tp
+        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
+            if attn_metadata is not None:
+                attn_output = attn_output.view(get_o_proj_dp_world_group().world_size, -1, self.num_heads,
+                                               self.v_head_dim).reshape(-1)
+                all_to_all_attn_output = torch.empty(
+                    [q.shape[0] * self.num_heads * self.v_head_dim],
+                    dtype=attn_output.dtype,
+                    device=current_platform.device_type
+                )
+                device_group = get_o_proj_dp_world_group().device_group \
+                    if model_extra_config.parall_config.o_proj_tp_size > 1 else get_tp_group().device_group
+                dist.all_to_all_single(all_to_all_attn_output, attn_output, group=device_group)
+                if model_extra_config.parall_config.o_proj_tp_size > 1:
+                    attn_output = all_to_all_attn_output.view(
+                        get_tensor_model_parallel_world_size() // get_o_proj_tp_size(),
+                        q.shape[0] // get_tensor_model_parallel_world_size() * get_o_proj_tp_size(),
+                        self.num_heads * self.v_head_dim
+                    ).transpose(0, 1).contiguous()
+                else:
+                    attn_output = all_to_all_attn_output.view(
+                        get_tensor_model_parallel_world_size(),
+                        q.shape[0] // get_tensor_model_parallel_world_size(),
+                        self.num_heads * self.v_head_dim
+                    ).transpose(0, 1).contiguous()
+            output, _ = self.o_proj.forward(
+                attn_output.reshape(-1, o_proj_rank_size * self.num_heads * self.v_head_dim))
         else:
-            output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
+            attn_output = attn_output.view(-1, self.num_heads * self.v_head_dim)
+            if model_extra_config.parall_config.o_proj_tp_size > 1:
+                output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_heads, self.v_head_dim)
+            else:
+                output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
         return output
 
     def _forward_decode(
