@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import zmq
 import os
 import time
+import pickle
 
 from vllm.envs import VLLM_RPC_TIMEOUT
 from vllm.config import VllmConfig
@@ -59,6 +60,7 @@ class ReqMeta:
     remote_block_ids: list[int]
     remote_host: str
     remote_cluster_id: str
+    spec_token_ids: Optional[list[int]]
 
 
 class DatadistConnectorMetadata(KVConnectorMetadata):
@@ -78,6 +80,7 @@ class DatadistConnectorMetadata(KVConnectorMetadata):
             remote_block_ids=kv_transfer_params["remote_block_ids"],
             remote_host=kv_transfer_params["remote_host_ip"],
             remote_cluster_id=kv_transfer_params["remote_cluster_id"],
+            spec_token_ids=kv_transfer_params["spec_token_ids"],
         )
 
 
@@ -135,10 +138,11 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             self,
             request: "Request",
             block_ids: list[int],
+            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if self.connector_scheduler is None:
             raise RuntimeError("self.connector_scheduler cannot be None")
-        return self.connector_scheduler.request_finished(request, block_ids)
+        return self.connector_scheduler.request_finished(request, block_ids, spec_token_ids)
 
     ############################################################
     # Worker Side Methods
@@ -206,6 +210,7 @@ class PrefillConnectorScheduler:
             self,
             request: "Request",
             block_ids: list[int],
+            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         """
         Once a request is finished, determine whether request blocks
@@ -218,7 +223,8 @@ class PrefillConnectorScheduler:
         return delay_free_blocks, dict(
             remote_block_ids=block_ids,
             remote_cluster_id=self.cluster_id,
-            remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}"
+            remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}",
+            spec_token_ids=spec_token_ids
         )
 
 
@@ -381,6 +387,7 @@ class DecodeConnectorScheduler:
             self,
             request: "Request",
             block_ids: list[int],
+            spec_token_ids: Optional[list[int]] = []
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if request.request_id in self.processed_request:
             self.processed_request.remove(request.request_id)
@@ -524,8 +531,8 @@ class DecodeConnectorWorker:
 
     # Now go asynchronous pull_kv
     def start_load_kv(self, metadata: DatadistConnectorMetadata):
+        logger.info(f" ***** start_load_kv: {len(metadata.requests)}")
         futures = []
-        logger.info(f" ***** start_load_kv:{len(metadata.requests)}")
         for req_id, meta in metadata.requests.items():
             if len(meta.local_block_ids) == 0 or \
                     all(isinstance(group_blk, list) and len(group_blk) == 0 for group_blk in meta.local_block_ids):
