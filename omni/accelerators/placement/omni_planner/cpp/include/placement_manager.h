@@ -53,6 +53,7 @@ class Placement {
     // 权重分布式通信变量
     Distribution *dist_ptr_ = nullptr;
     std::vector<bool> is_layer_update;
+    bool enable_dynamic_ = false;
 
   public:
     Placement()
@@ -66,7 +67,8 @@ class Placement {
 
     Placement(int rank, int world_size, int num_devices_per_host,
               ClusterActivation *activation,
-              PlacementMapping *placement_mapping, char *root_info);
+              PlacementMapping *placement_mapping, char *root_info,
+              bool enable_dynamic);
 
     Placement(int rank, int world_size, int num_devices_per_host,
               ClusterActivation *activation, size_t expert_mapping_ptr,

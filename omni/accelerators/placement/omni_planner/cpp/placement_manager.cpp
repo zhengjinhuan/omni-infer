@@ -108,10 +108,11 @@ const int MAX_LAYER = 58;
  */
 Placement::Placement(int rank, int world_size, int num_devices_per_host,
                      ClusterActivation *activations,
-                     PlacementMapping *placement_mapping, char *root_info)
+                     PlacementMapping *placement_mapping, char *root_info,
+                     bool enable_dynamic)
     : rank_(rank), world_size_(world_size),
       num_devices_per_host_(num_devices_per_host), activations_(activations),
-      mapping_(placement_mapping) {
+      mapping_(placement_mapping), enable_dynamic_(enable_dynamic) {
 
     // Initialize components immediately
     initialize_components(root_info);
@@ -272,6 +273,11 @@ void Placement::placement_manager(aclrtContext currentContext) {
     while (!should_stop_) {
         dump_count++;
         activations_->dump_and_collect(dist_ptr, stream, dump_count);
+
+        if (!enable_dynamic_) {
+            std::this_thread::sleep_for(std::chrono::seconds(collect_times));
+            continue;
+        }
 
         std::string log_info = "";
         // 构建下发交换队列
@@ -477,8 +483,7 @@ void Placement::placement_manager(aclrtContext currentContext) {
 
         activations_->collect(dist_ptr,
                               stream); // Clear the old placement activations
-        std::this_thread::sleep_for(
-            std::chrono::seconds(collect_times)); // wait other ranks
+        std::this_thread::sleep_for(std::chrono::seconds(collect_times));
     }
 
     dist_ptr->release_recv_buffs();
@@ -574,10 +579,11 @@ PYBIND11_MODULE(omni_placement, m) {
     py::class_<Placement>(m, "Placement")
         .def(py::init<>())
         .def(py::init<int, int, int, ClusterActivation *, PlacementMapping *,
-                      char *>(),
+                      char *, bool>(),
              py::arg("rank"), py::arg("world_size"),
              py::arg("num_devices_per_host"), py::arg("activation"),
-             py::arg("placement_mapping"), py::arg("root_info"))
+             py::arg("placement_mapping"), py::arg("root_info"),
+             py::arg("enable_dynamic"))
         .def(py::init<int, int, int, ClusterActivation *, size_t,
                       std::vector<int64_t>, int, size_t, std::vector<int64_t>,
                       int>(),

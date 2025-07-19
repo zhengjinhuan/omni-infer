@@ -47,35 +47,17 @@ class ExpertMapping:
 
     def get_selector(self):
         return self.selector
-    def _resolve_pattern_path(self) -> Optional[Path]:
-        """Resolve placement pattern path from configuration."""
-        raw_path = self.pattern_path
-        if not raw_path or raw_path == "":
-            return None
-        return self._convert_pattern_path(raw_path)
-
-    def _convert_pattern_path(self, path: str) -> str:
-        # Check if the path is a relative path
-        if not os.path.isabs(path):
-            # Get the absolute path of the current script file
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            # Create a Path object and resolve the relative path
-            absolute_path = (Path(current_dir) / path).resolve()
-            return str(absolute_path)
-        else:
-            # If it's already an absolute path, return it directly
-            return path
 
     def _load_placement_pattern_with_validation(self) -> Optional[torch.Tensor]:
         """Load and validate placement pattern from config."""
-        pattern_path = self._resolve_pattern_path()
-        if not pattern_path:
+        
+        if not self.pattern_path:
             return None
-        if not os.path.exists(pattern_path):
-            raise FileNotFoundError(f"Placement pattern file not found: {pattern_path}")
+        if not os.path.exists(self.pattern_path):
+            raise FileNotFoundError(f"Placement pattern file not found: {self.pattern_path}")
         try:
             pattern = torch.tensor(
-                np.load(pattern_path).astype(np.int32),
+                np.load(self.pattern_path).astype(np.int32),
                 dtype=torch.int32,
                 device=self.device
             )

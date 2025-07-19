@@ -1174,7 +1174,7 @@ class NPUModelRunner(GPUModelRunner):
                 "-O %s to use NPU graphs.", CompilationLevel.PIECEWISE)
         
         if model_extra_config.operator_opt_config.use_omni_placement:
-            self.planner.start_dynamic_optimize_expert_loaded_balance()
+            self.planner.start_dynamic_optimize_expert_load_balance()
 
     def _get_closest_gear(self, max_num_token):
         for gear in self.decode_gear_list:
