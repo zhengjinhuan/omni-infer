@@ -352,7 +352,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         input_positions = self.runner.positions_cpu[:num_actual_tokens].to(
             device, non_blocking=True)
 
-        # prefill也需要做padding，不然算子shape会报错
+        # pad prefill to avoid error of operator's shape assert
         if graph_pad_size > 0:
             padding = torch.full((graph_pad_size, ),
                                     PAD_SLOT_ID,
