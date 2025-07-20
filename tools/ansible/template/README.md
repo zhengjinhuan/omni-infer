@@ -13,9 +13,11 @@
 
 # 相关文件解释说明
 ## omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml
-两个文件一个用于 2P1D 四机场景，一个用于 4P1D 八机场景，都是用于定义被管理目标机的配置信息；文件中参数配置说明如下: 
+两个文件一个用于 2P1D 四机场景，一个用于 4P1D 八机场景，都是用于定义被管理目标机的配置信息；文件中参数配置说明如下:
 
 * `ansible_user`: 远程目标机的用户名， 如 user 等。
+
+* `ansible_ssh_private_key_file`: 连接目标机的私钥文件路径。也可以使用密码登录目标机的方式， 则使用 `ansible_password` 字段并将密码填入， 如：`ansible_password: "password"` 。
 
 * `global_port_base`: 基础端口号， 用于作为 `master-port` 的基准。
 
@@ -27,13 +29,11 @@
 
 * `ansible_host`: 目标机的 IP 。
 
-* `ansible_ssh_private_key_file`: 连接目标机的私钥文件路径。也可以使用密码登录目标机的方式， 则使用 `ansible_password` 字段并将密码填入， 如：`ansible_password: "passwod"` 。
-
-* `node_rank`: 用于多机组 P 的场景，多机的节点排序，主 P 节点的 node_rank 为0，其他节点的顺序值在此基础上依次递增。
+* `node_rank`: 用于多机组 P/D 的场景，多机的节点排序，主 P/D 节点的 node_rank 为0，其他节点的顺序值在此基础上依次递增。
 
 * `kv_rank`: 用于 prefill 实例 kv_rank 的区分。索引从0开始。
 
-* `node_port`: 即 Prefill 和 Decode 的实际 `master-port`。 
+* `node_port`: 即 Prefill 和 Decode 的实际 `master-port`。
     Prefill 实例的默认端口: `global_port_base + port_offset.P + node_rank`。
     Decode 实例的默认端口: `global_port_base + port_offset.D`。
 
@@ -41,13 +41,13 @@
     Prefill 实例的 API Server 默认端口: `base_api_port + port_offset.P + node_rank`。
     Decode 实例的 API Server 默认端口: `base_api_port + port_offset.D + node_rank`。
 
-* `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。 
+* `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。
 
 * `ascend_rt_visible_devices`: 每个 Prefill 或 Decode 实例需要使用的卡号， 参数值需要严格按照以下格式: `"x,x,x,x"` (用英文逗号分隔的连续值) ， 不能有多余逗号和空格。
 
 
 ## omni_infer_server_template.yml
-该文件作用是管理目标节点执行相应的任务；文件中参数配置说明如下: 
+该文件作用是管理目标节点执行相应的任务；文件中参数配置说明如下:
 
 * `LOG_PATH`: Decode/Prefill/Global Proxy 实例日志的存放的路径。
 
@@ -56,6 +56,8 @@
 * `CODE_PATH`: 执行机上的 omniinfer 源码路径，即用户通过 `git clone` 拉取的代码存放路径；例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`；脚本会将执行机上的源码同步到目标机内相同路径下，并且将路径挂载到容器中。
 
 * `MODEL_PATH`: 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致。
+
+* `HTTP_PROXY`: 下载 nginx 的 HTTP 代理地址，如果不需要代理可以留空。
 
 * `MODEL_LEN_MAX_PREFILL`: Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为30000。
 
@@ -90,7 +92,7 @@ baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everyt
 enabled=1
 gpgcheck=0
 gpgkey=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/RPM-GPG-KEY-openEuler
-        
+
 [openEuler-EPOL]
 name=openEuler-epol
 baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/EPOL/main/aarch64/
@@ -130,7 +132,7 @@ yum install openssh-server
 # 操作步骤
 
 ## 修改配置
-在 **omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml** 中， 只需修改以下配置项 `ansible_user / ansible_ssh_private_key_file`; 
+在 **omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml** 中， 只需修改以下配置项 `ansible_user / ansible_ssh_private_key_file`;
 在 **omni_infer_server_template.yml** 中， 只需修改以下配置项 `MODEL_PATH / DOCKER_IMAGE_ID / CODE_PATH / LOCAL_CODE_PATH`， 就可拉起 omniai 服务。
 此外，建议修改 omni_infer_server_template.yml 中的 `LOG_PATH`、`LOG_PATH_IN_EXECUTOR`、`SCRIPTS_PATH` 和 `ranktable_save_path`，防止路径下的文件被其他人覆盖。
 

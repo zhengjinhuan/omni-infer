@@ -8,17 +8,15 @@
 
 **操作系统：** Linux
 
-**Python:** >=3.9, <=3.11
+**镜像版本：**
 
-**PyTorch:** >=2.5.1, < 2.6
+[**驱动检查**](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#ascend-npu%E5%9B%BA%E4%BB%B6%E5%92%8C%E9%A9%B1%E5%8A%A8%E6%A3%80%E6%9F%A5): `npu-smi info` 检查Ascend NPU固件和驱动是否正确安装。
 
-[**驱动检查**](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#ascend-npu%E5%9B%BA%E4%BB%B6%E5%92%8C%E9%A9%B1%E5%8A%A8%E6%A3%80%E6%9F%A5): `npu-smi info`
-
-**网络联通：** 使用ssh命令确认机器互连。
+**网络联通：** 使用[ssh命令](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E7%BD%91%E7%BB%9C%E8%BF%9E%E9%80%9A%E6%80%A7%E6%A3%80%E6%9F%A5)确认机器互连。
 
 ## 模型准备
 
-基于开源的 DeepSeek-V3/R1 进行[权重转换](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E6%9D%83%E9%87%8D%E8%BD%AC%E6%8D%A2)。
+基于开源的 DeepSeek-V3/R1 进行[权重转换](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E6%9D%83%E9%87%8D%E8%BD%AC%E6%8D%A2)。目前提供一份转换好的权重供直接下载使用，[下载链接](https://e-share.obs-website.cn-north-1.myhuaweicloud.com?v2token=KBL+tPW8sihb1DQcY03GYZZdWrdKg8E2xUI8XrCsr7jo72H22pg6bY8V89ZgmD4Zq4VEcQa802+q2nR4Bydrzm9jjAO1ohYLIIDMeRtttFZR+EpCA2PWmZaVxazPlkJ6qtADFZaESGpEHUxChlLlFQ2xeLp6sXP5qVsj6JEPRh7MA6SmfqK8mLdgi/rmBjY6A0CRJFEe1K5JrgONubynmJaescenf5t0h36szT23dHV46pjw0BCjCFtxJyXqgGWc4T7pv3tugR09oHNLFaVoPi4ZlElNciul9a90kZ6ZOoNJ3ufoRyHA9bTdwqeJGg8jsBFzRr+d+tU1GXd8UaswFHUo805A3MoPlqSRiYThAz+3aPorLkveex99xiEwCq+pajn6S9GzSeY8FLjEMlopGMKfHJ6Z1B5aoGpIBY8UsjG878ixsE/YiZmetkXDO/FPYr/r9sbHqg5pLVXCmaH7uHqVvDabx6Mx0a8GRITN+yjwg08LjS3C76gwCfEqD7FegGitodr7RLSDsuewjGqjgK/7ST2J320CoBBBw5vtAAsDYiDC6LJOEZCN2ht/eAZUHvy7ZrCeBMN1AmagvqsXVJrsn2tof/CL5LpRm7z5eVoFAhLjpyKIOgWjUksthT0MLmqIZCiMoslj9BfCKv780nEeDQZqO/eerh7zT4qojk8Xaxuj9Xvv1fKtJnId608QPtLXDireSzh6aa4tF1b5W747AhNAPzLoNdOzcLheYyw=_Vsd2i2lmljqrcbVJHDC8TZw7tQFHpoZ6ZS0O3b864QM=_DuHhemY++UqCJXeQyjgwdA==)（提取码为12345678）。
 
 ## 部署
 
@@ -33,14 +31,18 @@ git clone https://gitee.com/omniai/omniinfer.git
 
 详见[ansible部署文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/README.md)。以下为快速部署示例。
 
+#### 环境准备
+
+安装ansible，参考[文档](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E7%8E%AF%E5%A2%83%E5%87%86%E5%A4%87-1)。
+
 #### 修改配置文件
 
 需要修改`omni_infer_inventory_used_for_xP1D.yml`和 `omni_infer_server_template` 两处配置文件，位于`omniinfer/tools/ansible/templete/`路径下。以2P1D为例:
 
 1. **omni_infer_inventory_used_for_2P1D.yml**
-   
+
    将`p0/p1/d0/d1/c0`下面的`ansible_host:`值改为对应的IP：
-   
+
    ```YAML
    children:
      P:
@@ -48,29 +50,37 @@ git clone https://gitee.com/omniai/omniinfer.git
          p0:
            ansible_host: "127.0.0.1"  # P0节点的IP
            ...
+           host_ip: "127.0.0.1"  # P0节点的IP
+           ...
 
          p1:
            ansible_host: "127.0.0.2"  # P1节点的IP
            ...
-        
+           host_ip: "127.0.0.2"  # P1节点的IP
+           ...
+
      D:
        hosts:
          d0:
            ansible_host: "127.0.0.3"  # D0 节点的IP
            ...
-        
+           host_ip: "127.0.0.3"       # D0 节点的IP
+           ...
+
          d1:
            ansible_host: "127.0.0.4"  # D1 节点的IP
            ...
-     
+           host_ip: "127.0.0.3"       # D0 节点的IP
+           ...
+
      C:
        hosts:
          c0:
            ansible_host: "127.0.0.1"  # C0 节点的IP
            ...
-      
+
    ```
-   
+
    生成私钥文件，参考[文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/README.md#%E5%AF%86%E9%92%A5%E6%96%87%E4%BB%B6%E7%9A%84%E5%87%86%E5%A4%87)。将`ansible_ssh_private_key_file:`修改为私钥文件路径：
 
    ```YAML
@@ -86,12 +96,14 @@ git clone https://gitee.com/omniai/omniinfer.git
     修改以下环境变量
     ```yaml
     environment:
-        # Global Configuration 
+        # Global Configuration
         LOG_PATH: "/data/log_path"
         MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"  #模型文件路径
         LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
+        CODE_PATH: "/data/local_code_path"  # omniinfer本地代码路径
+        HTTP_PROXY: ""  # 下载nginx的HTTP代理地址，如果不需要代理可以留空
 
-        # Configuration for containers 
+        # Configuration for containers
         DOCKER_IMAGE_ID: "REPOSITORY:TAG" #镜像与标签
         DOCKER_NAME_P: "you_name_omni_infer_prefill" # P容器名称
         DOCKER_NAME_D: "you_name_omni_infer_decode"  # D容器名称
@@ -143,5 +155,5 @@ ansible部署默认开启 MTP 以优化性能。如需调整 `--max-num-seqs`（
 ```JSON
 "decode_gear_list": [batch_size * (1+num_speculative_tokens)]
 ```
- 
+
  以MTP 1为例，`--max-num-seqs`设置为32，`"decode_gear_list":[64]`。
