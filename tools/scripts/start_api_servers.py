@@ -273,6 +273,7 @@ if __name__ == "__main__":
         extra_args=args.extra_args,
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp
+        num_speculative_tokens=args.num_speculative_tokens
     )
 
     # Register SIGINT handler for Ctrl+C
