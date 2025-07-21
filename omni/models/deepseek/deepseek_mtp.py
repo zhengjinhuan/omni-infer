@@ -23,7 +23,10 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler
-from .deepseek_v3 import DeepseekDecoderLayer
+if os.getenv("ASCEND_PLATFORM", "A3")=="A2":
+    from .deepseek_v3_a2 import DeepseekDecoderLayer
+else:
+    from .deepseek_v3 import DeepseekDecoderLayer
  
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
