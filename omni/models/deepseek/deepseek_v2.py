@@ -69,8 +69,7 @@ from vllm.model_executor.models.utils import (
 from vllm.sequence import IntermediateTensors
 
 import omni.adaptors.vllm.envs as envs_ascend
-from omni.ops.fused_moe import AscendFusedMoE
-from omni.ops.quantization.w8a8_dynamic import AscendW8A8DynamicLinearMethod
+
 
 VLLM_ENABLE_MC2: bool = envs_ascend.VLLM_ENABLE_MC2
 
@@ -104,6 +103,7 @@ class CustomDeepseekV2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
         # NOTE: `torch_npu.npu_dequant_swiglu_quant` can only be enabled in dynamic quant
+        from omni.ops.quantization.w8a8_dynamic import AscendW8A8DynamicLinearMethod
         self.is_dynamic_quant = not isinstance(
             self.gate_up_proj.quant_method,
             UnquantizedLinearMethod) and isinstance(
@@ -180,6 +180,7 @@ class CustomDeepseekV2MoE(nn.Module):
         else:
             self.gate.e_score_correction_bias = None
 
+        from omni.ops.fused_moe import AscendFusedMoE
         self.experts = AscendFusedMoE(
             num_experts=config.n_routed_experts,
             top_k=config.num_experts_per_tok,

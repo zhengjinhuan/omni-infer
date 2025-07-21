@@ -609,7 +609,7 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
         drop_pad_mode=0,
         row_idx_type=0,
         quant_mode=1)
- 
+
     tokens_per_expert_group = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
     dist.all_to_all_single(tokens_per_expert_group, tokens_per_expert)  # (total_experts,) --> (total_ranks * n_routed_experts_per_rank)
  
