@@ -22,7 +22,7 @@
   environment:
     # Global Configuration
     LOG_PATH: "/data/log_path"
-    MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"
+    MODEL_PATH: "/data/models/DeepSeek-R1-w8a8-fusion"
     MODEL_LEN_MAX_PREFILL: "32000"
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
@@ -55,6 +55,8 @@
         --device=/dev/hisi_hdc \
         --device=/dev/devmm_svm \
         --entrypoint=bash \
+        -v /data:/data \
+        -v /tmp:/tmp \
         -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
         -v /usr/local/dcmi:/usr/local/dcmi \
         -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
@@ -63,7 +65,6 @@
         -v /etc/hccn.conf:/etc/hccn.conf \
         -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \
         -v $LOG_PATH:$LOG_PATH \
-        -v /data:/data \
         -v $MODEL_PATH:$MODEL_PATH \
         -v $SCRIPTS_PATH:$SCRIPTS_PATH \
         -v $CODE_PATH:$CODE_PATH \
@@ -179,6 +180,7 @@
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
         export MASTER_NODE_IP=$HOST_IP
@@ -199,7 +201,7 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
@@ -260,11 +262,12 @@
       ADDITIONAL_CONFIG='{"enable_graph_mode": true, "use_cached_npu_graph": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
@@ -329,21 +332,16 @@
 
       NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
       if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
-        echo "Trying to download nginx-${NGINX_VERSION}.tar.gz..."
         wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"
-        echo "Download succeeded."
-      else
-        echo "nginx-${NGINX_VERSION}.tar.gz already exists."
       fi
+
+      tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
       unset http_proxy
       unset https_proxy
-      tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
-
       bash build.sh
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" --log-file /dev/shm/trace/logs/nginx_error.log --log-level notice --core-num 4 --start-core-index 16
-      echo "The default value for 'pd_score_balance_decode_req_limit' is now 25. If the concurrent batch size for each die is n, it is recommended to set 'pd_score_balance_decode_req_limit' to n+1. Please enter the container for the proxy, modify this value in /usr/local/nginx/conf/nginx.conf, and then execute 'nginx -c /usr/local/nginx/conf/nginx.conf -s reload' to apply the changes." &
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -354,6 +352,11 @@
       #!/bin/bash
 
       ps aux | grep "nginx" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+
+    kill_ray_processes_cmd: |
+      #!/bin/bash
+
+      ps aux | grep "ray" | grep -v "grep" | awk '{print $2}' | xargs kill -9
 
     start_docker_cmd_p: >
       {{ docker_run_cmd }}
@@ -366,8 +369,6 @@
     start_docker_cmd_c: >
       {{ docker_run_cmd }}
       -e PROXY_NODE_PORT=$NODE_PORT
-      -e http_proxy=$HTTP_PROXY
-      -e https_proxy=$HTTP_PROXY
       -d --name $DOCKER_NAME_C $DOCKER_IMAGE_ID
 
     docker_generate_prefill_ranktable_cmd: >
@@ -429,9 +430,14 @@
       -d $DOCKER_NAME_D
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
 
-    docker_start_proxy_cmd_c: "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh"
+    docker_start_proxy_cmd_c: >
+      {{ docker_exec_cmd }}
+      -e http_proxy=$HTTP_PROXY
+      -e https_proxy=$HTTP_PROXY
+      -d $DOCKER_NAME_C
+      /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh  && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
     docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
 
   tasks:
@@ -441,14 +447,8 @@
         ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
         ACTUAL_DOCKER_NAME_C: "{{ ansible_env.DOCKER_NAME_C }}_{{ inventory_hostname }}"
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags:
-        - run_docker
-        - sync_code
-        - ranktable
-        - run_server
-        - run_proxy
-        - clean_up
-
+      tags: always
+      
     - name: Check and delete Prefill/Decode group Docker containers.
       block:
         - name: Check whether the container exists.
@@ -884,6 +884,14 @@
       when: "'P' in group_names or 'D' in group_names"
       tags: run_server
 
+    - name: Generate a script to kill all Ray processes in the container. 
+      copy:
+        content: "{{ kill_ray_processes_cmd }}"
+        dest: "$SCRIPTS_PATH/kill_ray_processes.sh"
+        mode: '0750'
+      when: "'P' in group_names or 'D' in group_names"
+      tags: run_server
+
     - name: Kill all Python processes in the container of prefill.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
       environment:
@@ -893,8 +901,26 @@
       when: "'P' in group_names"
       tags: run_server
 
+    - name: Kill all Ray processes in the container of prefill.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      failed_when: false
+      no_log: true
+      when: "'P' in group_names"
+      tags: run_server
+
     - name: Kill all Python processes in the container of decode.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      failed_when: false
+      no_log: true
+      when: "'D' in group_names"
+      tags: run_server
+
+    - name: Kill all Ray processes in the container of decode.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
       failed_when: false
@@ -959,9 +985,9 @@
       tags:
         - run_server
 
-    - name: Wait 10 seconds.
+    - name: Wait 20 seconds.
       pause:
-        seconds: 10  # Support decimals（such as 0.5s）
+        seconds: 20  # Support decimals（such as 0.5s）
       when: "(NODE_IP_LIST | string).split(',') | length >= 2"
       tags:
         - run_server
