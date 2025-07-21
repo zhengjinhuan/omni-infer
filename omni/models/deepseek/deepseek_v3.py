@@ -530,6 +530,7 @@ class DeepseekMoE(nn.Module):
 
 
     def _forward_decode_bf16(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
+        is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
         if self.warm_up:
             self.warm_up = False
         router_logits, _ = self.gate.forward(hidden_states.float())
@@ -606,11 +607,7 @@ class DeepseekMoE(nn.Module):
 
         group_list = expert_token_nums.to(torch.int64)
         if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
-            if is_prefill:
-                layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-            else:
-                with tng.scope.npu_stream_switch('21'):
-                    layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+            layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
         # cal experts
         weight1_3 = self.experts.w13_weight
@@ -681,6 +678,7 @@ class DeepseekMoE(nn.Module):
 
 
     def _forward_decode_a8w8(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
+        is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
         if self.warm_up:
             self.warm_up = False
         with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):

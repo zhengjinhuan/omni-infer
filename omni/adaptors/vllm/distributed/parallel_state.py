@@ -159,6 +159,8 @@ def initialize_o_proj_tp_world_group(backend) -> None:
         raise RuntimeError("torch.distributed must be initialized")
     world_size: int = torch.distributed.get_world_size()
     local_size = model_extra_config.parall_config.o_proj_tp_size
+    if local_size < 1:
+        raise RuntimeError("model_extra_config.parall_config.o_proj_tp_size must larger than or equal to 1")
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
 
     num_local_groups: int = world_size // local_size
