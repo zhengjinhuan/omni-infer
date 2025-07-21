@@ -333,33 +333,17 @@ class FusedMoE(torch.nn.Module):
                     e_score_correction_bias=e_score_correction_bias)
                 topk_weights = topk_weights * routed_scaling_factor
             else:
-                if is_prefill:
-                    topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
-                        router_logits.float(),
-                        k=top_k,  # topk is currently 8
-                        bias=e_score_correction_bias,    # float32
-                        k_group=topk_group,  # fix: 4
-                        group_count=num_expert_group,  # fix 8
-                        group_select_mode=1,  # 0: maximum in group; 1: topk2.sum(fix)
-                        renorm=0,  # 0: softmax->topk(fix); 1: topk->softmax
-                        norm_type=1,  # 0: softmax; 1: sigmoid(fix)
-                        routed_scaling_factor=routed_scaling_factor,
-                        eps=float(1e-20))
-                else:
-                    # Only single operator is supported.
-                    # topk_weights, topk_ids, _ = torch.ops.npu_inference.npu_moe_gating_top_k(
-                    # Support single operator + graph mode
-                    topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
-                        router_logits,
-                        k=top_k,  # topk is currently 8
-                        bias=e_score_correction_bias,  # float32
-                        k_group=topk_group,  # fix: 4
-                        group_count=num_expert_group,  # fix 8
-                        group_select_mode=1,  # 0: maximum in group; 1: topk2.sum(fix)
-                        renorm=0,  # 0: softmax->topk(fix); 1: topk->softmax
-                        norm_type=1,  # 0: softmax; 1: sigmoid(fix)
-                        routed_scaling_factor=routed_scaling_factor,
-                        eps=float(1e-20))
+                topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
+                    router_logits.float(),
+                    k=top_k,  # topk is currently 8
+                    bias=e_score_correction_bias,    # float32
+                    k_group=topk_group,  # fix: 4
+                    group_count=num_expert_group,  # fix 8
+                    group_select_mode=1,  # 0: maximum in group; 1: topk2.sum(fix)
+                    renorm=0,  # 0: softmax->topk(fix); 1: topk->softmax
+                    norm_type=1,  # 0: softmax; 1: sigmoid(fix)
+                    routed_scaling_factor=routed_scaling_factor,
+                    eps=float(1e-20))
                 row_idx = torch.arange(topk_ids.numel(), device=current_platform.device_type, dtype=torch.int32).view(-1, router_logits.shape[
                     0]).transpose(0, 1)
         elif custom_routing_function is None:

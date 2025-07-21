@@ -3,6 +3,7 @@
 
 import math
 from typing import Callable, List, Optional, Dict, Any
+import os
 
 import torch, torch_npu
 #from mindspeed.ops import quant_gmm
@@ -20,8 +21,8 @@ from omni.models.common.layers.fused_moe.fused_moe import (
     fused_experts_w8a8_moe_dispatch_combine, 
     moe_infer_fusion,
     fused_experts_w8a8_allgather_ep,
+    fused_experts_w8a8_allgather_ep_a2
 )
-
 # OMNI_PLANNER: import omni planner instance, all layers share the same instance(singleton instance)
 if model_extra_config.operator_opt_config.use_omni_placement:
     from omni_planner import OmniPlanner
@@ -38,6 +39,8 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
     def __init__(self):
         self.initialized = False
         self.warm_up = True
+        self.n_routed_experts = None
+        self.smooth_scale = None
     
     @staticmethod
     def get_weight(num_experts: int, intermediate_size_per_partition: int,
@@ -84,7 +87,9 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
         if model_extra_config.operator_opt_config.gmm_nz:
             layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
             layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
-        if not model_extra_config.operator_opt_config.opt_w2_scale_cast:
+        if model_extra_config.operator_opt_config.pd_seperate_prefill:
+            layer.w2_weight_scale = torch.nn.Parameter(layer.w2_weight_scale.to(torch.bfloat16), requires_grad=False)
+        elif not model_extra_config.operator_opt_config.opt_w2_scale_cast:
             layer.w2_weight_scale = torch.nn.Parameter(layer.w2_weight_scale.to(torch.float32), requires_grad=False)
         layer.w13_weight_scale = torch.nn.Parameter(layer.w13_weight_scale.to(torch.float32), requires_grad=False)
         self.n_routed_experts = len(layer.w13_weight)
@@ -95,6 +100,8 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
             self.local_expert_indices_offset + i for i in range(self.n_routed_experts)
         ]
         self.initialized = True
+        self.smooth_scale = torch.ones((self.n_routed_experts, layer.w13_weight_scale.shape[-1]//2), dtype=torch.float32, device="npu")
+        torch._dynamo.mark_static(self.smooth_scale)
 
 
     def apply(
@@ -137,8 +144,21 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
                                                                                              dtype=torch.int64,
                                                                                              device=current_platform.device_type) * avg_num_tokens
                     AscendCompressedTensorsW8A8Int8MoEMethod.LAST_SEQ_LEN = x.shape[0]
-
-                out = fused_experts_w8a8_allgather_ep(hidden_states=x,
+                if os.getenv("ASCEND_PLATFORM", "A3") == "A2":
+                    out = fused_experts_w8a8_allgather_ep_a2(hidden_states=x,
+                                                        pertoken_scale=pertoken_scale,
+                                                        w1=layer.w13_weight,
+                                                        w2=layer.w2_weight,
+                                                        w1_scale=layer.w13_weight_scale,
+                                                        w2_scale=layer.w2_weight_scale,
+                                                        topk_weights=topk_weights,
+                                                        topk_ids=topk_ids,
+                                                        n_routed_experts=self.n_routed_experts,
+                                                        attn_metadata=attn_metadata,
+                                                        max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank, #ENABLE_OMNI_PLANNER
+                                                        smooth_scale=self.smooth_scale)
+                else:
+                    out = fused_experts_w8a8_allgather_ep(hidden_states=x,
                                                       pertoken_scale=pertoken_scale,
                                                       w1=layer.w13_weight,
                                                       w2=layer.w2_weight,

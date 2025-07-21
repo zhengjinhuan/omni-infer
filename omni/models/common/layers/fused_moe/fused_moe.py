@@ -831,3 +831,100 @@ def shared_expert_alltoall_ep(hidden_states: torch.Tensor, expert: torch.nn.Modu
 
     inverse_indices = np.argsort(sorted_indices, kind='stable')
     return recv_back_data[inverse_indices]
+
+def fused_experts_w8a8_allgather_ep_a2(hidden_states: torch.Tensor,
+                                    pertoken_scale: torch.Tensor,
+                                    w1: torch.Tensor,
+                                    w2: torch.Tensor,
+                                    w1_scale: torch.Tensor,
+                                    w2_scale: torch.Tensor,
+                                    topk_weights: torch.Tensor,
+                                    topk_ids: torch.Tensor,
+                                    n_routed_experts: int,
+                                    attn_metadata: AttentionMetadata,
+                                    max_num_deployed_expert_per_rank: int, #ENABLE_OMNI_PLANNER
+                                    smooth_scale: torch.Tensor
+                                    ):
+    expert_parallel_size = get_expert_parallel_world_size()
+    is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+
+    if expert_parallel_size > 1:
+        batch_size, hidden_size = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_size)
+        n_total_expert = n_routed_experts * get_expert_parallel_world_size()
+
+        experts_start_idx = get_world_group().rank_in_group * max_num_deployed_expert_per_rank  #ENABLE_OMNI_PLANNER
+        experts_end_idx = experts_start_idx + n_routed_experts
+        expert_range = [experts_start_idx, experts_end_idx]
+
+        row_idx_type = 0 if model_extra_config.operator_opt_config.pd_seperate_prefill else 1
+        sorted_tokens, expanded_x_idx, expert_tokens, dynamic_quant_scale = \
+            torch_npu.npu_moe_init_routing_v2(hidden_states, topk_ids, scale=pertoken_scale, offset=None, active_num=topk_ids.numel(), 
+                                            expert_capacity=-1, expert_num=n_total_expert, drop_pad_mode=0, expert_tokens_num_type=1, 
+                                            expert_tokens_num_flag=True, quant_mode=-1,active_expert_range=expert_range, row_idx_type=row_idx_type)
+        if is_prefill and model_extra_config.operator_opt_config.prefill_enable_long_seq:
+            sorted_tokens = sorted_tokens[:expert_tokens.sum(), :]
+            dynamic_quant_scale = dynamic_quant_scale[:expert_tokens.sum()]
+
+        if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
+            if not model_extra_config.operator_opt_config.pd_seperate_prefill:
+                range1 = torch.arange(0, expanded_x_idx.shape[0],dtype=torch.int32, device="npu")
+                range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
+                mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
+                expanded_x_idx += range2 * mask
+                expanded_x_idx = expanded_x_idx % expanded_x_idx.shape[0]
+                expanded_x_idx = torch.clamp(expanded_x_idx, min=0, max=expanded_x_idx.shape[0] - 1)
+                sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
+                row_index = torch.floor(torch.div(expanded_x_idx, topk_ids.shape[-1])).to(torch.int64)
+                share_input = torch.zeros((batch_size // expert_parallel_size, hidden_size),dtype=torch.bfloat16,device="npu")
+        else:
+            if model_extra_config.operator_opt_config.moe_multi_stream_tune:
+                with tng.scope.npu_stream_switch('11'):
+                    range1 = torch.arange(0, expanded_x_idx.shape[0],dtype=torch.int32, device="npu")
+                    range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
+                    mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
+                    expanded_x_idx += range2 * mask
+                    expanded_x_idx = expanded_x_idx % expanded_x_idx.shape[0]
+                    expanded_x_idx = torch.clamp(expanded_x_idx, min=0, max=expanded_x_idx.shape[0]-1)
+                    sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
+                    row_index = torch.floor(torch.div(expanded_x_idx, topk_ids.shape[-1])).to(torch.int64)
+                    share_input = torch.zeros((batch_size // expert_parallel_size, hidden_size),dtype=torch.bfloat16,device="npu")
+            else:
+                range1 = torch.arange(0, expanded_x_idx.shape[0],dtype=torch.int32, device="npu")
+                range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
+                mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
+                expanded_x_idx += range2 * mask
+                expanded_x_idx = expanded_x_idx % expanded_x_idx.shape[0]
+                expanded_x_idx = torch.clamp(expanded_x_idx, min=0, max=expanded_x_idx.shape[0]-1)
+                sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
+                row_index = torch.floor(torch.div(expanded_x_idx, topk_ids.shape[-1])).to(torch.int64)
+                share_input = torch.zeros((batch_size // expert_parallel_size, hidden_size),dtype=torch.bfloat16,device="npu")
+
+        gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=None, group_list=expert_tokens,
+                                                    split_item=3, output_dtype=torch.int32, group_type=0,
+                                                    group_list_type=1)[0]
+
+        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=w1_scale, activation_scale=dynamic_quant_scale, bias=None, quant_scale=smooth_scale, quant_offset=None, group_index=expert_tokens, activate_left=True, quant_mode=1)
+
+        if model_extra_config.operator_opt_config.pd_seperate_prefill:
+            out = torch_npu.npu_grouped_matmul([gate_up_proj], [w2], scale=[w2_scale], 
+                                                per_token_scale=[pertoken_scale], bias=None,
+                                                group_list=expert_tokens, split_item=3, output_dtype=torch.bfloat16,
+                                                group_type=0, group_list_type=1)[0]
+            output = torch_npu.npu_moe_finalize_routing(out.unsqueeze(1).to(torch.bfloat16),
+                                                        None, None, None,
+                                                        topk_weights.to(torch.bfloat16),
+                                                        expanded_x_idx, topk_ids, drop_pad_mode=3)
+        else:
+            output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2, scale=w2_scale, bias=None,
+                                                                    pertoken_scale=pertoken_scale,
+                                                                    group_list=expert_tokens, shared_input=share_input,
+                                                                    logit=sorted_topk_weight, row_index=row_index,
+                                                                    output_bs=batch_size, shared_input_weight=1.0,
+                                                                    group_list_type=1,
+                                                                    shared_input_offset=0)
+        
+        if not is_prefill and (model_extra_config.operator_opt_config.enable_round_pipeline_comm or model_extra_config.operator_opt_config.enable_pipeline_comm):
+            return output
+
+        return output.to(torch.bfloat16)

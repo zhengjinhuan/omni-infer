@@ -13,7 +13,8 @@ from torch.nn.parameter import Parameter, UninitializedParameter
 from omni.adaptors.vllm.distributed.communication_op import tensor_model_parallel_reduce_scatter
 
 
-from vllm.distributed import (divide, split_tensor_along_last_dim)
+from vllm.distributed import (divide, split_tensor_along_last_dim,
+                            get_tensor_model_parallel_world_size)
 from vllm.model_executor.layers.linear import (WEIGHT_LOADER_V2_SUPPORTED,
                                                LinearBase,
                                                adjust_marlin_shard,
@@ -48,7 +49,8 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_mlp_tp_rank,
     get_o_proj_tp_size,
     get_o_proj_tp_rank,
-    get_o_proj_world_group
+    get_o_proj_world_group,
+    get_npu_device_count
 )
 
 class AscendMergedColumnParallelLinear(LinearBase):
@@ -895,3 +897,109 @@ class MergedReplicatedLinear(ReplicatedLinear):
         if param_data.shape != loaded_weight.shape:
             raise RuntimeError("param_data.shape != loaded_weight.shape")
         param_data.copy_(loaded_weight)
+
+class RowParallelLinearCross(LinearBase):
+    def __init__(self,
+               input_size: int,
+               output_size: int,
+               bias: bool = True,
+               input_is_parallel: bool = True,
+               skip_bias_add: bool = False,
+               params_dtype: Optional[torch.dtype] = None,
+               reduce_results: bool = True,
+               quant_config: Optional[QuantizationConfig] = None,
+               prefix: str = ""):
+        super().__init__(input_size, output_size, skip_bias_add, params_dtype,
+                       quant_config, prefix)
+
+        self.quant_config = quant_config
+        self.input_is_parallel = input_is_parallel
+        self.reduce_results = reduce_results
+
+        # Divide the weight matrix along the last dimension
+        self.tp_size = get_tensor_model_parallel_world_size() // get_npu_device_count()
+        self.tp_rank = get_tensor_model_parallel_rank() // get_npu_device_count()
+        self.input_size_per_partition = divide(input_size, self.tp_size)
+        assert self.quant_method is not None
+
+        self.quant_method.create_weights(
+            layer=self,
+            input_size_per_partition=self.input_size_per_partition,
+            output_partition_sizes=[self.output_size],
+            input_size=self.input_size,
+            output_size=self.output_size,
+            params_dtype=self.params_dtype,
+            weight_loader = self.weight_loader)
+        if not reduce_results and (bias and not skip_bias_add):
+            raise ValueError("When not reduce the results, adding bias to the "
+                             "results can lead to incorrect results")
+
+        if bias:
+            self.bias = Parameter(
+                torch.empty(self.output_size, dtype=params_dtype))
+            set_weight_attrs(self.bias, {
+                "output_dim": 0,
+                "weight_loader": self.weight_loader, 
+            })
+        else:
+            self.register_parameter("bias", None)
+
+    def weight_loader_v2(self, param: Parameter, loaded_weight: torch.Tensor):
+        if len(loaded_weight.shape) == 0:
+            assert loaded_weight.numel() == 1
+            loaded_weight = loaded_weight.reshape(1)
+        param.load_column_parallel_weight(loaded_weight=loaded_weight)
+
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        input_dim = getattr(param, "input_dim", None)
+        use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
+
+        # Special case for GGUF
+        is_gguf_weight = getattr(param, "is_gguf_weight", False)
+        is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
+        if is_gguf_weight_type:
+            param.weight_type = loaded_weight.item()
+
+        # Materialize GGUF UninitializedParameter
+        if is_gguf_weight and isinstance(param, UninitializedParameter):
+            weight_shape = list(loaded_weight.shape)
+            if input_dim:
+                weight_shape[input_dim] = weight_shape[input_dim] // self.tp_size
+            param.materialize(tuple(weight_shape),dtype=loaded_weight.dtype)
+
+        param_data = param.data
+        # bitsandbytes loads the weights of the specific portion
+        # no need to narrow here
+        if input_dim is not None and not use_bitsandbytes_4bit:
+            shard_size = param_data.shape[input_dim]
+            start_idx = self.tp_rank * shard_size
+            loaded_weight = loaded_weight.narrow(input_dim, start_idx,
+                                                 shard_size)
+
+        # Special case for loading scales off disk, which often do not
+        # have a shape (such as in the case of AutoFP8)
+        if len(loaded_weight.shape) == 0:
+            loaded_weight = loaded_weight.reshape(1)
+        
+        assert param_data.shape == loaded_weight.shape
+        param_data.copy_(loaded_weight)
+
+    def forward(self, input_):
+        # todo: check mc2
+        if self.input_is_parallel:
+            input_parallel = input_
+        else:
+            tp_rank = get_tensor_model_parallel_rank()
+            splitted_input = split_tensor_along_last_dim(input_, num_partitions = self.tp_size)
+            input_parallel = splitted_input[tp_rank].contiguous()
+
+        # Matrix multiply.
+        assert self.quant_method is not None
+        # Only fuse bias add into GEMM for rank 0 (this ensures that
+        # bias will not get added more than once in TP>1 case)
+        bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
+        output =self.quant_method.apply(self, input_parallel, bias=bias_)
+
+        output_bias = self.bias if self.skip_bias_add else None
+
+        return output, output_bias
