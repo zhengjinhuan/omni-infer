@@ -193,7 +193,8 @@ class FusedMoE(torch.nn.Module):
         if model_extra_config.operator_opt_config.use_omni_placement:
             self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
                                        rank=get_world_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num,
-                                       world_size=get_expert_parallel_world_size() - model_extra_config.parall_config.redundancy_shared_expert_num)
+                                       world_size=get_expert_parallel_world_size() - model_extra_config.parall_config.redundancy_shared_expert_num,
+                                       num_experts = num_experts)
             self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(prefix)
             self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
 

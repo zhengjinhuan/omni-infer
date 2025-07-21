@@ -54,7 +54,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         expert_mapping: Expert deployment pattern mapping
     """
     def __init__(self, config_file: str = "/etc/omni/config.yaml", device: str = "npu",
-                 rank: int = None, world_size: int = None, num_devices_per_host: int = 16):
+                 rank: int = None, world_size: int = None, num_devices_per_host: int = 16,
+                 num_experts = 256):
         """Initialize OmniPlanner with configuration and distributed settings.
 
         Args:
@@ -71,10 +72,13 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # Initialize distributed settings with fallback
         self._init_distributed(rank, world_size, num_devices_per_host)
 
+        self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
+
         # Load and validate placement pattern
-        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.num_devices_per_host)
+        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts)
         if (self.expert_mapping.get_world_size() != self.world_size):
-            print(f"Pattern world_size should be {self.world_size}.")
+            print(f"[Placement-Error]-Pattern world_size is {self.expert_mapping.get_world_size()} should be {self.world_size}.")
+            exit(1)
         
         # TODO: 无效代码
         """Initialize cluster status and optimizers."""
@@ -82,7 +86,6 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # self.optimizers = _create_optimizers(self.config.Optimizers, self.cluster_status)
         # self.optimizer = self.optimizers[0]
         
-        self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
 
         # Initialize placement manager
         self._init_placement_manager()  
@@ -111,6 +114,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         if hasattr(self, 'cluster_activation'):
             self.cluster_activation.stop_thread()
             del self.cluster_activation
+            time.sleep(1)
+        if hasattr(self, 'placement_manager'):
             del self.placement_manager
             time.sleep(1)
 
