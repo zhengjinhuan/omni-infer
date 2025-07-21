@@ -220,19 +220,16 @@ class NPUModelRunner(GPUModelRunner):
             if not isinstance(self.decode_gear_list_ori, list):
                 raise TypeError("decode_gear_list must be list[int]")
 
-            if self.decode_gear_list_ori and max(self.decode_gear_list_ori) != self.max_batch_size:
+            if self.decode_gear_list_ori and self.max_batch_size != max(self.decode_gear_list_ori):
                 if len(self.decode_gear_list) > MAX_GEAR_NUM - 1:
                     raise ValueError(f"Max gear num supported is {MAX_GEAR_NUM - 1} now.")
-            else:
-                if len(self.decode_gear_list) > MAX_GEAR_NUM:
-                    raise ValueError(f"Max gear num supported is {MAX_GEAR_NUM} now.")
-        
-            if self.decode_gear_list_ori and self.max_batch_size != max(self.decode_gear_list_ori):
                 self.decode_gear_list = [gear for gear in self.decode_gear_list_ori if gear <= self.max_batch_size]
                 if  max(self.decode_gear_list) < self.max_batch_size:
                     self.decode_gear_list.append(self.max_batch_size)
                 logger.warning(f"PTA_TORCHAIR_DECODE_GEAR_LIST({self.decode_gear_list_ori}) becomes ({self.decode_gear_list}) due to max_batch_size({self.max_batch_size})")
             else:
+                if len(self.decode_gear_list) > MAX_GEAR_NUM:
+                    raise ValueError(f"Max gear num supported is {MAX_GEAR_NUM} now.")
                 self.decode_gear_list = self.decode_gear_list_ori # List of categories
 
         if len(self.decode_gear_list) == 0:
