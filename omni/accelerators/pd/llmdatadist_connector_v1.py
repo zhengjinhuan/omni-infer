@@ -22,6 +22,9 @@ from vllm.logger import init_logger
 from typing import TYPE_CHECKING, Any, Optional
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+
+from omni.accelerators.pd.utils import get_config_from_dict_or_env
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig, KVTransferConfig
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -47,10 +50,6 @@ GET_META_MSG = b"get_meta_msg"
 
 logger = init_logger(__name__)
 
-# Introduce the environment variable VLLM_LLMDATADIST_ZMQ_PORT to resolve ZMQ connection conflicts during
-# multi-P deployments on the same machine.
-# This variable should not be set separately unless specifically required for this scenario.
-VLLM_LLMDATADIST_ZMQ_PORT = int(os.environ.get("VLLM_LLMDATADIST_ZMQ_PORT", "5568"))
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
 
@@ -89,11 +88,19 @@ class LLMDataDistConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: VllmConfig, role: KVConnectorRole):
         if vllm_config.kv_transfer_config is None:
             raise RuntimeError("vllm_config.kv_transfer_config cannot be None")
+
+        if vllm_config.model_config.is_deepseek_mla:
+            vllm_config.kv_transfer_config.kv_parallel_size = 1
+            logger.info("Set kv_parallel_size to 1 when use deepseek mla model.")
+
         self.datadist_config = LLMDataDistConfig(vllm_config.kv_transfer_config, ignore_load_rank=True)
         self.cluster_id = self.datadist_config.cluster_id_start
-        self.local_info = self.datadist_config.local_info
-        self.host_ip = self.local_info.server.server_ip
-        self.host_port = VLLM_LLMDATADIST_ZMQ_PORT
+        self.host_ip = self.datadist_config.local_group.host_ip
+        # Introduce the environment variable VLLM_LLMDATADIST_ZMQ_PORT to resolve ZMQ connection conflicts during
+        # multi-P deployments on the same machine.
+        # This variable should not be set separately unless specifically required for this scenario.
+        self.host_port = get_config_from_dict_or_env(vllm_config.kv_transfer_config, "kv_port",
+                                                     "VLLM_LLMDATADIST_ZMQ_PORT", "5568", int)
         self.is_prefill = vllm_config.kv_transfer_config.kv_role == "kv_producer"
 
         if role == KVConnectorRole.SCHEDULER:
@@ -241,6 +248,7 @@ class PrefillConnectorWorker:
             self.ctx = zmq.Context()
             self.input_socket = self.ctx.socket(zmq.constants.PULL)
             self.input_socket.bind(f"tcp://{self.host_ip}:{self.host_port}")
+            logger.info(f"ConnectWorker bind tcp://{self.host_ip}:{self.host_port}")
             self._transfer_lock = threading.Lock()
             self.receive_req_list = []
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True)
@@ -405,8 +413,11 @@ class DecodeConnectorWorker:
         self.ctx = zmq.Context()
         self.zmq_socket_map = {}
 
+        self.sync_groups = {} # cluster_id -> ProcessGroup
+
         self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req)
         self.thread_on_fast_path_req.start()
+
 
     def on_fast_path_req(self):
         context = zmq.Context()
@@ -459,6 +470,10 @@ class DecodeConnectorWorker:
                 if cluster_id not in self.queues:
                     q = queue.Queue()
                     self.queues[cluster_id] = q
+
+                    group = torch.distributed.new_group(ranks=get_tp_group().ranks, backend="gloo")
+                    self.sync_groups[cluster_id] = group
+
                     t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True)
                     t.start()
                     self.threads[cluster_id] = t
@@ -484,7 +499,10 @@ class DecodeConnectorWorker:
     ):
         start = time.time()
         self.datadist_manager.pull_kv(remote_block_ids, local_block_ids, dst_cluster_id)
-        self._send_pulled_kv_req_list(remote_host_ip, [request_id])
+        torch.distributed.barrier(group=self.sync_groups.get(dst_cluster_id))
+
+        if get_tensor_model_parallel_rank() == 0:
+            self._send_pulled_kv_req_list(remote_host_ip, [request_id])
         with self._transfer_lock:
             self._recving_transfers.append(request_id)
         cost = time.time() - start
