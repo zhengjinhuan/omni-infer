@@ -199,7 +199,6 @@ ngx_http_prefill_score_upstream_init(ngx_http_request_t *r,
     ngx_uint_t i;
     ngx_uint_t n;
     double min_load;
-    double load;
     double my_time_cost;
     ngx_slab_pool_t *shpool;
 

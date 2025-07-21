@@ -367,7 +367,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         prefill_metadata = None
         if self._num_prefills > 0:
             seq_lens_list = self.runner.seq_lens_cpu[:num_reqs].tolist()
-            query_lens_list = seq_lens_list
+            query_lens_list = (self.runner.seq_lens_np[:num_reqs] - self.runner.input_batch.num_computed_tokens_cpu[:num_reqs]).tolist()
 
             reqs_start = self._num_decodes  # prefill_start
             tokens_start = self._num_decode_tokens
@@ -380,11 +380,11 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 self.runner.max_num_tokens)
 
             # Prepare kv index for prefill get kv_latent from kv_cache
-            kv_index_list = None
-            # if block_table is not None and block_table.numel() > 0:
-            #     for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
-            #         kv_index = self.get_kv_index(seq_lens, block_tables)
-            #         kv_index_list.append(kv_index)
+            kv_index_list = []
+            if block_table is not None and block_table.numel() > 0:
+                for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
+                    kv_index = self.get_kv_index(seq_lens, block_tables)
+                    kv_index_list.append(kv_index)
 
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
@@ -426,7 +426,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
                 best_topk = None
                 if model_extra_config.operator_opt_config.best_ep:
-                    best_topk = self.cal_best_topk(num_reqs + graph_pad_size)
+                    best_topk = self.cal_best_topk(num_actual_tokens + graph_pad_size)
             else:
                 raise NotImplementedError("Chunked prefill mode is not supported currently.")
 
@@ -847,7 +847,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                         num_key_value_heads=self.num_heads,
                         input_layout="TND",
                         atten_mask=attn_mask,
-                        sparse_mode=2,
+                        sparse_mode=3,
                         actual_seq_lengths=actual_seq_qlen,
                         actual_seq_lengths_kv=actual_seq_kvlen,
                         scale=self.scale,
@@ -987,7 +987,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             # FIA super kernel wait for support
             if False and model_extra_config.operator_opt_config.use_super_kernel:
                 with tng.scope.super_kernel(self.prefix, 'option_xxx'):
-                    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                    attn_output, _ = tng.ops.npu_fused_infer_attention_score(
                             q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                             num_heads=self.num_heads,
                             num_key_value_heads=1, input_layout=input_layout,
@@ -1010,17 +1010,30 @@ class AscendMLAImpl(MLAAttentionImpl):
                         -1, self.num_heads * self.v_head_dim)
                     output, _ = self.o_proj.forward(attn_output)
             else:
-                attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
-                        q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                        num_heads=self.num_heads,
-                        num_key_value_heads=1, input_layout=input_layout,
-                        scale=self.scale,
-                        antiquant_mode=0, antiquant_scale=None,
-                        block_table=attn_metadata.decode.block_table,
-                        block_size=128,
-                        actual_seq_lengths=self.actual_seq_lengths[bsz],
-                        actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
-                        )
+                if self.enable_graph_mode:
+                    attn_output, _ = tng.ops.npu_fused_infer_attention_score(
+                            q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                            num_heads=self.num_heads,
+                            num_key_value_heads=1, input_layout=input_layout,
+                            scale=self.scale,
+                            antiquant_mode=0, antiquant_scale=None,
+                            block_table=attn_metadata.decode.block_table,
+                            block_size=128,
+                            actual_seq_lengths=self.actual_seq_lengths[bsz],
+                            actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                            )
+                else:
+                    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                            q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                            num_heads=self.num_heads,
+                            num_key_value_heads=1, input_layout=input_layout,
+                            scale=self.scale,
+                            antiquant_mode=0, antiquant_scale=None,
+                            block_table=attn_metadata.decode.block_table,
+                            block_size=128,
+                            actual_seq_lengths=self.actual_seq_lengths[bsz],
+                            actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                            )
 
                 # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
                 if model_extra_config.operator_opt_config.use_a3_high_performance_cann:
@@ -1087,16 +1100,28 @@ class AscendMLAImpl(MLAAttentionImpl):
             q_pe = q_pe.view(bsz, 1, self.num_heads, -1)
 
             bsz, q_len, _, q_dim = q_nope.size()
-            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
-                    q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                    num_heads=self.num_heads,
-                    num_key_value_heads=1, input_layout="BSND",
-                    scale=self.scale,
-                    antiquant_mode=0, antiquant_scale=None,
-                    block_table=attn_metadata.decode.block_table,
-                    block_size=128,
-                    actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
-                    )
+            if self.enable_graph_mode:
+                attn_output, _ = tng.ops.npu_fused_infer_attention_score(
+                        q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                        num_heads=self.num_heads,
+                        num_key_value_heads=1, input_layout="BSND",
+                        scale=self.scale,
+                        antiquant_mode=0, antiquant_scale=None,
+                        block_table=attn_metadata.decode.block_table,
+                        block_size=128,
+                        actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                        )
+            else:
+                attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                        q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                        num_heads=self.num_heads,
+                        num_key_value_heads=1, input_layout="BSND",
+                        scale=self.scale,
+                        antiquant_mode=0, antiquant_scale=None,
+                        block_table=attn_metadata.decode.block_table,
+                        block_size=128,
+                        actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                        )
 
             # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
             attn_output = attn_output.squeeze(1).transpose(0, 1)

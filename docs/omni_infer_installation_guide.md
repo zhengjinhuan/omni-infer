@@ -69,7 +69,7 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
 
 ## 下载 omni_infer 以及 vllm 源码并安装 vllm
 可以选择在宿主机或者容器内下载源码，如果在容器内下载，应在主机挂载在容器的目录下下载；在宿主机内下载则无此约束。
-执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm，如果用户参考 **通过 ansible 部署** 章节，可以不用执行 4 到 6 步；
+执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm；如果用户参考 **通过 ansible 部署**章节，执行完前两步，进入 omniinfer/infer_engines 下执行 `bash bash_install_code.sh` 即可；另外需要注意当前 omni_cli 和 ansible 还不支持 omni_placement 重新编包。
 1. git clone 拉取 omni_infer 源码；
 2. 在目录 omniinfer/infer_engines 下 git clone 拉取 vllm v0.9.0 源码，注意文件夹名改为 "vllm"；infer_engines下的目录结构如下:
     ![alt text](./figures/20250702_141938.png)
@@ -151,9 +151,14 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
 ## PD分离自动化部署
 
 当前限制说明：
-目前仅支持Deepseek-R1-W8A8模型，需要基于开源的Deepseek-R1权重进行转换，参考**权重转换**章节
+目前仅支持Deepseek-R1-W8A8模型，需要基于开源的Deepseek-R1权重进行转换，参考**权重转换**章节；
+
+目前提供一份转换好的权重供直接下载使用，下载链接（提取码为12345678）：
+```
+https://e-share.obs-website.cn-north-1.myhuaweicloud.com?v2token=KBL+tPW8sihb1DQcY03GYZZdWrdKg8E2xUI8XrCsr7jo72H22pg6bY8V89ZgmD4Zq4VEcQa802+q2nR4Bydrzm9jjAO1ohYLIIDMeRtttFZR+EpCA2PWmZaVxazPlkJ6qtADFZaESGpEHUxChlLlFQ2xeLp6sXP5qVsj6JEPRh7MA6SmfqK8mLdgi/rmBjY6A0CRJFEe1K5JrgONubynmJaescenf5t0h36szT23dHV46pjw0BCjCFtxJyXqgGWc4T7pv3tugR09oHNLFaVoPi4ZlElNciul9a90kZ6ZOoNJ3ufoRyHA9bTdwqeJGg8jsBFzRr+d+tU1GXd8UaswFHUo805A3MoPlqSRiYThAz+3aPorLkveex99xiEwCq+pajn6S9GzSeY8FLjEMlopGMKfHJ6Z1B5aoGpIBY8UsjG878ixsE/YiZmetkXDO/FPYr/r9sbHqg5pLVXCmaH7uHqVvDabx6Mx0a8GRITN+yjwg08LjS3C76gwCfEqD7FegGitodr7RLSDsuewjGqjgK/7ST2J320CoBBBw5vtAAsDYiDC6LJOEZCN2ht/eAZUHvy7ZrCeBMN1AmagvqsXVJrsn2tof/CL5LpRm7z5eVoFAhLjpyKIOgWjUksthT0MLmqIZCiMoslj9BfCKv780nEeDQZqO/eerh7zT4qojk8Xaxuj9Xvv1fKtJnId608QPtLXDireSzh6aa4tF1b5W747AhNAPzLoNdOzcLheYyw=_Vsd2i2lmljqrcbVJHDC8TZw7tQFHpoZ6ZS0O3b864QM=_DuHhemY++UqCJXeQyjgwdA==
+```
 目前仅支持支持一个 D 的场景，如支持 4P1D、8P1D 等场景，不支持多个 D，如 4P2D、8P4D 等场景不支持；
-目前不支持 P 一主一从的配置，仅支持每个 P 只有一主
+
 
 ### 权重转换
 
@@ -167,7 +172,8 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
     pip install accelerate
     ```
 
-4. 安装转换工具，转换工具下载地址：https://gitee.com/ascend/msit/tree/8.0.RC1_ZS2.0_20251230，安装命令如下
+4. 安装转换工具，转换工具下载地址：https://gitee.com/ascend/msit/tree/8.0.RC1_ZS2.0_20251230
+    安装命令如下
     ```
     cd msit-8.0.RC1_ZS2.0_20251230/msmodelslim
     bash install.sh
@@ -224,6 +230,7 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
     
 
     config.json修改，参照下图红框部分，删除掉红框中的代码片段
+
     ![image](./figures/config_json_modify.png)
 
 8. 开始转换，执行以下脚本，假设权重和msit都放在/data/models/目录
@@ -233,9 +240,18 @@ curl -X POST http://127.0.0.1:8300/v1/completions -H "Content-Type:application/j
     export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
     export PYTHONPATH=/data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/:$PYTHONPATH
     cd /data/models/msit-8.0.RC1_ZS2.0_20251230/msmodelslim/example/DeepSeek
-    python quant_deepseek_w8a8.py --model_path /data/models/DeepSeek-R1 --save_path /data/models/DeepSeek-R1-Quant --dynamic --disable_anti --quant_mtp
+    python quant_deepseek_w8a8.py --model_path /data/models/DeepSeek-R1 --save_path /data/models/DeepSeek-R1-Quant --from_fp8 --dynamic --disable_anti --quant_mtp --cloud_vllm
     ```
-
+9. 修改转换后的config.json文件中的字段
+    将
+    ```
+    "architectures":"DeepseekV3Fusion",
+    ```
+    替换为
+    ```
+    "architectures":["DeepseekV3ForCausalLM"],
+    ```
+    并将num_hidden_layers从62改为61
 ### 部署框架介绍
 
 以**4机2P1D**进行示例
@@ -249,7 +265,7 @@ ansible 详细说明参考：**omniinfer**/**tools**/**ansible**/**template**/**
 3. omniinfer/omni/cli 路径下的这两种文件即用于 `omni_cli` 一键部署服务，参考 **omni_cli 一键部署**章节。
 
 ### 准备密钥文件
-首先介绍执行机和目标机的概念，执行机就是运行 `omni_cli` 和 `ansible` 命令的主机，而目标机就是被 `omni_cli` 和 `ansible` 管理的远程主机，也就是用户部署服务所用到的机器。在使用一键式部署命令前，用户需要准备好密钥文件，密钥文件用于执行机通过 `ansible` 去登录目标机，如果你已经有登录目标机的密钥文件，就不需要执行下列操作：
+首先介绍执行机和目标机的概念，执行机就是运行 `omni_cli` 和 `ansible` 命令的主机，而目标机就是被 `omni_cli` 和 `ansible` 管理的远程主机，也就是用户部署服务所用到的机器。在使用一键式部署命令前，用户需要准备好密钥文件，执行机使用 `ansible` 命令时就可以通过密钥文件去登录目标机，密钥文件的部署可以参考如下步骤，如果你已经有登录目标机的密钥文件，就不需要执行下列步骤：
 
 1. 首先在执行机生成秘钥对：
     ```bash
@@ -356,7 +372,7 @@ yum install openssh-server
 ![image](./figures/79f4a480-e13b-45a3-bc9e-080f27ea3995.png)
 
 ![image](./figures/4d4eb6e0-2af8-4ce2-8233-b8ccebc7c4a4.png)
-在 **omni\_infer\_server.yml** 中， 修改task任务依赖的环境变量。
+
 
 #### 执行命令
 
@@ -409,6 +425,8 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 ```
 
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --》默认按照task全部任务顺序执行
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_docker --》指定镜像创建并启动新的容器实例
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags ranktable --》生成ranktable文件
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_server --》只执行pd分离服务拉起
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_proxy --》只执行global_proxy分离服务拉起
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags sync_code --》只执行代码同步更新任务

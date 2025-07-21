@@ -502,27 +502,28 @@ def fused_experts_w8a8_allgather_ep(hidden_states: torch.Tensor,
                                     attn_metadata: AttentionMetadata,
                                     max_num_deployed_expert_per_rank:int #ENABLE_OMNI_PLANNER
                                     ):
-    expert_parallel_size = get_expert_parallel_world_size()
-    is_prefill = attn_metadata is not None and attn_metadata.prefill is not None
+    redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
+    expert_parallel_size = get_expert_parallel_world_size() - redundancy_shared_expert_num
+    is_prefill = attn_metadata is None or attn_metadata.prefill is not None
 
     if expert_parallel_size > 1:
         batch_size, hidden_size = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_size)
-        n_total_expert = n_routed_experts * get_expert_parallel_world_size()
+        n_total_expert = n_routed_experts * expert_parallel_size
 
 
-        experts_start_idx = get_world_group().rank_in_group * max_num_deployed_expert_per_rank  #ENABLE_OMNI_PLANNER
+        experts_start_idx = (get_world_group().rank_in_group - redundancy_shared_expert_num) * max_num_deployed_expert_per_rank  #ENABLE_OMNI_PLANNER
         experts_end_idx = experts_start_idx + n_routed_experts
         expert_range = [experts_start_idx, experts_end_idx]
 
         sorted_tokens, expanded_x_idx, expert_tokens, dynamic_quant_scale = torch_npu.npu_moe_init_routing_v2(
             hidden_states, topk_ids, scale=pertoken_scale, offset=None, active_num=topk_ids.numel(), expert_capacity=-1, expert_num=n_total_expert, drop_pad_mode=0, expert_tokens_num_type=1, expert_tokens_num_flag=True, quant_mode=-1,active_expert_range=expert_range, row_idx_type=1)
 
-        if is_prefill or not model_extra_config.operator_opt_config.kv_rmsnorm_rope_cache:
+        if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
             sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
             row_index = expanded_x_idx // topk_ids.shape[-1]
             row_index = row_index.to(torch.int64)
-            share_input = torch.zeros((batch_size//get_data_parallel_world_size(), hidden_size), dtype=torch.bfloat16, device=devcurrent_platform.device_type)
+            share_input = torch.zeros((batch_size//get_data_parallel_world_size(), hidden_size), dtype=torch.bfloat16, device=current_platform.device_type)
             scale_2 = torch.ones((n_routed_experts, w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
         else:
             with tng.scope.npu_stream_switch('11'):
@@ -535,9 +536,9 @@ def fused_experts_w8a8_allgather_ep(hidden_states: torch.Tensor,
         gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=None, group_list=expert_tokens,
                                                     split_item=3, output_dtype=torch.int32, group_type=0,
                                                     group_list_type=1)[0]
-        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=w1_scale, activate_scale=dynamic_quant_scale, bias=None, quant_scale=scale_2, quant_offset=None, group_index=expert_tokens, activate_left=True, quant_mode=1)
+        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=w1_scale, activation_scale=dynamic_quant_scale, bias=None, quant_scale=scale_2, quant_offset=None, group_index=expert_tokens, activate_left=True, quant_mode=1)
 
-        output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2, expert_tokens, scale=w2_scale, bias=None, pertoken_scale=pertoken_scale, shared_input=share_input, logit=sorted_topk_weight, row_index=row_index, output_bs=batch_size, shared_input_weight=1.0, group_list_type=1, shared_input_offset=0).to(torch.bfloat16)
+        output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2, expert_tokens, scale=w2_scale.to(torch.float), bias=None, pertoken_scale=pertoken_scale, shared_input=share_input, logit=sorted_topk_weight, row_index=row_index, output_bs=batch_size, shared_input_weight=1.0, group_list_type=1, shared_input_offset=0).to(torch.bfloat16)
 
         return output
 
@@ -552,15 +553,16 @@ def gmm_expert(x, expert_tokens, w1, w2, w1_scale, w2_scale, dynamic_scale=None,
         pertoken_scale = pertoken_scale.reshape(-1)
         h = h.view(-1, hidden_size)
     # gmm1: gate_up
+    avg_tokens_per_expert = avg_tokens_per_expert or [0]
     mm1_mm3 = torch_npu.npu_grouped_matmul([h], [w1],
                                             group_list=expert_tokens, split_item=3,
                                             output_dtype=torch.int32, group_type=0,
                                             group_list_type=1, tuning_config=avg_tokens_per_expert)[0]
     # dequant_swiglu_quant
-    scale_2 = torch.ones((256, w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
+    scale_2 = torch.ones((expert_tokens.shape[0], w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
     intermediate_h, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
         mm1_mm3, weight_scale=w1_scale,
-        activate_scale=pertoken_scale.squeeze(0), bias=None, quant_scale=scale_2, quant_offset=None,
+        activation_scale=pertoken_scale.squeeze(0), bias=None, quant_scale=scale_2, quant_offset=None,
         group_index=expert_tokens, activate_left=True, quant_mode=1)
 
     if pertoken_scale.dim() > 1:
@@ -591,15 +593,21 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
         topk_ids = torch.Tensor(cur_topk_list).int().view(hidden_states.shape[0], -1).npu()
     else:
         topk_ids = topk_ids.int()
-    max_num_deployed_expert = 256
+    max_num_deployed_expert = get_expert_parallel_world_size() * layer.num_experts
     if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
-        max_num_deployed_expert = layer.planner.get_max_num_deployed_expert_per_rank() * get_world_group().world_size
-    expanded_x, expanded_row_idx, tokens_per_expert, _, pertoken_scale = torch_npu.npu_moe_init_routing_quant_v2(
+        max_num_deployed_expert = w1_scale.shape[0] * get_expert_parallel_world_size()
+    expert_range = [0, max_num_deployed_expert]
+    expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
         hidden_states,
         expert_idx=topk_ids,
         scale=None,
         expert_num=max_num_deployed_expert,
-        expert_tokens_count_or_cumsum_flag=2,
+        active_expert_range=expert_range,
+        expert_tokens_num_type=1,
+        expert_tokens_num_flag=True,
+        active_num=topk_ids.numel(),
+        drop_pad_mode=0,
+        row_idx_type=0,
         quant_mode=1)
  
     tokens_per_expert_group = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
@@ -633,11 +641,8 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
     )
     group_list = tokens_per_local_expert.to(torch.int64)
     if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and layer.moe_layer_idx < 58:
-        if is_prefill:
-            layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-        else:
-            with tng.scope.npu_stream_switch('22'):
-                layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+        layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
+        
     hidden_states_ordered_by_experts = gmm_expert(hidden_states_sorted_by_experts, tokens_per_local_expert.to(torch.int64), w1, w2, w1_scale, w2_scale, gathered_pertoken_scale, None, warm_up)
 
     new_x = torch.index_select(hidden_states_ordered_by_experts, 0, gathered_idxs_unsort.to(torch.float32).argsort().to(torch.int32))
@@ -648,7 +653,7 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
     return hidden_states, gathered_tokens, topk_weight, expanded_row_idx
 
 
-def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_tokens, act_dtype, quant_mode, n_routed_experts,
+def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_tokens, act_dtype, quant_mode,
                              dynamic_scale=None):
     if quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
         pertoken_scale = dynamic_scale
@@ -659,9 +664,9 @@ def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_t
                                                     split_item=3, output_dtype=torch.int32, group_type=0,
                                                     group_list_type=1)[0]
 
-    scale_2 = torch.ones((n_routed_experts // get_expert_parallel_world_size(), w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
+    scale_2 = torch.ones((len(w1), w1_scale.shape[-1]//2), dtype=torch.float32, device=current_platform.device_type)
     gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-        gate_up_proj, weight_scale=w1_scale, activate_scale=pertoken_scale, bias=None, quant_scale=scale_2, quant_offset=None,
+        gate_up_proj, weight_scale=w1_scale, activation_scale=pertoken_scale, bias=None, quant_scale=scale_2, quant_offset=None,
         group_index=expert_tokens, activate_left=True, quant_mode=1)
 
     if not model_extra_config.operator_opt_config.opt_w2_scale_cast:
@@ -677,15 +682,11 @@ def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_t
 
 def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
                                             hidden_states: torch.Tensor,
-                                            w1: torch.Tensor,
-                                            w2: torch.Tensor,
-                                            w1_scale: torch.Tensor,
-                                            w2_scale: torch.Tensor,
                                             topk_weights: torch.Tensor,
                                             topk_ids: torch.Tensor,
-                                            n_routed_experts: int,
                                             max_num_deployed_expert: int, #ENABLE_OMNI_PLANNER
                                             is_prefill: bool, #ENABLE_OMNI_PLANNER
+                                            is_route_expert: bool #ENABLE_OMNI_PLANNER
                                             ):
     expert_parallel_size = get_expert_parallel_world_size()
 
@@ -698,7 +699,7 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
         global_bs = 0
         act_dtype = hidden_states.dtype
         # route
-        shared_expert_rank_num = 0
+        shared_expert_rank_num = model_extra_config.parall_config.redundancy_shared_expert_num
         kwargs = {
             "x": hidden_states,
             "expert_ids": topk_ids,  # [n*topk]
@@ -731,21 +732,18 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
 
         group_list = expert_token_nums.to(torch.int64)
 
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and layer.moe_layer_idx < 58:
-            if is_prefill:
-                layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-            else:
-                with tng.scope.npu_stream_switch('22'):
-                    layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+        if model_extra_config.operator_opt_config.use_omni_placement and is_route_expert and layer.planner.enable_dump and layer.moe_layer_idx < 58:
+            layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
-        group_list = group_list[:len(w1)] #Adapt to redundant and non-redundant layers, #ENABLE_OMNI_PLANNER
-
-        # cal experts
-        weight1_3 = w1
-        weight2 = w2
-        hidden_states_experts = moe_expert_quant_farword(expand_x, weight1_3, weight2, w1_scale, w2_scale,
-                                                            group_list,
-                                                            act_dtype, layer.quant_mode, n_routed_experts, dynamic_scale)
+        if shared_expert_rank_num > 0 and global_rank // experts_tp_size < shared_expert_rank_num:
+            x = {"x_int8": expand_x, "pertoken_scale": dynamic_scale}
+            hidden_states_experts = layer(x)
+        else:
+            # cal experts
+            group_list = group_list[:len(layer.w13_weight)] #Adapt to redundant and non-redundant layers, #ENABLE_OMNI_PLANNER
+            hidden_states_experts = moe_expert_quant_farword(expand_x, layer.w13_weight, layer.w2_weight,
+                                                             layer.w13_weight_scale, layer.w2_weight_scale, group_list,
+                                                             act_dtype, layer.quant_mode, dynamic_scale)
 
         # moeCombine
         kwargs = {
@@ -780,7 +778,7 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
 def static_routing(hidden_states: torch.Tensor):
     batch_size = hidden_states.size(0)
     indices = np.arange(batch_size, dtype=np.int64)
-    return indices % model_extra_config.parall_config.redundancy_expert_num + get_expert_parallel_world_size() - model_extra_config.parall_config.redundancy_expert_num
+    return indices % model_extra_config.parall_config.redundancy_shared_expert_num + get_expert_parallel_world_size() - model_extra_config.parall_config.redundancy_shared_expert_num
 
 
 def shared_expert_alltoall_ep(hidden_states: torch.Tensor, expert: torch.nn.Module, warm_up: bool):

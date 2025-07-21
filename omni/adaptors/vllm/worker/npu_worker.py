@@ -51,8 +51,9 @@ from omni.adaptors.vllm.utils import (
 import vllm.envs as envs
 import os
 import ray
+from omni.models.common.config.model_config import model_extra_config
 
-BLOCK_NUM_FLOATING_RANGE = 200
+BLOCK_NUM_FLOATING_RANGE = 32768
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
 class NPUDeviceProperties:
@@ -182,8 +183,11 @@ class NPUWorker(WorkerBase):
 
         cur_npu_kv_cache_bytes = self._compute_kv_cache_bytes()
         if not self.enable_torchair_graph_mode:
-           clear_var()
-           return cur_npu_kv_cache_bytes
+            clear_var()
+            # Only For Prefill Stage
+            if model_extra_config.operator_opt_config.use_omni_placement:
+                self.model_runner.planner.start_dynamic_optimize_expert_load_balance()
+            return cur_npu_kv_cache_bytes
 
         last_use_kv_cache_bytes = cur_npu_kv_cache_bytes
         range = self.block_num_floating_range * self.page_size_bytes()
@@ -223,6 +227,7 @@ class NPUWorker(WorkerBase):
     def _compute_kv_cache_bytes(self):
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
+        gc.collect()
         NPUPlatform.empty_cache()
 
         # Execute a forward pass with dummy inputs to profile the memory usage

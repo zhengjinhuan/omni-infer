@@ -226,7 +226,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                     continue
  
                 if name not in params_dict:
-                    breakpoint()
+                    continue
                 param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
@@ -242,7 +242,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                         continue
  
                     if name not in params_dict:
-                        breakpoint()
+                        continue
                     param = params_dict[name]
                     weight_loader = param.weight_loader
                     weight_loader(param,
@@ -260,10 +260,46 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                         continue
  
                     if name not in params_dict:
-                        breakpoint()
+                        continue
                     param = params_dict[name]
                     weight_loader = getattr(param, "weight_loader",
                                             default_weight_loader)
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
+
+class DeepseekV3MTPDuo(DeepseekV3MTP):
+    def __init__(self,
+                 config: PretrainedConfig,
+                 cache_config: Optional[CacheConfig] = None,
+                 quant_config: Optional[QuantizationConfig] = None,
+                 prefix: str = "",
+                 layer_index: int = 62,
+                 ):
+        super().__init__(config=config,
+                        cache_config=cache_config,
+                        quant_config=quant_config,
+                        prefix=prefix,
+                        layer_index=layer_index)
+    
+    def load_weights(self, weights: Iterable[Tuple[str,
+                                                   torch.Tensor]], layer_idx: int = 62) -> Set[str]:
+        super().load_weights(weights=weights, layer_idx=layer_idx)
+
+class DeepseekV3MTPTres(DeepseekV3MTP):
+    def __init__(self,
+                 config: PretrainedConfig,
+                 cache_config: Optional[CacheConfig] = None,
+                 quant_config: Optional[QuantizationConfig] = None,
+                 prefix: str = "",
+                 layer_index: int = 63,
+                 ):
+        super().__init__(config=config,
+                        cache_config=cache_config,
+                        quant_config=quant_config,
+                        prefix=prefix,
+                        layer_index=layer_index)
+    
+    def load_weights(self, weights: Iterable[Tuple[str,
+                                                   torch.Tensor]], layer_idx: int = 63) -> Set[str]:
+        super().load_weights(weights=weights, layer_idx=layer_idx)
