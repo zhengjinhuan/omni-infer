@@ -69,7 +69,7 @@ class ModelOperatorOptConfig:
     opt_w2_scale_cast: bool = False
     decode_gear_list: list[int] = field(default_factory=lambda: [16])
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
-    
+
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
         if self.use_omni_placement and not self.omni_placement_config_path:

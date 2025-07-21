@@ -18,6 +18,7 @@ from vllm.model_executor.models.utils import extract_layer_index
 from omni.accelerators.pd.ranktable.local_info import LocalInfo
 from omni.accelerators.pd.ranktable.rank_table import GlobalRankTable
 from omni.accelerators.pd.utils import get_p_start_rank, prepare_ranktables
+from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
 
@@ -58,8 +59,13 @@ class LLMDataDistConfig:
     Configuration for the separate deployment.
     """
 
-    def __init__(self, kv_transfer_config: KVTransferConfig, ignore_load_rank=False) -> None:
-        self.kv_transfer_config = kv_transfer_config
+    def __init__(self, vllm_config: VllmConfig, ignore_load_rank=False) -> None:
+        additional_config = vllm_config.additional_config
+        if additional_config:
+            self.multi_rank_pull_kv = additional_config.get("multi_rank_pull_kv", False)
+        else:
+            self.multi_rank_pull_kv = False
+        self.kv_transfer_config = vllm_config.kv_transfer_config
 
         self.local_info = LocalInfo()
         self.global_rank_table = GlobalRankTable()
@@ -87,6 +93,9 @@ class LLMDataDistConfig:
             if not self.is_prefill:
                 # dp need different cluster id, only support full dp.
                 self._cluster_id += self._rank
+            elif self.multi_rank_pull_kv:
+                # prefill need different cluster id, only support full dp.
+                self._cluster_id += self.local_rank
         self.cluster_info = self.local_info.server
 
     @cached_property
@@ -120,8 +129,14 @@ class LLMDataDistConfig:
 
 
 class LLMDataDistManager:
-    def __init__(self, kv_transfer_config: KVTransferConfig):
-        self.data_dist_config = LLMDataDistConfig(kv_transfer_config)
+    def __init__(self, vllm_config: VllmConfig):
+        additional_config = vllm_config.additional_config
+        if additional_config:  # pragma: no cover
+            self.multi_rank_pull_kv = additional_config.get("multi_rank_pull_kv", False)
+        else:  # pragma: no cover
+            self.multi_rank_pull_kv = False
+        kv_transfer_config = vllm_config.kv_transfer_config
+        self.data_dist_config = LLMDataDistConfig(vllm_config)
         self.rank = self.data_dist_config.rank
         self.local_rank = self.data_dist_config.local_rank
 
@@ -192,14 +207,6 @@ class LLMDataDistManager:
         # If this line is not added, the fx mode will report an error.
         # The preliminary reason is that the context is lost when multiple coroutines pull kv.
         torch.npu.set_device(f"npu:{self.local_rank}")
-        num_local_blocks = len(tgt_blocks)
-        num_remote_blocks = len(src_blocks)
-        if num_local_blocks > num_remote_blocks:
-            # raise RuntimeError("num_local_blocks must be less than or equal to num_remote_blocks")
-            tgt_blocks = tgt_blocks[:num_remote_blocks]
-            logger.debug("Look ahead tokens > 0")
-        if num_local_blocks < num_remote_blocks:
-            src_blocks = src_blocks[-num_local_blocks:]
         for model_id, kv_cache in enumerate(self.registerd_kv_caches):
             prompt_cache_key = BlocksCacheKey(
                 prompt_cluster_id=prompt_cluster_id, model_id=model_id)
@@ -227,66 +234,126 @@ class LLMDataDistManager:
         p_rank_end = (p_dp + 1) * prefill_tp_size
 
         link_num = 0
-
+        registed_link_infos = {}
         for prefill_server in prefill_servers:
+            registed_link_info = {}
+            prefill_cluster_id = self.data_dist_config.global_rank_table.get_cluster_id(prefill_server)
             for decode_server in decode_servers:
                 decode_id = 0
                 for decode_device in decode_server.device_list:
                     d_dp = decode_device.rank_id
-
                     d_rank_start = d_dp * decode_tp_size
                     d_rank_end = (d_dp + 1) * decode_tp_size
+                    p_start_rank = get_p_start_rank(
+                        prefill_tp_size, prefill_dp_size,
+                        decode_tp_size, decode_dp_size,
+                        decode_num, decode_id, d_dp
+                    )
 
-                    # Calculate the start rank of P when D and P establish a connection based on the P and D splitting strategy,
-                    # and remove the random value.
-                    p_start_rank = get_p_start_rank(prefill_tp_size, prefill_dp_size,
-                                                    decode_tp_size, decode_dp_size,
-                                                    decode_num, decode_id, d_dp)
-                    p_ranktables, d_ranktables = prepare_ranktables(prefill_server, decode_server,
-                                                                    p_rank_start, p_rank_end,
-                                                                    d_rank_start, d_rank_end,
-                                                                    p_start_rank)
+                    # first kv link
+                    link_num, registed_link_info = self._create_kv_link(
+                        prefill_server, decode_server, d_dp, p_start_rank, p_rank_start, p_rank_end,
+                        d_rank_start, d_rank_end, prefill_cluster_id, 
+                        self.data_dist_config.global_rank_table.get_cluster_id(decode_server), 
+                        link_num, registed_link_info)
 
-                    selected_p_ranks = list(p_ranktables.keys())
+                    # second kv link
+                    if self.multi_rank_pull_kv:
+                        logger.warning(f"***** Now trying to build the 2nd kv link....")
+                        p_start_rank_2 = (p_start_rank + 1) % (p_rank_end - p_rank_start)
+                        link_num, registed_link_info = self._create_kv_link(
+                            prefill_server, decode_server, d_dp, p_start_rank_2, p_rank_start, p_rank_end,
+                            d_rank_start, d_rank_end, prefill_cluster_id, 
+                            self.data_dist_config.global_rank_table.get_cluster_id(decode_server), 
+                            link_num, registed_link_info)
 
-                    prefill_cluster_id = self.data_dist_config.global_rank_table.get_cluster_id(prefill_server)
-                    decode_cluster_id = self.data_dist_config.global_rank_table.get_cluster_id(decode_server)
+            if self.multi_rank_pull_kv:
+                registed_link_infos[prefill_cluster_id] = registed_link_info
 
-                    p_ser_ip = prefill_server.server_ip
-                    p_clu_id = prefill_cluster_id
-                    d_ser_ip = decode_server.server_ip
-                    d_clu_id = decode_cluster_id
-                    if self.data_dist_config.is_prefill:
-                        cluster_rank_infos = {
-                            rank: {prefill_cluster_id + p_dp: 0, decode_cluster_id + d_dp: 1}
-                            for rank in selected_p_ranks}
-                        comm_names = {rank:
-                            f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_dp}-d{d_dp}-{i}"
-                                      for i, rank in
-                                      enumerate(selected_p_ranks)}
-                        ranktables = p_ranktables
-                    else:
-                        cluster_rank_infos = {
-                            rank: {prefill_cluster_id + p_dp: 0, decode_cluster_id + d_dp: 1}
-                            for rank in range(d_rank_start, d_rank_end)}
-                        comm_names = {rank:
-                            f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_dp}-d{d_dp}-{i}"
-                                      for i, rank in
-                                      enumerate(range(d_rank_start, d_rank_end))}
+        if self.data_dist_config.is_prefill or (not self.multi_rank_pull_kv):
+            return self.check_register_status()
+        return registed_link_infos, self.check_register_status()
 
-                        ranktables = d_ranktables
+    def _create_kv_link(
+        self, prefill_server, decode_server, d_dp, p_start_rank, p_rank_start, p_rank_end,
+        d_rank_start, d_rank_end, prefill_cluster_id, decode_cluster_id, link_num,
+        registed_link_info
+    ):
+        p_ranktables, d_ranktables = prepare_ranktables(
+            prefill_server, decode_server,
+            p_rank_start, p_rank_end,
+            d_rank_start, d_rank_end,
+            p_start_rank
+        )
 
-                    logger.warning(f"create link:{comm_names}")
+        selected_p_ranks = list(p_ranktables.keys())
 
-                    self._build_device_link(comm_names, cluster_rank_infos, ranktables)
+        p_ser_ip = prefill_server.server_ip
+        p_clu_id = prefill_cluster_id
+        d_ser_ip = decode_server.server_ip
+        d_clu_id = decode_cluster_id
 
-                    # sleep after every batchsize
-                    link_num += 1
-                    if link_num >= SCHEDULER_LINK_BATCH_SIZE:
-                        link_num = 0
-                        time.sleep(SCHEDULER_LINK_INTERVAL)
+        if self.multi_rank_pull_kv:
+            if self.data_dist_config.is_prefill:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_start_rank: 0, decode_cluster_id + d_dp: 1}
+                    for rank in selected_p_ranks
+                }
+                comm_names = {
+                    rank: f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_start_rank}-d{d_dp}-{i}"
+                    for i, rank in enumerate(selected_p_ranks)
+                }
+                ranktables = p_ranktables
+            else:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_start_rank: 0, decode_cluster_id + d_dp: 1}
+                    for rank in range(d_rank_start, d_rank_end)
+                }
+                comm_names = {
+                    rank: f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_start_rank}-d{d_dp}-{i}"
+                    for i, rank in enumerate(range(d_rank_start, d_rank_end))
+                }
+                ranktables = d_ranktables
+        else:
+            p_dp = 0
+            if self.data_dist_config.is_prefill:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_dp: 0, decode_cluster_id + d_dp: 1}
+                    for rank in selected_p_ranks}
+                comm_names = {rank:
+                    f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_dp}-d{d_dp}-{i}"
+                                for i, rank in
+                                enumerate(selected_p_ranks)}
+                ranktables = p_ranktables
+            else:
+                cluster_rank_infos = {
+                    rank: {prefill_cluster_id + p_dp: 0, decode_cluster_id + d_dp: 1}
+                    for rank in range(d_rank_start, d_rank_end)}
+                comm_names = {rank:
+                    f"{p_ser_ip}-{p_clu_id}-{d_ser_ip}-{d_clu_id}-p{p_dp}-d{d_dp}-{i}"
+                                for i, rank in
+                                enumerate(range(d_rank_start, d_rank_end))}
 
-        return self.check_register_status()
+                ranktables = d_ranktables
+
+
+        logger.warning(f"create link:{comm_names}")
+
+        self._build_device_link(comm_names, cluster_rank_infos, ranktables)
+
+        if self.multi_rank_pull_kv:
+            if not self.data_dist_config.is_prefill:
+                key = decode_cluster_id + d_dp
+                if key in registed_link_info:
+                    registed_link_info[key].append(prefill_cluster_id + p_start_rank)
+                else:
+                    registed_link_info[key] = [prefill_cluster_id + p_start_rank]
+
+        link_num += 1
+        if link_num >= SCHEDULER_LINK_BATCH_SIZE:
+            link_num = 0
+            time.sleep(SCHEDULER_LINK_INTERVAL)
+        return link_num, registed_link_info
 
     def _build_device_link(self, comm_names, cluster_rank_infos, rank_tables):
         if self.rank in comm_names and self.rank in cluster_rank_infos and self.rank in rank_tables:
