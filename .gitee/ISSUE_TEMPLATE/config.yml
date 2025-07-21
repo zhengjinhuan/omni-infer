@@ -1,5 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: 社区帮助中心
-    url: https://gitee.com/omniai/community
-    about: 如果通过RFC和Bug反馈依然没有解决你的问题，欢迎在社区帮助中心通过ISSUE提问。
