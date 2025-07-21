@@ -727,7 +727,10 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
             "x_active_mask": mc2_mask,
         })
 
-        output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
+        if model_extra_config.operator_opt_config.enable_mc2_v2:
+            output = torch_npu.npu_moe_distribute_dispatc_v2(**kwargs)
+        else:
+            output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
         group_list = expert_token_nums.to(torch.int64)
@@ -770,7 +773,10 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
         }
         kwargs.update(stage3_kwargs)
 
-        hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
+        if model_extra_config.operator_opt_config.enable_mc2_v2:
+            hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
+        else:
+            hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
     else:
         raise ValueError("ep number should be greater than 1.")
     return hidden_states_route

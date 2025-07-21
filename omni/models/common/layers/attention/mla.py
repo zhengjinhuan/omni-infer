@@ -630,6 +630,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.qk_rope_head_dim = qk_rope_head_dim
         self.qk_head_dim = qk_head_dim
         self.v_head_dim = v_head_dim
+        self.is_mla_prolog_init = False
         # we found npu_flash_attention can only works on 128 divisible head_dim, we pad it to target size here
         # and slice the final result to guarantee its functionality.
         self.padding_head_dim = (
@@ -675,6 +676,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.q_a_proj = q_a_proj
         self.kv_scale = None
         self.use_faquant = False
+        self.qk_rope_head_dim_nz = self.qk_rope_head_dim // 16
         kv_b_proj_weight = self.kv_b_proj.weight.T
 
         expected_shape = (
@@ -711,26 +713,40 @@ class AscendMLAImpl(MLAAttentionImpl):
         hidden_states: torch.Tensor,
         kv_cache: Optional[torch.Tensor],
         attn_metadata: AttentionMetadata,
-
+        quant_symbol: bool,
     ) -> torch.Tensor:
         if not self.is_init:
             self.W_UK = torch.nn.Parameter(self.W_UK.contiguous(), requires_grad=False)
             self.W_UV = torch.nn.Parameter(self.W_UV.contiguous(), requires_grad=False)
             self.is_init = True
         if attn_metadata is None or attn_metadata.prefill is not None:
-            output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata)
+            output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata, quant_symbol)
         else:
             output = self._forward_decode(
-                positions, hidden_states, kv_cache, attn_metadata, use_rmsnorm_rope_cache=model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache
+                positions, hidden_states, kv_cache, attn_metadata,
+                use_rmsnorm_rope_cache=model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache,
+                quant_symbol=quant_symbol
             )
+        if model_extra_config.operator_opt_config.use_mlaprolog and not self.is_mla_prolog_init:
+            self.is_mla_prolog_init = True
+            self.q_a_proj.weight = self._process_mla_prolog_weight(self.q_a_proj.weight)
+            self.q_b_proj.weight = self._process_mla_prolog_weight(self.q_b_proj.weight)
+            self.kv_a_proj_with_mqa.weight = self._process_mla_prolog_weight(self.kv_a_proj_with_mqa.weight)
         return output
+
+    def _process_mla_prolog_weight(self, weight):
+        weight.data = torch_npu.npu_format_cast(weight.data, 2)
+        weight = torch.nn.Parameter(weight.transpose(0, 1).contiguous(), requires_grad = False)
+        weight.data = torch_npu.npu_format_cast(weight.data, 29)
+        return weight
 
     def _forward_prefill(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         kv_cache: Optional[torch.Tensor],
-        attn_metadata: AttentionMetadata
+        attn_metadata: AttentionMetadata,
+        quant_symbol: bool,
     ) -> torch.Tensor:
         if self.q_lora_rank is not None:
             if self.merge_qkv:
@@ -747,11 +763,14 @@ class AscendMLAImpl(MLAAttentionImpl):
                 latent_cache = tensor_model_parallel_all_gather(latent_cache, dim=0)
 
                 q = self.q_a_layernorm(q)
-                q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
-                # Quantizing before all_gather can reduce communication overhead.
-                q_quant = tensor_model_parallel_all_gather(q_quant, dim=0)
-                q_scale = tensor_model_parallel_all_gather(q_scale, dim=0)
-                q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
+                if quant_symbol:
+                    q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
+                    # Quantizing before all_gather can reduce communication overhead.
+                    q_quant = tensor_model_parallel_all_gather(q_quant, dim=0)
+                    q_scale = tensor_model_parallel_all_gather(q_scale, dim=0)
+                    q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
+                else:
+                    q = tensor_model_parallel_all_gather(q, dim=0)
                 q = self.q_b_proj(q)[0].view(-1, self.num_heads, self.qk_head_dim)
         else:
             q = self.q_proj(hidden_states)[0].view(-1, self.num_heads, self.qk_head_dim)
@@ -794,11 +813,13 @@ class AscendMLAImpl(MLAAttentionImpl):
             k_pe = k_pe.unsqueeze(2)
             k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
             k_pe = k_pe.squeeze(2)
-        attn_output = torch.empty(q.shape[0],
-                        self.num_heads,
-                        self.v_head_dim,
-                        device=q_nope.device,
-                        dtype=q_nope.dtype)
+        is_attn_output_reshape = model_extra_config.operator_opt_config.prefill_enable_mla_alltoall and attn_metadata is None
+        attn_output = torch.empty(
+            q.shape[0] // get_tensor_model_parallel_world_size() if is_attn_output_reshape else q.shape[0],
+            self.num_heads * get_tensor_model_parallel_world_size() if is_attn_output_reshape else self.num_heads,
+            self.v_head_dim,
+            device=q_nope.device,
+            dtype=q_nope.dtype)
 
         if attn_metadata is not None:
             prefill_metadata = attn_metadata.prefill
@@ -855,14 +876,26 @@ class AscendMLAImpl(MLAAttentionImpl):
             attn_output.fill_(0)
 
         if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-            attn_output = attn_output.reshape(-1)
-            all_to_all_attn_output = torch.empty([sum(prefill_metadata.seq_lens) * self.num_heads * self.qk_nope_head_dim], dtype=attn_output.dtype, device=current_platform.device_type)
-            dist.all_to_all_single(all_to_all_attn_output, attn_output)  # (total_experts,) --> (total_ranks * n_routed_experts_per_rank)
-            attn_output = all_to_all_attn_output.view(get_tensor_model_parallel_world_size(), sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(), self.num_heads * self.qk_nope_head_dim).transpose(0, 1).contiguous()
-            output, _ = self.o_proj.forward(attn_output.reshape(sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(), -1))
+            if attn_metadata is not None:
+                attn_output = attn_output.reshape(-1)
+                all_to_all_attn_output = torch.empty(
+                    [q.shape[0] * self.num_heads * self.v_head_dim],
+                    dtype = attn_output.dtype,
+                    device = current_platform.device_type
+                )
+                dist.all_to_all_single(all_to_all_attn_output, attn_output)
+                attn_output = all_to_all_attn_output.view(
+                    get_tensor_model_parallel_world_size(),
+                    q.shape[0] // get_tensor_model_parallel_world_size(),
+                    self.num_heads * self.v_head_dim
+                    ).transpose(0, 1).contiguous()
+            output, _ = self.o_proj.forward(attn_output.reshape(-1, get_tensor_model_parallel_world_size() * self.num_heads * self.v_head_dim))
         else:
             attn_output = attn_output.view(-1, self.num_heads * self.v_head_dim)
-            output = self.o_proj.forward(attn_output)[0]
+            if model_extra_config.parall_config.o_proj_tp_size > 1:
+                output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_heads, self.v_head_dim)
+            else:
+                output = self.o_proj.forward(attn_output)[0]
         return output
 
     def _forward_decode(
@@ -871,7 +904,8 @@ class AscendMLAImpl(MLAAttentionImpl):
         hidden_states: torch.Tensor,
         kv_cache: Optional[torch.Tensor],
         attn_metadata: AttentionMetadata,
-        use_rmsnorm_rope_cache: bool = True
+        use_rmsnorm_rope_cache: bool = True,
+        quant_symbol: bool = True,
     ) -> torch.Tensor:
         if use_rmsnorm_rope_cache:
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
@@ -881,21 +915,24 @@ class AscendMLAImpl(MLAAttentionImpl):
             if model_extra_config.operator_opt_config.use_mlaprolog:
                 block_num, block_size, head_size, _ = key_cache.shape
                 bsz, _ = hidden_states.view(-1, 7168).shape
-                hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
+                if quant_symbol:
+                    hidden_states_mla_prolog, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
+                else:
+                    hidden_states_mla_prolog = hidden_states
                 cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
                 cache_index = attn_metadata.slot_mapping.view(bsz, -1)
 
-                q_nope, q_pe, k_nope, k_rope, dequant_scale_q_nope = torch.ops.npu.npu_mla_prolog_v2(token_x = hidden_states_int8.view(bsz, 1, -1),
+                q_nope, q_pe, k_nope, k_rope, dequant_scale_q_nope = torch.ops.npu.npu_mla_prolog_v2(token_x = hidden_states_mla_prolog.view(bsz, 1, -1),
                     weight_dq=self.q_a_proj.weight, weight_uq_qr=self.q_b_proj.weight,
                     weight_uk=self.W_UK, weight_dkv_kr=self.kv_a_proj_with_mqa.weight,
                     rmsnorm_gamma_cq=self.q_a_layernorm.weight, rmsnorm_gamma_ckv=self.kv_a_layernorm.weight,
                     rope_sin=sin.squeeze(1), rope_cos=cos.squeeze(1), cache_index=cache_index,
                     kv_cache=key_cache.view(-1, 128, 1, 512), kr_cache=value_cache.view(-1, 128, 1, 64),
-                    dequant_scale_x=pertoken_scale.view(-1, 1), # pertoken quant
-                    dequant_scale_w_dq=self.q_a_proj.weight_scale.view(1, -1),
-                    dequant_scale_w_uq_qr=self.q_b_proj.weight_scale.view(1, -1),
-                    dequant_scale_w_dkv_kr=self.kv_a_proj_with_mqa.weight_scale.view(1, -1),
-                    quant_scale_ckv=torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(1, -1) if self.use_faquant else None,
+                    dequant_scale_x=pertoken_scale.view(-1, 1) if quant_symbol else None, # pertoken quant
+                    dequant_scale_w_dq=self.q_a_proj.weight_scale.view(1, -1) if quant_symbol else None,
+                    dequant_scale_w_uq_qr=self.q_b_proj.weight_scale.view(1, -1) if quant_symbol else None,
+                    dequant_scale_w_dkv_kr=self.kv_a_proj_with_mqa.weight_scale.view(1, -1) if quant_symbol else None,
+                    quant_scale_ckv=torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(1, -1) if quant_symbol and self.use_faquant else None,
                     quant_scale_ckr=None,
                     smooth_scales_cq=None,
                     rmsnorm_epsilon_cq=self.q_a_layernorm.variance_epsilon,
@@ -903,7 +940,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                     cache_mode = "PA_NZ")
 
                 k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // (32 if self.use_faquant else 16), block_size, (32 if self.use_faquant else 16))
-                k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim // 16, block_size, 16)
+                k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim_nz, block_size, 16) 
                 q_nope = q_nope.view(bsz, self.num_heads, self.kv_lora_rank)
                 q_pe = q_pe.view(bsz, self.num_heads, -1)
             else:
@@ -1006,7 +1043,10 @@ class AscendMLAImpl(MLAAttentionImpl):
                     )
                     attn_output = attn_output.view(
                         -1, self.num_heads * self.v_head_dim)
-                    output, _ = self.o_proj.forward(attn_output)
+                    if model_extra_config.parall_config.o_proj_tp_size > 1:
+                        output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_heads, self.v_head_dim)
+                    else:
+                        output, _ = self.o_proj.forward(attn_output)
             else:
                 if self.enable_graph_mode:
                     attn_output, _ = tng.ops.npu_fused_infer_attention_score(
@@ -1046,7 +1086,10 @@ class AscendMLAImpl(MLAAttentionImpl):
                 )
                 attn_output = attn_output.view(
                     -1, self.num_heads * self.v_head_dim)
-                output, _ = self.o_proj.forward(attn_output)
+                if model_extra_config.parall_config.o_proj_tp_size > 1:
+                    output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_heads, self.v_head_dim)
+                else:
+                    output, _ = self.o_proj.forward(attn_output)
         else:
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
             key_cache, value_cache = kv_cache
@@ -1132,5 +1175,8 @@ class AscendMLAImpl(MLAAttentionImpl):
             )
             attn_output = attn_output.view(
                 -1, self.num_heads * self.v_head_dim)
-            output, _ = self.o_proj.forward(attn_output)
+            if model_extra_config.parall_config.o_proj_tp_size > 1:
+                output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_heads, self.v_head_dim)
+            else:
+                output, _ = self.o_proj.forward(attn_output)
         return output
