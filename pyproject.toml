@@ -1,5 +1,11 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = [
+    "setuptools>=64",
+    "wheel",
+    "pybind11",
+    "torch",
+    "numpy"
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +13,16 @@ name = "omni_infer"
 version = "0.1.0"
 description = "Omni Infer"
 authors = [
-    { name="Huawei" }
+    { name = "Huawei" }
 ]
 requires-python = ">=3.10"
 dependencies = [
+    "numpy",
+    "torch",
+    "pybind11",
     "ansible>=8.0",
     "pyyaml>=6.0",
-    "chardet",
+    "chardet"
 ]
 
 [project.scripts]
@@ -28,5 +37,17 @@ kv_connectors = "omni.accelerators.pd:register"
 tool_parsers = "omni.adaptors.vllm.entrypoints.openai.tool_parsers:register_tool"
 reasoning = "omni.adaptors.vllm.reasoning:register_reasoning"
 
-[tool.setuptools.packages.find]
-include = ["omni*"]
+[tool.setuptools]
+packages.find.where = ["."]
+packages.find.include = ["omni*"]
+packages.find.exclude = [
+    "omni.accelerators.placement.tests",
+    "omni.accelerators.placement.utils",
+    "omni.accelerators.placement.scripts",
+    "omni.accelerators.placement.patterns",
+    "omni.accelerators.placement..cloudbuild"   
+]
+
+cmdclass.build_ext = "pybind11.setup_helpers.build_ext"
+include-package-data = true
+license-files = ["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]

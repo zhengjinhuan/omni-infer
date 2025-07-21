@@ -6,7 +6,7 @@ import pickle
 import torch
 import torch_npu
 import torch.distributed as dist
-from omni_planner.expert_mapping import ExpertMapping
+from .expert_mapping import ExpertMapping
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def broadcast_mapping(tensor, src_rank, rank):
     print(f"Node {rank} after broadcast: tensor = {tensor}")
 
 def reduce_activation(dst_rank, rank):
-    from omni_planner.omni_planner import OmniPlanner
+    from .omni_planner import OmniPlanner
     planner = OmniPlanner()
     activation_tensor = planner.npu_activation_count
 

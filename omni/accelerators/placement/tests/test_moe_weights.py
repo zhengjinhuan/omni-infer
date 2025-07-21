@@ -8,14 +8,14 @@ import torch.nn as nn
 import unittest
 import ctypes
 from typing import Dict
-from omni_planner import omni_placement
+from omni.accelerators.placement.omni_placement import omni_placement
 import multiprocessing as mp
 import random
 import time
 import gc
-from omni_planner.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,get_expert_ids
+from omni.accelerators.placement.omni_placement.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,get_expert_ids
 from unittest.mock import Mock, patch
-from omni_planner.placement_handler import init_dram_weights,deepseek_filter_func ,deepseek_get_layer_idx_func
+from omni.accelerators.placement.omni_placement.placement_handler import init_dram_weights,deepseek_filter_func ,deepseek_get_layer_idx_func
 
 
 def generate_name(layer_idx, weight_name,first_k_dense_replace=3):
@@ -128,13 +128,13 @@ class TestVllmNpuEnv(unittest.TestCase):
     def setUp(self):
         from vllm_npu import ENV
         self.ENV = ENV
-    def test_enable_omni_planner(self):
-        self.ENV.omni_planner_config_path = '/home/kww/ascend-vllm/omni_planner/config.yaml'
-        self.assertTrue(self.ENV.use_omni_planner)
+    def test_enable_omni_placement(self):
+        self.ENV.omni_placement_config_path = '/home/omni/omni_placement/config.yaml'
+        self.assertTrue(self.ENV.use_omni_placement)
 
-    def test_disable_omni_planner(self):
-        self.ENV.omni_planner_config_path = ''
-        self.assertFalse(self.ENV.use_omni_planner)
+    def test_disable_omni_placement(self):
+        self.ENV.omni_placement_config_path = ''
+        self.assertFalse(self.ENV.use_omni_placement)
 
 class TestConvertParamDictToList(unittest.TestCase):
     def test_basic_functionality(self):
@@ -242,7 +242,7 @@ class TestConvertParamToCtype(unittest.TestCase):
     def setUp(self):
         # 在每个测试前设置模拟的omni_placement.Tensor
         self.mock_tensor_class = Mock()
-        self.patcher = patch('omni_planner.omni_placement.Tensor', self.mock_tensor_class)
+        self.patcher = patch('omni_placement.omni_placement.Tensor', self.mock_tensor_class)
         self.patcher.start()
 
     def tearDown(self):

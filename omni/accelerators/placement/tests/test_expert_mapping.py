@@ -8,8 +8,8 @@ import numpy as np
 import torch
 from pathlib import Path
 import tempfile
-from omni_planner import omni_placement
-from omni_planner.expert_mapping import ExpertMapping
+from ..omni_placement import omni_placement
+from ..omni_placement.expert_mapping import ExpertMapping
 
 class TestExpertMapping(unittest.TestCase):
     def setUp(self):

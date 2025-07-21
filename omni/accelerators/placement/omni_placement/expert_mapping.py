@@ -6,8 +6,8 @@ import numpy as np
 import torch
 from pathlib import Path
 from typing import Optional, Tuple
-from omni_planner import omni_placement
-from omni_planner.config import Config
+from . import omni_placement
+from .config import Config
 
 class ExpertMapping:
     def __init__(self, config: Config, device: str = "npu", rank: int = 0, world_size: int = 1, num_devices_per_host: int = 8, enable_dynamic: bool = False, num_experts: int = 256, enable_rank_round_robin: bool = False):

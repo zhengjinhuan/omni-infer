@@ -19,7 +19,7 @@ def create_optimizer_by_name(name: str, cluster_params, **kwargs):
     """
     try:
         parts = name.split('.')
-        module_name = f"omni_planner.optim.{parts[0]}"
+        module_name = f"omni_placement.optim.{parts[0]}"
         class_name = parts[1]
 
         # 动态导入模块
