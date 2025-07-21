@@ -69,7 +69,7 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
 
 ## 下载 omni_infer 以及 vllm 源码并安装 vllm
 可以选择在宿主机或者容器内下载源码，如果在容器内下载，应在主机挂载在容器的目录下下载；在宿主机内下载则无此约束。
-执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm；如果用户参考 **通过 ansible 部署**章节，执行完前两步，进入 omniinfer/infer_engines 下执行 `bash bash_install_code.sh` 即可；另外需要注意当前 omni_cli 和 ansible 还不支持 omni_placement 重新编包。
+执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm；如果用户参考 **通过 ansible 部署**章节，执行完前两步即可；另外需要注意当前 omni_cli 还不支持 omni_placement 重新编包。
 1. git clone 拉取 omni_infer 源码；
 2. 在目录 omniinfer/infer_engines 下 git clone 拉取 vllm v0.9.0 源码，注意文件夹名改为 "vllm"；infer_engines下的目录结构如下:
     ![alt text](./figures/20250702_141938.png)
