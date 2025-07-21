@@ -7,7 +7,6 @@ export HCCL_OP_EXPANSION_MODE=AIV
 export OMNI_PLANNER_CONFIG="/home/omni/omni_planner/config.yaml"
 
 export ENABLE_MOE_EP=1
-export ENABLE_ALLTOALL=1
 export DP_SIZE=4
 unset VLLM_ENABLE_PROFILING
 unset VLLM_TORCH_PROFILER_DIR

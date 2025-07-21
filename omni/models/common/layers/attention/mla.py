@@ -210,7 +210,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self.kv_cache_spec = kv_cache_spec
         self.block_table = block_table
         self.decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
-        self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device=current_platform.device_type)
+        if self.decode_gear_list:
+            self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device=current_platform.device_type)
 
     def generate_activate_mask(self, actual_seqs_num, batch_size):
         if len(self.decode_gear_list) > 1:
@@ -717,11 +718,12 @@ class AscendMLAImpl(MLAAttentionImpl):
         tp_size = get_tensor_model_parallel_world_size()
         self.norm_res = {}
         self.actual_seq_lengths = {}
-        for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
-            self.norm_res[batch_size] = torch.zeros([batch_size * tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
-            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
-            torch._dynamo.mark_static(self.norm_res[batch_size])
-            torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
+        if self.enable_graph_mode:
+            for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
+                self.norm_res[batch_size] = torch.zeros([batch_size * tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
+                self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+                torch._dynamo.mark_static(self.norm_res[batch_size])
+                torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
 
     def forward(
         self,
@@ -829,10 +831,9 @@ class AscendMLAImpl(MLAAttentionImpl):
             k_pe = k_pe.unsqueeze(2)
             k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
             k_pe = k_pe.squeeze(2)
-        is_attn_output_reshape = model_extra_config.operator_opt_config.prefill_enable_mla_alltoall and attn_metadata is None
         attn_output = torch.empty(
-            q.shape[0] // get_tensor_model_parallel_world_size() if is_attn_output_reshape else q.shape[0],
-            self.num_heads * get_tensor_model_parallel_world_size() if is_attn_output_reshape else self.num_heads,
+            q.shape[0],
+            self.num_heads,
             self.v_head_dim,
             device=q_nope.device,
             dtype=q_nope.dtype)
@@ -893,27 +894,11 @@ class AscendMLAImpl(MLAAttentionImpl):
         else:
             attn_output.fill_(0)
 
-        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-            if attn_metadata is not None:
-                attn_output = attn_output.reshape(-1)
-                all_to_all_attn_output = torch.empty(
-                    [q.shape[0] * self.num_heads * self.v_head_dim],
-                    dtype = attn_output.dtype,
-                    device = current_platform.device_type
-                )
-                dist.all_to_all_single(all_to_all_attn_output, attn_output)
-                attn_output = all_to_all_attn_output.view(
-                    get_tensor_model_parallel_world_size(),
-                    q.shape[0] // get_tensor_model_parallel_world_size(),
-                    self.num_heads * self.v_head_dim
-                    ).transpose(0, 1).contiguous()
-            output, _ = self.o_proj.forward(attn_output.reshape(-1, get_tensor_model_parallel_world_size() * self.num_heads * self.v_head_dim))
+        attn_output = attn_output.view(-1, self.num_heads * self.v_head_dim)
+        if model_extra_config.parall_config.o_proj_tp_size > 1:
+            output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_heads, self.v_head_dim)
         else:
-            attn_output = attn_output.view(-1, self.num_heads * self.v_head_dim)
-            if model_extra_config.parall_config.o_proj_tp_size > 1:
-                output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_heads, self.v_head_dim)
-            else:
-                output = self.o_proj.forward(attn_output)[0]
+            output = self.o_proj.forward(attn_output)[0]
         return output
 
     def _forward_decode(

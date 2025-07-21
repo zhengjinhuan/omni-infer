@@ -1038,13 +1038,7 @@ class AscendDeepseekAttention_MLA(nn.Module):
             quant_config=None,
             prefix=f"{prefix}.kv_b_proj")
         # O projection.
-        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-            self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
-                                           hidden_size,
-                                           bias=False,
-                                           quant_config=quant_config,
-                                           prefix=f"{prefix}.o_proj")
-        elif model_extra_config.parall_config.o_proj_tp_size > 1:
+        if model_extra_config.parall_config.o_proj_tp_size > 1:
             self.o_proj = DP2TPRowParallelLinear(self.num_heads * self.v_head_dim,
                                                  hidden_size,
                                                  bias=False,
