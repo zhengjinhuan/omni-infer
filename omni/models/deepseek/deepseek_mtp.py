@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
- 
+from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, QuantizationConfig, VllmConfig
 from vllm.attention.backends.abstract import AttentionMetadata
 from vllm.distributed.communication_op import tensor_model_parallel_all_gather
@@ -44,47 +44,42 @@ from omni.models.common.layers.logits_processor import _prune_hidden_states
 from omni.models.common.layers.logits_processor import LogitsProcessor
 from omni.models.common.config.model_config import model_extra_config
 from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration 
- 
+
+@support_torch_compile
 class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
-    def __init__(self,
-                 config: PretrainedConfig,
-                 cache_config: Optional[CacheConfig] = None,
-                 quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = "",
-                 layer_index: int = 61,
-                 ):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "", layer_index: int = 61, ):
         super().__init__()
-        self.config = config
+        self.config = vllm_config.model_config.hf_config
+        self.cache_config = vllm_config.cache_config
+        self.quant_config = vllm_config.quant_config
         prefix = "model"
-        self.cache_config = cache_config
-        self.quant_config = quant_config
         self.ignore_share_weight = True
         if self.ignore_share_weight:
             self.embed_tokens = None
             self.shared_head = nn.ModuleDict({
                 "head": None,
-                "norm": RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+                "norm": RMSNorm(self.config.hidden_size, eps=self.config.rms_norm_eps)
             })
         else:
             self.embed_tokens = VocabParallelEmbedding(
-                config.vocab_size,
-                config.hidden_size,
+                self.config.vocab_size,
+                self.config.hidden_size,
             )
             self.shared_head = nn.ModuleDict({
-                "head": ParallelLMHead(config.vocab_size, config.hidden_size, quant_config=self.quant_config),
-                "norm": RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+                "head": ParallelLMHead(self.config.vocab_size, self.config.hidden_size, quant_config=self.quant_config),
+                "norm": RMSNorm(self.config.hidden_size, eps=self.config.rms_norm_eps)
             })
- 
-        self.enorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.hnorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
- 
-        self.eh_proj = nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False)
-        self.decoderlayer = DeepseekDecoderLayer(config,
+
+        self.enorm = RMSNorm(self.config.hidden_size, eps=self.config.rms_norm_eps)
+        self.hnorm = RMSNorm(self.config.hidden_size, eps=self.config.rms_norm_eps)
+
+        self.eh_proj = nn.Linear(2 * self.config.hidden_size, self.config.hidden_size, bias=False)
+        self.decoderlayer = DeepseekDecoderLayer(self.config,
                                                  f"{prefix}.layers.{layer_index}",
                                                  quant_config=self.quant_config,
                                                  cache_config=self.cache_config)
- 
-        self.logits_processor = LogitsProcessor(config.vocab_size, logits_as_input=True)
+
+        self.logits_processor = LogitsProcessor(self.config.vocab_size, logits_as_input=True)
         self.greedy_sampler = Sampler()
  
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -169,7 +164,23 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
     ) -> torch.Tensor:
         logits = self.logits_processor(self.shared_head["head"], hidden_states, sampling_metadata)
         return logits
- 
+
+    def should_use_eager_mode(self, *args, **kwargs):
+        if len(kwargs) == 0:
+           return True
+
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.decoderlayer.layer_name]
+
+        if attn_metadata.prefill:
+            return True
+
+        return False
+
     def load_weights(self, weights: Iterable[Tuple[str,
                                                    torch.Tensor]], layer_idx: int = 61) -> Set[str]:
  

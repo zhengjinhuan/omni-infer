@@ -37,7 +37,12 @@ def patch_sampler():
     rejection_sampler.RejectionSampler = RejectionSampler
     rejection_sampler._multinomial = _multinomial
     print("++++++++++++++++++++++patch_sampler++++++++++++++++++++++++++++")
-    
+
+def patch_compilation():
+    from omni.adaptors.vllm.compilation.decorators import _support_torch_compile
+    from vllm.compilation import decorators
+    decorators._support_torch_compile = _support_torch_compile
+    print("+++++++++++++++++++++++patch_compilation+++++++++++++++++++++++++++")
 
 _patch_done = False
 
@@ -49,6 +54,7 @@ def patch_all():
     patch_rope()
     patch_embedding()
     patch_sampler()
+    patch_compilation()
     _patch_done = True
 
 patch_all() 

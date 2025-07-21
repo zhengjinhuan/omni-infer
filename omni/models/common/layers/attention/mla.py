@@ -662,10 +662,12 @@ class AscendMLAImpl(MLAAttentionImpl):
         #                           fa_version=self.vllm_flash_attn_version)
 
         self.enable_graph_mode = False
-        additional_config = get_current_vllm_config().additional_config
-        if additional_config:
-            self.enable_graph_mode = additional_config.get(
-                "enable_graph_mode", False)
+        from vllm.config import get_current_vllm_config, CompilationLevel
+        from vllm.utils import supports_dynamo
+
+        cur_vllm_config = get_current_vllm_config()
+        self.enable_graph_mode = (
+                    cur_vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
 
         self.attn_mask = ~torch.tril(
             torch.ones((2048, 2048), dtype=torch.bool, device=current_platform.device_type)
