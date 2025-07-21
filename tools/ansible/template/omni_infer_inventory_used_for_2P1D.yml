@@ -70,4 +70,4 @@ all:
           ansible_host: "127.0.0.1"
           node_rank: 0
           node_port: "{{ proxy_port + node_rank }}"
-          role: "C"   
+          role: "C"

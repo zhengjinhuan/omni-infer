@@ -31,7 +31,7 @@
 
 * `node_rank`: 用于多机组 P/D 的场景，多机的节点排序，主 P/D 节点的 node_rank 为0，其他节点的顺序值在此基础上依次递增。
 
-* `kv_rank`: 用于 prefill 实例 kv_rank 的区分。索引从0开始。
+* `kv_rank`: 用于 prefill 实例 kv_rank 的区分，索引从0开始。如果是多台机器组 P，这些机器的 `kv_rank` 的值需保持一致。
 
 * `node_port`: 即 Prefill 和 Decode 的实际 `master-port`。
     Prefill 实例的默认端口: `global_port_base + port_offset.P + node_rank`。
@@ -41,7 +41,7 @@
     Prefill 实例的 API Server 默认端口: `base_api_port + port_offset.P + node_rank`。
     Decode 实例的 API Server 默认端口: `base_api_port + port_offset.D + node_rank`。
 
-* `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。
+* `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。对于多机组 P 的场景，该 IP 就是主 P 或主 D 的 IP；对于单机组 P 的场景，该 IP 和 `ansible_host` 的值保持一致。
 
 * `ascend_rt_visible_devices`: 每个 Prefill 或 Decode 实例需要使用的卡号， 参数值需要严格按照以下格式: `"x,x,x,x"` (用英文逗号分隔的连续值) ， 不能有多余逗号和空格。
 
@@ -51,17 +51,17 @@
 
 * `LOG_PATH`: Decode/Prefill/Global Proxy 实例日志的存放的路径。
 
-* `LOG_PATH_IN_EXECUTOR`: 执行机上存放 Decode/Prefill/Global Proxy 实例日志的路径。
-
-* `CODE_PATH`: 执行机上的 omniinfer 源码路径，即用户通过 `git clone` 拉取的代码存放路径；例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`；脚本会将执行机上的源码同步到目标机内相同路径下，并且将路径挂载到容器中。
-
 * `MODEL_PATH`: 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致。
-
-* `HTTP_PROXY`: 下载 nginx 的 HTTP 代理地址，如果不需要代理可以留空。
 
 * `MODEL_LEN_MAX_PREFILL`: Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为30000。
 
 * `MODEL_LEN_MAX_DECODE`: Decode 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为16384。
+
+* `LOG_PATH_IN_EXECUTOR`: 执行机上存放 Decode/Prefill/Global Proxy 实例日志的路径。
+
+* `CODE_PATH`: 执行机上的 omniinfer 源码路径，即用户通过 `git clone` 拉取的代码存放路径；例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`；脚本会将执行机上的源码同步到目标机内相同路径下，并且将路径挂载到容器中。
+
+* `HTTP_PROXY`: 下载 nginx 的 HTTP 代理地址，例如 "http://your.proxy:port"，如果不需要代理可以留空。
 
 * `DOCKER_IMAGE_ID`: omniai 服务实例均在容器里面运行， 用来指定运行的容器镜像， 如: `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer:202506272026`，其中 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer` 表示镜像仓地址，`202506272026` 表示镜像版本号，如果远程目标机没有此容器镜像，脚本会自动下载。
 
@@ -82,27 +82,6 @@
 ```bash
 # 安装ansible-playbook
 yum install ansible
-
-# 参考open euler系统的公司内部的yum源
-rm  /etc/yum.repos.d/*
-
-echo "[openEuler-everything]
-name=openEuler-everything
-baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/
-enabled=1
-gpgcheck=0
-gpgkey=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/RPM-GPG-KEY-openEuler
-
-[openEuler-EPOL]
-name=openEuler-epol
-baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/EPOL/main/aarch64/
-enabled=1
-gpgcheck=0
-[openEuler-update]
-name=openEuler-update
-baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/update/aarch64/
-enabled=1
-gpgcheck=0" > /etc/yum.repos.d/openeuler.repo
 ```
 
 ## 在执行机安装 sshpass
@@ -132,15 +111,17 @@ yum install openssh-server
 # 操作步骤
 
 ## 修改配置
-在 **omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml** 中， 只需修改以下配置项 `ansible_user / ansible_ssh_private_key_file`;
-在 **omni_infer_server_template.yml** 中， 只需修改以下配置项 `MODEL_PATH / DOCKER_IMAGE_ID / CODE_PATH / LOCAL_CODE_PATH`， 就可拉起 omniai 服务。
+在 **omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml** 中， 重点修改以下配置项 `ansible_user / ansible_ssh_private_key_file / ansible_host / node_rank / kv_rank / host_ip`;
+在 **omni_infer_server_template.yml** 中， 重点修改以下配置项 `MODEL_PATH / DOCKER_IMAGE_ID / CODE_PATH / DOCKER_NAME_P / DOCKER_NAME_D / DOCKER_NAME_C`， 就可拉起 omniai 服务。
 此外，建议修改 omni_infer_server_template.yml 中的 `LOG_PATH`、`LOG_PATH_IN_EXECUTOR`、`SCRIPTS_PATH` 和 `ranktable_save_path`，防止路径下的文件被其他人覆盖。
 
 ## 执行命令
 ```bash
-# 拉取库上最新代码，比如执行机的 /workspace/local_code_path 路径下 clone 源码，执行下列命令即可
+# 拉取库上最新代码，比如执行机的 /data/local_code_path 路径下 clone 源码，执行下列命令即可
+cd /data/local_code_path
+git clone https://gitee.com/omniai/omniinfer.git
 cd omniinfer/infer_engines/
-bash bash_install_code.sh
+git clone https://github.com/vllm-project/vllm.git 或者 git clone https://gitee.com/mirrors/vllm.git
 # 进入到 ansible 脚本目录下
 cd omniinfer/tools/ansible/template
 # 如果是部署四机 2P1D，就执行如下命令：
@@ -148,7 +129,7 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 # 如果是部署八机 4P1D，就执行如下命令：
 ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template.yml --skip-tags fetch_log
 
-# 后续修改了执行机上的源码，执行下列命令即可通过修改后的源码拉起服务
+# 后续若修改了执行机上的源码，执行下列命令即可通过修改后的源码拉起服务
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags sync_code
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server
 
