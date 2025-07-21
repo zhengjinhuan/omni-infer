@@ -16,8 +16,7 @@ Omni_Infer is a powerful suite of inference accelerators tailored for the Ascend
 
 ## Getting Started
 
-(SECTION TO BE COMPLETED)
-To integrate Omni_Infer into your project, refer to the [installation guide](docs/omni_infer_installation_guide.md) and [documentation](docs/) for detailed setup instructions and API references.
+For an example of PD separation and rapid deployment, please refer to the [quick start guide](docs/omni_infer_quick_start.md). To integrate Omni_Infer into your project, refer to the [installation guide](docs/omni_infer_installation_guide.md) and [documentation](docs/) for detailed setup instructions and API references.
 
 ## Contributing
 We welcome contributions to enhance Omni_Infer! Please check our [contributing guidelines](./CONTRIBUTION.md) and submit pull requests or issues via [Gitee Issues](https://gitee.com/omniai/omniinfer/issues/new?issue%5Bassignee_id%5D=0&issue%5Bmilestone_id%5D=0).

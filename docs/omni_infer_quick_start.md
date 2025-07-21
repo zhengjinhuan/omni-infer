@@ -25,6 +25,7 @@
 ```bash
 docker pull IMAGE:TAG
 git clone https://gitee.com/omniai/omniinfer.git
+git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 ```
 
 ### 使用ansible一键部署
@@ -41,7 +42,7 @@ git clone https://gitee.com/omniai/omniinfer.git
 
 1. **omni_infer_inventory_used_for_2P1D.yml**
 
-   将`p0/p1/d0/d1/c0`下面的`ansible_host:`值改为对应的IP：
+   将`p0/p1/d0/d1/c0`下面的`ansible_host` 与 `host_ip` 值改为对应的IP：
 
    ```YAML
    children:
@@ -76,7 +77,7 @@ git clone https://gitee.com/omniai/omniinfer.git
      C:
        hosts:
          c0:
-           ansible_host: "127.0.0.1"  # C0 节点的IP
+           ansible_host: "127.0.0.1"  # C0 节点的IP，即 Global Proxy 节点
            ...
 
    ```
@@ -138,7 +139,7 @@ curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/j
 
 ```bash
 cd omniinfer/tools/ansible/template
-ansible-playbook -i omni\_infer\_inventory.yml omni\_infer\_server.yml --tags run_server
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server
 ```
 
 
@@ -150,7 +151,7 @@ ansible-playbook -i omni\_infer\_inventory.yml omni\_infer\_server.yml --tags ru
 
 **3. 增加 batch size**
 
-ansible部署默认开启 MTP 以优化性能。如需调整 `--max-num-seqs`（batch size），需同步修改所有容器代码 /workspace/omniinfer/tests/test_config/test_config_decode.json中:
+ansible部署默认开启 MTP 以优化性能。如需调整 `--max-num-seqs`（batch size），需同步修改omniinfer本地代码路径下 omniinfer/tests/test_config/test_config_decode.json中`decode_gear_list` 的值：
 
 ```JSON
 "decode_gear_list": [batch_size * (1+num_speculative_tokens)]
