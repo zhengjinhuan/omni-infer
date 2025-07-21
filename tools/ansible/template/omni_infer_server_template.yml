@@ -23,7 +23,7 @@
     # Global Configuration
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8-fusion"
-    MODEL_LEN_MAX_PREFILL: "16000"
+    MODEL_LEN_MAX_PREFILL: "32000"
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
