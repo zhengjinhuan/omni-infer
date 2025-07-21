@@ -53,7 +53,7 @@ def init_dram_weights(moe_weights,param_dict,first_k_dense_replace,init_shm):
 
 
 
-def create_placement_manager(rank, world_size, num_devices_per_host, cluster_activation=None, expert_mapping=None):
+def create_placement_manager(rank, world_size, num_devices_per_host, cluster_activation=None, expert_mapping=None, enable_dynamic=False):
     """
     Creates a Placement manage.
 
@@ -78,7 +78,8 @@ def create_placement_manager(rank, world_size, num_devices_per_host, cluster_act
         num_devices_per_host,
         cluster_activation,
         placement_mapping,
-        rootinfo
+        rootinfo,
+        enable_dynamic
     )
 
     return placement

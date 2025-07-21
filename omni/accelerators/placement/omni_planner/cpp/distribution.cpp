@@ -42,6 +42,12 @@ Distribution::Distribution(size_t rank, size_t world_size, const char *infoStr,
         exit(0);
     }
 
+    if (world_size == 0) {
+        std::cout << "[DynamicEplb-Error], Invalid world_size_, which is 0"
+                  << std::endl;
+        exit(0);
+    }
+
     warmup();
 
     void *data_ptr;
@@ -237,9 +243,9 @@ void Distribution::warmup() {
                          ACL_MEM_MALLOC_HUGE_FIRST));
 
     if (rank_ == 0) {
-        HCCLCHECK(HcclSend(data_ptr, length, NAME2DATATYPE.at(dtype), 31,
-                           hcclComm_, stream));
-    } else if (rank_ == 31) {
+        HCCLCHECK(HcclSend(data_ptr, length, NAME2DATATYPE.at(dtype),
+                           (world_size_ - 1), hcclComm_, stream));
+    } else if (rank_ == (world_size_ - 1)) {
         HCCLCHECK(HcclRecv(data_ptr, length, NAME2DATATYPE.at(dtype), 0,
                            hcclComm_, stream));
     }

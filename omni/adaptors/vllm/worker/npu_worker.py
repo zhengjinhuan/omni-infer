@@ -182,8 +182,11 @@ class NPUWorker(WorkerBase):
 
         cur_npu_kv_cache_bytes = self._compute_kv_cache_bytes()
         if not self.enable_torchair_graph_mode:
-           clear_var()
-           return cur_npu_kv_cache_bytes
+            clear_var()
+            # Only For Prefill Stage
+            if model_extra_config.operator_opt_config.use_omni_placement:
+                self.model_runner.planner.start_dynamic_optimize_expert_load_balance()
+            return cur_npu_kv_cache_bytes
 
         last_use_kv_cache_bytes = cur_npu_kv_cache_bytes
         range = self.block_num_floating_range * self.page_size_bytes()

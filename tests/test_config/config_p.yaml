@@ -17,7 +17,7 @@
 #     rather, experts may be replicated across multiple devices to enable parallelism or redundancy.
 
 #     Defaults to None.
-pattern_path: "/workspace/omni_infer/omni/accelerators/placement/patterns/placement_pattern_20250626_221356_58_rearrange_layers_58_layers_16_ranks_prefill_step0to100000.npy"
+pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20250626_221356_58_rearrange_layers_58_layers_16_ranks_prefill_step0to100000.npy"
 
 #define max_layer_num as a constant 58 (for deepseek moe layer num 58)
 max_moe_layer_num: 58
@@ -26,8 +26,6 @@ enable_dynamic: False
 max_redundant_per_expert: 1 # 10
 max_redundant_per_rank: 0 # 1
 
-max_batch_size: 100000
-max_top_k: 8
 
 enable_dump: False
 dump_dir: "../dump_data"

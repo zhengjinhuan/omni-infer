@@ -82,10 +82,10 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # self.optimizers = _create_optimizers(self.config.Optimizers, self.cluster_status)
         # self.optimizer = self.optimizers[0]
         
-        # Initialize placement manager
-        self._init_placement_manager()
-
         self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
+
+        # Initialize placement manager
+        self._init_placement_manager()  
 
         # Get selector
         self.selector = self.expert_mapping.get_selector()
@@ -162,11 +162,13 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             self.world_size,
             self.num_devices_per_host,
             self.cluster_activation,
-            self.cluster_status.expert_mapping
+            self.cluster_status.expert_mapping,
+            self.enable_dynamic
         )
 
-    def start_dynamic_optimize_expert_loaded_balance(self):
-        if self.enable_dynamic:
+    def start_dynamic_optimize_expert_load_balance(self):
+        is_thread_required = self.enable_dynamic or self.enable_dump
+        if is_thread_required:
             self.placement_manager.start_thread()
 
     def get_max_num_deployed_expert_per_rank(self)-> int:
@@ -303,7 +305,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
     def init_dram_weights(self, param_dict, first_k_dense_replace=3):
-        if self.enable_dynamic:
+        is_thread_required = self.enable_dynamic or self.enable_dump
+        if is_thread_required:
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
 
