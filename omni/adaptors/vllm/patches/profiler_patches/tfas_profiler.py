@@ -86,6 +86,7 @@ def get_update_params(output_path, segments, models, x, y):
     plt.grid(True)
     save_path = os.path.join(output_path, "profiller.png")
     plt.savefig(save_path, dpi=300)
+    plt.close()
     
     numerator = intercept_set[-1] - intercept_set[-2]
     denominator = slope_set[-2] - slope_set[-1]
@@ -167,9 +168,9 @@ def profiler_1K_fixed(log_file_path, output_path):
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argment('--log-file', type=str, required=True, 
+    parser.add_argument('--log-file', type=str, required=True, 
                        help='prefill server file path')
-    parser.add_argment('--output-path', type=str, default='',
+    parser.add_argument('--output-path', type=str, default='',
                        help='analysis output file path')
     args = parser.parse_args()
     profiler_1K_fixed(args.log_file, args.output_path)
