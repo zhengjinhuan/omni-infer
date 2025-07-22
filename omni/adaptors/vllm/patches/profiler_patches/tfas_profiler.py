@@ -169,7 +169,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argment('--log-file', type=str, required=True, 
                        help='prefill server file path')
-    parser.add_argment('--output-path', type=str, default='profiller.png',
+    parser.add_argment('--output-path', type=str, default='',
                        help='analysis output file path')
     args = parser.parse_args()
     profiler_1K_fixed(args.log_file, args.output_path)
