@@ -33,6 +33,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from vllm.platforms import current_platform
+from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding as GPURotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding as GPUYaRNScalingRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import DeepseekScalingRotaryEmbedding as DeepseekScalingRotaryEmbeddingGPU
@@ -42,7 +43,6 @@ from vllm.model_executor.layers.rotary_embedding import (_yarn_find_correction_d
                                             _yarn_get_mscale,
                                             _rotate_neox,
                                             _rotate_gptj)
-
 
 SCALE_FACTOR = 8
 LOW_FREQ_FACTOR = 1
@@ -181,31 +181,37 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         k_embed = self.apply_rotary_pos_emb(key, cos, sin)
         return q_embed.flatten(-2), k_embed.flatten(-2)
 
-    def _forward_fused_ops(self, position_ids, query, key, is_neox_style_override: Optional[bool] = None):
+    # use torch_npu fused ops
+    def _forward_fused_ops(self, position_ids, query, key, layer_name: Optional[str] = None):
+        forward_context: ForwardContext = get_forward_context()
+        attn_metadata = forward_context.attn_metadata
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[layer_name]
+        cos = torch.index_select(self.cos, dim=0, index=position_ids.view(-1)).unsqueeze(1)
+        sin = torch.index_select(self.sin, dim=0, index=position_ids.view(-1)).unsqueeze(1)
+        # head_dim use class variable, repair head_dim convert to symbol in dynamo
+        query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
+        key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
 
-        if self.cos_sin_cache.device != query.device:
-            self.cos_sin_cache = self.cos_sin_cache.to(query.device)
-        if self.cos_sin_cache.dtype != query.dtype:
-            self.cos_sin_cache = self.cos_sin_cache.to(query.dtype)
+        if attn_metadata is None:
+            query = query.unsqueeze(0)
+            key = key.unsqueeze(0)  
+            cos = cos.unsqueeze(0)
+            sin = sin.unsqueeze(0)
+        else:     
+            num_batch = attn_metadata.seq_lens.shape[0]
+            query = query.view(num_batch, -1, query.shape[1], self.head_size)
+            key = key.view(num_batch, -1, key.shape[1], self.head_size)
+            cos = cos.view(num_batch, -1, cos.shape[1], self.head_size)
+            sin = sin.view(num_batch, -1, sin.shape[1], self.head_size)
 
-        neox_style = self.is_neox_style
-        if is_neox_style_override is not None:
-            neox_style = is_neox_style_override
-        query_shape, key_shape = query.shape, key.shape
-        query = query.contiguous().view(query.shape[0], -1)
-        key = key.contiguous().view(key.shape[0], -1)
+        # npu_apply_rotary_pos_emb replace npu_rotary_mul, npu_rotary_mul will not support muti batch size
+        q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
 
-        torch_npu._npu_rotary_embedding(
-            position_ids,
-            query,
-            key,
-            self.head_size,
-            self.cos_sin_cache,
-            neox_style,
-        )
-        return query.view(query_shape), key.view(key_shape)
+        return q_embed.flatten(0, 1).flatten(1, 2), k_embed.flatten(0, 1).flatten(1, 2)
 
-    def forward(self, position_ids, query, key):
+
+    def forward(self, position_ids, query, key, layer_name: Optional[str] = None):
         # adapt chatglm : dim = head_size / 2
         if self.rotary_dim < self.head_size:
             q_embed, k_embed = self._forward_chatglm(position_ids, query, key)
@@ -213,7 +219,7 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
             # use ascend_ops to deal with torch_npu.npu_apply_rotary_pos_emb last dim is not 128 bug
             q_embed, k_embed = self._forward_ascend_ops_and_small_ops(position_ids, query, key)
         else:
-            q_embed, k_embed = self._forward_fused_ops(position_ids, query, key)
+            q_embed, k_embed = self._forward_fused_ops(position_ids, query, key, layer_name)
         return q_embed, k_embed
 
 
