@@ -32,7 +32,7 @@ index b83489f6d..121c12837 100644
 +        math.sqrt(
 +            req_in_waiting_queue
 +            * envs_omni.TFAS_INTERCEPT
-+            / envs_omni.TFAS_SLOP
++            / envs_omni.TFAS_SLOPE
 +        ) * 1024
 +    )
 +
