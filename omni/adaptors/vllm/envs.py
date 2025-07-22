@@ -29,8 +29,8 @@ from typing import Any, Callable, Dict
 env_variables: Dict[str, Callable[[], Any]] = {
     "TFAS_INTERCEPT":
     lambda: float(os.getenv("TFAS_INTERCEPT", "0.1259")),
-    "TFAS_SLOP":
-    lambda: float(os.getenv("TFAS_SLOP", "0.035")),
+    "TFAS_SLOPE":
+    lambda: float(os.getenv("TFAS_SLOPE", "0.035")),
     "TFAS_REAL_TOKEN_BUDGET":
     lambda: int(os.getenv("TFAS_REAL_TOKEN_BUDGET", "9154")),
     "TFAS_WAITING_TIME_OUT":
