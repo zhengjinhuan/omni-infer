@@ -95,7 +95,7 @@ index b83489f6d..121c12837 100644
 +                self.grow_upper_bound = self.max_num_running_reqs 
 +            tfas_profiler_max_num_running_reqs = (
 +                self.trigger_num//self.grow_frequency+1)
-+            tfas_profiler_max_num_running_reqs = min(self.tfas_profiler_max_num_running_reqs,
++            tfas_profiler_max_num_running_reqs = min(tfas_profiler_max_num_running_reqs,
 +                                                      self.grow_upper_bound)
 +            
          # For logging.
