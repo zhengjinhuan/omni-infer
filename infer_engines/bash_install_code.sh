@@ -24,3 +24,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/patch_support_prefilled_token_skip_tok
 git apply --whitespace=nowarn $PATCH_ROOT/patch_support_fast_path_pull_kv.patch
 git apply --whitespace=nowarn $PATCH_ROOT/freeze_numpy.patch
 git apply --whitespace=nowarn $PATCH_ROOT/npu_ray_adaptor.patch
+git apply --whitespace=nowarn $PATCH_ROOT/tfas.patch
