@@ -92,10 +92,10 @@ index b83489f6d..121c12837 100644
 +            else:
 +                self.trigger_num = 1
 +                self.grow_frequency = 30
-+                self.grow_upper_bound = 32
++                self.grow_upper_bound = self.max_num_running_reqs 
 +            tfas_profiler_max_num_running_reqs = (
 +                self.trigger_num//self.grow_frequency+1)
-+            tfas_profiler_max_num_running_reqs = min(self.max_num_running_reqs,
++            tfas_profiler_max_num_running_reqs = min(self.tfas_profiler_max_num_running_reqs,
 +                                                      self.grow_upper_bound)
 +            
          # For logging.
@@ -176,7 +176,7 @@ index e9192e9ba..65b3135e7 100644
 +        envs_omni.PREFILL_SCHEDULE_POLICY in ["tfas", "tfas_profiler"]):
 +        logger.info("[api_server.py] TFAS or TFAS_Profiler policy enabled; max_num_seqs set to 128.")
 +        tfas_max_num_seqs = 128
-+        args.max_num_seqs = tfas_max_num_seqs
++        args.max_num_seqs = max(tfas_max_num_seqs, 4*args.max_num_seqs)
  
  @asynccontextmanager
  async def lifespan(app: FastAPI):
