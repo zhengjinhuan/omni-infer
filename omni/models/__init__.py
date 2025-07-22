@@ -12,14 +12,18 @@ if os.getenv("PROFILING_NAMELIST", None):
 
 
 def register_model():
-
+    is_A2 = os.getenv("ASCEND_PLATFORM", "A3")=="A2"
     ModelRegistry.register_model(
         "DeepseekV2ForCausalLM",
         "omni.models.deepseek.deepseek_v2:CustomDeepseekV2ForCausalLM")
-
-    ModelRegistry.register_model(
-        "DeepseekV3ForCausalLM",
-        "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
+    if is_A2:
+        ModelRegistry.register_model(
+            "DeepseekV3ForCausalLM",
+            "omni.models.deepseek.deepseek_v3_a2:DeepseekV3ForCausalLM")
+    else:
+        ModelRegistry.register_model(
+            "DeepseekV3ForCausalLM",
+            "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
  
     ModelRegistry.register_model(
         "DeepSeekMTPModel",
@@ -44,8 +48,10 @@ def register_model():
         ModelRegistry.register_model(
             "Qwen2ForCausalLM",
             mock_model_class_factory(Qwen2ForCausalLM))
-            
-        from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM
+        if is_A2:   
+            from omni.models.deepseek.deepseek_v3_a2 import DeepseekV3ForCausalLM
+        else:
+            from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             mock_model_class_factory(DeepseekV3ForCausalLM))
