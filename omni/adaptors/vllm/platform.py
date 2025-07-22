@@ -87,7 +87,7 @@ def update_parallel_state():
 
     vllm.distributed.parallel_state.destroy_model_parallel = ascend_destroy_model_parallel
 
-    if torch.__version__ == '2.5.1':
+    if torch.__version__ >= '2.5.1' and torch.__version__ < "2.6":
         from vllm.config import ParallelConfig
         global origin_stateless_init_dp_group
         if origin_stateless_init_dp_group == None:
@@ -390,6 +390,14 @@ class NPUPlatform(Platform):
         Args:
             vllm_config: The vLLM configuration to update.
         """
+        additional_config = vllm_config.additional_config
+        if additional_config and vllm_config.additional_config.get("enable_hybrid_graph_mode", False):
+            from omni.adaptors.vllm.worker.npu_schedule import HybridSchedulerConfig
+            ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
+                vllm_config.scheduler_config)
+            vllm_config.scheduler_config = ascend_scheduler_config
+            logger.info("--------enbale hybrid graph mode----------------")
+            
         ConfigUpdater.update_vllm_config(vllm_config)
 
     @classmethod

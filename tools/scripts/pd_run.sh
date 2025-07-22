@@ -319,6 +319,9 @@ if [ $HCCL_BUFFSIZE -gt 0 ] ; then
     export HCCL_BUFFSIZE
     echo "HCCL_BUFFSIZE: $HCCL_BUFFSIZE"
 fi
+
+export HCCL_CONNECT_TIMEOUT=1800
+export HCCL_EXEC_TIMEOUT=120
 # 随路拷贝
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离
@@ -365,13 +368,15 @@ echo "VLLM_ENABLE_MC2: $VLLM_ENABLE_MC2"
 echo "TNG_HOST_COPY: $TNG_HOST_COPY"
 echo "CPU_AFFINITY_CONF: $CPU_AFFINITY_CONF"
 echo "AUTO_USE_UC_MEMORY: $AUTO_USE_UC_MEMORY"
+echo "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: $RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
+echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
 echo "=================="
 
 EXTRA_ARGS="$EXTRA_ARGS"
 # Execute Python script
 
-if [ -n "$ADDITIONAL_CONFIG" ]; then
+common_operations() {
   python start_api_servers.py \
     --num-servers "$NUM_SERVERS" \
     --num-dp "$NUM_DP" \
@@ -389,21 +394,37 @@ if [ -n "$ADDITIONAL_CONFIG" ]; then
     --additional-config "$ADDITIONAL_CONFIG" \
     --enable-mtp \
     --extra-args "$EXTRA_ARGS"
+}
+
+if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
+  if [ "$IP" = "$HOST_IP" ]; then
+    export RAY_USAGE_STATS_ENABLED=0
+    ray start --head --num-gpus=16
+    sleep 10s
+    common_operations
+  else
+    sleep 5s
+    command="ray start --address='$HOST_IP:6379' --num-gpus=16 &> /dev/null"
+    echo $command
+    cost_time=0
+    end_time=300
+    while true; do
+      if [ $cost_time -ge $end_time ]; then
+        echo "error, conneciton timeout"
+        exit 1
+      fi
+
+      eval $command
+      if [ $? -eq 0 ]; then
+        echo "succeed to connect to ray head node"
+        break
+      else
+        echo "failed to connect to ray head node, wait 5s....."
+        sleep 5
+        cost_time=$((cost + 5))
+      fi
+    done
+  fi
 else
-  python start_api_servers.py \
-    --num-servers "$NUM_SERVERS" \
-    --num-dp "$NUM_DP" \
-    --server-offset "$SERVER_OFFSET" \
-    --model-path "$MODEL_PATH" \
-    --master-ip "$MASTER_IP" \
-    --max-model-len "$MAX_MODEL_LEN" \
-    --master-port "$MASTER_PORT" \
-    --base-api-port "$BASE_API_PORT" \
-    --tp "$TP" \
-    --served-model-name "$SERVED_MODEL_NAME" \
-    --log-dir "$LOG_DIR" \
-    --kv-transfer-config "$KV_TRANSFER_CONFIG" \
-    --gpu-util "$GPU_UTIL" \
-    --enable-mtp \
-    --extra-args "$EXTRA_ARGS"
+  common_operations
 fi

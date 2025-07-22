@@ -80,6 +80,8 @@ def start_single_node_api_servers(
     extra_args=None,
     additional_config=None,
     enable_mtp=False,
+    no_enable_prefix_caching=False,
+    num_speculative_tokens=1,
 ):
     """Start multiple VLLM API servers with specified configurations."""
 
@@ -144,7 +146,8 @@ def start_single_node_api_servers(
             cmd.extend(extra_args.split())
         if additional_config:
             cmd.extend(["--additional-config", additional_config])
-
+        if no_enable_prefix_caching:
+            cmd.extend(["--no-enable-prefix-caching"])
         # Open a single log file for combined stdout and stderr
         log_file = open(os.path.join(log_dir, f"server_{rank}.log"), "w")
 
@@ -240,6 +243,8 @@ if __name__ == "__main__":
         help="JSON-formatted additional platform-specific config, e.g., '{\"key\":\"value\"}'")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
     parser.add_argument("--enable-mtp", default=False, action='store_true')
+    parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
+    parser.add_argument("--num-speculative-tokens", type=int, default=1)
 
     args = parser.parse_args()
     if not args.num_dp:
@@ -257,6 +262,7 @@ if __name__ == "__main__":
         master_port=args.master_port,
         total_dp_size=args.num_dp,
         server_offset=args.server_offset,
+        no_enable_prefix_caching=args.no_enable_prefix_caching,
         gpu_util=args.gpu_util,
         block_size=args.block_size,
         tp=args.tp,
@@ -267,7 +273,8 @@ if __name__ == "__main__":
         max_tokens=args.max_model_len, 
         extra_args=args.extra_args,
         additional_config=args.additional_config,
-        enable_mtp=args.enable_mtp
+        enable_mtp=args.enable_mtp,
+        num_speculative_tokens=args.num_speculative_tokens,
     )
 
     # Register SIGINT handler for Ctrl+C

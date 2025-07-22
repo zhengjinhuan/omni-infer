@@ -125,6 +125,7 @@
       #!/bin/bash
       . ~/.bashrc
       HCCL_BUFFSIZE=500
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
       tp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((tp++))
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
@@ -132,7 +133,7 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
-      GPU_UTIL=0.92
+      GPU_UTIL=0.95
       VLLM_ENABLE_MC2=1
 
       cd ${OMNI_INFER_SCRIPTS}

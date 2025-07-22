@@ -9,8 +9,6 @@
 #include <ngx_atomic.h>
 #include <stdlib.h>
 
-#define MAX_PEER_COUNT 512
-
 typedef struct {
     ngx_flag_t  enable;
 } ngx_http_prefill_score_conf_t;
@@ -121,7 +119,8 @@ ngx_http_prefill_score_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     shpool = (ngx_slab_pool_t *)shm_zone->shm.addr;
 
-    size_t sz = sizeof(ngx_http_prefill_score_shm_block_t) + (MAX_PEER_COUNT - 1) * sizeof(ngx_http_prefill_score_shm_peer_t);
+    n = 512;
+    size_t sz = sizeof(ngx_http_prefill_score_shm_block_t) + (n - 1) * sizeof(ngx_http_prefill_score_shm_peer_t);
     shm_block = ngx_slab_alloc(shpool, sz);
     if (!shm_block) {
         return NGX_ERROR;
@@ -200,7 +199,6 @@ ngx_http_prefill_score_upstream_init(ngx_http_request_t *r,
     ngx_uint_t i;
     ngx_uint_t n;
     double min_load;
-    double load;
     double my_time_cost;
     ngx_slab_pool_t *shpool;
 

@@ -7,91 +7,89 @@ import torch
 from pathlib import Path
 from typing import Optional, Tuple
 from omni_planner import omni_placement
+from omni_planner.config import Config
 
 class ExpertMapping:
-    def __init__(self, pattern_path, device: str = "npu", rank: int = 0, num_devices_per_host: int = 8, max_redundants_per_expert: int = 20):
-        self.pattern_path = pattern_path
+    def __init__(self, config: Config, device: str = "npu", rank: int = 0, world_size: int = 1, num_devices_per_host: int = 8, enable_dynamic: bool = False, num_experts: int = 256):
+        self.pattern_path = config.getattr("pattern_path", None)
         self.device = device
+        self.rank = rank
+        self.world_size = world_size 
         self.num_devices_per_host = num_devices_per_host
+        self.max_moe_layer_num = config.max_moe_layer_num
+        self.num_experts = num_experts
+
         self.placement_pattern = self._load_placement_pattern_with_validation()
 
-        max_redundants_per_expert = self.get_max_redundant_expert_num()
-        if self.placement_pattern is not None:
-            num_divices, num_layers, num_eps = self.placement_pattern.shape
-            self.local_expert_mapping = torch.zeros(num_layers,
-                                                    num_eps,
-                                                    dtype = torch.int32,
-                                                    device = self.device)
-            self.local_expert_offsets = self._calc_expert_offset_each_layer()
+        self.enable_dynamic = enable_dynamic
+        self.max_redundant_per_expert = config.getattr('max_redundant_per_expert', None) if self.enable_dynamic else None
+        self.max_redundant_per_rank = config.getattr('max_redundant_per_rank', None) if self.enable_dynamic else None
 
-            self.global_expert_mapping = torch.zeros(num_layers,
-                                                    num_eps,
-                                                    max_redundants_per_expert, # max_redundants_per_expert
-                                                    dtype = torch.int32,
-                                                    device = self.device)
-            self.redundant_count_per_expert = torch.zeros(num_layers,
-                                                    num_eps,
-                                                    dtype = torch.int32,
-                                                    device = self.device)
+        self._init_expert_mapping()
+        self.local_expert_offsets = self._calc_expert_offset_each_layer()
+        self.max_num_deployed_expert_per_rank = max(max(self.get_deployed_experts_per_layer()) // self.get_world_size(), 1)
 
-            self.redundant_expert_mapping = torch.zeros(num_layers,
-                                                    max_redundants_per_expert,
-                                                    num_eps,
-                                                    dtype = torch.int32,
-                                                    device = self.device)
 
-            self.placement_pattern_cpu = self.placement_pattern.cpu()
-            self.placement_mapping = omni_placement.PlacementMapping("",  # TODO: pattern path, parse pattern in native C++
-                                                                     rank,
-                                                                     num_devices_per_host,
-                                                                     self.redundant_expert_mapping.data_ptr(),
-                                                                     list(self.redundant_expert_mapping.size()),
-                                                                     self.global_expert_mapping.data_ptr(),
-                                                                     list(self.global_expert_mapping.size()),
-                                                                     self.redundant_count_per_expert.data_ptr(),
-                                                                     list(self.redundant_count_per_expert.size()),
-                                                                     self.placement_pattern_cpu.data_ptr(),
-                                                                     list(self.placement_pattern_cpu.size()))
+    def _init_expert_mapping(self) :
 
-    def _resolve_pattern_path(self) -> Optional[Path]:
-        """Resolve placement pattern path from configuration."""
-        raw_path = self.pattern_path
-        if not raw_path or raw_path == "":
-            return None
-        return self._convert_pattern_path(raw_path)
+        _, num_layers, num_eps = self.placement_pattern.shape
 
-    def _convert_pattern_path(self, path: str) -> str:
-        # Check if the path is a relative path
-        if not os.path.isabs(path):
-            # Get the absolute path of the current script file
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            # Create a Path object and resolve the relative path
-            absolute_path = (Path(current_dir) / path).resolve()
-            return str(absolute_path)
-        else:
-            # If it's already an absolute path, return it directly
-            return path
+        max_redundant_per_expert = self.get_max_redundant_per_expert()
+        
+        self.selector = torch.zeros(num_layers,num_eps,1,dtype=torch.int32,device=self.device)
+
+        self.placement_pattern_cpu = self.placement_pattern.cpu()
+        self.placement_mapping = omni_placement.PlacementMapping("",  # TODO: pattern path, parse pattern in native C++
+                                                                self.rank,
+                                                                self.num_devices_per_host,
+                                                                max_redundant_per_expert,
+                                                                max(self.get_deployed_experts_per_layer()),
+                                                                self.placement_pattern_cpu.data_ptr(),
+                                                                list(self.placement_pattern_cpu.size()),
+                                                                self.selector.data_ptr())
+
+    def get_selector(self):
+        return self.selector
 
     def _load_placement_pattern_with_validation(self) -> Optional[torch.Tensor]:
         """Load and validate placement pattern from config."""
-        pattern_path = self._resolve_pattern_path()
-        if not pattern_path:
-            return None
-        if not os.path.exists(pattern_path):
-            raise FileNotFoundError(f"Placement pattern file not found: {pattern_path}")
-        try:
-            pattern = torch.tensor(
-                np.load(pattern_path).astype(np.int32),
-                dtype=torch.int32,
-                device=self.device
-            )
-            # Validate pattern shape against num_devices_per_host
-            if pattern.shape[0] % self.num_devices_per_host != 0:
-                print(f"Warning: Number of devices in pattern ({pattern.shape[0]}) is not "
-                      f"evenly divisible by num_devices_per_host ({self.num_devices_per_host})")
-            return pattern
-        except Exception as e:
-            raise RuntimeError(f"Error loading placement pattern: {e}") from e
+
+        def build_basepattern(world_size, layers, num_experts):
+            # Calculate num_experts_per_rank
+            num_experts_per_rank = num_experts // world_size
+            
+            # Initialize a 3D matrix with zeros
+            matrix = np.zeros((world_size, layers, num_experts)).astype(np.int32)
+            
+            # Set specific slices to 1 based on rank
+            for rank in range(world_size):
+                start_idx = rank * num_experts_per_rank
+                end_idx = (rank + 1) * num_experts_per_rank
+                matrix[rank, :, start_idx:end_idx] = 1
+            
+            return matrix
+         
+        if self.pattern_path is None:
+            print(f"[Placement-Warning]: pattern_path is None, BasePattern will be Used!")
+            pattern = build_basepattern(self.world_size, self.max_moe_layer_num, self.num_experts)
+        else:
+            if not os.path.exists(self.pattern_path):
+                raise FileNotFoundError(f"[Placement-Error]: Placement pattern file not found: {self.pattern_path}")
+            else:
+                pattern = np.load(self.pattern_path).astype(np.int32)
+            if pattern.shape != (self.world_size, self.max_moe_layer_num, self.num_experts):
+                raise ValueError(f"[Placement-Error]: pattern.shape[{pattern.shape}] is not equals to (world_size[{self.world_size}], layers[{self.max_moe_layer_num}], num_experts[{self.num_experts}])")
+
+        pattern = torch.tensor(
+            pattern,
+            dtype=torch.int32,
+            device=self.device
+        )
+        # Validate pattern shape against num_devices_per_host
+        if pattern.shape[0] % self.num_devices_per_host != 0:
+            print(f"Warning: Number of devices in pattern ({pattern.shape[0]}) is not "
+                    f"evenly divisible by num_devices_per_host ({self.num_devices_per_host})")
+        return pattern
 
     # @calculate_time
     def is_expert_on_current_rank(
@@ -115,8 +113,7 @@ class ExpertMapping:
         """
         if layer_idx_moe > 57:
             return self._default_deployment_check(expert_id, current_rank, experts_per_rank)
-        if self.placement_pattern is None:
-            return self._default_deployment_check(expert_id, current_rank, experts_per_rank)
+
 
         layer_mapping = self.placement_pattern[current_rank, layer_idx_moe]
         exists = layer_mapping[expert_id] > 0.5
@@ -136,20 +133,6 @@ class ExpertMapping:
         position = expert_id - start if in_range else -1
         return in_range, position
 
-    def _apply_local_expert_mapping(
-        self,
-        layer_idx_moe: Optional[int] = None,
-        token_expert_ids: Optional[torch.Tensor] = None
-    ) -> Optional[torch.Tensor]:
-        return self.local_expert_mapping[layer_idx_moe, token_expert_ids]
-
-    def _none_local_expert_mapping(
-        self,
-        layer_idx_moe: Optional[int] = None,
-        token_expert_ids: Optional[torch.Tensor] = None
-    ) -> Optional[torch.Tensor]:
-        return token_expert_ids
-
     def get_num_of_redundant_experts(self, moe_layer_idx: int, num_expert_per_device_origin=16, rank_device=0) -> int:
         """
         Calculate the number of redundant experts for a specific device and MoE layer.
@@ -166,9 +149,11 @@ class ExpertMapping:
             int
                 Number of redundant experts, calculated as: (current experts count) - (original experts count).
         """
-        if self.placement_pattern is None:
-            return 0
+        # dynamic redundant num from config yml
+        if self.max_redundant_per_rank is not None:
+            return self.max_redundant_per_rank
 
+        # static redundant num from parttern
         experts_here = self.placement_pattern[rank_device][moe_layer_idx]
         num_redundant_experts = round(torch.sum(experts_here).item() - num_expert_per_device_origin)
         return num_redundant_experts
@@ -184,15 +169,22 @@ class ExpertMapping:
         num_layers = self.placement_pattern.shape[1]
         return num_layers
 
-    def get_total_deployed_experts(self) -> int:
-        total_deployed_experts = int(torch.sum(self.placement_pattern[:, 0, :]).item())
-        return total_deployed_experts
-
     def get_deployed_experts_per_layer(self) -> list:
+        # dynamic redundant num from config yml
+        if self.max_redundant_per_rank is not None:
+            num_layers = self.get_total_num_layers()
+            return [self.get_total_num_expert() +  self.max_redundant_per_rank * self.get_world_size()] * num_layers
+        # static redundant num from parttern
         deployed_experts_per_layer = torch.sum(self.placement_pattern, dim=(0, 2)).tolist()
         return deployed_experts_per_layer
 
     def get_redundant_enable_per_layer(self) -> list:
+        num_layers = self.get_total_num_layers()
+        # dynamic redundant num from config yml
+        if self.max_redundant_per_rank is not None:
+            return [False] * num_layers if self.max_redundant_per_rank == 0 else [True] * num_layers
+
+        # static redundant num from parttern
         deployed_experts_per_layer = self.get_deployed_experts_per_layer()
         num_logits_expert_per_rank = self.get_total_num_expert()
         redundant_enable_per_layer = [not (value==num_logits_expert_per_rank) for value in deployed_experts_per_layer]
@@ -216,14 +208,15 @@ class ExpertMapping:
         return local_expert_offsets
 
     def get_local_expert_indices_offset(self, layer_idx_moe: int, current_rank: int, default_experts_per_rank: int) -> int:
-        if self.placement_pattern is None:
-            return current_rank * default_experts_per_rank
+        if self.max_redundant_per_rank is not None:
+            return self.rank * self.max_num_deployed_expert_per_rank
 
         return self.local_expert_offsets[current_rank, layer_idx_moe].item()
 
-    def get_max_redundant_expert_num(self) :
-        if self.placement_pattern is None:
-            return 1 #only one deployment each expert
+    def get_max_redundant_per_expert(self) :
+        # max_redundant_per_expert from config yml
+        if self.max_redundant_per_expert is not None:
+            return self.max_redundant_per_expert
 
         pattern = self.placement_pattern.to(dtype=torch.int64)
         redundant_expert_num = pattern.sum(dim=0)
@@ -274,3 +267,12 @@ class ExpertMapping:
             valid_layers.append(torch.all(valid_expected & valid_non_expected).item())
 
         return valid_layers
+
+    def update_working_mapping(self):
+        print("Not implement update_working_mapping.")
+
+    def get_working_mapping(self) -> torch.tensor:
+        return self.redundant_expert_mapping
+
+    def get_max_num_deployed_expert_per_rank(self) ->int:
+        return self.max_num_deployed_expert_per_rank

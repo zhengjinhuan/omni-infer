@@ -38,7 +38,7 @@ class ResDis_ExpertsBalancer(Optimizer):
 
         # self._initial_ep2pos_all()
 
-        self.ep2pos_all = cluster_status.expert_mapping.global_expert_mapping
+        self.ep2pos_all = cluster_status.expert_mapping.local_expert_mapping
         self.count_all = cluster_status.expert_mapping.redundant_count_per_expert
 
 

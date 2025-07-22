@@ -29,8 +29,10 @@ class ModelParallelConfig:
     lm_tp_size: int = 1
     pp_size: int = 1
     dp_size: int = 1
+    o_proj_tp_size: int = 1
     
     redundancy_expert_num: int = 0
+    redundancy_shared_expert_num: int = 0
     
 @dataclass    
 class ModelProfilingConfig:
@@ -66,8 +68,20 @@ class ModelOperatorOptConfig:
     use_super_kernel: bool = False
     use_mlaprolog: bool = False
     opt_w2_scale_cast: bool = False
+    enable_mc2_v2: bool = False
     decode_gear_list: list[int] = field(default_factory=lambda: [16])
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
+
+    enable_round_pipeline_comm: bool = False
+    enable_pipeline_comm: bool = False
+    pd_seperate_prefill: bool = False
+    prefill_enable_long_seq: bool = False
+    enable_prefetch: bool = False
+    prefill_moe_multi_stream: bool = True
+    prefill_enable_mla_alltoall_local: bool = True
+    prefill_enable_pipeline_comm: bool = True
+    prefill_mla_multi_stream: bool = True
+    enable_dense_local_tp: int = 1
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path

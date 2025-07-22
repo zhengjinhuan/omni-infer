@@ -4,8 +4,9 @@
 import torch
 import ctypes
 from omni_planner import omni_placement
+from omni_planner.distributed_ops import distribution_warmup
 from collections import defaultdict
-from omni_planner.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,get_expert_ids,calculate_time
+from omni_planner.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,calculate_time
 import re
 
 def deepseek_filter_func(key, first_k_dense_replace=3):
@@ -22,13 +23,12 @@ def deepseek_filter_func(key, first_k_dense_replace=3):
 def deepseek_get_layer_idx_func(key,first_k_dense_replace=3):
     pattern = r"^.*\.layers\.(\d+)\..*\.(.+)$"
     match = re.match(pattern, key)
-    if not match:
-        raise RuntimeError(f"current key is {key},  layer.layer_idx ")
+    assert match, f"current key is {key},  layer.layer_idx "
     layer = int(match.group(1))  # 提取layer数字
     return layer - first_k_dense_replace
 
 @calculate_time
-def init_dram_weights(moe_weights,param_dict,local_rank_pattern,first_k_dense_replace):
+def init_dram_weights(moe_weights,param_dict,first_k_dense_replace,init_shm):
     """
     Args:
         moeweights: omni_placement.MoEWeights
@@ -40,14 +40,6 @@ def init_dram_weights(moe_weights,param_dict,local_rank_pattern,first_k_dense_re
         raise TypeError("moe_weights must be an instance of omni_placement.MoEWeights")
     if not isinstance(param_dict, dict):
         raise TypeError("param_dict must be a dictionary")
-    if not isinstance(local_rank_pattern, torch.Tensor):
-        raise TypeError("local_rank_pattern must be a torch.Tensor")
-
-    # Validate local_rank_pattern
-    if local_rank_pattern.dtype != torch.bool:
-        raise ValueError("local_rank_pattern must have dtype torch.bool")
-    if local_rank_pattern.dim() != 2:
-        raise ValueError("local_rank_pattern must be a 2D tensor with shape [num_layers, num_experts]")
 
     filter_func_params = {"first_k_dense_replace":first_k_dense_replace}
     param_dict = filter_dict_keys(param_dict,deepseek_filter_func,filter_func_params) # 传入过滤函数， 过滤出专家权重
@@ -55,14 +47,13 @@ def init_dram_weights(moe_weights,param_dict,local_rank_pattern,first_k_dense_re
     param_list = convert_param_dict_to_list(param_dict,deepseek_get_layer_idx_func,get_layer_func_params) # 传入layer识别函数， 权重从 Dict转化为list
     ctype_param_list = convert_param_to_ctype(param_list) # 取权重地址，转化为c++接收类型
 
-    # 临时取
-    experts_id_list = get_expert_ids(local_rank_pattern) # expert_idx -> expert_ids 转化，
 
     # 调用C++端的init_weights方法
-    moe_weights.init_weights(ctype_param_list,experts_id_list)
+    moe_weights.init_weights(ctype_param_list,init_shm)
 
 
-def create_placement_manager(rank, world_size, num_devices_per_host, cluster_activation=None, expert_mapping=None):
+
+def create_placement_manager(rank, world_size, num_devices_per_host, cluster_activation=None, expert_mapping=None, enable_dynamic=False):
     """
     Creates a Placement manage.
 
@@ -76,17 +67,9 @@ def create_placement_manager(rank, world_size, num_devices_per_host, cluster_act
     Returns:
         omni_placement.Placement: A Placement object managing MoE expert placement.
     """
-    # Map torch.dtype to c10::ScalarType integer values
-    dtype_map = {
-        torch.int32: 3,  # c10::ScalarType::Int
-        # Add more types as needed
-    }
-    scalar_type = dtype_map[torch.int32]
+    placement_mapping = expert_mapping.placement_mapping
 
-    local_expert_mapping = expert_mapping.local_expert_mapping
-    local_expert_shape = list(local_expert_mapping.size())
-    placement_pattern = expert_mapping.placement_pattern.cpu()
-    placement_shape = list(placement_pattern.size())
+    rootinfo = get_hccl_root_info(rank)
 
     # Instantiate Placement object
     placement = omni_placement.Placement(
@@ -94,17 +77,15 @@ def create_placement_manager(rank, world_size, num_devices_per_host, cluster_act
         world_size,
         num_devices_per_host,
         cluster_activation,
-        local_expert_mapping.data_ptr(),
-        local_expert_shape,
-        scalar_type,
-        placement_pattern.data_ptr(),
-        placement_shape,
-        scalar_type
+        placement_mapping,
+        rootinfo,
+        enable_dynamic
     )
+
     return placement
 
 
-def create_cluster_activation(rank, world_size, num_layers,total_deployed_experts, count_activation):
+def create_cluster_activation(rank, world_size, num_layers,num_deploy_experts_per_rank, count_activation,max_activation_count):
     """
     Creates a ClusterActivation object for managing cluster-level activations.
 
@@ -123,21 +104,49 @@ def create_cluster_activation(rank, world_size, num_layers,total_deployed_expert
     length = count_activation.numel()
     element_size = count_activation.element_size()
     address = count_activation.data_ptr()
+    dtype = str(count_activation.dtype)[len('torch.'):]
 
     tensor = omni_placement.Tensor(
         data_ptr=address,
         length=length,
         element_size=element_size,
-        name="",
+        dtype=dtype,
+        name=""
     )
 
     # Instantiate ClusterActivation object
     cluster_activation = omni_placement.ClusterActivation(
         tensor,
+        max_activation_count,
         num_layers,
-        total_deployed_experts,
+        num_deploy_experts_per_rank,
         activation_window_size,
         world_size,
         rank
     )
     return cluster_activation
+
+def do_placement_optimizer(placement_manager, layer_id: int) :
+    omni_placement.do_placement_optimizer(placement_manager, layer_id)
+
+def get_hccl_root_info(rank) :
+    distribution_warmup() # must be warmup before get_hccl_root_info
+    if rank == 0:
+        root_info = omni_placement.get_pd_rootinfo()
+        tensor_to_broadcast = torch.tensor(list(root_info), dtype=torch.uint8, device="npu")
+        shape = torch.tensor(tensor_to_broadcast.shape, dtype=torch.int64,device="npu")
+    else:
+        shape = torch.zeros(1, dtype=torch.int64,device="npu")
+    
+    # step1. broadcast shape
+    torch.distributed.broadcast(shape,src=0)
+    if rank != 0:
+        tensor_to_broadcast = torch.zeros(shape, dtype=torch.uint8, device="npu")
+    
+    # Step2. broadcast rootinfo
+    torch.distributed.broadcast(tensor_to_broadcast,src=0)
+    torch.npu.synchronize()
+    root_info = bytes(tensor_to_broadcast.cpu().numpy())
+    if rank==0:
+        print(f"Rank {rank}: Broadcasted rootinfo = {root_info[:16]}... (length={len(root_info)})",flush=True)
+    return root_info

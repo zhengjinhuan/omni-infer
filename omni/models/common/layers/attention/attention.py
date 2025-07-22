@@ -36,11 +36,12 @@ from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.block_table import BlockTable
 from vllm.platforms import current_platform
-
+from vllm.config import get_current_vllm_config
 from omni.ops.attention import vanilla_chunked_prefill
 from omni.models.common.layers.attention.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.attention_dummy_builder import DummyAttentionMetadataBuilder
 
+import torchair as tng
 
 class AscendAttentionState(Enum):
     PrefillNoCache = 0
@@ -125,35 +126,108 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.dtype = runner.dtype
         self.device = runner.device
         self.block_table = block_table
-
         mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", 10000)
         self.attn_mask_len = min(self.runner.model_config.max_model_len,
                                  int(mask_len))
         self.attn_mask_builder = AttentionMaskBuilder.initialize_from_len(
-            self.attn_mask_len, self.dtype)
+            self.attn_mask_len, torch.bool)
 
     def _make_attention_mask(self, seq_lens, query_lens, position,
                              attn_state) -> torch.Tensor:
         # Chunk Prefill situation.
         if attn_state == AscendAttentionState.ChunkedPrefill:
             return self.attn_mask_builder.get_splitfuse_attn_mask(
-                seq_lens, query_lens, position, self.dtype, self.device)
+                seq_lens, query_lens, position, torch.bool, self.device)
         # Prefill without cache situation.
         elif attn_state == AscendAttentionState.PrefillNoCache:
             max_seq_len = max(seq_lens, default=0)
             return self.attn_mask_builder.get_attn_mask(
-                max_seq_len, self.dtype, self.device)
+                max_seq_len, torch.bool, self.device)
         # Prefill with cache hit.
         elif attn_state == AscendAttentionState.PrefillCacheHit:
             return self.attn_mask_builder.get_attn_mask(
-                128, self.dtype, self.device)
+                128, torch.bool, self.device)
         # Decode-only situation.
         else:
             return None
 
     def reorder_batch(self, input_batch: "InputBatch",
                       scheduler_output: "SchedulerOutput") -> bool:
-        return False
+        # We now want to reorder the batch so that the "decode" requests are at
+        # the front and the "prefill" requests are at the using the least amount
+        # swaps possible. (NOTE for now we loosely use "decode" to mean requests
+        # where attention is likely memory-bound and "prefill" to mean requests
+        # where attention is likely compute-bound
+        decodes = []
+        prefills = []
+        num_decode_tokens = 0
+        num_prefill_tokens = 0
+
+        for i, req_id in enumerate(input_batch.req_ids):
+            num_tokens = scheduler_output.num_scheduled_tokens[req_id]
+            # for now treat 1 scheduled token as "decode" even if its not,
+            # we should update this to something like < 8 in the future but
+            # currently the TritonMLA._forward_decode only supports
+            # num_tokens = 1
+            # Only in decode the spec tokens are scheduled
+            if req_id in scheduler_output.scheduled_spec_decode_tokens or num_tokens == 1:
+                decodes.append(i)
+                num_decode_tokens += num_tokens
+            else:
+                prefills.append(i)
+                num_prefill_tokens += num_tokens
+
+        # We hope that this is fairly minimal since decodes
+        # should be around for a number of iterations so hopefully they are
+        # relatively stationary (and new request are generally appended to the
+        # persistent batch so already should be at the back)
+        # To achieve this we loop over the decodes in descending order and
+        # the prefills in ascending order. We swap decodes from the  "back"
+        # i.e. past where the last decode should be in the reodorered with
+        # prefills from the front of the batch.
+        # `decodes` and `prefills` are already in ascending order just based on
+        # the above loop
+        num_decodes = len(decodes)
+        num_prefills = len(prefills)
+        first_prefill = 0
+        modified_batch = False
+
+        # Save for next `build` call
+        self._num_decodes = num_decodes
+        self._num_prefills = num_prefills
+        self._num_decode_tokens = num_decode_tokens
+        self._num_prefill_tokens = num_prefill_tokens
+
+        return modified_batch
+
+    def _get_graph_runner_block_tables(
+            self, num_decode_tokens: int, block_tables: torch.Tensor) -> torch.Tensor:
+
+        max_batch_size, max_blocks = self.runner.graph_block_tables.shape
+        if max_batch_size < num_decode_tokens:
+            raise RuntimeError("max_batch_size must be greater than or equal to num_decode_tokens")
+
+        if isinstance(self.runner.graph_block_tables, np.ndarray):
+            graph_block_tables = torch.zeros((max_batch_size, max_blocks),
+                                             dtype=block_tables.dtype,
+                                             device=block_tables.device)
+        else:
+            graph_block_tables = self.runner.graph_block_tables.to(
+                device=block_tables.device, dtype=block_tables.dtype, non_blocking=True)
+
+        graph_block_tables = graph_block_tables[:block_tables.shape[0]]
+
+        num_blocks = block_tables.size(1)
+        if num_blocks <= max_blocks:
+            graph_block_tables[:num_decode_tokens, :
+                               num_blocks] = block_tables[:num_decode_tokens, :
+                                                          num_blocks]
+        else:
+            graph_block_tables[:num_decode_tokens, :
+                               max_blocks] = block_tables[:num_decode_tokens, :
+                                                          max_blocks]
+
+        return graph_block_tables
 
     def build(self,
               num_reqs,
@@ -163,23 +237,48 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
               common_attn_metadata=None,
               graph_pad_size=-1):
 
-        block_table = self.block_table.get_device_tensor()[:num_reqs]
+        block_table = self.runner.input_batch.block_table[
+                          0].get_device_tensor()[:num_reqs]
 
         seq_lens = self.runner.seq_lens_cpu[:num_reqs]
         query_lens = seq_lens - self.runner.input_batch.num_computed_tokens_cpu_tensor[:num_reqs]
 
         slot_mapping = self.block_table.slot_mapping_cpu[:num_actual_tokens].to(
-            self.runner.device, non_blocking=True, dtype=torch.int32)
+            self.runner.device, non_blocking=True)
+        input_positions = self.runner.positions_cpu[:num_actual_tokens].to(
+            self.runner.device, non_blocking=True)
 
-        if self.runner.scheduler_config.chunked_prefill_enabled:
-            attn_state = AscendAttentionState.ChunkedPrefill
-        elif np.array_equal(self.runner.seq_lens_np[:num_reqs], num_actual_tokens):
-            attn_state = AscendAttentionState.PrefillNoCache
-        # We assume it is the decode stage, where prefill occurs but only one token is not hit in cache.
-        elif np.all(num_actual_tokens == 1):
-            attn_state = AscendAttentionState.DecodeOnly
-        else:
-            attn_state = AscendAttentionState.ChunkedPrefill
+        attn_state = self.runner.attn_state
+
+        if graph_pad_size > 0:
+            padding = torch.full((graph_pad_size, ),
+                                    0,
+                                    dtype=slot_mapping.dtype,
+                                    device=self.runner.device)
+            slot_mapping = torch.cat([slot_mapping, padding])
+            padding_0 = torch.zeros(graph_pad_size,
+                                    dtype=input_positions.dtype,
+                                    device=self.runner.device)
+            input_positions = torch.cat([input_positions, padding_0])
+
+        if self.runner.attn_state == AscendAttentionState.DecodeOnly:
+            if self._num_decode_tokens % self._num_decodes != 0:
+                raise RuntimeError("self._num_decode_tokens must be divisible by self._num_decodes")
+            num_tokens_per_req = self._num_decode_tokens // self._num_decodes
+            seq_lens = (input_positions + 1).to(seq_lens.dtype)
+            block_table = block_table[:self._num_decodes, ...]
+            # has speculative tokens
+            if num_tokens_per_req > 1:
+                block_table = block_table.unsqueeze(1).repeat(1, num_tokens_per_req, 1).view(-1, block_table.shape[-1])
+            block_table_padding = torch.zeros(
+                (graph_pad_size, ) + block_table.shape[1:],
+                dtype=block_table.dtype,
+                device=block_table.device)
+            block_table = torch.cat([block_table, block_table_padding],
+                                    dim=0)
+            block_table = self._get_graph_runner_block_tables(
+                self._num_decode_tokens, block_table)
+
 
         attn_mask = self._make_attention_mask(seq_lens=seq_lens,
                                               query_lens=query_lens,
@@ -196,11 +295,39 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                        attn_state=attn_state)
         return attn_metadata
 
-    def build_dummy(self):
-        return None
+    def build_dummy(self, num_tokens: int, max_pad_size: int = -1) -> AscendMetadata:
+        if max_pad_size == -1:
+            max_pad_size = self.runner.max_batch_size
+        slot_mapping = torch.zeros(max_pad_size,
+                                   dtype=self.runner.slot_mapping_cpu.dtype,
+                                   device=self.runner.device)
+        if isinstance(self.runner.graph_block_tables, np.ndarray):
+            graph_block_tables = torch.zeros((max_pad_size, self.runner.graph_block_tables.shape[1]))
+        block_table = graph_block_tables.to(
+            device=self.runner.device,
+            dtype=self.runner.input_batch.block_table[0].get_device_tensor().dtype
+        )
+    
+        seq_lens = torch.ones(max_pad_size, dtype=torch.long, device=self.runner.device, pin_memory=True) * 2
+    
+        return AscendMetadata(
+            num_actual_tokens=num_tokens,
+            block_tables=block_table,   
+            query_lens=seq_lens,
+            seq_lens=seq_lens,
+            slot_mapping=slot_mapping,
+            is_only_prefill=False,
+            attn_state=self.runner.attn_state,
+            attn_mask=self.runner.attn_mask,
+        )
 
-    def mark_static_for_attn_metadata(self):
-        pass
+    def mark_static_for_attn_metadata(self, attn_metadata):
+        if attn_metadata is not None:
+            torch._dynamo.mark_static(attn_metadata.block_tables)
+            torch._dynamo.mark_static(attn_metadata.seq_lens)
+            if attn_metadata.slot_mapping is not None:
+                torch._dynamo.mark_static(attn_metadata.slot_mapping)
+
 
 
 class AscendAttentionBackendImpl(AttentionImpl):
@@ -239,13 +366,19 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.key_cache = None
         self.value_cache = None
 
+        self.enable_graph_mode = False
+        additional_config = get_current_vllm_config().additional_config
+        if additional_config:
+            self.enable_graph_mode = additional_config.get(
+                "enable_graph_mode", False)
+
     def forward(
             self,
             layer: AttentionLayer,
             query: torch.Tensor,
             key: torch.Tensor,
             value: torch.Tensor,
-            kv_cache: torch.Tensor,
+            kv_cache: Tuple,
             attn_metadata: AscendMetadata,
             output: Optional[torch.Tensor] = None,
             trace_flag: bool = True,
@@ -272,108 +405,141 @@ class AscendAttentionBackendImpl(AttentionImpl):
                                  self.head_size,
                                  dtype=query.dtype,
                                  device=query.device)
-        if trace_flag:
-            torch.ops.vllm.unified_ascend_attention_with_output(
-                query=query,
-                key=key,
-                value=value,
-                output=output,
-                layer_name=layer.layer_name)
-        else:
+
+        if attn_metadata is None:
+            return output.view(num_tokens, self.hidden_size)
+
+        if not (layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0):
+            raise RuntimeError("layer._k_scale_float and layer._v_scale_float must both be 1.0")
+        attn_type = self.attn_type
+        if attn_type != AttentionType.DECODER:
+            raise NotImplementedError("Encoder self-attention and "
+                                        "encoder/decoder cross-attention "
+                                        "are not implemented for "
+                                        "PallasAttentionBackendImpl")
+        # View q k v to BSH.
+        query = query.view(-1, self.num_heads, self.head_size)
+        key = key.view(-1, self.num_kv_heads, self.head_size)
+        value = value.view(-1, self.num_kv_heads, self.head_size)
+        value = value.contiguous()
+
+        if kv_cache[0].numel() > 0 or kv_cache[1].numel():
+
+            self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+            slots = attn_metadata.slot_mapping
+
+            block_size = self.key_cache.shape[1]
+            slots = torch.stack([slots // block_size, slots % block_size], dim=1)
+
+            cast_key = key.reshape(-1, 1, self.num_kv_heads * self.head_size)
+            cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
+
+            torch_npu.scatter_update_(self.key_cache, slots, cast_key, -2)
+            torch_npu.scatter_update_(self.value_cache, slots, cast_value, -2)   
+
+        if hasattr(layer, 'quant_method'):
+            pass
+        # V0-Style scheduler situation.
+        elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
             if attn_metadata is None:
-                return output.view(num_tokens, self.hidden_size)
+                raise RuntimeError("attn_metadata must not be None")
+            if attn_metadata.attn_mask is None:
+                raise RuntimeError("attn_metadata.attn_mask must not be None")
+            mask = attn_metadata.attn_mask
 
-            num_actual_tokens = attn_metadata.num_actual_tokens
-            if not (layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0):
-                raise RuntimeError("layer._k_scale_float and layer._v_scale_float must both be 1.0")
-            attn_type = self.attn_type
-            if attn_type != AttentionType.DECODER:
-                raise NotImplementedError("Encoder self-attention and "
-                                          "encoder/decoder cross-attention "
-                                          "are not implemented for "
-                                          "PallasAttentionBackendImpl")
-            # View q k v to BSH.
-            query = query.view(-1, self.num_heads, self.head_size)
-            key = key.view(-1, self.num_kv_heads, self.head_size)
-            value = value.view(-1, self.num_kv_heads, self.head_size)
-            value = value.contiguous()
+            actual_seq_qlen = np.array(attn_metadata.query_lens).cumsum().tolist()
+            actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
 
-            if kv_cache.numel() > 0:
-                if self.key_cache is None:
-                    self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
-                slots = attn_metadata.slot_mapping
-                torch_npu._npu_reshape_and_cache(
-                    key=key[:num_actual_tokens],
-                    value=value[:num_actual_tokens],
-                    key_cache=self.key_cache,
-                    value_cache=self.value_cache,
-                    slot_indices=slots)
+            attn_output = torch_npu.npu_fusion_attention(
+                query,
+                key,
+                value,
+                head_num=self.num_heads,
+                input_layout="TND",
+                scale=self.scale,
+                atten_mask=mask,
+                actual_seq_qlen=actual_seq_qlen,
+                actual_seq_kvlen=actual_seq_kvlen)[0]
 
-            if hasattr(layer, 'quant_method'):
-                pass
-            # V0-Style scheduler situation.
-            elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
-                if attn_metadata is None:
-                    raise RuntimeError("attn_metadata must not be None")
-                if attn_metadata.attn_mask is None:
-                    raise RuntimeError("attn_metadata.attn_mask must not be None")
-                mask = attn_metadata.attn_mask
-                torch_npu._npu_flash_attention(query=query,
-                                               key=key,
-                                               value=value,
-                                               mask=mask,
-                                               seq_len=attn_metadata.seq_lens,
-                                               scale_value=self.scale,
-                                               num_heads=self.num_heads,
-                                               num_kv_heads=self.num_kv_heads,
-                                               out=output)
-            elif attn_metadata.attn_state == AscendAttentionState.PrefillCacheHit:
-                if attn_metadata is None:
-                    raise RuntimeError("attn_metadata must not be None")
-                if attn_metadata.attn_mask is None:
-                    raise RuntimeError("attn_metadata.attn_mask must not be None")
-                compress_mask = attn_metadata.attn_mask
-                torch_npu._npu_flash_attention_qlens(
-                    query=query,
-                    key_cache=self.key_cache,
-                    value_cache=self.value_cache,
-                    block_table=attn_metadata.block_tables,
-                    mask=compress_mask,
-                    seq_len=attn_metadata.query_lens,
-                    context_lens=attn_metadata.seq_lens,
-                    num_kv_heads=self.num_kv_heads,
+            output = output.view_as(attn_output)
+            output.copy_(attn_output)
+
+        elif attn_metadata.attn_state == AscendAttentionState.PrefillCacheHit:
+            if attn_metadata is None:
+                raise RuntimeError("attn_metadata must not be None")
+            if attn_metadata.attn_mask is None:
+                raise RuntimeError("attn_metadata.attn_mask must not be None")
+            compress_mask = attn_metadata.attn_mask
+            torch_npu._npu_flash_attention_qlens(
+                query=query,
+                key_cache=self.key_cache,
+                value_cache=self.value_cache,
+                block_table=attn_metadata.block_tables,
+                mask=compress_mask,
+                seq_len=attn_metadata.query_lens,
+                context_lens=attn_metadata.seq_lens,
+                num_kv_heads=self.num_kv_heads,
+                num_heads=self.num_heads,
+                scale_value=self.scale,
+                out=output)
+        elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
+
+            block_num, block_size = self.key_cache.shape[0], self.key_cache.shape[1]
+
+            num_batch = attn_metadata.seq_lens.shape[0]
+            query = query.view(num_batch, -1, self.num_heads * self.head_size)
+            block_tables = attn_metadata.block_tables
+            attn_output = None
+            if self.enable_graph_mode:
+                attn_output, _ = tng.ops.npu_fused_infer_attention_score(
+                    query,
+                    self.key_cache,
+                    self.value_cache,
                     num_heads=self.num_heads,
-                    scale_value=self.scale,
-                    out=output)
-            elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
-                torch_npu._npu_paged_attention(
-                    query=query,
-                    key_cache=self.key_cache,
-                    value_cache=self.value_cache,
-                    num_kv_heads=self.num_kv_heads,
-                    num_heads=self.num_heads,
-                    scale_value=self.scale,
-                    block_table=attn_metadata.block_tables,
-                    context_lens=attn_metadata.seq_lens,
-                    out=output)
-            # Normal V1 situation.
+                    num_key_value_heads=self.num_kv_heads,
+                    input_layout="BSH",
+                    scale=self.scale,
+                    actual_seq_lengths_kv=attn_metadata.seq_lens,
+                    block_table=block_tables,
+                    block_size=block_size,
+                )
             else:
-                # use chunked prefill for head size 192 scenario, like deepseek
-                # paged_attention_splitfuse maybe crash at such scenario
-                cu_seqlen_q = [0] + attn_metadata.query_lens.tolist()
-                cu_seqlen_k = [0] + attn_metadata.seq_lens.tolist()
-                cu_seqlen_q = torch.tensor(cu_seqlen_q, device=current_platform.device_type)
-                cu_seqlen_k = torch.tensor(cu_seqlen_k, device=current_platform.device_type)
-                cu_seqlen_q = torch.cumsum(cu_seqlen_q, dim=0)
-                cu_seqlen_k = torch.cumsum(cu_seqlen_k, dim=0)
-                max_seqlen_q = torch.max(attn_metadata.query_lens)
-                max_seqlen_k = torch.max(attn_metadata.seq_lens)
-                vanilla_chunked_prefill(output, query, self.key_cache,
-                                        self.value_cache,
-                                        attn_metadata.block_tables,
-                                        cu_seqlen_q, cu_seqlen_k,
-                                        max_seqlen_q, max_seqlen_k,
-                                        self.scale, None, True)
+                attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+                    query,
+                    self.key_cache,
+                    self.value_cache,
+                    num_heads=self.num_heads,
+                    num_key_value_heads=self.num_kv_heads,
+                    input_layout="BSH",
+                    scale=self.scale,
+                    actual_seq_lengths_kv=attn_metadata.seq_lens,
+                    block_table=block_tables,
+                    block_size=block_size,
+                )
+
+            output = output.view_as(attn_output)
+            output.copy_(attn_output)
+
+        # Normal V1 situation.
+        else:
+            # use chunked prefill for head size 192 scenario, like deepseek
+            # paged_attention_splitfuse maybe crash at such scenario
+
+            cu_seqlen_q = [0] + attn_metadata.query_lens.tolist()
+            cu_seqlen_k = [0] + attn_metadata.seq_lens.tolist()
+            cu_seqlen_q = torch.tensor(cu_seqlen_q, device=current_platform.device_type)
+            cu_seqlen_k = torch.tensor(cu_seqlen_k, device=current_platform.device_type)
+            cu_seqlen_q = torch.cumsum(cu_seqlen_q, dim=0)
+            cu_seqlen_k = torch.cumsum(cu_seqlen_k, dim=0)
+            max_seqlen_q = torch.max(attn_metadata.query_lens)
+            max_seqlen_k = torch.max(attn_metadata.seq_lens)
+            vanilla_chunked_prefill(output, query, self.key_cache,
+                                    self.value_cache,
+                                    attn_metadata.block_tables,
+                                    cu_seqlen_q, cu_seqlen_k,
+                                    max_seqlen_q, max_seqlen_k,
+                                    self.scale, None, True)
+
         return output.view(num_tokens, self.hidden_size)
 
 
@@ -407,7 +573,7 @@ class AscendAttentionBackend(AttentionBackend):
             num_kv_heads: int,
             head_size: int,
     ) -> Tuple[int, ...]:
-        return (2, num_blocks, block_size, num_kv_heads, head_size)
+        return (2, num_blocks, block_size, num_kv_heads * head_size)
 
     @staticmethod
     def swap_blocks(
@@ -449,4 +615,4 @@ class AscendAttentionBackend(AttentionBackend):
                                       device=device)
         if not int(os.getenv("NO_NPU_MOCK", "0")):
             torch_npu.npu_format_cast(layer_kv_caches, 2)
-        return layer_kv_caches
+        return (layer_kv_caches[0], layer_kv_caches[1])

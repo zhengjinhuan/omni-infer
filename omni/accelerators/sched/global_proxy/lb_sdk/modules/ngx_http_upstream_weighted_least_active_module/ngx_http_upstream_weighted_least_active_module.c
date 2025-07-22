@@ -8,8 +8,6 @@
 #include <ngx_atomic.h>
 #include <stdlib.h>
 
-#define MAX_PEER_COUNT 512
-
 typedef struct {
     ngx_flag_t enable;
 } ngx_http_weighted_least_active_conf_t;
@@ -78,14 +76,14 @@ static char *ngx_http_weighted_least_active_set_flag(ngx_conf_t *cf, ngx_command
 
 static ngx_command_t ngx_http_weighted_least_active_commands[] = {
     { ngx_string("weighted_least_active"),
-      NGX_HTTP_UPS_CONF|NGX_CONF_FLAG,
+      NGX_HTTP_UPS_CONF | NGX_CONF_FLAG,
       ngx_http_weighted_least_active_set_flag,
       NGX_HTTP_SRV_CONF_OFFSET,
       offsetof(ngx_http_weighted_least_active_conf_t, enable),
       NULL },
 
     { ngx_string("weighted_least_active_shm_size"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       0,
       0,
@@ -148,7 +146,8 @@ ngx_http_weighted_least_active_init_shm_zone(ngx_shm_zone_t *shm_zone, void *dat
 
     shpool = (ngx_slab_pool_t *) shm_zone->shm.addr;
 
-    size_t sz = sizeof(ngx_http_weighted_least_active_shm_block_t) + (MAX_PEER_COUNT - 1) * sizeof(ngx_http_weighted_least_active_shm_peer_t);
+    n = 512;
+    size_t sz = sizeof(ngx_http_weighted_least_active_shm_block_t) + (n - 1) * sizeof(ngx_http_weighted_least_active_shm_peer_t);
     shm_block = ngx_slab_alloc(shpool, sz);
     if (!shm_block) {
         return NGX_ERROR;
@@ -297,11 +296,10 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     ngx_http_upstream_t *u = r->upstream;
     ngx_http_upstream_rr_peer_data_t *rrp;
     ngx_http_weighted_least_active_peer_data_t *pdata;
-    ngx_uint_t chosen = -1;
+    ngx_uint_t chosen = 0;
     ngx_uint_t i;
     ngx_uint_t n;
     ngx_slab_pool_t *shpool;
-    ngx_http_weighted_least_active_conf_t *conf;
 
     if (ngx_http_upstream_init_round_robin_peer(r, uscf) != NGX_OK) {
         return NGX_ERROR;
@@ -317,8 +315,6 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     if (n > wla_shm->peer_count) {
         n = wla_shm->peer_count;
     }
-
-    conf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_weighted_least_active_module);
 
     ngx_shmtx_lock(&shpool->mutex);
 
@@ -337,17 +333,13 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
         }
     }
 
-    if (candidate_count == 0) {
-        chosen = ngx_random() % n;
-    } else {
-        ngx_uint_t min_decode = wla_shm->peers[candidate[0]].total_decode_num;
-        chosen = candidate[0];
-        for (i = 1; i < candidate_count; i++) {
-            ngx_uint_t idx = candidate[i];
-            if (wla_shm->peers[idx].total_decode_num < min_decode) {
-                min_decode = wla_shm->peers[idx].total_decode_num;
-                chosen = idx;
-            }
+    ngx_uint_t min_decode = wla_shm->peers[candidate[0]].total_decode_num;
+    chosen = candidate[0];
+    for (i = 1; i < candidate_count; i++) {
+        ngx_uint_t idx = candidate[i];
+        if (wla_shm->peers[idx].total_decode_num < min_decode) {
+            min_decode = wla_shm->peers[idx].total_decode_num;
+            chosen = idx;
         }
     }
 

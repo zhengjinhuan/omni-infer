@@ -83,13 +83,13 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                                                  f"{prefix}.layers.{layer_index}",
                                                  quant_config=self.quant_config,
                                                  cache_config=self.cache_config)
- 
+
         self.logits_processor = LogitsProcessor(config.vocab_size, logits_as_input=True)
         self.greedy_sampler = Sampler()
- 
+
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids, reduce=1)
- 
+
     def forward(
             self,
             input_ids: torch.Tensor,
@@ -132,7 +132,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
  
         if attn_metadata is None:
-            logits = self.logits_processor._get_logits(hidden_states[-1:, ...], self.shared_head['head'], None)
+            logits = self.compute_lmhead(self.shared_head['head'], hidden_states[-1:, ...], None)
         else:
             logits = self.compute_lmhead(self.shared_head['head'], hidden_states, prefill_padding_or_selected_indices)
  
@@ -226,7 +226,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                     continue
  
                 if name not in params_dict:
-                    breakpoint()
+                    continue
                 param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
@@ -242,7 +242,7 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                         continue
  
                     if name not in params_dict:
-                        breakpoint()
+                        continue
                     param = params_dict[name]
                     weight_loader = param.weight_loader
                     weight_loader(param,
@@ -260,10 +260,46 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
                         continue
  
                     if name not in params_dict:
-                        breakpoint()
+                        continue
                     param = params_dict[name]
                     weight_loader = getattr(param, "weight_loader",
                                             default_weight_loader)
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
+
+class DeepseekV3MTPDuo(DeepseekV3MTP):
+    def __init__(self,
+                 config: PretrainedConfig,
+                 cache_config: Optional[CacheConfig] = None,
+                 quant_config: Optional[QuantizationConfig] = None,
+                 prefix: str = "",
+                 layer_index: int = 62,
+                 ):
+        super().__init__(config=config,
+                        cache_config=cache_config,
+                        quant_config=quant_config,
+                        prefix=prefix,
+                        layer_index=layer_index)
+    
+    def load_weights(self, weights: Iterable[Tuple[str,
+                                                   torch.Tensor]], layer_idx: int = 62) -> Set[str]:
+        super().load_weights(weights=weights, layer_idx=layer_idx)
+
+class DeepseekV3MTPTres(DeepseekV3MTP):
+    def __init__(self,
+                 config: PretrainedConfig,
+                 cache_config: Optional[CacheConfig] = None,
+                 quant_config: Optional[QuantizationConfig] = None,
+                 prefix: str = "",
+                 layer_index: int = 63,
+                 ):
+        super().__init__(config=config,
+                        cache_config=cache_config,
+                        quant_config=quant_config,
+                        prefix=prefix,
+                        layer_index=layer_index)
+    
+    def load_weights(self, weights: Iterable[Tuple[str,
+                                                   torch.Tensor]], layer_idx: int = 63) -> Set[str]:
+        super().load_weights(weights=weights, layer_idx=layer_idx)

@@ -7,8 +7,8 @@
 #include "config.h"
 #include "expert_activation.h" // Assuming ExpertActivation is in a header file
 #include <dirent.h> // Include for POSIX directory operations
-#include <fstream> 
-
+#include <fstream>
+#include "distribution.h"
 
 
 aclError static my_mem_fun(void* dst, size_t destMax, const void* src,
@@ -146,7 +146,7 @@ TEST_F(ClusterActivationTest, ConstructorNormalCase) {
 
         // 验证成员变量是否正确初始化
         EXPECT_EQ(ca.get_num_layers(), num_layers);
-        EXPECT_EQ(ca.get_num_deploy_experts(), num_deploy_experts);
+        EXPECT_EQ(ca.get_num_deploy_experts_per_rank(), num_deploy_experts);
     });
 }
 
@@ -232,7 +232,7 @@ TEST_F(ClusterActivationTest, ConstructorRankWorldSizeBoundary) {
                            activation_window_size, world_size, rank);
 
         EXPECT_EQ(ca.get_num_layers(), num_layers);
-        EXPECT_EQ(ca.get_num_deploy_experts(), num_deploy_experts);
+        EXPECT_EQ(ca.get_num_deploy_experts_per_rank(), num_deploy_experts);
     });
 }
 
@@ -270,7 +270,8 @@ protected:
     // }
 };
 
-// 测试fixture
+// 已不再activation中起thread，UT待重新調整
+/*
 class ClusterActivationThreadTest : public ::testing::Test {
 protected:
     int old_activation_quiesce;
@@ -716,7 +717,7 @@ TEST_F(ClusterActivationThreadTest, BaseDumpActivateOnThread) {
     // 等待片刻，让线程运行
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    
+
     // 当没有调用setDumpDir,不应该创建文件夹
     struct stat info;
     EXPECT_NE(stat(dump_dir.c_str(), &info), 0); // dump_dir文件夹不存在此时为预期情况
@@ -731,7 +732,7 @@ TEST_F(ClusterActivationThreadTest, BaseDumpActivateOnThread) {
     }
     int file_count = 0;
     struct dirent* entry;
-    
+
     while ((entry = readdir(dir)) != nullptr) {
         if (entry->d_type == DT_REG) { // 检查是否为常规文件
             ++file_count;
@@ -745,7 +746,7 @@ TEST_F(ClusterActivationThreadTest, BaseDumpActivateOnThread) {
     EXPECT_EQ(count, 40); // 检查计数功能是否正常
     // remove_dir(dump_dir);
 }
-
+*/
 
 
 // Test fixture for ClusterActivation
@@ -1105,7 +1106,7 @@ TEST_F(ClusterActivationDumpTest, MultiThreadedDump) {
         std::string line;
         while (std::getline(inFile, line)) {
             std::vector<std::string> expected = {
-                "0\t0\t0\t0\t", 
+                "0\t0\t0\t0\t",
                 "1\t1\t1\t1\t",
                 "2\t2\t2\t2\t",
                 "3\t3\t3\t3\t"

@@ -23,6 +23,7 @@ from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 import torch_npu
+import torch.distributed as dist
 from vllm import envs
 from vllm.config import VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized,
@@ -50,8 +51,9 @@ from omni.adaptors.vllm.utils import (
 import vllm.envs as envs
 import os
 import ray
+from omni.models.common.config.model_config import model_extra_config
 
-BLOCK_NUM_FLOATING_RANGE = 200
+BLOCK_NUM_FLOATING_RANGE = 32768
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
 class NPUDeviceProperties:
@@ -181,38 +183,44 @@ class NPUWorker(WorkerBase):
 
         cur_npu_kv_cache_bytes = self._compute_kv_cache_bytes()
         if not self.enable_torchair_graph_mode:
-           clear_var()
-           return cur_npu_kv_cache_bytes
+            clear_var()
+            # Only For Prefill Stage
+            if model_extra_config.operator_opt_config.use_omni_placement:
+                self.model_runner.planner.start_dynamic_optimize_expert_load_balance()
+            return cur_npu_kv_cache_bytes
 
         last_use_kv_cache_bytes = cur_npu_kv_cache_bytes
-        range = self.block_num_floating_range * self.page_size_bytes()
-        print(f"range = {range}")
+
         if self.use_cached_npu_graph:
+            dp_size = get_dp_group().world_size
             if check_torchair_cache_exists() and check_block_num_cache_exist():
+                logger.info("Currently use graph cache")
                 npu_kv_cache_bytes = read_block_num_from_file(torch.distributed.get_rank())
                 if npu_kv_cache_bytes == -1:
                     raise RuntimeError(f"Read npu_kv_cache_bytes: {npu_kv_cache_bytes} error, "
                                         f"please make sure the block num cache file is correct")
-                old_kv_cache_bytes = torch.tensor([npu_kv_cache_bytes], device=self.device_config.device)
-                all_kv_cache_bytes = get_dp_group().all_gather(old_kv_cache_bytes, 0)
-                is_all_kv_cache_bytes_equal = (all_kv_cache_bytes[:] == old_kv_cache_bytes).all().item()
-                if not is_all_kv_cache_bytes_equal:
-                        raise RuntimeError(f"The block num data of some ranks has been modified kv_cache_bytes:{is_all_kv_cache_bytes_equal}")
+                old_kv_cache_bytes = torch.tensor([npu_kv_cache_bytes], device="cpu")
+                all_kv_cache_bytes = [
+                    torch.tensor([0], dtype=old_kv_cache_bytes.dtype, device="cpu")
+                    for _ in range(dp_size)
+                ]
+                dist.all_gather(all_kv_cache_bytes, old_kv_cache_bytes, group=get_dp_group().cpu_group)
+                for kv_cache_bytes in all_kv_cache_bytes:
+                    if kv_cache_bytes != old_kv_cache_bytes:
+                        raise RuntimeError(f"The block num data of some ranks has been modified, origin: {old_kv_cache_bytes}, now: {kv_cache_bytes}")
 
-                # if abs(cur_npu_kv_cache_bytes - npu_kv_cache_bytes) > range:
-                #         raise RuntimeError(f"The range between the current NPU kv_cache_bytes and the recorded kv_cache_bytes exceeds {range} "
-                #                             f"cur_npu_kv_cache_bytes:{cur_npu_kv_cache_bytes}, old_kv_cache_bytes:{npu_kv_cache_bytes}")
-
-                logger.info("Currently use graph cache")
                 clear_var(old_kv_cache_bytes, all_kv_cache_bytes)
                 last_use_kv_cache_bytes = npu_kv_cache_bytes
-
             else:
                 logger.warning("Currently no graph cache available")
                 delete_torchair_cache_file()
-                cur_npu_kv_cache_bytes = torch.tensor([cur_npu_kv_cache_bytes], device=self.device_config.device)
-                all_kv_cache_bytes = get_dp_group().all_gather(cur_npu_kv_cache_bytes, 0)
-                kv_cache_bytes = int(min(all_kv_cache_bytes[:]).item())
+                cur_npu_kv_cache_bytes = torch.tensor([cur_npu_kv_cache_bytes], device="cpu")
+                all_kv_cache_bytes = [
+                    torch.tensor([0], dtype=cur_npu_kv_cache_bytes.dtype, device="cpu")
+                    for _ in range(dp_size)
+                ]
+                dist.all_gather(all_kv_cache_bytes, cur_npu_kv_cache_bytes, group=get_dp_group().cpu_group)
+                kv_cache_bytes = int(min(all_kv_cache_bytes[:]))
                 write_block_num_to_file(torch.distributed.get_rank(), kv_cache_bytes)
                 clear_var(cur_npu_kv_cache_bytes, all_kv_cache_bytes)
                 last_use_kv_cache_bytes = kv_cache_bytes
@@ -222,12 +230,12 @@ class NPUWorker(WorkerBase):
     def _compute_kv_cache_bytes(self):
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
+        gc.collect()
         NPUPlatform.empty_cache()
 
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
         self.model_runner.profile_run()
-
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
         free_npu_memory, total_npu_memory = NPUPlatform.mem_get_info()
@@ -299,6 +307,8 @@ class NPUWorker(WorkerBase):
             self.profiler.stop()
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            self.model_runner.planner.place_experts()
 
     def _init_worker_distributed_environment(self) -> None:
         """Initialize the distributed environment."""
