@@ -8,7 +8,7 @@
 
 **操作系统：** Linux
 
-**镜像版本：**
+**镜像版本：** swr.cn-east-4.myhuaweicloud.com/omni-ci/daily_omniinfer:20250722_26
 
 [**驱动检查**](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#ascend-npu%E5%9B%BA%E4%BB%B6%E5%92%8C%E9%A9%B1%E5%8A%A8%E6%A3%80%E6%9F%A5): `npu-smi info` 检查Ascend NPU固件和驱动是否正确安装。
 
@@ -23,7 +23,7 @@
 ### 镜像及源码准备
 
 ```bash
-docker pull IMAGE:TAG
+docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/daily_omniinfer:20250722_26
 git clone https://gitee.com/omniai/omniinfer.git
 git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 ```
@@ -42,7 +42,8 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 
 1. **omni_infer_inventory_used_for_2P1D.yml**
 
-   将`p0/p1/d0/d1/c0`下面的`ansible_host` 与 `host_ip` 值改为对应的IP：
+   将`p0/p1/d0/d1/c0`下面的`ansible_host` 与 `host_ip` 值改为对应的IP。<span style="color:red; font-weight:bold">对于多机组 D 的场景，所有 D 节点的 `host_ip` 为主节点 d0 的 IP。</span>
+
 
    ```YAML
    children:
@@ -71,7 +72,7 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
          d1:
            ansible_host: "127.0.0.4"  # D1 节点的IP
            ...
-           host_ip: "127.0.0.3"       # D0 节点的IP
+           host_ip: "127.0.0.3"       # D0 节点的IP, 即 D 节点的主节点 IP
            ...
 
      C:
@@ -111,7 +112,7 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
         DOCKER_NAME_C: "you_name_omni_infer_proxy"   # Proxy 容器名称
     ```
 
-配置文件详细解释说明请参考[文档]()。
+配置文件详细解释说明请参考[文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/template/README.md#%E7%9B%B8%E5%85%B3%E6%96%87%E4%BB%B6%E8%A7%A3%E9%87%8A%E8%AF%B4%E6%98%8E)。
 
 #### 执行命令
 
@@ -128,6 +129,9 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/json" -d '{"model": "deepseek","temperature":0,"max_tokens":50,"prompt": "how are you?", "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}'
 ```
 
+#### 注意事项
+
+- ansible 每次执行时，会对vllm代码进行`checkout -f`，若修改代码，请确保代码已提交或暂存。
 
 ## 更高性能
 
