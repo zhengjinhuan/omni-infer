@@ -19,7 +19,7 @@ vLLM原生调度器采用以内存最大化为中心的策略，优化利用NPU�
 - `TFAS_INTERCEPT`
 - `TFAS_SLOP`
 
-**后续使用**：无需profiling。开启tfas策略，需在prefill实例服务启动时，设置环境变量`PREFILL_SCHEDULE_POLICY='tfas' `，并指定环境变量`TFAS_REAL_TOKEN_BUDGET`，`TFAS_INTERCEPT`，`TFAS_SLOP`为profillng的输出值。建议直接在`/omni/adaptors/vllm/envs.py` 中直接配置策略超参默认值，避免反复设置环。
+**后续使用**：无需profiling。开启tfas策略，需在prefill实例服务启动时，设置环境变量`PREFILL_SCHEDULE_POLICY='tfas' `，并指定环境变量`TFAS_REAL_TOKEN_BUDGET`，`TFAS_INTERCEPT`，`TFAS_SLOP`为profiling的输出值。建议直接在`/omni/adaptors/vllm/envs.py` 中直接配置策略超参默认值，避免反复设置。
 
 **注意事项**：由于 `tfas` 在每次组 batch 时会根据队列中的请求信息（请求数量和输入长度）动态计算最优的 `batch_size`，为避免因序列数限制导致越界，我们对 `vllm` 的 `openai/api_server.py` 文件进行了如下补丁处理
 
