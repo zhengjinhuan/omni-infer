@@ -600,7 +600,7 @@ class DeepseekMoE(nn.Module):
         })
 
         if model_extra_config.operator_opt_config.enable_mc2_v2:
-            output = torch_npu.npu_moe_distribute_dispatc_v2(**kwargs)
+            output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
         else:
             output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
@@ -667,6 +667,8 @@ class DeepseekMoE(nn.Module):
                 torch_npu.npu_prefetch(next_attention_weights['W_UK'], attn_prefetch_flag, attn_prefetch_size)
 
         if model_extra_config.operator_opt_config.enable_mc2_v2:
+            expand_idx = kwargs.pop('expand_idx', None)
+            kwargs['assist_info_for_combine'] = expand_idx
             hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
         else:
             hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
@@ -751,7 +753,7 @@ class DeepseekMoE(nn.Module):
             })
 
             if model_extra_config.operator_opt_config.enable_mc2_v2:
-                output = torch_npu.npu_moe_distribute_dispatc_v2(**kwargs)
+                output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
             else:
                 output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
             expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
@@ -835,6 +837,8 @@ class DeepseekMoE(nn.Module):
 
         with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
             if model_extra_config.operator_opt_config.enable_mc2_v2:
+                expand_idx = kwargs.pop('expand_idx', None)
+                kwargs['assist_info_for_combine'] = expand_idx
                 hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
             else:
                 hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
