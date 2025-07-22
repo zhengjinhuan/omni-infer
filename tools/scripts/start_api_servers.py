@@ -244,6 +244,7 @@ if __name__ == "__main__":
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
     parser.add_argument("--enable-mtp", default=False, action='store_true')
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
+    parser.add_argument("--num-speculative-tokens", type=int, default=1)
 
     args = parser.parse_args()
     if not args.num_dp:
