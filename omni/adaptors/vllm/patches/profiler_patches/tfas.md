@@ -17,7 +17,7 @@ vLLM原生调度器采用以内存最大化为中心的策略，优化利用NPU�
 
 - `TFAS_REAL_TOKEN_BUDGET`
 - `TFAS_INTERCEPT`
-- `TFAS_SLOP`
+- `TFAS_SLOPE`
 
 **后续使用**：无需profiling。开启tfas策略，需在prefill实例服务启动时，设置环境变量`PREFILL_SCHEDULE_POLICY='tfas' `，并指定环境变量`TFAS_REAL_TOKEN_BUDGET`，`TFAS_INTERCEPT`，`TFAS_SLOP`为profiling的输出值。建议直接在`/omni/adaptors/vllm/envs.py` 中直接配置策略超参默认值，避免反复设置。
 
