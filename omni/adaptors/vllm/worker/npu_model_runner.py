@@ -237,8 +237,6 @@ class NPUModelRunner(GPUModelRunner):
                 self.max_batch_size
             ]
 
-        self.max_batch_size = max(self.decode_gear_list) if not self.use_spec_decode else max(self.decode_gear_list) * 2
-
     def _make_attention_mask(self, seq_lens, query_lens, position,
                              attn_state) -> torch.Tensor:
         # Chunk Prefill situation.
