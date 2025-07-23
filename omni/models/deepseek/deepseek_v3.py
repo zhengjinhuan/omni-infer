@@ -606,7 +606,7 @@ class DeepseekMoE(nn.Module):
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
         group_list = expert_token_nums.to(torch.int64)
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
+        if model_extra_config.operator_opt_config.use_omni_placement:
             layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
         # cal experts
@@ -759,7 +759,7 @@ class DeepseekMoE(nn.Module):
             expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
             group_list = expert_token_nums.to(torch.int64)
-            if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
+            if model_extra_config.operator_opt_config.use_omni_placement:
                 layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
             # cal experts

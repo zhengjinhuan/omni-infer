@@ -68,6 +68,10 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # Load configuration
         self.config = Config(config_file)
         self.device = torch.device(device)
+        self.max_moe_layer_num = self.config.getattr("max_moe_layer_num",None)
+        if self.max_moe_layer_num is None:
+            print(f"[Placement-Error]-max_moe_layer_num is not defined in config.yaml")
+            exit(1)
 
         # Initialize distributed settings with fallback
         self._init_distributed(rank, world_size, num_devices_per_host)
@@ -171,6 +175,9 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             self.enable_dynamic
         )
 
+    def is_moe_layer(self, layer_idx_moe):
+        return layer_idx_moe < self.max_moe_layer_num
+    
     def start_dynamic_optimize_expert_load_balance(self):
         is_thread_required = self.enable_dynamic or self.enable_dump
         if is_thread_required:
@@ -203,7 +210,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self,
         layer_idx_moe: torch.tensor,
         is_prefill=False) -> torch.tensor:
-        if layer_idx_moe > 57:
+        if not self.is_moe_layer(layer_idx_moe):
             return None
         return self.selector[layer_idx_moe]
 
@@ -250,7 +257,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             Tuple containing (original tokens, optimized expert IDs, optimized scores)
         """
         # Input validation check
-        if layer_idx_moe > 57:
+        if not self.is_moe_layer(layer_idx_moe):
             return tokens, token_expert_ids, token_expert_scores
         token_expert_ids = torch.nn.functional.embedding(token_expert_ids,expert_mapping).squeeze(-1)
         return tokens, token_expert_ids, token_expert_scores
@@ -305,7 +312,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             int
                 Number of redundant experts, calculated as: (current experts count) - (original experts count).
         """
-        if moe_layer_idx > 57:
+        if not self.is_moe_layer(moe_layer_idx):
             return 0
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
@@ -316,7 +323,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
 
     def record_activation(self, layer_idx_moe, expert_token_num, is_prefill):
-        if self.enable_dump and layer_idx_moe < 58:
+        if  self.is_moe_layer(layer_idx_moe):
             if is_prefill:
                 self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
             else:
