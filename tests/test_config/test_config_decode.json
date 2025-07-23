@@ -53,6 +53,7 @@
         "prefill_enable_mla_alltoall": false,
         "use_mlaprolog": false,
         "opt_w2_scale_cast": true,
+        "enable_mc2_v2": false,
         "decode_gear_list": [
             64
         ]
