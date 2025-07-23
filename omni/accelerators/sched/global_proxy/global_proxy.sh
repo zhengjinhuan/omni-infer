@@ -326,7 +326,7 @@ function nginx_set_upstream() {
     local upstream_name="$3"
     local use_shm_zone="$4"
     local lb_sdk_line="$5" 
-    local lb_sdk_line_par="#"
+
 
     # Build server lines with 8 spaces indentation
     local upstream_servers=""
@@ -360,11 +360,12 @@ function nginx_set_upstream() {
             ;;
         "least_total_load")
             lb_sdk_line="least_total_load on"
-            lb_sdk_line_par="least_total_load_batch_size 16"
+            lb_sdk_extra="least_total_load_batch_size 16;"
             ;;
         "auto_balance_controller")
             lb_sdk_line="auto_balance_controller on"
-            lb_sdk_line_par="auto_balance_controller_batch_size 32"
+            lb_sdk_extra="auto_balance_controller_batch_size 32;"
+            ;;
         "pd_score_balance")
             if [ "$upstream_name" = "prefill_servers" ]; then
                 lb_sdk_line="pd_score_balance prefill"
@@ -378,9 +379,8 @@ function nginx_set_upstream() {
     # Compose new upstream block with 8 spaces indentation
     local upstream_block="    upstream $upstream_name {
         ${zone_line}
-        ${lb_sdk_extra}
         ${lb_sdk_line};
-        ${lb_sdk_line_par};
+        ${lb_sdk_extra}
         keepalive 2048;
         keepalive_timeout 110s;
         keepalive_requests 20000;
