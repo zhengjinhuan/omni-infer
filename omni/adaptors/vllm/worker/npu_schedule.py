@@ -17,7 +17,7 @@ from collections import deque
 from dataclasses import dataclass, fields
 
 from typing import Iterable, Optional, Type, Union
- 
+
 from vllm.config import VllmConfig, SchedulerConfig
 from vllm.logger import logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
@@ -87,7 +87,7 @@ class HybridSchedulerConfig(SchedulerConfig):
 class NpuHybridScheduler(Scheduler):
     """This Scheduler extends vllm's original v1 scheduler
     with prefill-first scheduling strategy."""
- 
+
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -107,7 +107,7 @@ class NpuHybridScheduler(Scheduler):
             self.vllm_config.kv_transfer_config.is_kv_consumer:
             raise ValueError(
                 "AscendScheduler cannot be used for decode nodes. ")
- 
+
     def schedule(self) -> SchedulerOutput:
         if self.scheduler_config.chunked_prefill_enabled:
             return super().schedule()
@@ -115,26 +115,26 @@ class NpuHybridScheduler(Scheduler):
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
         preempted_reqs: list[Request] = []
- 
+
         req_to_new_block_ids: dict[str, list[list[int]]] = {}
         num_scheduled_tokens: dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
- 
+
         # Spec decode-related.
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
- 
+
         # Record scheduled LoRA requests.
         scheduled_loras: set[int] = set()
- 
+
         # Use a temporary deque to collect requests that need to be skipped
         # and put back at the head of the waiting queue later
         skipped_waiting_requests: deque[Request] = deque()
- 
+
         # Schedule prefill requests first.
         while self.waiting and token_budget > 0:
             if len(self.running) == self.max_num_running_reqs:
                 break
- 
+
             request = self.waiting[0]
             def skip_cur_request():
                 self.waiting.popleft()
@@ -161,7 +161,7 @@ class NpuHybridScheduler(Scheduler):
             max_tokens_in_kvcache = (self.kv_cache_config.num_blocks *
                                      self.block_size)
             prompt_limit = min(prompt_limit, max_tokens_in_kvcache)
- 
+
             # Finish request that exceeds prompt_limit or kv cache size.
             if num_new_tokens > prompt_limit:
                 logger.warning(
@@ -184,7 +184,7 @@ class NpuHybridScheduler(Scheduler):
             if new_blocks is None:
                 # The request cannot be scheduled.
                 break
- 
+
             self.waiting.popleft()
             self.running.append(request)
             self.scheduled_req_ids.add(request.request_id)
@@ -195,23 +195,23 @@ class NpuHybridScheduler(Scheduler):
                 scheduled_resumed_reqs.append(request)
             else:
                 raise RuntimeError(f"Invalid request status: {request.status}")
- 
+
             if self.lora_config and request.lora_request:
                 scheduled_loras.add(request.lora_request.lora_int_id)
-            
+
             all_block_ids = computed_blocks.get_block_ids()[0] + new_blocks.get_block_ids()[0]    
             req_to_new_block_ids[request.request_id] = [all_block_ids]
-            
+
             # Update request info.
             num_scheduled_tokens[request.request_id] = num_new_tokens
             token_budget -= num_new_tokens
             request.status = RequestStatus.RUNNING
             request.num_computed_tokens = num_computed_tokens
- 
+
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.extendleft(skipped_waiting_requests)
- 
+
         # If no prefill requests are scheduled,
         # Schedule decode requests next.
         if len(self.scheduled_req_ids) == 0:
@@ -222,7 +222,7 @@ class NpuHybridScheduler(Scheduler):
                     # This request has already been scheduled.
                     req_index += 1
                     continue
- 
+
                 num_new_tokens = (request.num_tokens_with_spec -
                                   request.num_computed_tokens)
                 if (0 < self.scheduler_config.long_prefill_token_threshold <
@@ -231,7 +231,7 @@ class NpuHybridScheduler(Scheduler):
                         self.scheduler_config.long_prefill_token_threshold)
                 num_new_tokens = min(num_new_tokens, token_budget)
                 assert num_new_tokens == 1
- 
+
                 while True:
                     new_blocks = self.kv_cache_manager.allocate_slots(
                         request, num_new_tokens)
@@ -255,17 +255,16 @@ class NpuHybridScheduler(Scheduler):
                 if not can_schedule:
                     break
                 assert new_blocks is not None
- 
+
                 # Schedule the request.
                 scheduled_running_reqs.append(request)
                 self.scheduled_req_ids.add(request.request_id)
                 req_to_new_block_ids[request.request_id] = new_blocks.get_block_ids()
- 
- 
+
                 num_scheduled_tokens[request.request_id] = num_new_tokens
                 token_budget -= num_new_tokens
                 req_index += 1
- 
+
                 # Speculative decode related.
                 if request.spec_token_ids:
                     num_scheduled_spec_tokens = (num_new_tokens +
@@ -276,7 +275,7 @@ class NpuHybridScheduler(Scheduler):
                         del request.spec_token_ids[num_scheduled_spec_tokens:]
                         scheduled_spec_decode_tokens[request.request_id] = (
                             request.spec_token_ids)
- 
+
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
@@ -284,7 +283,7 @@ class NpuHybridScheduler(Scheduler):
         assert len(self.running) <= self.max_num_running_reqs
         assert len(scheduled_new_reqs) + len(scheduled_resumed_reqs) + len(
             scheduled_running_reqs) <= len(self.running)
- 
+
         # Get the longest common prefix among all requests in the running queue.
         # This can be potentially used for cascade attention.
         num_common_prefix_blocks = 0
@@ -293,7 +292,7 @@ class NpuHybridScheduler(Scheduler):
             num_common_prefix_blocks = (
                 self.kv_cache_manager.get_num_common_prefix_blocks(
                     any_request, len(self.running)))
- 
+
         # Construct the scheduler output.
         new_reqs_data = [
             NewRequestData.from_request(req,
@@ -335,7 +334,7 @@ class NpuHybridScheduler(Scheduler):
             structured_output_request_ids={},
             grammar_bitmask=None,
         )
- 
+
         # NOTE(Kuntai): this function is designed for multiple purposes:
         # 1. Plan the KV cache store
         # 2. Wrap up all the KV cache load / save ops into an opaque object
@@ -343,8 +342,7 @@ class NpuHybridScheduler(Scheduler):
         if self.connector is not None:
             meta = self.connector.build_connector_meta(scheduler_output)
             scheduler_output.kv_connector_metadata = meta
- 
- 
+
         # Advance the number of computed tokens for the request AFTER
         # the request is scheduled.
         # 1. The scheduler_output of the current step has to include the
@@ -356,7 +354,7 @@ class NpuHybridScheduler(Scheduler):
         #    computed tokens will be adjusted in update_from_output.
         for req_id, num_scheduled_token in num_scheduled_tokens.items():
             self.requests[req_id].num_computed_tokens += num_scheduled_token
- 
+
         self.finished_req_ids = set()  # type: ignore
         return scheduler_output
 
@@ -369,14 +367,14 @@ class NpuHybridScheduler(Scheduler):
                 self.scheduler_config.max_model_len,
                 self.scheduler_config.max_num_batched_tokens,
             )
- 
+
         # Model is fine tuned with long context. Return the fine tuned max_len.
         if request.lora_request and request.lora_request.long_lora_max_len:
             assert prompt_limit <= request.lora_request.long_lora_max_len
             return request.lora_request.long_lora_max_len
         else:
             return prompt_limit
- 
+
     def finish_requests(
         self,
         request_ids: Union[str, Iterable[str]],
@@ -392,13 +390,13 @@ class NpuHybridScheduler(Scheduler):
             request_ids = (request_ids, )
         else:
             request_ids = set(request_ids)
- 
+
         for req_id in request_ids:
             request = self.requests.get(req_id)
             if request is None:
                 # Invalid request ID.
                 continue
- 
+
             if request.status == RequestStatus.RUNNING:
                 self.running.remove(request)
                 self.scheduled_req_ids.discard(request.request_id)
@@ -406,23 +404,32 @@ class NpuHybridScheduler(Scheduler):
                 self.waiting.remove(request)
             request.status = finished_status
             self._free_request(request)
- 
 
     def update_from_output(
         self,
         scheduler_output: SchedulerOutput,
         model_runner_output: ModelRunnerOutput,
+        num_steps=None,
     ) -> EngineCoreOutputs:
-        sampled_token_ids = model_runner_output.sampled_token_ids
-        spec_token_ids = model_runner_output.spec_token_ids
-        logprobs = model_runner_output.logprobs
-        prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
+
+        if len(model_runner_output.sampled_token_ids) == 0:
+            return EngineCoreOutputs(
+                outputs=[],
+                scheduler_stats=None,
+            )
+        sampled_token_ids = model_runner_output.sampled_token_ids[-1]
+        spec_token_ids = model_runner_output.spec_token_ids[-1]
+        logprobs = model_runner_output.logprobs[-1]
+        prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict[-1]
+        logger.warning(
+            f" { sampled_token_ids = } { spec_token_ids = } { logprobs = } { prompt_logprobs_dict = }"
+        )
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
- 
+
         new_running: list[Request] = []
         outputs: list[EngineCoreOutput] = []
         spec_decoding_stats: Optional[SpecDecodingStats] = None
- 
+
         # NOTE(woosuk): As len(self.running) can be up to 1K or more, the below
         # loop can be a performance bottleneck. We should do our best to avoid
         # expensive operations inside the loop.
@@ -433,10 +440,10 @@ class NpuHybridScheduler(Scheduler):
                 # The request was not scheduled in this step.
                 new_running.append(request)
                 continue
- 
+
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[req_index]
- 
+
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id))
             if scheduled_spec_token_ids:
@@ -453,7 +460,7 @@ class NpuHybridScheduler(Scheduler):
                     spec_decoding_stats,
                     num_draft_tokens=len(scheduled_spec_token_ids),
                     num_accepted_tokens=len(generated_token_ids) - 1)
- 
+
             cached_encoder_input_ids = (
                 self.encoder_cache_manager.get_cached_input_ids(request))
             # OPTIMIZATION: Avoid list(set) if the set is empty.
@@ -467,7 +474,7 @@ class NpuHybridScheduler(Scheduler):
                         # in the decoder's KV cache.
                         self.encoder_cache_manager.free_encoder_input(
                             request, input_id)
- 
+
             stopped = False
             new_logprobs = None
             new_token_ids = generated_token_ids
@@ -477,7 +484,7 @@ class NpuHybridScheduler(Scheduler):
             # to return empty token ids for the request.
             for num_new, output_token_id in enumerate(new_token_ids, 1):
                 request.append_output_token_ids(output_token_id)
- 
+
                 # Check for stop and update request state.
                 # This must be called before we make the EngineCoreOutput.
                 stopped = check_stop(request, self.max_model_len)
@@ -486,20 +493,20 @@ class NpuHybridScheduler(Scheduler):
                     self._free_request(request)
                     del new_token_ids[num_new:]  # Trim new tokens if needed.
                     break
- 
+
             # Extract sample logprobs if needed.
             if request.sampling_params.logprobs is not None and logprobs:
                 # NOTE: once we support N tokens per step (spec decode),
                 # the outer lists can be of length > 1.
                 new_logprobs = logprobs.slice(req_index, req_index + 1)
- 
+
             if new_token_ids and request.use_structured_output:
                 # NOTE: structured_output_request
                 # should not be None if use_structured_output, we have
                 # check above, so safe to ignore type warning
                 request.structured_output_request.grammar.accept_tokens(  # type: ignore[union-attr]
                     req_id, new_token_ids)
- 
+
             # Add newly generated spec token ids to the request.
             if spec_token_ids is not None:
                 if request.use_structured_output:
@@ -510,7 +517,7 @@ class NpuHybridScheduler(Scheduler):
                         spec_token_ids[req_index])
                 else:
                     request.spec_token_ids = spec_token_ids[req_index]
- 
+
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
             if new_token_ids:
@@ -527,7 +534,7 @@ class NpuHybridScheduler(Scheduler):
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
- 
+
             self.scheduled_req_ids.remove(req_id)
             if not stopped:
                 new_running.append(request)
@@ -538,15 +545,15 @@ class NpuHybridScheduler(Scheduler):
             # to _cached_reqs_data will cause a memory leak.
             if req_data.req_id not in self.finished_req_ids:
                 self._cached_reqs_data[req_data.req_id].append(req_data)
- 
+
         self.running = new_running
         engine_core_outputs = EngineCoreOutputs(
             outputs=outputs,
             scheduler_stats=self.make_stats(spec_decoding_stats),
         )
         if self.include_finished_set:
-            #TODO currently sending duplicates here, improve this
+            # TODO currently sending duplicates here, improve this
             engine_core_outputs.finished_requests = (
                 scheduler_output.finished_req_ids | self.finished_req_ids)
- 
+
         return engine_core_outputs
