@@ -562,8 +562,8 @@ class DeepseekMoE(nn.Module):
                                                                 )
         
         if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-            faka_topk_ids = attn_metadata.decode.best_topk
-            topk_ids = tng.scope.npu_wait_tensor(faka_topk_ids, topk_ids)
+            fake_topk_ids = attn_metadata.decode.best_topk
+            topk_ids = tng.scope.npu_wait_tensor(fake_topk_ids, topk_ids)
 
         mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and attn_metadata.decode is not None else None
         layer = self.experts
@@ -715,8 +715,8 @@ class DeepseekMoE(nn.Module):
         with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
 
             if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-                faka_topk_ids = attn_metadata.decode.best_topk
-                topk_ids = tng.scope.npu_wait_tensor(faka_topk_ids, topk_ids)
+                fake_topk_ids = attn_metadata.decode.best_topk
+                topk_ids = tng.scope.npu_wait_tensor(fake_topk_ids, topk_ids)
 
             mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and attn_metadata.decode is not None else None
             layer = self.experts
@@ -847,6 +847,90 @@ class DeepseekMoE(nn.Module):
                 final_hidden_states = (hidden_states_route, shared_output)
 
             return final_hidden_states, residual
+
+    def forward_separate_expert_decode(self,
+                                       hidden_states: torch.Tensor,
+                                       residual: torch.Tensor,
+                                       attn_metadata: AttentionMetadata) -> torch.Tensor:
+        router_logits, _ = self.gate.forward(hidden_states.float())
+        
+        # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
+        hidden_states_3d = hidden_states.unsqueeze(1)
+        hidden_states = hidden_states_3d.squeeze(1)
+
+        topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
+                                                            self.top_k, self.use_grouped_topk,
+                                                            self.renormalize,
+                                                            self.topk_group, self.num_expert_group,
+                                                            self.custom_routing_function,
+                                                            self.scoring_func,
+                                                            self.gate.e_score_correction_bias,
+                                                            self.routed_scaling_factor,
+                                                            layer=self.experts)
+        max_num_deployed_expert=self.n_routed_experts
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            if self.shared_experts is not None and self.moe_layer_idx < 58:
+                hidden_states, topk_ids, topk_weights = self.planner.plan(layer_idx_moe=self.moe_layer_idx,
+                                                                          tokens=hidden_states,
+                                                                          token_expert_ids=topk_ids,
+                                                                          token_expert_scores=topk_weights,
+                                                                          top_k=self.top_k,
+                                                                          expert_mapping=self.expert_mapping,
+                                                                          is_prefill=False)
+                max_num_deployed_expert_per_rank = self.planner.get_max_num_deployed_expert_per_rank()
+                max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
+            elif self.experts is not None and self.experts.moe_layer_idx < 58:
+                max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
+                max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
+        if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
+            fake_topk_ids = attn_metadata.decode.best_topk
+            topk_ids = tng.scope.npu_wait_tensor(fake_topk_ids, topk_ids)
+        hidden_states = fused_experts_w8a8_moe_dispatch_combine(self.shared_experts or self.experts,
+                                                                hidden_states,
+                                                                topk_weights,
+                                                                topk_ids,
+                                                                max_num_deployed_expert=max_num_deployed_expert,
+                                                                is_prefill=False,
+                                                                is_route_expert=self.experts is not None)
+        return hidden_states, residual
+
+    def forward_separate_expert_prefill(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata) -> torch.Tensor:
+        global_hidden_states = all_gather_two_stage(hidden_states, idx=0, dim=0)
+        if self.shared_experts:
+            avg_tokens_per_shared_experts = global_hidden_states.shape[0] // self.redundancy_shared_expert_num
+            shared_experts_mask = torch.zeros(global_hidden_states.shape[0], 1, dtype=torch.int32, device="npu")
+            shared_experts_mask[self.global_rank * avg_tokens_per_shared_experts : (self.global_rank + 1) * avg_tokens_per_shared_experts] = 1
+            shared_experts_hidden_states = global_hidden_states * shared_experts_mask
+            shared_output = self.shared_experts(shared_experts_hidden_states, attn_metadata)
+        else:
+            shared_output = torch.zeros_like(global_hidden_states)
+        shared_output = reduce_scatter_two_stage(shared_output, idx=0)
+
+        if self.experts:
+            router_logits, _ = self.gate.forward(global_hidden_states)
+            topk_weights, topk_ids, _ = FusedMoE.select_experts(global_hidden_states, router_logits,
+                                                                self.experts.top_k, self.experts.use_grouped_topk,
+                                                                self.experts.renormalize,
+                                                                self.experts.topk_group, self.experts.num_expert_group,
+                                                                self.experts.custom_routing_function,
+                                                                self.experts.scoring_func,
+                                                                self.experts.e_score_correction_bias,
+                                                                self.routed_scaling_factor,
+                                                                layer=self.experts)
+            global_hidden_states, global_pertoken_scale = torch_npu.npu_dynamic_quant(global_hidden_states)
+            output = self.experts(
+                hidden_states=global_hidden_states,
+                topk_weights=topk_weights,
+                topk_ids=topk_ids,
+                pertoken_scale=global_pertoken_scale,
+                attn_metadata=attn_metadata
+            )
+        else:
+            output = torch.zeros_like(global_hidden_states)
+        final_hidden_states = reduce_scatter_two_stage(output, idx=0)
+        if shared_output is not None:
+            final_hidden_states = final_hidden_states + shared_output
+        return final_hidden_states, residual
 
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
