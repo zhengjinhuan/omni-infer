@@ -201,7 +201,7 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
+      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
@@ -267,7 +267,7 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
+      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
@@ -332,16 +332,23 @@
 
       NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
       if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
-        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"
+        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" > ${LOG_PATH}/install_nginx.log 2>&1
       fi
 
       tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
       unset http_proxy
       unset https_proxy
-      bash build.sh
+      bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" --log-file /dev/shm/trace/logs/nginx_error.log --log-level notice --core-num 4 --start-core-index 16
+      bash global_proxy.sh \
+        --listen-port "$PROXY_NODE_PORT" \
+        --prefill-servers-list "$prefill_result" \
+        --decode-servers-list "$decode_result" \
+        --log-file ${LOG_PATH}/nginx_error.log \
+        --log-level notice \
+        --core-num 4 \
+        --start-core-index 16
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -535,26 +542,6 @@
       tags:
         - run_docker
 
-    - name: Use system commands to obtain the IP address of the executor.
-      command: hostname -I
-      register: ip_output
-      run_once: yes
-      delegate_to: localhost
-      tags: sync_code
-
-    - name: Extract the first valid IP address.
-      set_fact:
-        executor_ip: "{{ ip_output.stdout.split() | first }}"
-      run_once: yes
-      delegate_to: localhost
-      tags: sync_code
-
-    - name: Delete the old code on the target machine.
-      command: /bin/bash -c "rm -rf {{ ansible_env.CODE_PATH }}/omniinfer/*"
-      when: hostvars[inventory_hostname].ansible_host != executor_ip
-      tags:
-        - sync_code
-
     - name: Create a directory to store the code.
       ansible.builtin.file:
         path: "{{ ansible_env.CODE_PATH }}"
@@ -566,17 +553,14 @@
         src: "{{ ansible_env.CODE_PATH }}/omniinfer"
         dest: "{{ ansible_env.CODE_PATH }}/"
       when: >
-        hostvars[inventory_hostname].ansible_host != executor_ip and
+        'P' in group_names or
+        'D' in group_names or
         (
-          'P' in group_names or
-          'D' in group_names or
-          (
-            'C' in group_names and
-            ansible_host not in
-            (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and
-            ansible_host not in
-            (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
-          )
+          'C' in group_names and
+          ansible_host not in
+          (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and
+          ansible_host not in
+          (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
         )
       tags: sync_code
 
@@ -702,10 +686,7 @@
         DECODE_SERVER_OFFSET: "{% set offsets = {} %}{% set ns = namespace(cnt=0) %}{% for host in groups['D']|default([]) %}{% set _ = offsets.update({host: ns.cnt}) %}{% set num=hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int %}{% set ns.cnt = ns.cnt + num + 1 %}{% endfor %}{{ offsets }}"
       run_once: yes
       delegate_to: localhost
-      tags:
-        - ranktable
-        - run_server
-        - run_proxy
+      tags: always
 
     - name: Register values for prefill.
       set_fact:
@@ -727,10 +708,7 @@
             length
           }}
       when: "'P' in group_names"
-      tags:
-        - ranktable
-        - run_server
-        - run_proxy
+      tags: always
 
     - name: Display all values.
       debug:
@@ -739,11 +717,15 @@
          DECODE_API_SERVER_LIST: {{ DECODE_API_SERVER_LIST }}
          DECODE_SERVER_IP_LIST: {{ DECODE_SERVER_IP_LIST }}
          PREFILL_POD_NUM: {{ PREFILL_POD_NUM }}
-         DECODE_NUM_DP: {{ DECODE_SERVER_ALL.count(',') + 1 }}
+         DECODE_NUM_DP: {{ DECODE_SERVER_ALL.count(',') + 1 }} 
+         PREFILL_MERGE_RANKTABLE_LIST: {{ PREFILL_MERGE_RANKTABLE_LIST }}   
          DECODE_RANKTABLE_LIST: {{ DECODE_RANKTABLE_LIST }}
          DECODE_SERVER_OFFSET: {{ DECODE_SERVER_OFFSET }}
+         NODE_IP_LIST: {{ NODE_IP_LIST }}
+         NNODES: {{ NNODES }}
       run_once: yes
       delegate_to: localhost
+      tags: always
 
     - name: Generate a script to generate the ranktable file for the prefill instances.
       copy:

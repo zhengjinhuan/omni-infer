@@ -14,8 +14,6 @@
 # ============================================================================
 
 deployment:
-  docker_image: "registry-cbu.huawei.com/omni_infer_v1/omni_infer_v1_a3:20250615"
-
   prefill:
     group1:
       user: "root"
@@ -62,12 +60,14 @@ deployment:
     private_key: "/workspace/pem/keypair.pem"
 
 services:
-  local_code_path: "/data/local_code_path"
-
+  log_path: "/data/omniinfer/log"
   model_path: "/data/models/DeepSeek-R1-w8a8-fusion"
+  code_path: "/data/code_path"
+  http_proxy: ""
+  docker_image: "REPOSITORY:TAG"
 
   prefill:
-    max_model_len: "30000"
+    max_model_len: "32000"
 
   decode:
     max_model_len: "16384"
