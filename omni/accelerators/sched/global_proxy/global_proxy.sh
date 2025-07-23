@@ -487,14 +487,11 @@ function nginx_set_load_modules() {
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
     sed -i "2i ${load_module_prefill_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_length_balance_line}" "$nginx_conf_file"
-    sed -i "4i ${load_module_upstream_wla_line}" "$nginx_conf_file"
-    sed -i "5i ${load_module_upstream_psb_line}" "$nginx_conf_file"
-    sed -i "6i ${load_module_upstream_ltl_line}" "$nginx_conf_file"
-    sed -i "7i ${load_module_upstream_abc_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_wla_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_psb_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_pds_line}" "$nginx_conf_file"
-
+    sed -i "3i ${load_module_upstream_ltl_line}" "$nginx_conf_file"
+    sed -i "3i ${load_module_upstream_abc_line}" "$nginx_conf_file"
 }
 
 function nginx_configuration() {
