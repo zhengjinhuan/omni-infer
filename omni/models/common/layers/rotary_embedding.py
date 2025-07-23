@@ -200,15 +200,45 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
             sin = sin.unsqueeze(0)
         else:     
             num_batch = attn_metadata.seq_lens.shape[0]
-            query = query.view(num_batch, -1, query.shape[1], self.head_size)
-            key = key.view(num_batch, -1, key.shape[1], self.head_size)
-            cos = cos.view(num_batch, -1, cos.shape[1], self.head_size)
-            sin = sin.view(num_batch, -1, sin.shape[1], self.head_size)
+            # Calculate padding needed for each tensor to make them divisible by num_batch
+            total_tokens = query.shape[0]
+            tokens_per_batch = (total_tokens + num_batch - 1) // num_batch  # Ceiling division
+            padded_total_tokens = tokens_per_batch * num_batch
+            
+            # Pad query, key, cos, sin to make them divisible by num_batch if needed
+            if padded_total_tokens > total_tokens:
+                padding_size = padded_total_tokens - total_tokens
+                query_padding = torch.zeros(padding_size, *query.shape[1:], device=query.device, dtype=query.dtype)
+                key_padding = torch.zeros(padding_size, *key.shape[1:], device=key.device, dtype=key.dtype)
+                cos_padding = torch.zeros(padding_size, *cos.shape[1:], device=cos.device, dtype=cos.dtype)
+                sin_padding = torch.zeros(padding_size, *sin.shape[1:], device=sin.device, dtype=sin.dtype)
+                
+                query = torch.cat([query, query_padding], dim=0)
+                key = torch.cat([key, key_padding], dim=0)
+                cos = torch.cat([cos, cos_padding], dim=0)
+                sin = torch.cat([sin, sin_padding], dim=0)
+            
+            # Now reshape with the padded tensors
+            query = query.view(num_batch, tokens_per_batch, query.shape[1], self.head_size)
+            key = key.view(num_batch, tokens_per_batch, key.shape[1], self.head_size)
+            cos = cos.view(num_batch, tokens_per_batch, cos.shape[1], self.head_size)
+            sin = sin.view(num_batch, tokens_per_batch, sin.shape[1], self.head_size)
 
         # npu_apply_rotary_pos_emb replace npu_rotary_mul, npu_rotary_mul will not support muti batch size
         q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
 
-        return q_embed.flatten(0, 1).flatten(1, 2), k_embed.flatten(0, 1).flatten(1, 2)
+        # Flatten results
+        q_embed_flat = q_embed.flatten(0, 1).flatten(1, 2)
+        k_embed_flat = k_embed.flatten(0, 1).flatten(1, 2)
+        
+        # Remove padding if it was applied
+        if attn_metadata is not None:
+            total_tokens = position_ids.shape[0]  # Use original total_tokens
+            if q_embed_flat.shape[0] > total_tokens:
+                q_embed_flat = q_embed_flat[:total_tokens]
+                k_embed_flat = k_embed_flat[:total_tokens]
+        
+        return q_embed_flat, k_embed_flat
 
 
     def forward(self, position_ids, query, key, layer_name: Optional[str] = None):
