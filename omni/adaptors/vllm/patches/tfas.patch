@@ -56,11 +56,11 @@ index b83489f6d..121c12837 100644
              self.connector = KVConnectorFactory.create_connector_v1(
                  config=self.vllm_config, role=KVConnectorRole.SCHEDULER)
 +            if (self.vllm_config.kv_transfer_config.is_kv_producer and 
-+                envs_omni.PREFILL_SCHEDULE_POLICY=='tfas'):
++                envs_omni.PREFILL_SCHEDULE_POLICY == 'tfas'):
 +                logger.info("[scheduler.py] TFAS policy is enabled")
 +                self.enable_tfas = True
 +            if (self.vllm_config.kv_transfer_config.is_kv_producer and 
-+                envs_omni.PREFILL_SCHEDULE_POLICY=='tfas_profiler'):
++                envs_omni.PREFILL_SCHEDULE_POLICY == 'tfas_profiler'):
 +                logger.info("[scheduler.py] TFAS_profiler policy is enabled")
 +                self.enable_tfas_profiler = True
  
