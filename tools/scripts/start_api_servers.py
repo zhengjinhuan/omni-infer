@@ -82,6 +82,7 @@ def start_single_node_api_servers(
     enable_mtp=False,
     no_enable_prefix_caching=False,
     num_speculative_tokens=1,
+    no_enable_chunked_prefill=False,
 ):
     """Start multiple VLLM API servers with specified configurations."""
 
@@ -148,6 +149,9 @@ def start_single_node_api_servers(
             cmd.extend(["--additional-config", additional_config])
         if no_enable_prefix_caching:
             cmd.extend(["--no-enable-prefix-caching"])
+        if no_enable_chunked_prefill:
+            cmd.extend(["--no-enable-chunked-prefill"])
+
         # Open a single log file for combined stdout and stderr
         log_file = open(os.path.join(log_dir, f"server_{rank}.log"), "w")
 
@@ -244,6 +248,7 @@ if __name__ == "__main__":
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
     parser.add_argument("--enable-mtp", default=False, action='store_true')
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
+    parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
 
     args = parser.parse_args()
@@ -275,6 +280,7 @@ if __name__ == "__main__":
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp,
         num_speculative_tokens=args.num_speculative_tokens,
+        no_enable_chunked_prefill=args.no_enable_chunked_prefill
     )
 
     # Register SIGINT handler for Ctrl+C

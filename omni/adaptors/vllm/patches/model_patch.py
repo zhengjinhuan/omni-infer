@@ -39,7 +39,7 @@ def patch_sampler():
     print("++++++++++++++++++++++patch_sampler++++++++++++++++++++++++++++")
     
 def patch_qwen2():
-    from omni.models.qwen.qwen2 import Qwen2Attention as OmniQwen2Attention
+    from omni.models.qwen.qwen2_patch import Qwen2Attention as OmniQwen2Attention
     import vllm.model_executor.models.qwen2
     vllm.model_executor.models.qwen2.Qwen2Attention = OmniQwen2Attention
 

@@ -126,9 +126,12 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.dtype = runner.dtype
         self.device = runner.device
         self.block_table = block_table
-        mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", 10000)
+        mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", 100)
         self.attn_mask_len = min(self.runner.model_config.max_model_len,
                                  int(mask_len))
+        self.attn_mask = ~torch.tril(
+            torch.ones((self.runner.model_config.max_model_len, self.runner.model_config.max_model_len), dtype=torch.bool, device=current_platform.device_type)
+        )
         self.attn_mask_builder = AttentionMaskBuilder.initialize_from_len(
             self.attn_mask_len, torch.bool)
 
@@ -141,8 +144,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         # Prefill without cache situation.
         elif attn_state == AscendAttentionState.PrefillNoCache:
             max_seq_len = max(seq_lens, default=0)
-            return self.attn_mask_builder.get_attn_mask(
-                max_seq_len, torch.bool, self.device)
+            return self.attn_mask[:max_seq_len, :max_seq_len]
         # Prefill with cache hit.
         elif attn_state == AscendAttentionState.PrefillCacheHit:
             return self.attn_mask_builder.get_attn_mask(
@@ -312,7 +314,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
     
         return AscendMetadata(
             num_actual_tokens=num_tokens,
-            block_tables=block_table,   
+            block_tables=block_table,
             query_lens=seq_lens,
             seq_lens=seq_lens,
             slot_mapping=slot_mapping,
@@ -423,8 +425,10 @@ class AscendAttentionBackendImpl(AttentionImpl):
         value = value.view(-1, self.num_kv_heads, self.head_size)
         value = value.contiguous()
 
-        if kv_cache[0].numel() > 0 or kv_cache[1].numel():
+        # update kv cache
+        SPLIT_SEQ_LEN = 4096
 
+        if kv_cache[0].numel() > 0 or kv_cache[1].numel():
             self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
             slots = attn_metadata.slot_mapping
 
@@ -433,9 +437,19 @@ class AscendAttentionBackendImpl(AttentionImpl):
 
             cast_key = key.reshape(-1, 1, self.num_kv_heads * self.head_size)
             cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
-
-            torch_npu.scatter_update_(self.key_cache, slots, cast_key, -2)
-            torch_npu.scatter_update_(self.value_cache, slots, cast_value, -2)   
+            if slots.shape[0] > SPLIT_SEQ_LEN:
+                slots_list = slots.split(SPLIT_SEQ_LEN)
+                cast_key_list = cast_key.split(SPLIT_SEQ_LEN)
+                cast_value_list = cast_value.split(SPLIT_SEQ_LEN)
+                for i in range(len(slots_list)):
+                    slots_i = slots_list[i]
+                    cast_key_i = cast_key_list[i]
+                    cast_value_i = cast_value_list[i]
+                    torch_npu.scatter_update_(self.key_cache, slots_i, cast_key_i, -2)
+                    torch_npu.scatter_update_(self.value_cache, slots_i, cast_value_i, -2)
+            else:
+                torch_npu.scatter_update_(self.key_cache, slots, cast_key, -2)
+                torch_npu.scatter_update_(self.value_cache, slots, cast_value, -2)
 
         if hasattr(layer, 'quant_method'):
             pass
@@ -458,6 +472,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 input_layout="TND",
                 scale=self.scale,
                 atten_mask=mask,
+                pre_tockens=actual_seq_qlen[-1],
+                next_tockens=0,
                 actual_seq_qlen=actual_seq_qlen,
                 actual_seq_kvlen=actual_seq_kvlen)[0]
 
