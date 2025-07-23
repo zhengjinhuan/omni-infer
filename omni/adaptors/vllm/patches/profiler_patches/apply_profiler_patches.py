@@ -2,13 +2,14 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import importlib
-import sys
 import os
 from pathlib import Path
 import logging
 import yaml
-from .prof_wrapper import torchnpu_prof_wrapper, timer_prof_wrapper, viztracer_prof_wrapper
-
+from .prof_wrapper import (torchnpu_prof_wrapper, 
+    timer_prof_wrapper, viztracer_prof_wrapper, marker_prof_wrapper)
+import time
+from typing import Optional, List, Tuple
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,7 +17,8 @@ logger = logging.getLogger(__name__)
 wrapper_dict = {
     "torchnpu": torchnpu_prof_wrapper, 
     "timer": timer_prof_wrapper, 
-    "viztracer": viztracer_prof_wrapper
+    "viztracer": viztracer_prof_wrapper, 
+    "marker": marker_prof_wrapper
 }
 
 # Parse config from namelist, apply profiler monkey patch
@@ -31,13 +33,14 @@ def apply_patches(namelist_path: str):
         profiler_type = config.get('type')
         if not (profiler_type=='torchnpu' or 
                 profiler_type=='timer' or 
-                profiler_type=='viztracer'):
-            logger.error(f"<<<type of namelist invalid, should be one of torchnpu/timer/viztracer")
-            raise RuntimeError("<<<type of namelist invalid, should be one of torchnpu/timer/viztracer")
+                profiler_type=='viztracer' or
+                profiler_type=='marker'):
+            logger.error(f"<<<type of namelist invalid, should be one of torchnpu/timer/viztracer/marker")
+            raise RuntimeError("<<<type of namelist invalid, should be one of torchnpu/timer/viztracer/marker")
         logger.info(f"<<<Applying {profiler_type} profiler patches from {namelist_path}")
         wrapper_method = wrapper_dict[profiler_type]
         
-        base_params = config.get("base_params")
+        base_params = config.get("base_params", {})
 
         # Extract target modules and methods
         targets: List[Tuple[str, Optional[str]]] = []
@@ -47,8 +50,20 @@ def apply_patches(namelist_path: str):
             if ":" in module_name:
                 module_name, class_name = module_name.split(":")
             function_name = target.get('function_name')
+            entry_operation = target.get('entry_operation', None)
+            exit_operation = target.get('exit_operation', None)
+            entry_message = target.get('entry_message', None)
+            exit_message = target.get('exit_message', None)
             if module_name:
-                targets.append((module_name, class_name, function_name))
+                targets.append(
+                    (
+                        module_name, 
+                        class_name, 
+                        function_name, 
+                        (entry_operation, exit_operation), 
+                        (entry_message, exit_message)
+                    )
+                )            
             else:
                 logger.warning(f"<<<Skipping target with missing 'module': {target}")
 
@@ -56,10 +71,17 @@ def apply_patches(namelist_path: str):
             logger.warning(f"<<<No valid targets found in {namelist_path}")
             return
 
-        for module_name, class_name, function_name in targets:
+        for module_name, class_name, function_name, \
+                (entry_operation, exit_operation), \
+                (entry_message, exit_message) in targets:
             logger.info(f"<<<Patching {module_name}.{function_name or 'all methods'}")
             try:
                 original_module = importlib.import_module(module_name)
+
+                base_params['entry_operation'] = entry_operation
+                base_params['exit_operation'] = exit_operation
+                base_params['entry_message'] = entry_message
+                base_params['exit_message'] = exit_message
                 if class_name:
                     try:
                         target_class = getattr(original_module, class_name)
@@ -100,10 +122,65 @@ def apply_patches(namelist_path: str):
         logger.error(f"<<<Failed to apply model patches: {e}")
         raise
 
+# following monkey patch is for triggering a printing message 
+#   when a request enter WAITING_FOR_REMOTE_KVS status
+def monkey_patch_request_status():
+    from vllm.v1.request import Request
+    from vllm.v1.request import RequestStatus
+    original_status = Request.__dict__.get('status', None)
+    def status_getter(self):
+        return self._status
+
+    def status_setter(self, value):
+        self._status = value
+        self.waiting_pull_len += 1
+        if value == RequestStatus.WAITING_FOR_REMOTE_KVS:
+            print(
+                f"<<<Action: Add need pullling sequence;|waiting_pull_len={self.waiting_pull_len} "
+                f"Timestamp:{time.time()}; "
+                f"RequestID:{self.request_id}; "
+                f"Role:{os.getenv('ROLE')}"
+            )
+
+    Request.status = property(status_getter, status_setter)
+
+    original_init = Request.__init__
+
+    def new_init(self, *args, **kwargs):
+        self.waiting_pull_len = 0
+        original_init(self, *args, **kwargs)
+        self._status = self.status
+
+    Request.__init__ = new_init
+    print("<<< Monkey patch request status is applied")
+
+# following monkey patch is for recoding the number of output tokens
+def monkey_patch_request_output_collector_init():
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestOutputCollector
+    original_init = RequestOutputCollector.__init__
+    def new_init(
+        self, output_kind: RequestOutputKind
+    ) -> None:
+        original_init(self, output_kind)
+        self.token_number_dict = {}
+    RequestOutputCollector.__init__ = new_init
+    print("<<< Monkey patch monkey_patch_request_output_collector_init is applied")
+
+# following monkey patch is for passing raw request_id inside _preprocess_chat function
+def patch_chatcompletionrequest():
+    from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+    OriginalChatCompletionRequest = ChatCompletionRequest
+    class PatchedChatCompletionRequest(OriginalChatCompletionRequest):
+        raw_request_id: Optional[str] = None
+    ChatCompletionRequest = PatchedChatCompletionRequest
 
 profiling_namelist = os.getenv("PROFILING_NAMELIST", None)
 if os.path.isfile(profiling_namelist):
     apply_patches(profiling_namelist)
+    monkey_patch_request_status()
+    monkey_patch_request_output_collector_init()
+    patch_chatcompletionrequest()
 else:
     logger.error(f"'{profiling_namelist}' does not exist.")
     raise FileNotFoundError(f"'{profiling_namelist}' does not exist.")
