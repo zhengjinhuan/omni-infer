@@ -86,11 +86,12 @@ def get_update_params(output_path, segments, models, x, y):
     plt.grid(True)
     save_path = os.path.join(output_path, "profiller.png")
     plt.savefig(save_path, dpi=300)
+    plt.show()
     plt.close()
     
     numerator = intercept_set[-1] - intercept_set[-2]
     denominator = slope_set[-2] - slope_set[-1]
-    B_start = int(numerator / denominator * 1024)
+    B_start = int(numerator / denominator * 1024) if denominator != 0 else float('inf')
     tfas_intercept = intercept_set[-1]
     tfas_slope = slope_set[-1]
     print("tfas_real_token_budget = ", B_start)
@@ -117,38 +118,46 @@ def IQR_filter(df):
     return result 
 
 def profiler_1K_fixed(log_file_path, output_path):
-    pattern1=r"current num reqs = (\d+), num_input_tokens = (\d+)"
-    pattern2=r"execute model cost:([\d.]+)=([\d.+]+)"
     records_running_seqs = []
     records_execute_time = []
     records_tokens = []
-    
+    records_waiting_reqs = []
+
     try:
         with open(log_file_path, "r", encoding="utf-8") as file:
             for line in file:
-                match1=re.findall(pattern1, line)
-                match2=re.findall(pattern2, line)
-                if match1:
-                    records_running_seqs.append(int(match1[0][0]))
-                    records_tokens.append(int(match1[0][1]))
-                elif match2:
-                    records_execute_time.append(float(match2[0][1].split('+')[1]))
-                else:
-                    pass
+                if "execute time" in line:
+                    s = [_ for _ in line.split("|") if "seqs:" in _]
+                    e = [_ for _ in line.split("|") if "execute time:" in _]
+                    t = [_ for _ in line.split("|") if "tokens:" in _]
+                    w = [_ for _ in line.split("|") if "waiting_reqs_num_after_step=" in _][-1:]
+                    records_running_seqs += s
+                    records_execute_time += e
+                    records_tokens += t
+                    records_waiting_reqs += w
     except FileNotFoundError as e:
-        raise ValueError({e})
+        raise ValueError({e}) 
     except Exception as e:
         raise ValueError({e})
-    
+
+    running_seqs = np.array([int(e.split(":")[-1]) for e in records_running_seqs])
+    execute_time = np.array([float(e.split(":")[-1]) for e in records_execute_time])
+    tokens = np.array([float(e.split(":")[-1]) for e in records_tokens])
+    waiting_reqs = np.array([float(e.split("=")[-1]) for e in records_waiting_reqs])
+
     # 获取profiler数据
     df = pd.DataFrame()
-    df["seqs"] = records_running_seqs
-    df["etime"] = records_execute_time
-    df["tokens"] = records_tokens
+    df["seqs"] = running_seqs
+    df["etime"] = execute_time / 1000
+    df["tokens"] = tokens
+    df["wq"] = waiting_reqs
+    df = df[df.seqs>0] 
     df["input_len"] = df["tokens"] / df["seqs"]
+
     
+ 
     # 获取prefiler统计结果
-    df_sel = df[(df.seqs > 0) & (df.input_len == 1025)]
+    df_sel = df[df.input_len == 1025]
     my_result = IQR_filter(df_sel)
     
     # 计算初始甜点值
