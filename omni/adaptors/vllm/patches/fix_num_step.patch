@@ -1,0 +1,10 @@
+diff --git a/vllm/v1/core/sched/output.py b/vllm/v1/core/sched/output.py
+index 257234430..de5a111e6 100644
+--- a/vllm/v1/core/sched/output.py
++++ b/vllm/v1/core/sched/output.py
+@@ -151,3 +151,5 @@ class SchedulerOutput:
+ 
+     # KV Cache Connector metadata.
+     kv_connector_metadata: Optional[KVConnectorMetadata] = None
++
++    num_step: Optional[int] = 1
