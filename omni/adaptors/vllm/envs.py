@@ -27,16 +27,6 @@ from typing import Any, Callable, Dict
 # begin-env-vars-definition
 
 env_variables: Dict[str, Callable[[], Any]] = {
-    "TFAS_INTERCEPT":
-    lambda: float(os.getenv("TFAS_INTERCEPT", "0.1259")),
-    "TFAS_SLOPE":
-    lambda: float(os.getenv("TFAS_SLOPE", "0.035")),
-    "TFAS_REAL_TOKEN_BUDGET":
-    lambda: int(os.getenv("TFAS_REAL_TOKEN_BUDGET", "9154")),
-    "TFAS_WAITING_TIME_OUT":
-    lambda: int(os.getenv("TFAS_WAITING_TIME_OUT", "20")),
-    "PREFILL_SCHEDULE_POLICY":
-    lambda: os.getenv("PREFILL_SCHEDULE_POLICY", ""),
     "VLLM_ENABLE_MC2":
     lambda: bool(int(os.getenv("VLLM_ENABLE_MC2", '0'))),
     "USING_LCCL_COM":
