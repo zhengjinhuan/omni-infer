@@ -5,6 +5,8 @@ PATCH_ROOT=${1:-../../omni/adaptors/vllm/patches/}
 VLLM_PATH=${2:-./vllm}
 
 cd ${VLLM_PATH}
+git reset --hard
+git clean -fd
 git checkout v0.9.0
 git apply --whitespace=nowarn $PATCH_ROOT/manual_apiserver_scaleout.patch
 git apply --whitespace=nowarn $PATCH_ROOT/scheduler_kv_cache_manager_partial_kv_transfer.patch
