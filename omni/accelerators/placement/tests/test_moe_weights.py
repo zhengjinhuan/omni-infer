@@ -129,7 +129,7 @@ class TestVllmNpuEnv(unittest.TestCase):
         from vllm_npu import ENV
         self.ENV = ENV
     def test_enable_omni_placement(self):
-        self.ENV.omni_placement_config_path = '/home/omni/omni_placement/config.yaml'
+        self.ENV.omni_placement_config_path = './config_test.yaml'
         self.assertTrue(self.ENV.use_omni_placement)
 
     def test_disable_omni_placement(self):

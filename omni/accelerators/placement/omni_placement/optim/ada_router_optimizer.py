@@ -16,7 +16,9 @@ class AdaRouter(Optimizer):
         """
         super().__init__()
         self._cluster_status = cluster_status
-        self._threshold = torch.tensor(1-threshold, device='npu')
+        if threshold > 1:
+            raise ValueError("AdaRouter threshold must be ≤ 1")
+        self._threshold = torch.tensor(1 - threshold, device='npu')
         self._entropy_bound = entropy_bound
         self._method = method
 
@@ -41,9 +43,6 @@ class AdaRouter(Optimizer):
             return token, topk_ids, topk_weights
         else:
             return token, token_expert_ids, token_scores
-
-    
-
 
     def _select_experts_by_threshold(self, token_expert_ids, token_scores):
         """

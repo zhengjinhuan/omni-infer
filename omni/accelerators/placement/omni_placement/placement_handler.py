@@ -6,7 +6,7 @@ import ctypes
 from . import omni_placement
 from .distributed_ops import distribution_warmup
 from collections import defaultdict
-from .utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,calculate_time
+from .utils import filter_dict_keys, convert_param_dict_to_list, convert_param_to_ctype, calculate_time
 import re
 import time
 
