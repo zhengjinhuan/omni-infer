@@ -225,6 +225,20 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         # full attention layers reorder first, then other layers agree
         if isinstance(self.kv_cache_spec, OmniAttentionSpec):
             return False
+
+        # In the case of prefill nodes in PD disaggregation, there is no need to
+        # reorder the batch, since it's IMPOSSIBLE to have decode requests.
+        # Besides, when APC is on, if a request has exactly one more token
+        # than a previous one whose cache is hit, this request will be considered
+        # as 'decode' mistakenly.
+        kv_transfer_config = self.runner.vllm_config.kv_transfer_config
+        if kv_transfer_config is not None and kv_transfer_config.kv_role == "kv_producer":
+            self._num_decodes = 0
+            self._num_prefills = len(input_batch.req_ids)
+            self._num_decode_tokens = 0
+            self._num_prefill_tokens = scheduler_output.total_num_scheduled_tokens
+            return False
+
         # We now want to reorder the batch so that the "decode" requests are at
         # the front and the "prefill" requests are at the using the least amount
         # swaps possible. (NOTE for now we loosely use "decode" to mean requests
@@ -852,8 +866,10 @@ class AscendMLAImpl(MLAAttentionImpl):
                 k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
                 if prefill_metadata.max_query_len > 1:
                     attn_mask = self.attn_mask
+                    sparse_mode = 3
                 else:
                     attn_mask = None
+                    sparse_mode = 0  # must be 0 if attn_mask is None
                 prefill_k_rope = prefill_k_pe.view(-1, 1, self.qk_rope_head_dim).repeat(1, self.num_heads, 1)
                 attn_output[computed_tokens:computed_tokens+actual_seq_qlen[-1]] = \
                     torch.ops.npu.npu_fused_infer_attention_score(
@@ -866,7 +882,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                         num_key_value_heads=self.num_heads,
                         input_layout="TND",
                         atten_mask=attn_mask,
-                        sparse_mode=3,
+                        sparse_mode=sparse_mode,
                         actual_seq_lengths=actual_seq_qlen,
                         actual_seq_lengths_kv=actual_seq_kvlen,
                         scale=self.scale,
