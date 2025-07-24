@@ -327,7 +327,6 @@ function nginx_set_upstream() {
     local use_shm_zone="$4"
     local lb_sdk_line="$5" 
 
-
     # Build server lines with 8 spaces indentation
     local upstream_servers=""
     IFS=',' read -ra ADDR <<< "$servers_list"
@@ -358,14 +357,6 @@ function nginx_set_upstream() {
         "prefill_score_balance")
             lb_sdk_line="prefill_score_balance on"
             ;;
-        "least_total_load")
-            lb_sdk_line="least_total_load on"
-            lb_sdk_extra="least_total_load_batch_size 16;"
-            ;;
-        "auto_balance_controller")
-            lb_sdk_line="auto_balance_controller on"
-            lb_sdk_extra="auto_balance_controller_batch_size 32;"
-            ;;
         "pd_score_balance")
             if [ "$upstream_name" = "prefill_servers" ]; then
                 lb_sdk_line="pd_score_balance prefill"
@@ -379,8 +370,8 @@ function nginx_set_upstream() {
     # Compose new upstream block with 8 spaces indentation
     local upstream_block="    upstream $upstream_name {
         ${zone_line}
-        ${lb_sdk_line};
         ${lb_sdk_extra}
+        ${lb_sdk_line};
         keepalive 2048;
         keepalive_timeout 110s;
         keepalive_requests 20000;
@@ -479,8 +470,6 @@ function nginx_set_load_modules() {
     local load_module_upstream_length_balance_line="load_module /usr/local/nginx/modules/ngx_http_upstream_length_balance_module.so;"
     local load_module_upstream_wla_line="load_module /usr/local/nginx/modules/ngx_http_upstream_weighted_least_active_module.so;"
     local load_module_upstream_psb_line="load_module /usr/local/nginx/modules/ngx_http_upstream_prefill_score_balance_module.so;"
-    local load_module_upstream_ltl_line="load_module /usr/local/nginx/modules/ngx_http_upstream_least_total_load_module.so;"
-    local load_module_upstream_abc_line="load_module /usr/local/nginx/modules/ngx_http_upstream_auto_balance_controller_module.so;"
     local load_module_upstream_pds_line="load_module /usr/local/nginx/modules/ngx_http_upstream_pd_score_balance_module.so;"
 
     # Add all load module at the top
@@ -490,8 +479,7 @@ function nginx_set_load_modules() {
     sed -i "3i ${load_module_upstream_wla_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_psb_line}" "$nginx_conf_file"
     sed -i "3i ${load_module_upstream_pds_line}" "$nginx_conf_file"
-    sed -i "3i ${load_module_upstream_ltl_line}" "$nginx_conf_file"
-    sed -i "3i ${load_module_upstream_abc_line}" "$nginx_conf_file"
+
 }
 
 function nginx_configuration() {
