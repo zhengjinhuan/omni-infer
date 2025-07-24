@@ -114,8 +114,16 @@ Placement::Placement(int rank, int world_size, int num_devices_per_host,
       num_devices_per_host_(num_devices_per_host), activations_(activations),
       mapping_(placement_mapping), enable_dynamic_(enable_dynamic) {
 
+    num_layers_ = mapping_->get_num_layers();
+    num_experts_ = mapping_->get_num_experts();
+    num_deploy_experts_ = mapping_->get_num_deploy_experts();
+    num_deploy_experts_per_rank_ = num_deploy_experts_ / world_size_;        
     // Initialize components immediately
-    initialize_components(root_info);
+    if (enable_dynamic)
+    {
+        initialize_components(root_info);
+    }
+
     activations_->set_params(num_experts_);
     is_layer_update.resize(num_layers_, false);
 
@@ -127,11 +135,6 @@ Placement::Placement(int rank, int world_size, int num_devices_per_host,
 }
 
 void Placement::initialize_components(char *root_info) {
-    num_layers_ = mapping_->get_num_layers();
-    num_experts_ = mapping_->get_num_experts();
-    num_deploy_experts_ = mapping_->get_num_deploy_experts();
-    num_deploy_experts_per_rank_ = num_deploy_experts_ / world_size_;
-
     dist_ptr_ = new Distribution(rank_, world_size_, root_info,
                                  HcclCommInitType::RootInfoString);
     moe_weight_ = new MoEWeights(num_deploy_experts_, rank_, world_size_);
@@ -272,7 +275,7 @@ void Placement::placement_manager(aclrtContext currentContext) {
 
     while (!should_stop_) {
         dump_count++;
-        activations_->dump_and_collect(dist_ptr, stream, dump_count);
+        activations_->collect(dist_ptr, stream);
 
         if (!enable_dynamic_) {
             std::this_thread::sleep_for(std::chrono::seconds(collect_times));
@@ -616,6 +619,7 @@ PYBIND11_MODULE(omni_placement, m) {
         .def("getClusterTotalActivationCount",
              &ClusterActivation::getClusterTotalActivationCount,
              py::arg("layer"), py::arg("expert"), "")
+        .def("start_thread", &ClusterActivation::start_thread, "")
         .def("stop_thread", &ClusterActivation::stop_thread, "")
         .def("stopDump", &ClusterActivation::stopDump, "")
         .def("setDumpDir", &ClusterActivation::setDumpDir, py::arg("dump_dir"),
