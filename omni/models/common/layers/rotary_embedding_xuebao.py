@@ -22,11 +22,9 @@
 # limitations under the License.
 """Rotary Positional Embeddings."""
 from typing import Any, Dict, Optional, Tuple, Union
-from dataclasses import dataclass
 import torch
 import torch_npu
 import torch.nn as nn
-import torch.nn.functional as F
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -73,11 +71,11 @@ class RotaryEmbedding(torch.nn.Module):
         return inv_freq
 
     # use small ops
-    # def apply_rotary_pos_emb(self, x, cos, sin):
-    #     x1, x2 = torch.chunk(x, 2, -1)
-    #     x_new = torch.cat((-x2, x1), dim=-1)
-    #     output = cos * x + sin * x_new
-    #     return output
+    def apply_rotary_pos_emb(self, x, cos, sin):
+        x1, x2 = torch.chunk(x, 2, -1)
+        x_new = torch.cat((-x2, x1), dim=-1)
+        output = cos * x + sin * x_new
+        return output
 
     def forward(self, position_ids, query, key, cos, sin):
         """
@@ -87,17 +85,27 @@ class RotaryEmbedding(torch.nn.Module):
             key: [num_tokens, num_heads * head_size]
         """
 
-        # shape to bsnd
-        cos = cos.unsqueeze(1).unsqueeze(1)
-        sin = sin.unsqueeze(1).unsqueeze(1)
+        if self.rotary_dim != 128:
+            query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
+            key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
+            cos = cos.unsqueeze(-2)
+            sin = sin.unsqueeze(-2)
+            q_embed = self.apply_rotary_pos_emb(query, cos, sin)
+            k_embed = self.apply_rotary_pos_emb(key, cos, sin)
+            q_embed = q_embed.flatten(-2)
+            k_embed = k_embed.flatten(-2)
+        else:
+            # shape to bsnd
+            cos = cos.unsqueeze(1).unsqueeze(1)
+            sin = sin.unsqueeze(1).unsqueeze(1)
 
-        query = query.view(query.shape[0], 1, -1, self.head_size)
-        key = key.view(key.shape[0], 1, -1, self.head_size)
+            query = query.view(query.shape[0], 1, -1, self.head_size)
+            key = key.view(key.shape[0], 1, -1, self.head_size)
 
-        q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
+            q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
 
-        q_embed = q_embed.view(q_embed.shape[0], -1)
-        k_embed = k_embed.view(k_embed.shape[0], -1)
+            q_embed = q_embed.view(q_embed.shape[0], -1)
+            k_embed = k_embed.view(k_embed.shape[0], -1)
 
         return q_embed, k_embed
 
@@ -109,17 +117,27 @@ class RotaryEmbedding(torch.nn.Module):
             key: [num_tokens, num_heads * head_size]
         """
 
-        # shape to bsnd
-        cos = cos.unsqueeze(1).unsqueeze(1)
-        sin = sin.unsqueeze(1).unsqueeze(1)
+        if self.rotary_dim != 128:
+            query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
+            key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
+            cos = cos.unsqueeze(-2)
+            sin = sin.unsqueeze(-2)
+            q_embed = self.apply_rotary_pos_emb(query, cos, sin)
+            k_embed = self.apply_rotary_pos_emb(key, cos, sin)
+            q_embed = q_embed.flatten(-2)
+            k_embed = k_embed.flatten(-2)
+        else:
+            # shape to bsnd
+            cos = cos.unsqueeze(1).unsqueeze(1)
+            sin = sin.unsqueeze(1).unsqueeze(1)
 
-        query = query.view(query.shape[0], 1, -1, self.head_size)
-        key = key.view(key.shape[0], 1, -1, self.head_size)
+            query = query.view(query.shape[0], 1, -1, self.head_size)
+            key = key.view(key.shape[0], 1, -1, self.head_size)
 
-        q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
+            q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
 
-        q_embed = q_embed.view(q_embed.shape[0], -1)
-        k_embed = k_embed.view(k_embed.shape[0], -1)
+            q_embed = q_embed.view(q_embed.shape[0], -1)
+            k_embed = k_embed.view(k_embed.shape[0], -1)
 
         return q_embed, k_embed
 

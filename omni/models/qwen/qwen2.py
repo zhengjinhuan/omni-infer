@@ -256,6 +256,7 @@ class Qwen2Model(nn.Module):
                  decoder_layer_type: type[nn.Module] = Qwen2DecoderLayer):
         super().__init__()
 
+        self.tp_size = get_tensor_model_parallel_world_size()
         # TODO (@robertgshaw2): see if this can be moved out
         if (cache_config.sliding_window is not None
                 and hasattr(config, "max_window_layers")):
@@ -336,7 +337,7 @@ class Qwen2Model(nn.Module):
         sin = torch.index_select(self.full_sin, dim=0, index=positions)
 
         attn_metadata = get_forward_context().attn_metadata
-        if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache:
+        if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache and self.tp_size > 1:
             hidden_states, residual = self.forward_layers_prefill_microbatch_tp8_allreduce(positions, hidden_states, residual, kv_caches, cos, sin)
         else:
             hidden_states, residual = self.forward_layers(positions, hidden_states, residual, kv_caches, cos, sin)
