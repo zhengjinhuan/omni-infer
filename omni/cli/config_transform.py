@@ -81,9 +81,9 @@ def detect_file_encoding(file_path):
         result = chardet.detect(raw_data)
         return result['encoding']
 
-def parse_host_overrides(logger, decode_group):
+def parse_host_overrides(logger, group):
     """
-    Analyze the host coverage configuration in the decode group. 
+    Analyze the host coverage configuration in the group. 
     Supported formats: 
         host 127.0.0.6:
             master_port: "8000"
@@ -101,7 +101,7 @@ def parse_host_overrides(logger, decode_group):
         'password': 'ansible_password'
     }
     
-    for key, value in decode_group.items():
+    for key, value in group.items():
         host = key.split(" ")[0]
         if host != 'host':
             continue
@@ -123,14 +123,12 @@ def parse_host_overrides(logger, decode_group):
 def transform_config_for_inventory(logger, input_data):
     """The core function for executing configuration conversion"""
     # Extract basic information
-    docker_image = input_data['deployment']['docker_image']
-    required_keys = {'user', 'private_key', 'master_port', 'base_api_port', 'ascend_rt_visible_devices'}
+    required_keys = {'user', 'master_port', 'base_api_port', 'ascend_rt_visible_devices'}
     
     # Building infrastructure
     output = {
         'all': {
             'vars': {
-                'docker_image': docker_image,
                 'ansible_ssh_common_args': '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
             },
             'children': {
@@ -147,29 +145,44 @@ def transform_config_for_inventory(logger, input_data):
 
     # Group processing 
     index = 0
-    for group_valus in prefill.values():
-        host_key = f'p{index}'
-        hosts_list = [h.strip() for h in group_valus['hosts'].split(',')]
-        if len(hosts_list) > 1:
-            logger.error("Multiple machines cannot deploy one prefill instance at present!")
-            return None
-
+    for kv_rank, group_valus in enumerate(prefill.values()):
         missing_keys = required_keys - set(group_valus.keys())
         if missing_keys:
             logger.error("The group of prefill is missing the necessary configuration. The missing configuration is: %s", missing_keys)
             return None
 
-        p_hosts[host_key] = {
-            'ansible_host': hosts_list[0],
-            'ansible_user': group_valus['user'],
-            'ansible_ssh_private_key_file': group_valus['private_key'],
-            'node_rank': f'{index}',
-            'node_port': group_valus['master_port'],
-            'api_port': group_valus['base_api_port'],
-            'ascend_rt_visible_devices': group_valus['ascend_rt_visible_devices']
-        }
+        host_overrides = parse_host_overrides(logger, group_valus)
+        if host_overrides is None:
+            return None
+        
+        hosts_list = [h.strip() for h in group_valus['hosts'].split(',')]
+        for i, host in enumerate(hosts_list):
+            host_key = f'p{index}'
+            p_hosts[host_key] = {
+                'ansible_host': host,
+                'ansible_user': group_valus['user'],
+                'node_rank': f'{i}',
+                'kv_rank': f'{kv_rank}',
+                'node_port': group_valus['master_port'],
+                'api_port': group_valus['base_api_port'],
+                'ascend_rt_visible_devices': group_valus['ascend_rt_visible_devices'],
+                'host_ip': hosts_list[0]
+            }
 
-        index+=1
+            if 'private_key' in group_valus.keys():
+                p_hosts[host_key]['ansible_ssh_private_key_file'] = group_valus['private_key']
+            elif 'password' in group_valus.keys():
+                p_hosts[host_key]['ansible_password'] = group_valus['password']
+            else:
+                logger.error("The group of prefill is missing necessary configuration. The missing configuration is: private_key or password")
+                return None
+            
+            if host in host_overrides.keys():
+                p_hosts[host_key].update({
+                    k: v for k, v in host_overrides[host].items()
+                })
+
+            index+=1
     
     # Handle the decode section 
     if len(input_data['deployment']['decode']) > 1:
@@ -197,16 +210,19 @@ def transform_config_for_inventory(logger, input_data):
         host_config = {
             'ansible_host': host,
             'ansible_user': decode_group['user'],
-            'ansible_ssh_private_key_file': decode_group['private_key'],
             'node_port': decode_group['master_port'],
             'api_port': decode_group['base_api_port'],
             'ascend_rt_visible_devices': decode_group['ascend_rt_visible_devices'],
-            'role': 'S'  # Default slave server 
+            'host_ip': hosts_list[0]
         }
-        
-        # First host special processing
-        if i == 0:
-            host_config['role'] = 'M'  # Master server
+
+        if 'private_key' in decode_group.keys():
+            host_config['ansible_ssh_private_key_file'] = decode_group['private_key']
+        elif 'password' in decode_group.keys():
+            host_config['ansible_password'] = decode_group['password']
+        else:
+            logger.error("The group of decode is missing necessary configuration. The missing configuration is: private_key or password")
+            return None
 
         if host in host_overrides.keys():
             host_config.update({
@@ -231,27 +247,26 @@ def transform_config_for_inventory(logger, input_data):
 def transform_config_for_playbook(logger, input_data):
     """The core function for executing configuration conversion"""
     updates = {}
-    if "model_path" not in input_data['services']:
-        logger.error("Missing global configuration: %s", "model_path")
+    global_required_keys = {'log_path', 'model_path', 'code_path', 'docker_image'}
+    missing_keys = global_required_keys - set(input_data['services'])
+    if missing_keys:
+        logger.error("Missing global configuration: %s", missing_keys)
         return None
-    if 'max_model_len' not in input_data['services']['prefill']:
+    if 'max_model_len' not in input_data['services']['prefill'].keys():
         logger.error("Missing necessary configuration for prefill: %s", 'max_model_len')
         return None
-    if 'max_model_len' not in input_data['services']['decode']:
+    if 'max_model_len' not in input_data['services']['decode'].keys():
         logger.error("Missing necessary configuration for decoding: %s", 'max_model_len')
         return None
-    if 'local_code_path' not in input_data['services']:
-        logger.error("Missing global configuration: %s", "local_code_path")
-        return None
-    if "docker_image" not in input_data['deployment']:
-        logger.error("Missing global configuration: %s", "docker_image")
-        return None
 
+    updates["LOG_PATH"] = input_data['services']['log_path']
     updates["MODEL_PATH"] = input_data['services']['model_path']
+    updates["CODE_PATH"] = input_data['services']['code_path']
+    if 'http_proxy' in input_data['services'].keys():
+        updates["HTTP_PROXY"] = input_data['services']['http_proxy']
+    updates["DOCKER_IMAGE_ID"] = input_data['services']['docker_image']
     updates["MODEL_LEN_MAX_PREFILL"] = input_data['services']['prefill']['max_model_len']
     updates["MODEL_LEN_MAX_DECODE"] = input_data['services']['decode']['max_model_len']
-    updates["LOCAL_CODE_PATH"] = input_data['services']['local_code_path']
-    updates["DOCKER_IMAGE_ID"] = input_data['deployment']['docker_image']
 
     return updates
 
@@ -271,7 +286,7 @@ def update_yml_file(logger, updates, file_path):
     
     # Create a regular expression pattern for each key 
     patterns = {
-        key: re.compile(rf'^(\s*{key}:\s*)"([^"]+)"', re.MULTILINE)
+        key: re.compile(rf'^(\s*{key}:\s*)"([^"]*)"', re.MULTILINE)
         for key in updates
     }
     
@@ -286,6 +301,15 @@ def update_yml_file(logger, updates, file_path):
 def transform_deployment_config(config_path):
     """Main function, handles file input and output"""
     try:
+        # Delete the existing .yml file
+        file_path = f"{os.getcwd()}/omni_infer_inventory.yml"
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            os.remove(file_path)
+
+        file_path = f"{os.getcwd()}/omni_infer_server.yml"
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            os.remove(file_path)
+
         # Initialize the log system
         logger = setup_logging()
  
@@ -313,7 +337,7 @@ def transform_deployment_config(config_path):
             return
 
         # update the omni_infer_server.yml
-        update_yml_file(logger, playbookArges, f"{input_data['services']['local_code_path']}/omniinfer/omni/cli/omni_infer_server.yml")
+        update_yml_file(logger, playbookArges, f"{input_data['services']['code_path']}/omniinfer/omni/cli/omni_infer_server.yml")
         
         # Write to output file
         with open(f'{os.getcwd()}/omni_infer_inventory.yml', 'w') as f:
@@ -325,6 +349,6 @@ def transform_deployment_config(config_path):
     except FileNotFoundError:
         logger.critical("Cannot find config_path file! ")
     except KeyError as e:
-        logger.critical(f"The input file is missing a required key  - {e}")
+        logger.critical(f"The input file is missing a required key - {e}")
     except Exception as e:
         logger.critical(f"An unknown error occurred: {e}")

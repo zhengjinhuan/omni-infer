@@ -41,7 +41,7 @@
     Prefill 实例的 API Server 默认端口: `base_api_port + port_offset.P + node_rank`。
     Decode 实例的 API Server 默认端口: `base_api_port + port_offset.D + node_rank`。
 
-* `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。对于多机组 P 的场景，该 IP 就是主 P 或主 D 的 IP；对于单机组 P 的场景，该 IP 和 `ansible_host` 的值保持一致。
+* `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。对于多机组 P/D 的场景，该 IP 就是主 P 或主 D 的 IP；对于单机组 P 的场景，该 IP 和 `ansible_host` 的值保持一致。
 
 * `ascend_rt_visible_devices`: 每个 Prefill 或 Decode 实例需要使用的卡号， 参数值需要严格按照以下格式: `"x,x,x,x"` (用英文逗号分隔的连续值) ， 不能有多余逗号和空格。
 

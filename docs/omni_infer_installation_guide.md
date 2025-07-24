@@ -69,7 +69,7 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
 
 ## 下载 omni_infer 以及 vllm 源码并安装 vllm
 可以选择在宿主机或者容器内下载源码，如果在容器内下载，应在主机挂载在容器的目录下下载；在宿主机内下载则无此约束。
-执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm；如果用户参考 **通过 ansible 部署**章节，执行完前两步即可；另外需要注意当前 omni_cli 还不支持 omni_placement 重新编包。
+执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm；如果用户参考 **通过 ansible 部署**章节，执行完前两步即可。
 1. git clone 拉取 omni_infer 源码；
 2. 在目录 omniinfer/infer_engines 下 git clone 拉取 vllm v0.9.0 源码，注意文件夹名改为 "vllm"；infer_engines下的目录结构如下:
     ![alt text](./figures/20250702_141938.png)
@@ -105,6 +105,7 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
 pip list | grep omni_infer
 ```
 检查结果如下：
+
 ![image](./figures/7bf10117-2c1a-4ec7-a7b6-2ce29c37fda1.png)
 
 ## 混布
@@ -285,7 +286,7 @@ ansible 详细说明参考：**omniinfer**/**tools**/**ansible**/**template**/**
 
 ### omni_cli 一键部署
 
-该工具目前仅支持拉起**MTP+入图**的服务配置，若要修改请参考**通过 ansible 部署**章节；
+该工具目前支持拉起**MTP+入图+omni_placement**的服务配置，若需要修改配置请参考**通过 ansible 部署**章节；
 提供的docker镜像中默认安装 omni_cli 工具，在宿主机 **下载omni_infer以及vllm源码并安装vllm** 时 omni_cli 也安装好了，通过以下命令查看是否安装：
 
 ```
@@ -295,14 +296,13 @@ omni_cli --help
 
 #### 配置文件说明
 
-进入 omni_infer 代码路径下，`cd omniinfer/omni/cli` 进入配置文件所在目录，有 `omni_infer_deployment.yml` 和 `omni_infer_server.yml` 两个配置文件，前者的 `services` 字段下配置参数最终会替换后者中相似的配置，用户只需要修改 `omni_infer_deployment.yml` 中的参数即可，`omni_infer_server.yml` 内的参数修改属于进阶操作（参考**通过 ansible 部署**章节），
-由于PD 服务实例均在容器里运行，`docker_image` 用来指定运行的容器镜像，如 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer:202506272026`，其中 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer` 表示镜像仓地址，`202506272026` 表示镜像版本号，如果远程目标机没有此容器镜像，脚本会自动下载。
-配置文件是一个 4P1D 的模板，如果需要增加 P，在 `prefill` 中增加一个 `group5` ，其他配置按实际情况配置即可，需要继续增加 P，以此类推；`group` 中的各个字段说明如下：
+进入 omni_infer 代码路径下，`cd omniinfer/omni/cli` 进入配置文件所在目录，有 `omni_infer_deployment.yml` 和 `omni_infer_server.yml` 两个配置文件，前者的 `services` 字段下配置参数最终会替换后者中相同的配置，用户只需要修改 `omni_infer_deployment.yml` 中的参数即可，`omni_infer_server.yml` 内的参数修改不涉及（参数修改参考**通过 ansible 部署**章节），
+`omni_infer_deployment.yml` 是一个 4P1D 的模板，如果需要增加 P，在 `prefill` 中增加一个 `group5` ，其他配置参考其他 group 配置即可，需要继续增加 P，以此类推；`group` 中的各个字段说明如下：
 
 | 字段                            | 含义                                                                                                                               |
 | :-------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------- |
 | `user`                      | 远程目标机的用户名， 如 user 等                                                                                                    |
-| `hosts`                     | 目标机 IP 地址                                                                                                                     |
+| `hosts`                     | 组成 P/D 所有机器的IP地址，其中 master 节点的 IP地址需要放在首位                                                                                                                     |
 | `master_port`               | 即 Prefill 和 Decode 的实际 `master-port`                                                                                      |
 | `base_api_port`             | API Server 的端口号                                                                                                                |
 | `private_key`               | 连接目标机的私钥文件路径。也可以使用密码登录目标机的方式， 则使用 `password` 字段并将密码填入， 如：password: "passwod"        |
@@ -314,12 +314,14 @@ omni_cli --help
 
 | 字段                         | 含义                                                                                         |
 | :----------------------------- | :--------------------------------------------------------------------------------------------- |
-| `local_code_path`        | 执行机上的代码路径，即用户通过 git clone 拉取的代码存放路径。例如用户在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path` |
-| `model_path`             | 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致 |
-| `prefill: max_model_len` | Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为30000             |
+| `local_code_path`    | 执行机上的代码路径，即用户通过 git clone 拉取的代码存放路径。例如用户在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path` |
+| `model_path`         | 加载的模型路径，要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致 |
+| `code_path`          | 执行机上的 omniinfer 源码路径，即用户通过 `git clone` 拉取的代码存放路径；例如你在 `/workspace/local_code_path` 下 git clone 了代码，那路径就是 `/workspace/local_code_path`；脚本会将执行机上的源码同步到目标机内相同路径下，并且将路径挂载到容器中 |
+| `docker_image`       | omniai 服务实例均在容器里面运行，用来指定运行的容器镜像，如: `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer:202506272026`，其中 `swr.cn-southwest-2.myhuaweicloud.com/omni-ai/omniinfer` 表示镜像仓地址，`202506272026` 表示镜像版本号，如果远程目标机没有此容器镜像，脚本会自动下载 |
+| `prefill: max_model_len` | Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为32000             |
 | `decode: max_model_len`  | Decode 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为16384              |
 
-注意到 D 中所有机器的配置都是统一的，但是多数情况下机器的配置是各异的，比如登录目标机的私钥文件路径可能就不一样，所以，如果需要修改 D 的某一台机器的配置，可以参照如下，**注意缩进**即可：
+注意到 P/D 中所有机器的配置都是统一的，但是多数情况下机器的配置是各异的，比如登录目标机的私钥文件路径可能就不一样，所以，如果需要修改 P/D 的某一台机器的配置，可以参照如下，**注意缩进**即可：
 
 ```
 group1:
@@ -367,7 +369,7 @@ yum install openssh-server
 #### 配置文件说明
 
 在 **omniinfer/tools/ansible/template/** 中，有 omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml 两个文件，omni_infer_inventory_used_for_2P1D.yml 用于四机 2P1D 场景，omni_infer_inventory_used_for_4P1D.yml 用于八机 4P1D 场景，其他场景可以参考这两个文件创建新的 inventory 文件；此外还有一个 omni_infer_server_template.yml 文件，这三个
-文件的参数配置说明可以参考 **omniinfer/tools/ansible/template/README.md**, 以2P1D为例，则修改 omni_infer_inventory_used_for_2P1D.yml 文件，将 `p0/p1/d0/d1/c0` 下面的 `ansible_host:` 值改为机器的 ip，其中p0/p1表示用来部署P的2台A3机器，d0/d1表示用来部署D的2台A3机器，c0表示用来部署globalproxy的机器信息，可以使用p0/p1/d0/d1中的任意一台;
+文件的参数配置说明可以参考 **[omniinfer/tools/ansible/template/README.md](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/template/README.md)**, 以2P1D为例，则修改 omni_infer_inventory_used_for_2P1D.yml 文件，将 `p0/p1/d0/d1/c0` 下面的 `ansible_host:` 值改为机器的 ip，其中p0/p1表示用来部署P的2台A3机器，d0/d1表示用来部署D的2台A3机器，c0表示用来部署globalproxy的机器信息，可以使用p0/p1/d0/d1中的任意一台;
 
 ![image](./figures/79f4a480-e13b-45a3-bc9e-080f27ea3995.png)
 
