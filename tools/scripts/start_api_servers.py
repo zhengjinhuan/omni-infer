@@ -139,7 +139,7 @@ def start_single_node_api_servers(
             "--max-model-len", str(max_tokens)
         ]
         if enable_mtp:
-            cmd.extend(["--speculative_config", '{"method": "deepseek_mtp", "num_speculative_tokens": 1}'])
+            cmd.extend(["--speculative_config", '{"method": "mtp", "num_speculative_tokens": 1}'])
         if kv_transfer_config:
             cmd.extend(["--kv-transfer-config", str(kv_transfer_config)])
         if extra_args:
