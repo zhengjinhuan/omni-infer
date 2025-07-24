@@ -775,7 +775,7 @@ class NPUModelRunner(GPUModelRunner):
             if not self.use_spec_decode:
                 # Speculative decoding is not enabled.
                 spec_tokens_tensor = None
-            elif self.speculative_config.method == 'deepseek_mtp':
+            elif self.speculative_config.method == 'mtp':
                 spec_tokens_tensor = self.run_mtp(
                     attn_metadata, scheduler_output, input_ids, raw_hidden_states, mtp_input_tokens, positions, sample_indices, last_accepted_index
                 )
@@ -937,7 +937,7 @@ class NPUModelRunner(GPUModelRunner):
                     hidden_states = forward_results
                 else:
                     raw_hidden_states, hidden_states = forward_results
-                if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
+                if self.use_spec_decode and self.speculative_config.method in ('mtp'):
                     for layer_idx in range(self.speculative_config.num_speculative_tokens):
                         self.drafter_list[layer_idx](
                             input_ids=input_ids,
@@ -999,7 +999,7 @@ class NPUModelRunner(GPUModelRunner):
                         hidden_states = forward_results
                     else:
                         raw_hidden_states, hidden_states = forward_results
-                    if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
+                    if self.use_spec_decode and self.speculative_config.method in ('mtp'):
                         if not self.dummy_drafter_mark_static:
                             torch._dynamo.mark_static(input_ids)
                             torch._dynamo.mark_static(raw_hidden_states)
@@ -1029,7 +1029,7 @@ class NPUModelRunner(GPUModelRunner):
                                             inputs_embeds=inputs_embeds,
                                             kv_caches=self.kv_caches,
                                             attn_metadata=attn_metadata)
-                    if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
+                    if self.use_spec_decode and self.speculative_config.method in ('mtp'):
                         for layer_idx in range(self.speculative_config.num_speculative_tokens):
                             self.drafter_list[layer_idx](
                                 input_ids=input_ids,
@@ -1142,7 +1142,7 @@ class NPUModelRunner(GPUModelRunner):
             device=self.device,
             pin_memory=is_pin_memory_available(),
             vocab_size=self.model_config.get_vocab_size(),
-            block_size=self.cache_config.block_size
+            kv_cache_config=kv_cache_config,
         )
         self.input_batch.token_ids_cpu_tensor = torch.zeros(
             (self.max_num_reqs, self.model_config.max_model_len),
