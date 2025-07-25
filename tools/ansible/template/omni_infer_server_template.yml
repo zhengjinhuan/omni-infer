@@ -36,6 +36,10 @@
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
 
+    #Configuration for lb_sdk in global proxy
+    PREFILL_LB_SDK: "pd_score_balance"
+    DECODE_LB_SDK: "pd_score_balance"
+
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
 
@@ -348,7 +352,9 @@
         --log-file ${LOG_PATH}/nginx_error.log \
         --log-level notice \
         --core-num 4 \
-        --start-core-index 16
+        --start-core-index 16 \
+        --prefill-lb-sdk ${PREFILL_LB_SDK} \
+        --decode-lb-sdk ${DECODE_LB_SDK}
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -441,6 +447,8 @@
       {{ docker_exec_cmd }}
       -e http_proxy=$HTTP_PROXY
       -e https_proxy=$HTTP_PROXY
+      -e PREFILL_LB_SDK=$PREFILL_LB_SDK
+      -e DECODE_LB_SDK=$DECODE_LB_SDK
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
