@@ -72,6 +72,7 @@ class ClusterActivation {
     Tensor *expert_activation_counts_ = nullptr; // activation all rank reduced
     void *deployed_experts_counts_host_;
     void *last_count_ptr_;
+    void *last_count_ptr_this_rank_;
     void *delta_experts_counts_;
     std::vector<ExpertActivation> all_logit_experts_activation_;
 
@@ -91,6 +92,8 @@ class ClusterActivation {
     void init_activation_hbm();
     void free_activation_hbm();
     bool is_enbale_dump() const { return enable_dump_; }
+    void dumpActivationCounts(size_t dump_count, int64_t* total_count_ptr, int64_t* last_count_ptr);
+    void collect_wrapper();
 
   public:
     ClusterActivation(Tensor npu_count, int64_t max_activation_count,

@@ -69,7 +69,10 @@ def create_placement_manager(rank, world_size, num_devices_per_host, cluster_act
     """
     placement_mapping = expert_mapping.placement_mapping
 
-    rootinfo = get_hccl_root_info(rank)
+    if enable_dynamic:
+        rootinfo = get_hccl_root_info(rank)
+    else:
+        rootinfo = ""
 
     # Instantiate Placement object
     placement = omni_placement.Placement(

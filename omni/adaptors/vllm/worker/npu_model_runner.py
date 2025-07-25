@@ -537,6 +537,7 @@ class NPUModelRunner(GPUModelRunner):
                 is_prompt = False if attn_state == AscendAttentionState.DecodeOnly else True
                 global _GLOBAL_STEP
                 self.planner.place_experts()
+                self.planner.dump(0 if is_prompt else _GLOBAL_STEP)
                 if attn_state == AscendAttentionState.DecodeOnly :
                     _GLOBAL_STEP += 1
                 else :
