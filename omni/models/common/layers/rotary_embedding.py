@@ -26,7 +26,6 @@
 """Rotary Positional Embeddings."""
 from typing import Any, Dict, Optional, Tuple, Union
 import math
-from dataclasses import dataclass
 import torch_npu
 import torch
 import torch.nn as nn

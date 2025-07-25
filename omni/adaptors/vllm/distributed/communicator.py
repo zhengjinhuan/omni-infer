@@ -46,7 +46,7 @@ class NPUCommunicator(DeviceCommunicatorBase):
         else:
             return None
 
-    def reduce_scatter(self, input_: torch.Tensor) -> torch.Tensor:
+    def reduce_scatter(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         input_size = tuple(input_.size())
         output_tensor = torch.empty(
             (input_size[0] // self.world_size,) + input_size[1:],

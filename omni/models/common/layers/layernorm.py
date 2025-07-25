@@ -4,10 +4,11 @@
 """Custom normalization layers."""
 import torch
 import torch_npu
-from omni.models.common.config.model_config import model_extra_config
 from typing import Optional, Union, Any
 from vllm.model_executor.layers.layernorm import RMSNorm as RMSNormGPU
 from vllm.distributed.parallel_state import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
+from omni.models.common.config.model_config import model_extra_config
+
 
 class RMSNorm(RMSNormGPU):
     def forward(

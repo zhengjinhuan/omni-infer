@@ -174,7 +174,6 @@
       #!/bin/bash
 
       . ~/.bashrc
-      HCCL_BUFFSIZE=500
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
