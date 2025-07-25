@@ -100,6 +100,27 @@ class GroupCoordinator(GroupCoordinatorGPU):
             return input_
         return self.device_communicator.reduce_scatter(input_)
 
+    def all_reduce_async(self, input_: torch.Tensor):
+        # Bypass the function if we are using only 1 GPU.
+        if self.world_size == 1:
+            return input_, None
+
+        return self.device_communicator.all_reduce_async(input_)
+
+    def all_gather_async(self, input_: torch.Tensor, dim: int = -1):
+        world_size = self.world_size
+        # Bypass the function if we are using only 1 GPU.
+        if world_size == 1:
+            return input_
+        # assert -input_.dim() <= dim < input_.dim(), (
+        #     f"Invalid dim ({dim}) for input tensor with shape {input_.size()}")
+
+        return self.device_communicator.all_gather_async(input_, dim)
+
+    def reduce_scatter_async(self, input_: torch.Tensor) -> torch.Tensor:
+        if self.world_size == 1:
+            return input_
+        return self.device_communicator.reduce_scatter_async(input_)
 
 _NUM_COMM_GROUP = 2
 _LOCAL_COMM_LIST = None

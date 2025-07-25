@@ -36,7 +36,11 @@ def register_model():
     ModelRegistry.register_model(
         "DeepSeekMTPModelTres",
         "omni.models.deepseek.deepseek_mtp:DeepseekV3MTPTres")
- 
+
+    ModelRegistry.register_model(
+        "Qwen2ForCausalLM",
+        "omni.models.qwen.qwen2:Qwen2ForCausalLM")
+
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
         int(os.getenv("CAPTURE_MODE", default='0')) or
