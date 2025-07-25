@@ -9,6 +9,53 @@
 
 #define UUID_STR_LEN 37 /* 36 for uuid, and 1 for '\0' */
 
+typedef struct {
+    ngx_flag_t enable;
+} ngx_http_set_request_id_conf_t;
+
+/* Function declarations */
+static void *ngx_http_set_request_id_create_loc_conf(ngx_conf_t *cf);
+static char *ngx_http_set_request_id_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
+static ngx_int_t ngx_http_set_request_id_post_config(ngx_conf_t *cf);
+static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r);
+
+
+static ngx_command_t ngx_http_set_request_id_commands[] = {
+    {
+        ngx_string("set_request_id"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_set_request_id_conf_t, enable),
+        NULL
+    },
+    ngx_null_command
+};
+
+static ngx_http_module_t ngx_http_set_request_id_module_ctx = {
+    NULL,                                      /* preconfiguration */
+    ngx_http_set_request_id_post_config,       /* postconfiguration */
+    NULL,                                      /* create main configuration */
+    NULL,                                      /* init main configuration */
+    NULL,                                      /* create server configuration */
+    NULL,                                      /* merge server configuration */
+    ngx_http_set_request_id_create_loc_conf,   /* create location configuration */
+    ngx_http_set_request_id_merge_loc_conf     /* merge location configuration */
+};
+
+ngx_module_t ngx_http_set_request_id_module = {NGX_MODULE_V1,
+    &ngx_http_set_request_id_module_ctx,  // Module context
+    ngx_http_set_request_id_commands,     // Module commands
+    NGX_HTTP_MODULE,                      // Module type
+    NULL,                                 // init master
+    NULL,                                 // init module
+    NULL,                                 // init process
+    NULL,                                 // init thread
+    NULL,                                 // exit thread
+    NULL,                                 // exit process
+    NULL,                                 // exit master
+    NGX_MODULE_V1_PADDING};
+
 static void gen_uuid(unsigned char out[UUID_STR_LEN])
 {
     uuid_t uuid_data;
@@ -26,6 +73,13 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
     ngx_list_part_t *part;
     ngx_table_elt_t *header;
     ngx_uint_t i;
+    ngx_http_set_request_id_conf_t *conf;
+
+    conf = ngx_http_get_module_loc_conf(r, ngx_http_set_request_id_module);
+    
+    if (!conf->enable) {
+        return NGX_DECLINED;
+    }
 
     if (r != r->main) {
         // Skip adding a new request id for subrequests
@@ -93,6 +147,30 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
     return NGX_DECLINED;
 }
 
+static void *ngx_http_set_request_id_create_loc_conf(ngx_conf_t *cf)
+{
+    ngx_http_set_request_id_conf_t *conf;
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_set_request_id_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    conf->enable = NGX_CONF_UNSET;
+
+    return conf;
+}
+
+static char *ngx_http_set_request_id_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+{
+    ngx_http_set_request_id_conf_t *prev = parent;
+    ngx_http_set_request_id_conf_t *conf = child;
+
+    ngx_conf_merge_value(conf->enable, prev->enable, 0);
+
+    return NGX_CONF_OK;
+}
+
 static ngx_int_t ngx_http_set_request_id_post_config(ngx_conf_t *cf)
 {
     ngx_http_handler_pt *h;
@@ -107,27 +185,3 @@ static ngx_int_t ngx_http_set_request_id_post_config(ngx_conf_t *cf)
 
     return NGX_OK;
 }
-
-static ngx_http_module_t ngx_http_set_request_id_module_ctx = {
-    NULL,                                /* preconfiguration */
-    ngx_http_set_request_id_post_config, /* postconfiguration */
-    NULL,                                /* create main configuration */
-    NULL,                                /* init main configuration */
-    NULL,                                /* create server configuration */
-    NULL,                                /* merge server configuration */
-    NULL,                                /* create location configuration */
-    NULL                                 /* merge location configuration */
-};
-
-ngx_module_t ngx_http_set_request_id_module = {NGX_MODULE_V1,
-    &ngx_http_set_request_id_module_ctx,  // Module context
-    NULL,                                 // Module instructions
-    NGX_HTTP_MODULE,                      // Module type
-    NULL,                                 // init master
-    NULL,                                 // init module
-    NULL,                                 // init process
-    NULL,                                 // init thread
-    NULL,                                 // exit thread
-    NULL,                                 // exit process
-    NULL,                                 // exit master
-    NGX_MODULE_V1_PADDING};
