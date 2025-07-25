@@ -324,6 +324,15 @@ class DeepseekMoE(nn.Module):
             (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
             intermediate_size = config.moe_intermediate_size * config.n_shared_experts
 
+            if self.redundancy_shared_expert_num > 0 and OmniPlanner is not None:
+                # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
+                self.planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
+                                           rank=self.global_rank, world_size=self.ep_size,
+                                           num_experts=config.n_routed_experts,
+                                           num_redundancy_shared_expert_rank = self.redundancy_shared_expert_num)
+                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts")
+                self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
+
             self.shared_experts = ReplicatedDeepseekMLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=intermediate_size,
@@ -332,11 +341,6 @@ class DeepseekMoE(nn.Module):
                 reduce_results=False,
                 prefix=f"{prefix}.shared_experts",
             )
-            if self.redundancy_shared_expert_num > 0 and OmniPlanner is not None:
-                self.planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
-                                           rank=self.global_rank, world_size=self.ep_size - self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts")
-                self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
 
         if self.experts is not None:
             if self.quant_symbol:

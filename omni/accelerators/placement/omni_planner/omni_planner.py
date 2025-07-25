@@ -55,7 +55,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
     """
     def __init__(self, config_file: str = "/etc/omni/config.yaml", device: str = "npu",
                  rank: int = None, world_size: int = None, num_devices_per_host: int = 16,
-                 num_experts = 256):
+                 num_experts = 256, num_redundancy_shared_expert_rank=0):
         """Initialize OmniPlanner with configuration and distributed settings.
 
         Args:
@@ -74,7 +74,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             exit(1)
 
         # Initialize distributed settings with fallback
-        self._init_distributed(rank, world_size, num_devices_per_host)
+        self._init_distributed(rank, world_size, num_devices_per_host, num_redundancy_shared_expert_rank)
 
         self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
 
@@ -99,7 +99,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
         dump_dir = getattr(self.config, 'dump_dir', None)
         self.enable_dump = getattr(self.config, 'enable_dump', False) if dump_dir else False
-        if self.enable_dump:
+        if self.enable_dump and self.rank == 0:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             dump_dir = os.path.join(dump_dir,timestamp)
             os.makedirs(dump_dir, exist_ok=True)
@@ -123,7 +123,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             del self.placement_manager
             time.sleep(1)
 
-    def _init_distributed(self, rank: int = None, world_size: int = None, num_devices_per_host: int = 16) -> None:
+    def _init_distributed(self, rank: int = None, world_size: int = None, num_devices_per_host: int = 16, num_redundancy_shared_expert_rank: int = 0) -> None:
         """Initialize distributed settings with fallback to provided values.
 
         Args:
@@ -137,6 +137,13 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             self.world_size = torch.distributed.get_world_size()
         else:
             self.rank, self.world_size = rank, world_size
+
+        self.num_redundancy_shared_expert_rank = num_redundancy_shared_expert_rank
+        self.rank -= self.num_redundancy_shared_expert_rank
+        if self.rank < 0:
+            self.rank += self.world_size
+        self.hccl_comm_world_size = self.world_size
+        self.world_size -= self.num_redundancy_shared_expert_rank
 
         self.num_devices_per_host = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")  # omni_planner config file
         self.num_devices_per_host = len(self.num_devices_per_host.split(",")) if self.num_devices_per_host else num_devices_per_host
@@ -160,6 +167,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self.cluster_activation = create_cluster_activation(
             self.rank,
             self.world_size,
+            self.hccl_comm_world_size,
             self.expert_mapping.get_total_num_layers(),
             self.get_max_num_deployed_expert_per_rank(),
             self.npu_activation_count,
@@ -169,6 +177,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self.placement_manager = create_placement_manager(
             self.rank,
             self.world_size,
+            self.hccl_comm_world_size,
             self.num_devices_per_host,
             self.cluster_activation,
             self.cluster_status.expert_mapping,
@@ -317,10 +326,12 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
     def init_dram_weights(self, param_dict, first_k_dense_replace=3):
-        is_thread_required = self.enable_dynamic or self.enable_dump
-        if is_thread_required:
+        if self.enable_dynamic and not self.is_redundant_share_expert_rank():
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
+    
+    def is_redundant_share_expert_rank(self):
+        return self.rank>=self.world_size
 
     def record_activation(self, layer_idx_moe, expert_token_num, is_prefill):
         if  self.is_moe_layer(layer_idx_moe):
