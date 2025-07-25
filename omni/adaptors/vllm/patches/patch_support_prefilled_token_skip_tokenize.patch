@@ -91,7 +91,7 @@ index 2f35619ca..42d6d2659 100644
 -                    add_special_tokens=add_special_tokens,
 -                )
 +        if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
-+            engine_prompt = TokensPrompt(
++            engine_prompt = TextTokensPrompt(
 +                prompt_token_ids=request.kv_transfer_params["prompt_token_ids"])
          else:
 -            # For MistralTokenizer
