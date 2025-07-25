@@ -1,8 +1,8 @@
 diff --git a/requirements/common.txt b/requirements/common.txt
-index 80f90e600..98b613072 100644
+index 625efc3366..b2dbda5044 100644
 --- a/requirements/common.txt
 +++ b/requirements/common.txt
-@@ -1,7 +1,7 @@
+@@ -2,7 +2,7 @@ regex # Replace re for higher-performance regex matching
  cachetools
  psutil
  sentencepiece  # Required for LLaMA tokenizer.

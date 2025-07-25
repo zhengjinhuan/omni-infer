@@ -184,9 +184,9 @@ index 994350062..a6a769e2b 100644
 +                request.prompt_token_ids.extend(request.sampling_params.extra_args['kv_transfer_params']['prefilled_token'])
 +                request.append_output_token_ids(request.sampling_params.extra_args['kv_transfer_params']['prefilled_token'])
 +        
-         # due to no speculative trans from prefill node, push one manully
+         # due to no speculative trans from prefill node, push one manually
          if self.vllm_config.speculative_config is not None:
-             request.spec_token_ids.append(16426) # 16426 is "嗯" in deepseek
+             request.spec_token_ids.extend([0] * self.vllm_config.speculative_config.num_speculative_tokens)
 diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
 index 16165b52e..39a43006b 100644
 --- a/vllm/v1/engine/async_llm.py
