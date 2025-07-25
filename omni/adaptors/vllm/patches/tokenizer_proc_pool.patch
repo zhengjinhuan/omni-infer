@@ -89,7 +89,7 @@ index c73575b48..2f35619ca 100644
              self._tokenize_prompt_input_or_inputs,
              executor=self._tokenizer_executor)
  
-+        self.enable_tokenizer_proc_pool = os.getenv("TOKENIZER_PROC_POOL", False)
++        self.enable_tokenizer_proc_pool = os.getenv("TOKENIZER_PROC_POOL", "0") == "1"
 +        self.tokenizer_worker_num = max(1, int(os.getenv("TOKENIZER_WORKER_NUM", default=5)))
 +        self.process_pool_threshold = max(1, int(os.getenv("TOKENIZER_PROC_POOL_THRES", 512)))
 +        affinity_str = os.getenv("TOKENIZER_AFFINITY_CORES", 
@@ -102,10 +102,10 @@ index c73575b48..2f35619ca 100644
 +            logger.info(f"Tokenizer process pool is enabled.")
 +            logger.info(f"Tokenizer worker num is {self.tokenizer_worker_num}.")
 +            logger.info(f"Process pool threshold is {self.process_pool_threshold}.")
-+            logger.info("<<<Available (unbound) cores:", self.available_cores)
-+            if self.tokenizer_worker_num > self.available_cores:
++            logger.info(f"<<<Available (unbound) cores: {self.available_cores}")
++            if self.tokenizer_worker_num > len(self.available_cores):
 +                raise ValueError(f"tokenizer_worker_num ({self.tokenizer_worker_num}) "
-+                    "cannot exceed available_cores ({self.available_cores})")
++                    f"cannot exceed available_cores ({len(self.available_cores)})")
 +
 +            manager = Manager()
 +            core_queue = manager.Queue()

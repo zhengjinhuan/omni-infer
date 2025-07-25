@@ -1,5 +1,5 @@
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index ffb80f4db..9b2a80aac 100644
+index 4d9b53dd6..3356264ac 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
 @@ -40,8 +40,11 @@ from vllm.v1.structured_output import StructuredOutputManager
@@ -14,7 +14,7 @@ index ffb80f4db..9b2a80aac 100644
  POLLING_TIMEOUT_S = 2.5
  HANDSHAKE_TIMEOUT_MINS = 5
  
-@@ -63,6 +66,14 @@ class EngineCore:
+@@ -67,6 +70,14 @@ class EngineCore:
                      VLLM_VERSION, vllm_config)
  
          self.log_stats = log_stats
@@ -29,7 +29,7 @@ index ffb80f4db..9b2a80aac 100644
  
          # Setup Model.
          self.model_executor = executor_class(vllm_config)
-@@ -216,10 +227,13 @@ class EngineCore:
+@@ -221,10 +232,13 @@ class EngineCore:
              # Start grammar compilation asynchronously
              self.structured_output_manager.grammar_init(req)
  
@@ -47,7 +47,7 @@ index ffb80f4db..9b2a80aac 100644
  
          self.scheduler.add_request(req)
  
-@@ -252,7 +266,11 @@ class EngineCore:
+@@ -257,7 +271,11 @@ class EngineCore:
                  outputs=[],
                  scheduler_stats=self.scheduler.make_stats(),
              )
@@ -60,26 +60,13 @@ index ffb80f4db..9b2a80aac 100644
          scheduler_output.num_step = self.step_num
          for req_id, num_scheduled_token in scheduler_output.num_scheduled_tokens.items():
              self.scheduler.requests[req_id].num_computed_tokens += num_scheduled_token * (self.step_num - 1)
-@@ -510,6 +528,11 @@ class EngineCoreProc(EngineCore):
-                 args=(output_address, engine_index),
-                 daemon=True)
-             self.output_thread.start()
-+            if self.async_pull_kv:
-+                if vllm_config.parallel_config.data_parallel_rank_local < 10:
-+                    set_thread_affinity(self.output_thread, 51+vllm_config.parallel_config.data_parallel_rank_local)
-+                else:
-+                    set_thread_affinity(self.output_thread, 64+vllm_config.parallel_config.data_parallel_rank_local)
-         finally:
-             if input_socket is not None:
-                 input_socket.close(linger=0)
-@@ -708,9 +731,50 @@ class EngineCoreProc(EngineCore):
+@@ -720,9 +738,50 @@ class EngineCoreProc(EngineCore):
                  request_type == EngineCoreRequestType.ADD) else generic_decoder
              request = decoder.decode(data_frames)
  
 +            if self.async_pull_kv:
 +                if request_type == EngineCoreRequestType.ADD:
-+                    with self.pull_kv_lock:
-+                        self.try_pull_kv_fast_path(request)
++                    self.try_pull_kv_fast_path(request)
 +
              # Push to input queue for core busy loop.
              self.input_queue.put_nowait((request_type, request))
@@ -90,22 +77,23 @@ index ffb80f4db..9b2a80aac 100644
 +        if req.kv_transfer_params is not None:
 +            req.kv_transfer_params["fast_path"] = False
 +
-+            connector = self.scheduler.connector
-+            num_external_computed_tokens, load_kv_async = (
-+                    (0, False) if connector is None else
-+                    connector.get_num_new_matched_tokens(
-+                        req, 0))
++            with self.pull_kv_lock:
++                connector = self.scheduler.connector
++                num_external_computed_tokens, load_kv_async = (
++                        (0, False) if connector is None else
++                        connector.get_num_new_matched_tokens(
++                            req, 0))
 +
-+            new_computed_blocks = KVCacheBlocks.create_empty()
++                new_computed_blocks = KVCacheBlocks.create_empty()
 +
-+            new_blocks = self.scheduler.kv_cache_manager.allocate_slots(
-+                    req,
-+                    num_external_computed_tokens,
-+                    0,
-+                    new_computed_blocks,
-+                    num_lookahead_tokens=0,
-+                    delay_cache_blocks=load_kv_async,
-+                )
++                new_blocks = self.scheduler.kv_cache_manager.allocate_slots(
++                        req,
++                        num_external_computed_tokens,
++                        0,
++                        new_computed_blocks,
++                        num_lookahead_tokens=0,
++                        delay_cache_blocks=load_kv_async,
++                    )
 +            if new_blocks is None:
 +                # Let's delay to slow path.
 +                return
@@ -123,16 +111,3 @@ index ffb80f4db..9b2a80aac 100644
      def process_output_socket(self, output_path: str, engine_index: int):
          """Output socket IO thread."""
  
-@@ -893,3 +957,12 @@ class DPEngineCoreProc(EngineCoreProc):
- 
-         return ParallelConfig.has_unfinished_dp(self.dp_group,
-                                                 local_unfinished)
-+
-+
-+def set_thread_affinity(thread, cpu_id):
-+    import threading
-+    import ctypes
-+    while not hasattr(thread, "native_id"):
-+        pass
-+    tid = thread.native_id
-+    os.sched_setaffinity(tid, {cpu_id})
