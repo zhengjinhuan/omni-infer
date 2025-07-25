@@ -102,7 +102,7 @@ index c73575b48..2f35619ca 100644
 +            logger.info(f"Tokenizer process pool is enabled.")
 +            logger.info(f"Tokenizer worker num is {self.tokenizer_worker_num}.")
 +            logger.info(f"Process pool threshold is {self.process_pool_threshold}.")
-+            logger.info("<<<Available (unbound) cores:", self.available_cores)
++            logger.info(f"<<<Available (unbound) cores: {self.available_cores}")
 +            if self.tokenizer_worker_num > len(self.available_cores):
 +                raise ValueError(f"tokenizer_worker_num ({self.tokenizer_worker_num}) "
 +                    f"cannot exceed available_cores ({len(self.available_cores)})")
