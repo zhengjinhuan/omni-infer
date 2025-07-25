@@ -264,3 +264,15 @@ def all_gather_round_pipeline(input_: torch.Tensor, idx: int, node_rank: int, di
 
 def all_to_all_local(input_: torch.Tensor, idx: int) -> torch.Tensor:
     return get_local_group_from_list(idx).all_to_all(input_)
+
+def tensor_model_parallel_all_reduce_async(input_: torch.Tensor):
+    """All-reduce the input tensor across model parallel group."""
+    return get_tp_group().all_reduce_async(input_)
+
+
+def tensor_model_parallel_all_gather_async(input_: torch.Tensor, dim: int = -1):
+    return get_tp_group().all_gather_async(input_, dim)
+
+
+def tensor_model_parallel_reduce_scatter_async(input_: torch.Tensor):
+    return get_tp_group().reduce_scatter_async(input_)

@@ -79,21 +79,17 @@ class RotaryEmbedding(torch.nn.Module):
     #     output = cos * x + sin * x_new
     #     return output
 
-    def forward(self, position_ids, query, key, attn_metadata):
+    def forward(self, position_ids, query, key, cos, sin):
         """
         Args: 
             position_ids: [num_tokens, ]
             query: [num_tokens, num_heads * head_size]
             key: [num_tokens, num_heads * head_size]
         """
-        cos = torch.index_select(self.cos, dim=0, index=position_ids)  # cos.shape [num_tokens, head_size]
-        sin = torch.index_select(self.sin, dim=0, index=position_ids)
 
         # shape to bsnd
         cos = cos.unsqueeze(1).unsqueeze(1)
         sin = sin.unsqueeze(1).unsqueeze(1)
-        # cos = attn_metadata.cos.unsqueeze(1).unsqueeze(1)
-        # sin = attn_metadata.sin.unsqueeze(1).unsqueeze(1)
 
         query = query.view(query.shape[0], 1, -1, self.head_size)
         key = key.view(key.shape[0], 1, -1, self.head_size)

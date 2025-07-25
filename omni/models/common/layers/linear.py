@@ -1040,6 +1040,8 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
+        weight_data = layer.weight.data.t().contiguous()
+        layer.weight = torch.nn.Parameter(weight_data, requires_grad=False)
         # weight_data = torch_npu.npu_format_cast(layer.weight.data.t().contiguous(), 29)
         # layer.weight = torch.nn.Parameter(weight_data, requires_grad=False)
 
@@ -1050,12 +1052,11 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
               module_name: Optional[str] = "",
               x_transform: Optional[str] = None,
               is_prefill: Optional[bool] = True) -> torch.Tensor:
-        if x_transform == "AG":
-            x = tensor_model_parallel_all_gather(x, dim=0)
-        elif x_transform == "A2A":
-            # x = module_parallel_x_all_to_all(x, module_name)
-            raise NotImplementedError
-        return F.linear(x, layer.weight, bias)
+        if bias is not None:
+            # return F.linear(x, layer.weight, bias)
+            return torch.addmm(bias, x, layer.weight)
+        else:
+            return torch.matmul(x, layer.weight)
 
 class FlashCommLinearBase(torch.nn.Module):
 
@@ -1159,8 +1160,6 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         if self.tp_size > 1:
             if reduce_type == "AR":
                 output = tensor_model_parallel_all_reduce(output_parallel)
-            elif reduce_type == "RS":
-                output = tensor_model_parallel_reduce_scatter(output_parallel)
             else:
                 output = output_parallel
         else:

@@ -31,6 +31,7 @@ from torch import nn
 from transformers import Qwen2Config
 from transformers import PretrainedConfig
 
+from vllm.forward_context import get_forward_context, set_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
@@ -40,14 +41,19 @@ from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import (RowParallelFlashCommLinear, QKVParallelFlashCommLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from omni.models.common.layers.rotary_embedding_xuebao import get_rope
+from omni.models.common.layers.rotary_embedding_xuebao import get_rope, RotaryEmbedding
 from omni.models.common.layers.fused_mlp import FusedMLP
+from omni.models.common.layers.attention.attention import AscendAttentionState
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead, VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, maybe_remap_kv_scale_name)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
+
+from omni.adaptors.vllm.distributed.communication_op import (tensor_model_parallel_all_reduce_async,
+                                                             tensor_model_parallel_all_gather_async,
+                                                             tensor_model_parallel_reduce_scatter_async)
 
 from vllm.model_executor.models.interfaces import SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer, is_pp_missing_parameter,
@@ -136,14 +142,17 @@ class Qwen2Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         kv_cache: torch.Tensor,
-        attn_metadata: AttentionMetadata,
+        cos: torch.Tensor,
+        sin: torch.Tensor
     ) -> torch.Tensor:
-        # is_prefill = True if attn_metadata.prefill_metadata else False
-        is_prefill = attn_metadata is None or attn_metadata.prefill
+        attn_metadata = get_forward_context().attn_metadata
+        if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache:
+            is_prefill = True
+        else:
+            is_prefill = False
         qkv, _ = self.qkv_proj(hidden_states, is_prefill=is_prefill)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k, attn_metadata)
-        # attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
+        q, k = self.rotary_emb(positions, q, k, cos, sin)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output, reduce_type="AR")
         return output
@@ -207,7 +216,8 @@ class Qwen2DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
         kv_cache: Optional[torch.Tensor],
-        attn_metadata: Optional[AttentionMetadata]
+        cos: Optional[torch.Tensor],
+        sin: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
         if residual is None:
@@ -220,12 +230,16 @@ class Qwen2DecoderLayer(nn.Module):
             positions=positions,
             hidden_states=hidden_states,
             kv_cache=kv_cache,
-            attn_metadata=attn_metadata,
+            cos=cos,
+            sin=sin
         )
 
         # Fully Connected
-        # is_prefill = True if attn_metadata.prefill_metadata else False
-        is_prefill = attn_metadata is None or attn_metadata.prefill
+        attn_metadata = get_forward_context().attn_metadata
+        if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache:
+            is_prefill = True
+        else:
+            is_prefill = False
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         hidden_states = self.mlp(hidden_states, x_transform=None, reduce_type="AR", is_prefill=is_prefill)
@@ -269,6 +283,13 @@ class Qwen2Model(nn.Module):
         else:
             self.embed_tokens = PPMissingLayer()
 
+        base = getattr(config, "rope_theta", 1000000)
+        rotary_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        max_len = config.max_position_embeddings
+        full_cos, full_sin = RotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
+        self.register_buffer("full_cos", full_cos, persistent=False)
+        self.register_buffer("full_sin", full_sin, persistent=False)
+
         # Use the provided decoder layer type or default to Qwen2DecoderLayer
         decoder_layer_type = decoder_layer_type or Qwen2DecoderLayer
         self.start_layer, self.end_layer, self.layers = make_layers(
@@ -311,7 +332,14 @@ class Qwen2Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        hidden_states, residual = self.forward_layers(positions, hidden_states, residual, kv_caches, attn_metadata)
+        cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
+        sin = torch.index_select(self.full_sin, dim=0, index=positions)
+
+        attn_metadata = get_forward_context().attn_metadata
+        if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache:
+            hidden_states, residual = self.forward_layers_prefill_microbatch_tp8_allreduce(positions, hidden_states, residual, kv_caches, cos, sin)
+        else:
+            hidden_states, residual = self.forward_layers(positions, hidden_states, residual, kv_caches, cos, sin)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
@@ -320,8 +348,66 @@ class Qwen2Model(nn.Module):
             })
         hidden_states, _ = self.norm(hidden_states, residual, y_transform=None)
         return hidden_states
-    
-    def forward_layers(self, positions, hidden_states, residual, kv_caches, attn_metadata):
+
+    def forward_layers_prefill_microbatch_tp8_allreduce(self, positions, hidden_states, residual, kv_caches, cos, sin):
+        n_tokens = hidden_states.shape[0]
+        if n_tokens % 2 == 0:
+            split_sizes = [n_tokens // 2, n_tokens // 2]
+        else:
+            split_sizes = [n_tokens // 2, n_tokens // 2 + 1]
+        hidden_states_mb0, hidden_states_mb1 = torch.split(hidden_states, split_sizes)
+        assert residual is None
+        residual_mb0, residual_mb1 = None, None
+        cos_mb0, cos_mb1 = torch.split(cos, split_sizes)
+        sin_mb0, sin_mb1 = torch.split(sin, split_sizes)
+        hidden_states_mb0_handle, hidden_states_mb1_handle = None, None
+        for layer_idx in range(self.start_layer, self.end_layer):
+            layer = self.layers[layer_idx]
+
+            if hidden_states_mb0_handle is not None:
+                hidden_states_mb0_handle.wait()
+            hidden_states_mb0, residual_mb0 = layer.input_layernorm.forward_with_residual(hidden_states_mb0, residual_mb0)
+            qkv_mb0, _ = layer.self_attn.qkv_proj(hidden_states_mb0, is_prefill=True)
+            q_mb0, k_mb0, v_mb0 = qkv_mb0.split([layer.self_attn.q_size, layer.self_attn.kv_size, layer.self_attn.kv_size], dim=-1)
+            q_mb0, k_mb0 = layer.self_attn.rotary_emb.forward_cos_sin(q_mb0, k_mb0, cos_mb0, sin_mb0)
+
+            if hidden_states_mb1_handle is not None:
+                hidden_states_mb1_handle.wait()
+            hidden_states_mb1, residual_mb1 = layer.input_layernorm.forward_with_residual(hidden_states_mb1, residual_mb1)
+            qkv_mb1, _ = layer.self_attn.qkv_proj(hidden_states_mb1, is_prefill=True)
+            q_mb1, k_mb1, v_mb1 = qkv_mb1.split([layer.self_attn.q_size, layer.self_attn.kv_size, layer.self_attn.kv_size], dim=-1)
+            q_mb1, k_mb1 = layer.self_attn.rotary_emb.forward_cos_sin(q_mb1, k_mb1, cos_mb1, sin_mb1)
+
+            q = torch.cat([q_mb0, q_mb1])
+            k = torch.cat([k_mb0, k_mb1])
+            v = torch.cat([v_mb0, v_mb1])
+            attn_output = layer.self_attn.attn(q.contiguous(), k.contiguous(), v.contiguous())
+
+            attn_output_mb0, attn_output_mb1 = torch.split(attn_output, split_sizes)
+
+            output_mb0, _ = layer.self_attn.o_proj(attn_output_mb0, reduce_type=None)
+            hidden_states_mb0, hidden_states_mb0_handle = tensor_model_parallel_all_reduce_async(output_mb0)
+
+            output_mb1, _ = layer.self_attn.o_proj(attn_output_mb1, reduce_type=None)
+            hidden_states_mb1, hidden_states_mb1_handle = tensor_model_parallel_all_reduce_async(output_mb1)
+
+            hidden_states_mb0_handle.wait()
+            hidden_states_mb0, residual_mb0 = layer.post_attention_layernorm(hidden_states_mb0, residual_mb0)
+            hidden_states_mb0 = layer.mlp(hidden_states_mb0, x_transform=None, reduce_type=None, is_prefill=True)
+            hidden_states_mb0, hidden_states_mb0_handle = tensor_model_parallel_all_reduce_async(hidden_states_mb0)
+
+            hidden_states_mb1_handle.wait()
+            hidden_states_mb1, residual_mb1 = layer.post_attention_layernorm(hidden_states_mb1, residual_mb1)
+            hidden_states_mb1 = layer.mlp(hidden_states_mb1, x_transform=None, reduce_type=None, is_prefill=True)
+            hidden_states_mb1, hidden_states_mb1_handle = tensor_model_parallel_all_reduce_async(hidden_states_mb1)
+
+        hidden_states_mb0_handle.wait()
+        hidden_states_mb1_handle.wait()
+        hidden_states = torch.cat([hidden_states_mb0, hidden_states_mb1])
+        residual = torch.cat([residual_mb0, residual_mb1])
+        return hidden_states, residual
+
+    def forward_layers(self, positions, hidden_states, residual, kv_caches, cos, sin):
         for layer_idx in range(self.start_layer, self.end_layer):
             layer = self.layers[layer_idx]
             hidden_states, residual = layer(
@@ -329,7 +415,7 @@ class Qwen2Model(nn.Module):
                 hidden_states,
                 residual,
                 kv_caches[layer_idx] if kv_caches is not None else None,
-                attn_metadata
+                cos, sin
             )
         return hidden_states, residual
 
