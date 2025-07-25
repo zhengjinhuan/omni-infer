@@ -41,7 +41,7 @@ from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import (RowParallelFlashCommLinear, QKVParallelFlashCommLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from omni.models.common.layers.rotary_embedding_xuebao import get_rope, RotaryEmbedding
+from omni.models.common.layers.rotary_embedding_extend import get_rope, RotaryEmbedding
 from omni.models.common.layers.fused_mlp import FusedMLP
 from omni.models.common.layers.attention.attention import AscendAttentionState
 from vllm.model_executor.layers.vocab_parallel_embedding import (
