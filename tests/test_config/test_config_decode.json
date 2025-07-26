@@ -43,7 +43,7 @@
         "fused_experts_v2": false,
         "gmm_nz": true,
         "moe_dispatch_combine": true,
-        "use_omni_placement": true,
+        "use_omni_placement": false,
         "omni_placement_config_path": "../../tests/test_config/config_d.yaml",
         "enable_fusion_spec": false,
         "enable_alltoall": false,
