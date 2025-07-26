@@ -431,7 +431,7 @@ class DeepseekMoE(nn.Module):
                     "x_active_mask": mc2_mask,
                 })
 
-                output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
+                output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
                 expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
                 group_list = expert_token_nums.to(torch.int64)
@@ -512,7 +512,9 @@ class DeepseekMoE(nn.Module):
                     torch_npu.npu_prefetch(next_attention_weights['W_UK'], attn_prefetch_flag, attn_prefetch_size)
 
             with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
-                hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
+                expand_idx = kwargs.pop('expand_idx', None)
+                kwargs['assist_info_for_combine'] = expand_idx
+                hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
 
                 if shared_output is not None:
                     final_hidden_states = (hidden_states_route, shared_output)
