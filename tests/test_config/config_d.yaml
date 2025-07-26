@@ -22,7 +22,7 @@ pattern_path: "../../omni/accelerators/placement/patterns/base_patterns/DSV3_bas
 #define max_layer_num as a constant 58 (for deepseek moe layer num 58)
 max_moe_layer_num: 58
 
-enable_dynamic: True
+enable_dynamic: False
 max_redundant_per_expert: 1 # 10
 max_redundant_per_rank: 0 # 1
 
