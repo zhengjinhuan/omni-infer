@@ -39,7 +39,7 @@ class GlobalRankTable:
 
         self.global_decode_server_ip_list = [group.split(',')
                 for group in os.getenv("GLOBAL_DECODE_SERVER_IP_LIST").split(';')]
-        self.local_decode_server_ip_list = os.getenv("GLOBAL_DECODE_SERVER_IP_LIST").split(',')
+        self.local_decode_server_ip_list = os.getenv("LOCAL_DECODE_SERVER_IP_LIST").split(',')
 
         if len(self.global_decode_server_ip_list) != self.decode_pod_num:
             glo_d_ser_ip_num = len(self.global_decode_server_ip_list)
