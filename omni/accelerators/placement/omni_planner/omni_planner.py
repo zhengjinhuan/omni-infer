@@ -76,6 +76,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # Initialize distributed settings with fallback
         self._init_distributed(rank, world_size, num_devices_per_host, num_redundancy_shared_expert_rank)
 
+        self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
+
 
         # Load and validate placement pattern
         self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts)
@@ -89,7 +91,6 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # self.optimizers = _create_optimizers(self.config.Optimizers, self.cluster_status)
         # self.optimizer = self.optimizers[0]
         
-        self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
         dump_dir = getattr(self.config, 'dump_dir', None)
         self.enable_dump = getattr(self.config, 'enable_dump', False) if dump_dir else False
 
