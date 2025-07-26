@@ -100,7 +100,10 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         dump_dir = getattr(self.config, 'dump_dir', None)
         self.enable_dump = getattr(self.config, 'enable_dump', False) if dump_dir else False
         if self.enable_dump:
-            self.cluster_activation.start_thread()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dump_dir = os.path.join(dump_dir,timestamp)
+            os.makedirs(dump_dir, exist_ok=True)
+            self.cluster_activation.setDumpDir(dump_dir)
 
         # redundant_enable_per_layer, True is redundant layer, False is Origin Layer
         self.redundant_enable_per_layer = self.expert_mapping.get_redundant_enable_per_layer()
@@ -153,7 +156,6 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             dtype=torch.int64
         )
         self.max_activation_count = int(1e16)
-        torch.npu.synchronize()
 
         self.cluster_activation = create_cluster_activation(
             self.rank,
@@ -177,7 +179,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         return layer_idx_moe < self.max_moe_layer_num
     
     def start_dynamic_optimize_expert_load_balance(self):
-        is_thread_required = self.enable_dynamic
+        is_thread_required = self.enable_dynamic or self.enable_dump
         if is_thread_required:
             self.placement_manager.start_thread()
 
@@ -315,7 +317,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
     def init_dram_weights(self, param_dict, first_k_dense_replace=3):
-        is_thread_required = self.enable_dynamic
+        is_thread_required = self.enable_dynamic or self.enable_dump
         if is_thread_required:
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
@@ -327,39 +329,6 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             else:
                 with tng.scope.npu_stream_switch('21'):
                     self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
-
-    def dump(self, step):
-        if not self.enable_dump:
-            return
-        dump_dir = getattr(self.config, 'dump_dir', None)
-        if dump_dir is None:
-            raise RuntimeError("dump_dir must not be None, Pls Set dump_dir")
-
-        if step == 0:
-            self.cluster_activation.stopDump()
-            if not hasattr(self, "prefill_count"):
-                self.prefill_count  = 0
-            if not hasattr(self, "last_npu_activation_count"):
-                self.last_npu_activation_count = torch.zeros_like(self.npu_activation_count)
-
-        if step == 0 or step == 1:
-            self.prefill_count  += 1
-            prefill_dump_dir = os.path.join(dump_dir, "prefill")
-            os.makedirs(prefill_dump_dir, exist_ok=True)
-            file_path = os.path.join(prefill_dump_dir, f"activation_counts_recordstep_{self.prefill_count}_rank_{self.rank}.txt")
-            npu_activation_count = self.npu_activation_count-self.last_npu_activation_count
-            # write dump file for prefill
-            with open(file_path, 'w') as f:
-                for row in npu_activation_count:
-                    row_str = '\t'.join(str(x.item()) for x in row)
-                    f.write(row_str + '\n')
-
-        elif step >= 32:
-            decoder_dump_dir = os.path.join(dump_dir, "decoder")
-            os.makedirs(decoder_dump_dir, exist_ok=True)
-            self.cluster_activation.setDumpDir(decoder_dump_dir)
-
-        self.last_npu_activation_count = self.npu_activation_count.clone()
 
 # Example usage
 if __name__ == "__main__":
