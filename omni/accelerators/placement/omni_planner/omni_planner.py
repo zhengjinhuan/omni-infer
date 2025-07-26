@@ -95,8 +95,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self.enable_dump = getattr(self.config, 'enable_dump', False) if dump_dir else False
 
         # Initialize placement manager
-        if self.enable_dynamic or self.enable_dump:
-            self._init_placement_manager()  
+        self._init_placement_manager()  
 
         # Get selector
         self.selector = self.expert_mapping.get_selector()
@@ -175,16 +174,16 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             self.npu_activation_count,
             self.max_activation_count
         )
-
-        self.placement_manager = create_placement_manager(
-            self.rank,
-            self.world_size,
-            self.hccl_comm_world_size,
-            self.num_devices_per_host,
-            self.cluster_activation,
-            self.cluster_status.expert_mapping,
-            self.enable_dynamic
-        )
+        if self.enable_dynamic or self.enable_dump:
+            self.placement_manager = create_placement_manager(
+                self.rank,
+                self.world_size,
+                self.hccl_comm_world_size,
+                self.num_devices_per_host,
+                self.cluster_activation,
+                self.cluster_status.expert_mapping,
+                self.enable_dynamic
+            )
 
     def is_moe_layer(self, layer_idx_moe):
         return layer_idx_moe < self.max_moe_layer_num
