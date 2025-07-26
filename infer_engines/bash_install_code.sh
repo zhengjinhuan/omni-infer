@@ -21,3 +21,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/chunked_prefill_disable.patch
 git apply --whitespace=nowarn $PATCH_ROOT/multi_step.patch
 git apply --whitespace=nowarn $PATCH_ROOT/multiple_mtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/freeze_numpy.patch
+git apply --whitespace=nowarn $PATCH_ROOT/npu_ray_adaptor.patch

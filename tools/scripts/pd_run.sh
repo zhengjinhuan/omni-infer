@@ -392,18 +392,18 @@ common_operations() {
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
-    --enable-mtp \
     --extra-args "$EXTRA_ARGS"
 }
 
 if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
   if [ "$IP" = "$HOST_IP" ]; then
     export RAY_USAGE_STATS_ENABLED=0
+    ray stop
     ray start --head --num-gpus=16
     sleep 10s
     common_operations
   else
-    sleep 5s
+    ray stop
     command="ray start --address='$HOST_IP:6379' --num-gpus=16 &> /dev/null"
     echo $command
     cost_time=0
