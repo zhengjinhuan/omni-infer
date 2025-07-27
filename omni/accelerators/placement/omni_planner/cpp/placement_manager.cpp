@@ -255,7 +255,7 @@ void Placement::placement_manager(aclrtContext currentContext) {
     if (enable_dynamic_ && !is_redundant_share_expert_rank()) {
         while (!moe_weight_->isHbmInitialized()) {
             std::this_thread::sleep_for(
-                std::chrono::seconds(1)); // Run every 1 mins
+                std::chrono::seconds(1)); // Run every 1 seconds
         }
         size_t expert_size =
             moe_weight_->get_expert_size(); // 根据QueueSize 预分配 接受buffs

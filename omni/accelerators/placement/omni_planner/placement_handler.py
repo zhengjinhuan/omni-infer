@@ -134,7 +134,7 @@ def do_placement_optimizer(placement_manager, layer_id: int) :
     omni_placement.do_placement_optimizer(placement_manager, layer_id)
 
 def get_hccl_root_info(rank, src_rank_offset=0) :
-    time.sleep(5)
+    torch.distributed.barrier() # Avoid other ranks accessing dist.backend during warmup processing on this rank.
     distribution_warmup() # must be warmup before get_hccl_root_info
     if rank == 0:
         root_info = omni_placement.get_pd_rootinfo()

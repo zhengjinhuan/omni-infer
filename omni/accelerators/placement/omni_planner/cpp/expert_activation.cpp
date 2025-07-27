@@ -42,8 +42,40 @@ ClusterActivation::ClusterActivation(
       num_deploy_experts_per_rank_(num_deploy_experts_per_rank),
       activation_window_size_(activation_window_size), world_size_(world_size),
       hccl_comm_world_size_(hccl_comm_world_size), rank_(rank) {
+    // Validate max_activation_count
+    if (max_activation_count <= 0) {
+        throw std::invalid_argument("max_activation_count must be positive");
+    }
+    // Validate num_layers
+    if (num_layers == 0) {
+        throw std::invalid_argument("num_layers must be greater than zero");
+    }
+    // Validate num_deploy_experts_per_rank
+    if (num_deploy_experts_per_rank == 0) {
+        throw std::invalid_argument(
+            "num_deploy_experts_per_rank must be greater than zero");
+    }
+    // Validate world_size
+    if (world_size == 0) {
+        throw std::invalid_argument("world_size must be greater than zero");
+    }
+
+    // Validate hccl_comm_world_size
+    if (hccl_comm_world_size == 0) {
+        throw std::invalid_argument(
+            "hccl_comm_world_size must be greater than zero");
+    }
+
+    // Additional consistency checks
+    if (hccl_comm_world_size < world_size) {
+        throw std::invalid_argument(
+            "hccl_comm_world_size cannot be less than world_size");
+    }
+
     if (npu_count_.get_data_ptr() == nullptr) {
-        throw std::invalid_argument("Current Tensor data_ptr() is nullptr!");
+        throw std::invalid_argument(
+            "Current Tensor npu_count_'s HBM address is nullptr, which may not "
+            "be initialized.");
     }
     // 约束Tensor的 element_size 为 int
     if (npu_count_.get_element_size() != sizeof(int64_t)) {
