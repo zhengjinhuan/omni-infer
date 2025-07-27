@@ -23,7 +23,13 @@ from .kv_cache_manager import (
 )
 from .pd import OmniBiGroupDataDistManager
 from .sched import _connector_finished, _update_waiting_for_remote_kv
-from .utils import compute_omni_attn_metadata
+from .utils import compute_omni_attn_metadata, to_bool_or_raise
+
+
+def check_omni_attn_cmd_arg(additional_config: dict) -> bool:
+    if additional_config is None or "enable_omni_attn" not in additional_config:
+        return False
+    return to_bool_or_raise(additional_config["enable_omni_attn"])
 
 
 def apply_omni_attn_patch(enable=False, is_kv_consumer=True, config=None):
@@ -75,4 +81,5 @@ def apply_omni_attn_patch(enable=False, is_kv_consumer=True, config=None):
 
 __all__ = [
     "apply_omni_attn_patch",
+    "check_omni_attn_cmd_arg",
 ]

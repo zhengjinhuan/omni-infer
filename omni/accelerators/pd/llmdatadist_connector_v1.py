@@ -239,8 +239,11 @@ class PrefillConnectorWorker:
             self.receive_req_list = []
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True)
             self.thread.start()
-        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
-        if ENABLED:
+        
+        # check whether omni attention is enabled
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+        use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+        if use_omni_attn_mgr:
             manager_cls = OmniBiGroupDataDistManager
             logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
         else:
@@ -367,8 +370,9 @@ class DecodeConnectorWorker:
     """Worker implementation for datadist."""
 
     def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id: str):
-        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
-        if ENABLED:
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+        use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+        if use_omni_attn_mgr:
             manager_cls = OmniBiGroupDataDistManager
             logger.warning(f"DecodeConnector is using Omni datadist manager for KV transfer.")
         else:
