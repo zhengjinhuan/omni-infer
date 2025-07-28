@@ -32,7 +32,7 @@ from vllm.model_executor.parameter import (BasevLLMParameter,
                                            PerTensorScaleParameter,
                                            RowvLLMParameter)
 from vllm.model_executor.utils import set_weight_attrs
-from vllm.model_executor.layers.linear import LinearMethodBase
+from vllm.model_executor.layers.linear import LinearMethodBase, UnquantizedLinearMethod
 
 from vllm.distributed import (
     get_tensor_model_parallel_world_size,
@@ -57,6 +57,13 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_npu_device_count,
     GroupCoordinator
 )
+
+class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
+
+    def process_weights_after_loading(self, layer):
+        weight = layer.weight
+        weight.data = torch_npu.npu_format_cast(weight.data, 29)
+        layer.weight = Parameter(weight, requires_grad=False)
 
 class AscendMergedColumnParallelLinear(LinearBase):
     def __init__(self,
