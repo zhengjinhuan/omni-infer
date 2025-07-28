@@ -35,6 +35,7 @@ torch._logging.set_logs(recompiles=True)
 # vllm adaptor
 from vllm.platforms import current_platform
 from vllm.config import CacheConfig, QuantizationConfig, VllmConfig
+from vllm.compilation.decorators import support_torch_compile
 from vllm.attention import Attention, AttentionMetadata
 from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
@@ -1308,17 +1309,16 @@ class DeepseekDecoderLayer(nn.Module):
         return gathered_tensors, start_index, end_index
 
 
-# @support_torch_compile
+@support_torch_compile
 class DeepseekV3Model(nn.Module):
     fall_back_to_pt_during_load = False
 
-    def __init__(self,
-                 config: PretrainedConfig,
-                 cache_config: Optional[CacheConfig] = None,
-                 quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = "",
-                 ):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
+
+        config = vllm_config.model_config.hf_config
+        cache_config = vllm_config.cache_config
+        quant_config = vllm_config.quant_config
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -1419,6 +1419,23 @@ class DeepseekV3Model(nn.Module):
 
         return hidden_states
 
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata_index = 4
+
+        if len(args) < attn_metadata_index:
+           return True
+
+        attn_metadata = args[attn_metadata_index-1]
+        if not attn_metadata:
+            return True
+
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.layers[self.start_layer].layer_name]
+
+        if attn_metadata.prefill:
+            return True
+
+        return False
 
 class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
@@ -1433,10 +1450,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
-        self.model = DeepseekV3Model(self.config,
-                                     vllm_config.cache_config,
-                                     self.quant_config,
-                                     prefix="model")
+        self.model = DeepseekV3Model(vllm_config=vllm_config, prefix="model")
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
