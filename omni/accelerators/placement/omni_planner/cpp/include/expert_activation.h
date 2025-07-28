@@ -62,6 +62,7 @@ class ClusterActivation {
     size_t num_deploy_experts_per_rank_;
     int activation_window_size_;
     size_t world_size_;
+    size_t hccl_comm_world_size_;
     size_t rank_;
     void *total_count_ptr_;
 
@@ -72,7 +73,6 @@ class ClusterActivation {
     Tensor *expert_activation_counts_ = nullptr; // activation all rank reduced
     void *deployed_experts_counts_host_;
     void *last_count_ptr_;
-    void *last_count_ptr_this_rank_;
     void *delta_experts_counts_;
     std::vector<ExpertActivation> all_logit_experts_activation_;
 
@@ -92,14 +92,12 @@ class ClusterActivation {
     void init_activation_hbm();
     void free_activation_hbm();
     bool is_enbale_dump() const { return enable_dump_; }
-    void dumpActivationCounts(size_t dump_count, int64_t* total_count_ptr, int64_t* last_count_ptr);
-    void collect_wrapper();
 
   public:
     ClusterActivation(Tensor npu_count, int64_t max_activation_count,
                       size_t num_layers, size_t num_deploy_experts_per_rank,
                       int activation_window_size, size_t world_size,
-                      size_t rank);
+                      size_t hccl_comm_world_size, size_t rank);
     ~ClusterActivation();
     int64_t getLayerActivationCount(size_t layer_id = 0);
     int64_t getClusterTotalActivationCount(size_t layer_idx,
@@ -123,6 +121,7 @@ class ClusterActivation {
     }
     size_t get_rank() const { return rank_; }
     size_t get_world_size() const { return world_size_; }
+    size_t get_hccl_comm_world_size() const { return hccl_comm_world_size_; }
     void set_params(size_t num_experts);
     int64_t getLogitExpertShiftActivateion(int32_t layer_id, int32_t expert_id,
                                            int this_expert_deployed_num);

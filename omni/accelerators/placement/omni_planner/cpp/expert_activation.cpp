@@ -33,19 +33,49 @@ void ClusterActivation::setDumpDir(const std::string &dump_dir) {
     }
 }
 
-ClusterActivation::ClusterActivation(Tensor npu_count,
-                                     int64_t max_activation_count,
-                                     size_t num_layers,
-                                     size_t num_deploy_experts_per_rank,
-                                     int activation_window_size,
-                                     size_t world_size, size_t rank)
+ClusterActivation::ClusterActivation(
+    Tensor npu_count, int64_t max_activation_count, size_t num_layers,
+    size_t num_deploy_experts_per_rank, int activation_window_size,
+    size_t world_size, size_t hccl_comm_world_size, size_t rank)
     : npu_count_(npu_count), max_activation_count_(max_activation_count),
       num_layers_(num_layers),
       num_deploy_experts_per_rank_(num_deploy_experts_per_rank),
       activation_window_size_(activation_window_size), world_size_(world_size),
-      rank_(rank) {
+      hccl_comm_world_size_(hccl_comm_world_size), rank_(rank) {
+    // Validate max_activation_count
+    if (max_activation_count <= 0) {
+        throw std::invalid_argument("max_activation_count must be positive");
+    }
+    // Validate num_layers
+    if (num_layers == 0) {
+        throw std::invalid_argument("num_layers must be greater than zero");
+    }
+    // Validate num_deploy_experts_per_rank
+    if (num_deploy_experts_per_rank == 0) {
+        throw std::invalid_argument(
+            "num_deploy_experts_per_rank must be greater than zero");
+    }
+    // Validate world_size
+    if (world_size == 0) {
+        throw std::invalid_argument("world_size must be greater than zero");
+    }
+
+    // Validate hccl_comm_world_size
+    if (hccl_comm_world_size == 0) {
+        throw std::invalid_argument(
+            "hccl_comm_world_size must be greater than zero");
+    }
+
+    // Additional consistency checks
+    if (hccl_comm_world_size < world_size) {
+        throw std::invalid_argument(
+            "hccl_comm_world_size cannot be less than world_size");
+    }
+
     if (npu_count_.get_data_ptr() == nullptr) {
-        throw std::invalid_argument("Current Tensor data_ptr() is nullptr!");
+        throw std::invalid_argument(
+            "Current Tensor npu_count_'s HBM address is nullptr, which may not "
+            "be initialized.");
     }
     // 约束Tensor的 element_size 为 int
     if (npu_count_.get_element_size() != sizeof(int64_t)) {
@@ -55,10 +85,11 @@ ClusterActivation::ClusterActivation(Tensor npu_count,
             ", while only support element size: " +
             std::to_string(sizeof(int64_t)) + " now");
     }
-    if (get_rank() >= get_world_size()) {
+    if (get_rank() >= get_hccl_comm_world_size()) {
         throw std::runtime_error(
             "Current Rank is: " + std::to_string(get_rank()) +
-            " Current world_size is :" + std::to_string(get_world_size()));
+            " Current world_size is :" +
+            std::to_string(get_hccl_comm_world_size()));
     }
 
     // Since local tokens global experts -> glocal tokens local experts,
@@ -82,14 +113,14 @@ ClusterActivation::ClusterActivation(Tensor npu_count,
     total_count_ptr_ = malloc(total_size);
     memset(total_count_ptr_, 0, total_size);
 
-    last_count_ptr_this_rank_ = malloc(total_size);
-    memset(last_count_ptr_this_rank_, 0, total_size);
-
     thread_state_ = ThreadState::INIT;
+
+    // 启动线程监听并更新专家激活信息
+    // start_thread();  //合并到placement_manager
 }
 
 ClusterActivation::~ClusterActivation() {
-    stop_thread(); // 析构时安全关闭线程
+    // stop_thread(); // 析构时安全关闭线程
     if (act_shm_ptr_) {
         munmap(act_shm_ptr_, act_shm_size_);
         shm_unlink(act_shm_name_.c_str());
@@ -100,7 +131,6 @@ ClusterActivation::~ClusterActivation() {
     }
     free(total_count_ptr_);
     free(last_count_ptr_);
-    free(last_count_ptr_this_rank_);
     free(deployed_experts_counts_host_);
     free(delta_experts_counts_);
 }
@@ -135,7 +165,8 @@ void ClusterActivation::init_activation_hbm() {
 
     num_deploy_experts_ = world_size_ * num_deploy_experts_per_rank_;
     void *data_ptr;
-    size_t length = num_layers_ * num_deploy_experts_;
+    size_t length =
+        num_layers_ * get_hccl_comm_world_size() * num_deploy_experts_per_rank_;
     size_t total_size = length * sizeof(int64_t);
     ACLCHECK(aclrtMalloc(&data_ptr, total_size, ACL_MEM_MALLOC_HUGE_FIRST));
     expert_activation_counts_ =
@@ -153,9 +184,9 @@ void ClusterActivation::init_activation_hbm() {
 }
 
 void ClusterActivation::start_thread() {
+    // TODO: 两个版本后废弃
     assert(thread_state_ == ThreadState::INIT);
     thread_state_ = ThreadState::RUNNING;
-    thread_ = std::thread(&ClusterActivation::collect_wrapper, this);
 }
 
 void ClusterActivation::stop_thread() {
@@ -163,77 +194,6 @@ void ClusterActivation::stop_thread() {
     if (thread_.joinable()) {
         thread_.join();
     }
-}
-
-void ClusterActivation::dumpActivationCounts(size_t dump_count, int64_t* total_count_ptr, int64_t* last_count_ptr) {
-    if (dump_dir_.empty()) {
-        throw std::runtime_error("Dump directory not set, set dump_dir first.");
-        return;
-    }
-
-    std::string filename = dump_dir_ + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_"+std::to_string(get_rank())+".txt";
-    std::ofstream outFile(filename);
-    if (!outFile.is_open()) {
-        throw std::runtime_error("Failed to open file for writing: " + filename);
-        return;
-    }
-
-    std::ostringstream oss;
-    for (size_t i = 0; i < num_layers_; ++i) {
-        for (size_t j = 0; j < get_num_deploy_experts_per_rank(); ++j) {
-            size_t index = i * get_num_deploy_experts_per_rank() + j;
-            int64_t countDiff = total_count_ptr[index] - last_count_ptr[index];
-            oss << countDiff << "\t";
-        }
-        oss << std::endl;
-    }
-
-    outFile << oss.str();
-    outFile.close();
-}
-
-void ClusterActivation::collect_wrapper() {
-    aclInit(NULL); // init ACL
-    aclrtContext context;
-    aclrtCreateContext(&context, 0);
-    aclrtSetCurrentContext(context);
-
-    size_t dump_count = 0;
-    while(thread_state_ == ThreadState::RUNNING) {
-        aclError ret = npu_count_.to_host(total_count_ptr_);
-        if (ret != ACL_ERROR_NONE) {
-            throw std::runtime_error("aclrtMemcpy failed, error code: " + std::to_string(ret));
-        }
-        int64_t* total_count_ptr = static_cast<int64_t*>(total_count_ptr_);
-        int64_t* last_count_ptr = static_cast<int64_t*>(last_count_ptr_this_rank_);
-
-        if (is_enbale_dump()){
-            dump_count += 1;
-            dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
-        }
-
-        for (size_t layer = 0; layer < get_num_layers(); ++layer) {
-            for (size_t expert = 0; expert < get_num_deploy_experts_per_rank(); ++expert) {
-                size_t idx = layer * get_num_deploy_experts_per_rank() + expert;
-                int64_t count = total_count_ptr[idx] - last_count_ptr[idx];
-                if (count > 0) {
-                    last_count_ptr[idx] = total_count_ptr[idx];
-                } else if (count < 0) {
-                    throw std::runtime_error("npu count value is less than last time value: " +
-                        std::to_string(total_count_ptr[idx]) + "/ " + 
-                        std::to_string(last_count_ptr[idx]) + " on layer: " +
-                        std::to_string(layer) + "/" +
-                        std::to_string(get_num_layers()) + " local_deploy expert idx: " + 
-                        std::to_string(expert) + "/" +
-                        std::to_string(get_num_deploy_experts_per_rank()) + " global index is: " + 
-                        std::to_string(idx) + " rank: " + 
-                        std::to_string(rank_));
-                }
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(5)); // Run every 5s
-    }
-    thread_state_ = ThreadState::STOPPED;
 }
 
 void ClusterActivation::dumpActivationCountsPerRank(size_t dump_count,

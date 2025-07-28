@@ -28,6 +28,7 @@ class Placement {
     MoEWeights *moe_weight_;
     int rank_;       // global device id
     int world_size_; // global device number
+    int hccl_comm_world_size_;
     int num_devices_per_host_;
     ClusterActivation *activations_;
     PlacementMapping *mapping_;
@@ -65,8 +66,8 @@ class Placement {
     mutable size_t dump_count_ = 0;
     void dump_count_addone() const { dump_count_ = dump_count_ + 1; }
 
-    Placement(int rank, int world_size, int num_devices_per_host,
-              ClusterActivation *activation,
+    Placement(int rank, int world_size, int hccl_comm_world_size,
+              int num_devices_per_host, ClusterActivation *activation,
               PlacementMapping *placement_mapping, char *root_info,
               bool enable_dynamic);
 
@@ -112,6 +113,7 @@ class Placement {
         return num_deploy_experts_per_rank_;
     }
     int get_num_devices_per_host() const { return num_devices_per_host_; }
+    bool is_redundant_share_expert_rank() const { return rank_ >= world_size_; }
 
     std::thread &get_worker_thread() {
         return worker_thread_;

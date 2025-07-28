@@ -55,7 +55,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
     """
     def __init__(self, config_file: str = "/etc/omni/config.yaml", device: str = "npu",
                  rank: int = None, world_size: int = None, num_devices_per_host: int = 16,
-                 num_experts = 256):
+                 num_experts = 256, num_redundancy_shared_expert_rank=0):
         """Initialize OmniPlanner with configuration and distributed settings.
 
         Args:
@@ -74,9 +74,10 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             exit(1)
 
         # Initialize distributed settings with fallback
-        self._init_distributed(rank, world_size, num_devices_per_host)
+        self._init_distributed(rank, world_size, num_devices_per_host, num_redundancy_shared_expert_rank)
 
         self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
+
 
         # Load and validate placement pattern
         self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts)
@@ -90,6 +91,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # self.optimizers = _create_optimizers(self.config.Optimizers, self.cluster_status)
         # self.optimizer = self.optimizers[0]
         
+        dump_dir = getattr(self.config, 'dump_dir', None)
+        self.enable_dump = getattr(self.config, 'enable_dump', False) if dump_dir else False
 
         # Initialize placement manager
         self._init_placement_manager()  
@@ -97,10 +100,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # Get selector
         self.selector = self.expert_mapping.get_selector()
 
-        dump_dir = getattr(self.config, 'dump_dir', None)
-        self.enable_dump = getattr(self.config, 'enable_dump', False) if dump_dir else False
-        if self.enable_dump:
-            self.cluster_activation.start_thread()
+        if self.enable_dump and self.rank == 0:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dump_dir = os.path.join(dump_dir,timestamp)
+            os.makedirs(dump_dir, exist_ok=True)
+            self.cluster_activation.setDumpDir(dump_dir)
 
         # redundant_enable_per_layer, True is redundant layer, False is Origin Layer
         self.redundant_enable_per_layer = self.expert_mapping.get_redundant_enable_per_layer()
@@ -120,7 +124,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             del self.placement_manager
             time.sleep(1)
 
-    def _init_distributed(self, rank: int = None, world_size: int = None, num_devices_per_host: int = 16) -> None:
+    def _init_distributed(self, rank: int = None, world_size: int = None, num_devices_per_host: int = 16, num_redundancy_shared_expert_rank: int = 0) -> None:
         """Initialize distributed settings with fallback to provided values.
 
         Args:
@@ -134,6 +138,13 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             self.world_size = torch.distributed.get_world_size()
         else:
             self.rank, self.world_size = rank, world_size
+
+        self.num_redundancy_shared_expert_rank = num_redundancy_shared_expert_rank
+        self.rank -= self.num_redundancy_shared_expert_rank
+        if self.rank < 0:
+            self.rank += self.world_size
+        self.hccl_comm_world_size = self.world_size
+        self.world_size -= self.num_redundancy_shared_expert_rank
 
         self.num_devices_per_host = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")  # omni_planner config file
         self.num_devices_per_host = len(self.num_devices_per_host.split(",")) if self.num_devices_per_host else num_devices_per_host
@@ -153,31 +164,32 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             dtype=torch.int64
         )
         self.max_activation_count = int(1e16)
-        torch.npu.synchronize()
 
         self.cluster_activation = create_cluster_activation(
             self.rank,
             self.world_size,
+            self.hccl_comm_world_size,
             self.expert_mapping.get_total_num_layers(),
             self.get_max_num_deployed_expert_per_rank(),
             self.npu_activation_count,
             self.max_activation_count
         )
-
-        self.placement_manager = create_placement_manager(
-            self.rank,
-            self.world_size,
-            self.num_devices_per_host,
-            self.cluster_activation,
-            self.cluster_status.expert_mapping,
-            self.enable_dynamic
-        )
+        if self.enable_dynamic or self.enable_dump:
+            self.placement_manager = create_placement_manager(
+                self.rank,
+                self.world_size,
+                self.hccl_comm_world_size,
+                self.num_devices_per_host,
+                self.cluster_activation,
+                self.cluster_status.expert_mapping,
+                self.enable_dynamic
+            )
 
     def is_moe_layer(self, layer_idx_moe):
         return layer_idx_moe < self.max_moe_layer_num
     
     def start_dynamic_optimize_expert_load_balance(self):
-        is_thread_required = self.enable_dynamic
+        is_thread_required = self.enable_dynamic or self.enable_dump
         if is_thread_required:
             self.placement_manager.start_thread()
 
@@ -315,10 +327,12 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
     def init_dram_weights(self, param_dict, first_k_dense_replace=3):
-        is_thread_required = self.enable_dynamic
-        if is_thread_required:
+        if self.enable_dynamic and not self.is_redundant_share_expert_rank():
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
+    
+    def is_redundant_share_expert_rank(self):
+        return self.rank>=self.world_size
 
     def record_activation(self, layer_idx_moe, expert_token_num, is_prefill):
         if  self.is_moe_layer(layer_idx_moe):
@@ -327,39 +341,6 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             else:
                 with tng.scope.npu_stream_switch('21'):
                     self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
-
-    def dump(self, step):
-        if not self.enable_dump:
-            return
-        dump_dir = getattr(self.config, 'dump_dir', None)
-        if dump_dir is None:
-            raise RuntimeError("dump_dir must not be None, Pls Set dump_dir")
-
-        if step == 0:
-            self.cluster_activation.stopDump()
-            if not hasattr(self, "prefill_count"):
-                self.prefill_count  = 0
-            if not hasattr(self, "last_npu_activation_count"):
-                self.last_npu_activation_count = torch.zeros_like(self.npu_activation_count)
-
-        if step == 0 or step == 1:
-            self.prefill_count  += 1
-            prefill_dump_dir = os.path.join(dump_dir, "prefill")
-            os.makedirs(prefill_dump_dir, exist_ok=True)
-            file_path = os.path.join(prefill_dump_dir, f"activation_counts_recordstep_{self.prefill_count}_rank_{self.rank}.txt")
-            npu_activation_count = self.npu_activation_count-self.last_npu_activation_count
-            # write dump file for prefill
-            with open(file_path, 'w') as f:
-                for row in npu_activation_count:
-                    row_str = '\t'.join(str(x.item()) for x in row)
-                    f.write(row_str + '\n')
-
-        elif step >= 32:
-            decoder_dump_dir = os.path.join(dump_dir, "decoder")
-            os.makedirs(decoder_dump_dir, exist_ok=True)
-            self.cluster_activation.setDumpDir(decoder_dump_dir)
-
-        self.last_npu_activation_count = self.npu_activation_count.clone()
 
 # Example usage
 if __name__ == "__main__":

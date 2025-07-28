@@ -8,6 +8,7 @@ from omni_planner.distributed_ops import distribution_warmup
 from collections import defaultdict
 from omni_planner.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,calculate_time
 import re
+import time
 
 def deepseek_filter_func(key, first_k_dense_replace=3):
     NAMES = ("w13_weight", "w2_weight", "w2_weight_offset", "w2_weight_scale", "w13_weight_offset", "w13_weight_scale")
@@ -53,7 +54,7 @@ def init_dram_weights(moe_weights,param_dict,first_k_dense_replace,init_shm):
 
 
 
-def create_placement_manager(rank, world_size, num_devices_per_host, cluster_activation=None, expert_mapping=None, enable_dynamic=False):
+def create_placement_manager(rank, world_size, hccl_comm_world_size, num_devices_per_host, cluster_activation=None, expert_mapping=None, enable_dynamic=False):
     """
     Creates a Placement manage.
 
@@ -69,15 +70,14 @@ def create_placement_manager(rank, world_size, num_devices_per_host, cluster_act
     """
     placement_mapping = expert_mapping.placement_mapping
 
-    if enable_dynamic:
-        rootinfo = get_hccl_root_info(rank)
-    else:
-        rootinfo = ""
+    src_rank_offset = hccl_comm_world_size - world_size
+    rootinfo = get_hccl_root_info(rank, src_rank_offset = src_rank_offset)
 
     # Instantiate Placement object
     placement = omni_placement.Placement(
         rank,
         world_size,
+        hccl_comm_world_size,
         num_devices_per_host,
         cluster_activation,
         placement_mapping,
@@ -88,7 +88,7 @@ def create_placement_manager(rank, world_size, num_devices_per_host, cluster_act
     return placement
 
 
-def create_cluster_activation(rank, world_size, num_layers,num_deploy_experts_per_rank, count_activation,max_activation_count):
+def create_cluster_activation(rank, world_size, hccl_comm_world_size, num_layers,num_deploy_experts_per_rank, count_activation,max_activation_count):
     """
     Creates a ClusterActivation object for managing cluster-level activations.
 
@@ -125,6 +125,7 @@ def create_cluster_activation(rank, world_size, num_layers,num_deploy_experts_pe
         num_deploy_experts_per_rank,
         activation_window_size,
         world_size,
+        hccl_comm_world_size,
         rank
     )
     return cluster_activation
@@ -132,7 +133,8 @@ def create_cluster_activation(rank, world_size, num_layers,num_deploy_experts_pe
 def do_placement_optimizer(placement_manager, layer_id: int) :
     omni_placement.do_placement_optimizer(placement_manager, layer_id)
 
-def get_hccl_root_info(rank) :
+def get_hccl_root_info(rank, src_rank_offset=0) :
+    torch.distributed.barrier() # Avoid other ranks accessing dist.backend during warmup processing on this rank.
     distribution_warmup() # must be warmup before get_hccl_root_info
     if rank == 0:
         root_info = omni_placement.get_pd_rootinfo()
@@ -142,12 +144,12 @@ def get_hccl_root_info(rank) :
         shape = torch.zeros(1, dtype=torch.int64,device="npu")
     
     # step1. broadcast shape
-    torch.distributed.broadcast(shape,src=0)
+    torch.distributed.broadcast(shape,src=src_rank_offset)
     if rank != 0:
         tensor_to_broadcast = torch.zeros(shape, dtype=torch.uint8, device="npu")
     
     # Step2. broadcast rootinfo
-    torch.distributed.broadcast(tensor_to_broadcast,src=0)
+    torch.distributed.broadcast(tensor_to_broadcast,src=src_rank_offset)
     torch.npu.synchronize()
     root_info = bytes(tensor_to_broadcast.cpu().numpy())
     if rank==0:
