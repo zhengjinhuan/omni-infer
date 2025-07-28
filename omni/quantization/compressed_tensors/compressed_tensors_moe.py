@@ -18,15 +18,24 @@ from omni.models.common.config.model_config import model_extra_config
 
 from omni.models.common.layers.fused_moe.fused_moe import (
     fused_experts_w8a8_moe_dispatch_combine, 
+    fused_experts_w8a8_moe_dispatch_combine,
+    fused_experts_w4a8_moe_dispatch_combine,
     moe_infer_fusion,
+    moe_infer_fusion_w4a8,
     fused_experts_w8a8_allgather_ep,
+    fused_experts_w4a8_allgather_ep
 )
+from vllm.model_executor.utils import set_weight_attrs
+from vllm.forward_context import get_forward_context
+from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe import CompressedTensorsMoEMethod
+from vllm.model_executor.layers.quantization.compressed_tensors.utils import CompressionFormat
 
 # OMNI_PLANNER: import omni planner instance, all layers share the same instance(singleton instance)
 if model_extra_config.operator_opt_config.use_omni_placement:
     from omni_planner import OmniPlanner
 
-SUPPORTED_BITS = 8
+
+SUPPORTED_BITS = [4, 8]
 SEQ_SPLIT_LENGTH = 4096
 torch.npu.config.allow_internal_format = True
 
@@ -222,3 +231,274 @@ def fused_experts_w8a8(hidden_states: torch.Tensor,
     out = out.float()
     return torch_npu.npu_moe_finalize_routing(out, None, None, None, topk_weights,
                                               expanded_src_to_dst_row, topk_ids).to(torch.bfloat16)
+
+class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
+    LAST_SEQ_LEN = None
+    BEST_EXPERT_TOKENS = None
+
+    def __init__(
+            self,
+            quant_config: "CompressedTensorsConfig"  # type: ignore # noqa E501
+    ):
+
+        STORAGE_BITS_NPU = 8
+        WEIGHT_BITS = 4
+
+        self.quant_config = quant_config
+        self.weight_quant = self.quant_config.target_scheme_map["Linear"].get(
+            "weights")
+        self.input_quant = self.quant_config.target_scheme_map["Linear"].get(
+            "input_activations")
+        self.initialized = False
+        self.warm_up = True
+        self.n_total_experts = None
+        self.pack_factor = STORAGE_BITS_NPU // WEIGHT_BITS
+        self.group_size = self.weight_quant.group_size
+
+        if not (self.quant_config.quant_format
+                == CompressionFormat.int_quantized.value
+                and self.weight_quant.num_bits in SUPPORTED_BITS) and isinstance(self.weight_quant.num_bits, int):
+            raise ValueError("For Fused MoE layers, only ",
+                             f"{CompressionFormat.int_quantized.value} ",
+                             "is supported for the following bits: ",
+                             f"{SUPPORTED_BITS}")
+
+    def create_weights(self, layer: torch.nn.Module, num_experts: int,
+                       hidden_size: int, intermediate_size_per_partition: int,
+                       params_dtype: torch.dtype, **extra_weight_attrs):
+
+        # Will transpose the loaded weight along the
+        # intermediate and hidden dim sizes. Will
+        # shard for TP along the transposed dims
+        extra_weight_attrs.update({
+            "is_transposed": False,
+            "quant_method": self.weight_quant.strategy
+        })
+
+        # self.group_size = self.quant_config.group_size if self.quant_config.group_size != -1 else input_size
+
+        # Fused gate_up_proj (column parallel)
+        w13_weight = torch.nn.Parameter(torch.empty(num_experts,
+                                                    2 * intermediate_size_per_partition // self.pack_factor,
+                                                    hidden_size,
+                                                    dtype=torch.int8),
+                                        requires_grad=False)
+        layer.register_parameter("w13_weight", w13_weight)
+        set_weight_attrs(w13_weight, extra_weight_attrs)
+
+        # down_proj (row parallel)
+        w2_weight = torch.nn.Parameter(torch.empty(num_experts,
+                                                   hidden_size // self.pack_factor,
+                                                   intermediate_size_per_partition,
+                                                   dtype=torch.int8),
+                                       requires_grad=False)
+        layer.register_parameter("w2_weight", w2_weight)
+        set_weight_attrs(w2_weight, extra_weight_attrs)
+
+        if self.weight_quant.strategy == "group":
+            w13_weight_int4_scale = torch.nn.Parameter(torch.ones(num_experts,
+                                                                  hidden_size // self.group_size,
+                                                                  2 * intermediate_size_per_partition,
+                                                                  dtype=torch.int64),
+                                                       requires_grad=False)
+
+            w2_weight_int4_scale = torch.nn.Parameter(torch.ones(num_experts,
+                                                                 intermediate_size_per_partition // self.group_size,
+                                                                 hidden_size,
+                                                                 dtype=torch.int64),
+                                                      requires_grad=False)
+        elif self.weight_quant.strategy == "channel":
+            w13_weight_int4_scale = torch.nn.Parameter(torch.ones(num_experts,
+                                                                  1,
+                                                                  2 * intermediate_size_per_partition,
+                                                                  dtype=torch.int64),
+                                                       requires_grad=False)
+
+            w2_weight_int4_scale = torch.nn.Parameter(torch.ones(num_experts,
+                                                                 1,
+                                                                 hidden_size,
+                                                                 dtype=torch.int64),
+                                                      requires_grad=False)
+        else:
+            raise ValueError(f"Do not support quant strategy {self.weight_quant.strategy} !")
+
+        w13_weight_bias = torch.nn.Parameter(torch.ones(num_experts,
+                                                        2 * intermediate_size_per_partition,
+                                                        dtype=torch.float32),
+                                             requires_grad=False)
+
+        w2_weight_bias = torch.nn.Parameter(torch.ones(num_experts,
+                                                       hidden_size,
+                                                       dtype=torch.float32),
+                                            requires_grad=False)
+        # w13_weight_int4_offset = torch.nn.Parameter(torch.zeros(num_experts,
+        #                                                         2 * intermediate_size_per_partition,
+        #                                                         dtype=torch.float32
+        #                                                         if params_dtype == torch.float16 else torch.bfloat16),
+        #                                             requires_grad=False)
+
+        layer.register_parameter("w13_weight_int4_scale", w13_weight_int4_scale)
+        layer.register_parameter("w13_weight_bias", w13_weight_bias)
+        # layer.register_parameter("w13_weight_int4_offset", w13_weight_int4_offset)
+        set_weight_attrs(w13_weight_int4_scale, extra_weight_attrs)
+        set_weight_attrs(w13_weight_bias, extra_weight_attrs)
+        # set_weight_attrs(w13_weight_int4_offset, extra_weight_attrs)
+
+        # w2_weight_int4_offset = torch.nn.Parameter(torch.zeros(num_experts,
+        #                                                        hidden_size,
+        #                                                        dtype=torch.float32
+        #                                                        if params_dtype == torch.float16 else torch.bfloat16),
+        #                                            requires_grad=False)
+
+        layer.register_parameter("w2_weight_int4_scale", w2_weight_int4_scale)
+        layer.register_parameter("w2_weight_bias", w2_weight_bias)
+        # layer.register_parameter("w2_weight_int4_offset", w2_weight_int4_offset)
+        set_weight_attrs(w2_weight_int4_scale, extra_weight_attrs)
+        set_weight_attrs(w2_weight_bias, extra_weight_attrs)
+        # set_weight_attrs(w2_weight_int4_offset, extra_weight_attrs)
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        layer.w13_weight = torch.nn.Parameter(layer.w13_weight.transpose(1, 2).contiguous(), requires_grad=False)
+        layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1, 2).contiguous(), requires_grad=False)
+
+        if model_extra_config.operator_opt_config.gmm_nz:
+            layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
+            if not model_extra_config.operator_opt_config.is_910B:
+                layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
+
+        layer.w13_weight.data = layer.w13_weight.data.view(torch.int32).contiguous()
+        layer.w2_weight.data = layer.w2_weight.data.view(torch.int32).contiguous()
+
+        self.n_routed_experts = len(layer.w13_weight)
+
+        experts_start_idx = get_expert_parallel_rank() * self.n_routed_experts
+        experts_end_idx = experts_start_idx + self.n_routed_experts
+        self.expert_range = [experts_start_idx, experts_end_idx]
+        self.n_total_experts = self.n_routed_experts * get_expert_parallel_world_size()
+        self.local_expert_indices_offset = (
+            experts_start_idx
+        ) 
+        self.local_expert_indices = [
+            self.local_expert_indices_offset + i for i in range(self.n_routed_experts)
+        ]
+        self.initialized = True
+
+    def apply(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            topk_weights: torch.Tensor,
+            topk_ids: torch.Tensor,
+            pertoken_scale: torch.Tensor,
+            attn_metadata: AttentionMetadata
+    ) -> torch.Tensor:
+
+        # ENABLE_OMNI_PLANNER
+        max_num_deployed_expert_per_rank = self.n_routed_experts
+        # if model_extra_config.operator_opt_config.use_omni_planner:
+        #     max_num_deployed_expert_per_rank = layer.planner.get_max_num_deployed_expert_per_rank()
+
+        is_prefill = is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+
+        if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
+            if model_extra_config.operator_opt_config.prefill_dispatch_combine or (
+                    model_extra_config.operator_opt_config.moe_dispatch_combine and is_prefill):
+                is_prefill = is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+                if is_prefill:
+                    row_idx = torch.arange(topk_ids.numel(), device='npu',
+                                           dtype=torch.int32).view(-1, x.shape[0]).transpose(0, 1)
+                    out = moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weights, layer.w13_weight, layer.w2_weight,
+                                                layer.w13_weight_int4_scale, layer.w2_weight_int4_scale,
+                                                layer.w13_weight_bias,
+                                                layer.w2_weight_bias,
+                                                row_idx, self.warm_up, is_prefill)
+                else:
+                    out = fused_experts_w4a8_moe_dispatch_combine(layer,
+                                                                  x,
+                                                                  layer.w13_weight,
+                                                                  layer.w2_weight,
+                                                                  layer.w13_weight_int4_scale,
+                                                                  layer.w2_weight_int4_scale,
+                                                                  layer.w13_weight_bias,
+                                                                  layer.w2_weight_bias,
+                                                                  topk_weights,
+                                                                  topk_ids,
+                                                                  n_routed_experts=self.n_routed_experts * get_expert_parallel_world_size(),
+                                                                  max_num_deployed_expert=max_num_deployed_expert_per_rank * get_expert_parallel_world_size(),
+                                                                  # ENABLE_OMNI_PLANNER
+                                                                  is_prefill=is_prefill  # ENABLE_OMNI_PLANNER
+                                                                  )
+            else:
+                if model_extra_config.operator_opt_config.best_ep and (
+                        AscendCompressedTensorsW8A8Int8MoEMethod.LAST_SEQ_LEN is None or AscendCompressedTensorsW8A8Int8MoEMethod.LAST_SEQ_LEN !=
+                        x.shape[0]):
+                    avg_num_tokens = math.ceil(topk_ids.numel() / get_expert_parallel_world_size())
+                    AscendCompressedTensorsW8A8Int8MoEMethod.BEST_EXPERT_TOKENS = torch.ones(self.n_routed_experts,
+                                                                                             dtype=torch.int64,
+                                                                                             device="npu") * avg_num_tokens
+                    AscendCompressedTensorsW8A8Int8MoEMethod.LAST_SEQ_LEN = x.shape[0]
+
+                out = fused_experts_w4a8_allgather_ep(hidden_states=x,
+                                                      pertoken_scale=pertoken_scale,
+                                                      w1=layer.w13_weight,
+                                                      w2=layer.w2_weight,
+                                                      w1_scale=layer.w13_weight_int4_scale,
+                                                      w2_scale=layer.w2_weight_int4_scale,
+                                                      w1_bias=layer.w13_weight_bias,
+                                                      w2_bias=layer.w2_weight_bias,
+                                                      topk_weights=topk_weights,
+                                                      topk_ids=topk_ids,
+                                                      n_routed_experts=self.n_routed_experts,
+                                                      attn_metadata=attn_metadata,
+                                                      max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank
+                                                      # ENABLE_OMNI_PLANNER
+                                                      )
+            if self.warm_up:
+                self.warm_up = False
+            return out
+        else:
+            row_idx = torch.arange(topk_ids.numel(), device='npu',
+                                   dtype=torch.int32).view(-1, x.shape[0]).transpose(0, 1)
+            token_num = x.shape[0]
+            if token_num > SEQ_SPLIT_LENGTH:  # 切分seq，降低显存开销
+                x_list = x.split(SEQ_SPLIT_LENGTH)
+                topk_weights_list = topk_weights.split(SEQ_SPLIT_LENGTH)
+                topk_ids_list = topk_ids.split(SEQ_SPLIT_LENGTH)
+                out = []
+                for i in range(len(x_list)):
+                    if model_extra_config.operator_opt_config.fused_experts_v2:
+                        out.append(fused_experts_w8a8_v2(x_list[i],
+                                                         layer.w13_weight,
+                                                         layer.w2_weight,
+                                                         layer.w13_weight_scale,
+                                                         layer.w2_weight_scale,
+                                                         layer.w13_weight_offset,
+                                                         layer.w2_weight_offset,
+                                                         topk_weights_list[i],
+                                                         topk_ids_list[i]))
+                    else:
+                        split_token, top_k = topk_weights_list[i].shape
+                        row_idx = torch.arange(split_token * top_k).to(torch.int32).view(
+                            (top_k, split_token)).T.contiguous().npu()
+                        out.append(fused_experts_w8a8(x_list[i],
+                                                      layer.w13_weight,
+                                                      layer.w2_weight,
+                                                      layer.w13_weight_scale,
+                                                      layer.w2_weight_scale,
+                                                      layer.w13_weight_offset,
+                                                      layer.w2_weight_offset,
+                                                      topk_weights_list[i],
+                                                      topk_ids_list[i],
+                                                      row_idx))
+                return torch.concat(out)
+
+            return fused_experts_w8a8(x,
+                                      layer.w13_weight,
+                                      layer.w2_weight,
+                                      layer.w13_weight_scale,
+                                      layer.w2_weight_scale,
+                                      layer.w13_weight_offset,
+                                      layer.w2_weight_offset,
+                                      topk_weights,
+                                      topk_ids,
+                                      row_idx)
