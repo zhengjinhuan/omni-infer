@@ -36,6 +36,7 @@
         "opt_w2_scale_cast": true,
         "control_accept_rate": -1,
         "enable_mc2_v2": false,
+        "enable_combine_addrmsnorm_fusion": false,
         "decode_gear_list": [
             96
         ]

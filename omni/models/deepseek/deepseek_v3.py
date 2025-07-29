@@ -1217,6 +1217,9 @@ class DeepseekDecoderLayer(nn.Module):
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
             # Adapt end.
+        if model_extra_config.operator_opt_config.enable_combine_addrmsnorm_fusion:
+            hidden_states = hidden_states.view(-1, self.hidden_size)
+            residual = residual.view(-1, self.hidden_size)
         hidden_states = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
@@ -1264,7 +1267,11 @@ class DeepseekDecoderLayer(nn.Module):
                 if isinstance(hidden_states, (tuple, list)):
                     assert len(hidden_states) == 2
                     # 0 is the shared expert hidden_states, 1 is the routing expert hidden_states, add operation cannot be placed in the super kernel
-                    hidden_states = hidden_states[0] + hidden_states[1]
+                    if model_extra_config.operator_opt_config.enable_combine_addrmsnorm_fusion and layer_id and layer_id < 57:
+                        residual = residual.view(-1, 1, self.hidden_size)
+                        hidden_states = hidden_states[0].view(-1, 1, self.hidden_size) + hidden_states[1].view(-1, 1, self.hidden_size)
+                    else:
+                        hidden_states = hidden_states[0] + hidden_states[1]
             else:
                 hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
 
