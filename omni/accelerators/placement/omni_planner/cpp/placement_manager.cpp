@@ -87,8 +87,6 @@ OmniConfig global_omni_config;
 
 namespace py = pybind11;
 
-const int MAX_LAYER = 58;
-
 /**
  * Constructor for Placement class
  *
