@@ -280,8 +280,9 @@ class AscendFusedMoEMethod(FusedMoEMethodBase):
         attn_metadata: AttentionMetadata,
         **kwargs,
     ) -> torch.Tensor:
+        comm_group = kwargs.pop('comm_group', None)
         return self.quant_method.apply(
-            layer, x, topk_weights, topk_ids, pertoken_scale, attn_metadata)
+            layer, x, topk_weights, topk_ids, pertoken_scale, attn_metadata, comm_group=comm_group)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         if hasattr(self.quant_method, "process_weights_after_loading"):

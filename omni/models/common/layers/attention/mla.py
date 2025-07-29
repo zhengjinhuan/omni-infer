@@ -34,6 +34,8 @@ from vllm.platforms import current_platform
 from omni.models.common.layers.attention.attention import AscendAttentionState
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.models.common.layers.attention.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.adaptors.vllm.distributed.communication_op import mla_tensor_model_parallel_all_gather
+from omni.adaptors.vllm.distributed.parallel_state import GroupCoordinator
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.kv_cache_interface import AttentionSpec
 
@@ -732,13 +734,14 @@ class AscendMLAImpl(MLAAttentionImpl):
         kv_cache: Optional[torch.Tensor],
         attn_metadata: AttentionMetadata,
         quant_symbol: bool,
+        comm_group: Optional[GroupCoordinator] = None,
     ) -> torch.Tensor:
         if not self.is_init:
             self.W_UK = torch.nn.Parameter(self.W_UK.contiguous(), requires_grad=False)
             self.W_UV = torch.nn.Parameter(self.W_UV.contiguous(), requires_grad=False)
             self.is_init = True
         if attn_metadata is None or attn_metadata.prefill is not None:
-            output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata, quant_symbol)
+            output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata, quant_symbol, comm_group=comm_group)
         else:
             output = self._forward_decode(
                 positions, hidden_states, kv_cache, attn_metadata,
@@ -765,6 +768,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         kv_cache: Optional[torch.Tensor],
         attn_metadata: AttentionMetadata,
         quant_symbol: bool,
+        comm_group: Optional[GroupCoordinator] = None,
     ) -> torch.Tensor:
         if self.q_lora_rank is not None:
             if self.merge_qkv:
@@ -778,17 +782,17 @@ class AscendMLAImpl(MLAAttentionImpl):
                 q = self.q_a_proj(hidden_states)[0]
                 latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
                 # q = tensor_model_parallel_all_gather(q, dim=0)
-                latent_cache = tensor_model_parallel_all_gather(latent_cache, dim=0)
+                latent_cache = mla_tensor_model_parallel_all_gather(latent_cache, dim=0, comm_group=comm_group)
 
                 q = self.q_a_layernorm(q)
                 if quant_symbol:
                     q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
                     # Quantizing before all_gather can reduce communication overhead.
-                    q_quant = tensor_model_parallel_all_gather(q_quant, dim=0)
-                    q_scale = tensor_model_parallel_all_gather(q_scale, dim=0)
+                    q_quant = mla_tensor_model_parallel_all_gather(q_quant, dim=0, comm_group=comm_group)
+                    q_scale = mla_tensor_model_parallel_all_gather(q_scale, dim=0, comm_group=comm_group)
                     q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
                 else:
-                    q = tensor_model_parallel_all_gather(q, dim=0)
+                    q = mla_tensor_model_parallel_all_gather(q, dim=0, comm_group=comm_group)
                 q = self.q_b_proj(q)[0].view(-1, self.num_heads, self.qk_head_dim)
         else:
             q = self.q_proj(hidden_states)[0].view(-1, self.num_heads, self.qk_head_dim)
@@ -898,7 +902,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         if model_extra_config.parall_config.o_proj_tp_size > 1:
             output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_heads, self.v_head_dim)
         else:
-            output = self.o_proj.forward(attn_output)[0]
+            output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
         return output
 
     def _forward_decode(

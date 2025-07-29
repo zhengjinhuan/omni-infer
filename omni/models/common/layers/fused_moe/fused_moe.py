@@ -18,7 +18,8 @@ from omni.models.common.config.model_config import model_extra_config
 from omni.adaptors.vllm.distributed.parallel_state import (
     get_expert_parallel_world_size, 
     get_expert_parallel_rank, 
-    get_data_parallel_world_size
+    get_data_parallel_world_size,
+    GroupCoordinator
 )
 
 
@@ -579,7 +580,20 @@ def gmm_expert(x, expert_tokens, w1, w2, w1_scale, w2_scale, dynamic_scale=None,
                                             group_list_type=1, tuning_config=avg_tokens_per_expert)[0]
     return out_hidden
 
-def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale, row_idx=None, warm_up=False, is_prefill=True):
+def moe_infer_fusion(
+        layer,
+        x,
+        topk_ids,
+        topk_weight,
+        w1,
+        w2,
+        w1_scale,
+        w2_scale,
+        row_idx=None,
+        warm_up=False,
+        is_prefill=True,
+        comm_group: Optional[GroupCoordinator] = None,
+):
     _, h = x.shape
     hidden_states = x.view(-1, h)
     topk_weight = topk_weight.to(x.dtype)
@@ -611,8 +625,9 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
         quant_mode=1)
 
     tokens_per_expert_group = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
-    dist.all_to_all_single(tokens_per_expert_group, tokens_per_expert)  # (total_experts,) --> (total_ranks * n_routed_experts_per_rank)
- 
+    group = comm_group.device_group if comm_group else None
+    dist.all_to_all_single(tokens_per_expert_group, tokens_per_expert, group=group)
+
     # combine tensors, do reduceSum and D2H toghter
     combine_tokens = torch.stack([tokens_per_expert_group, tokens_per_expert], dim=0)
     # view: EP, E//EP
@@ -629,9 +644,9 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
     gathered_tokens = expanded_x.new_empty(
         all_tokens.item(), expanded_x.shape[1]
     )
-    dist.all_to_all_single(gathered_tokens, expanded_x, output_splits, input_splits)
+    dist.all_to_all_single(gathered_tokens, expanded_x, output_splits, input_splits, group=group)
     gathered_pertoken_scale = pertoken_scale.new_empty(gathered_tokens.shape[0])
-    dist.all_to_all_single(gathered_pertoken_scale, pertoken_scale, output_splits, input_splits)
+    dist.all_to_all_single(gathered_pertoken_scale, pertoken_scale, output_splits, input_splits, group=group)
     # reroute
     # Tokens merged by experts, scales merged by experts, indices for FinalizeRouting, number of tokens processed by each expert
     hidden_states_sorted_by_experts, gathered_pertoken_scale, gathered_idxs_unsort, tokens_per_local_expert = torch_npu.npu_moe_re_routing(
@@ -647,9 +662,8 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
 
     new_x = torch.index_select(hidden_states_ordered_by_experts, 0, gathered_idxs_unsort.to(torch.float32).argsort().to(torch.int32))
     gathered_tokens = new_x.new_empty(*expanded_x.shape)
- 
-    dist.all_to_all_single(gathered_tokens, new_x, input_splits, output_splits)
- 
+
+    dist.all_to_all_single(gathered_tokens, new_x, input_splits, output_splits, group=group)
     return hidden_states, gathered_tokens, topk_weight, expanded_row_idx
 
 

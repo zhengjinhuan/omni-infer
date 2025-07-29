@@ -35,6 +35,7 @@
         "opt_w2_scale_cast": false,
         "control_accept_rate": -1,
         "enable_mc2_v2": false,
+        "enable_prefill_micro_batch": false,
         "decode_gear_list": [
             16
         ]

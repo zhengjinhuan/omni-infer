@@ -78,7 +78,11 @@ from omni.models.common.layers.layernorm import RMSNorm
 from omni.adaptors.vllm.distributed.parallel_state import (
     get_data_parallel_world_size,
     get_data_parallel_rank,
-    get_expert_parallel_world_size
+    get_expert_parallel_world_size,
+    GroupCoordinator,
+    get_stream1_attn_group,
+    get_stream1_mlp_group,
+    get_stream1_moe_group
 )
 from omni.adaptors.vllm.distributed.communication_op import (
     mlp_all_gather,
@@ -96,6 +100,9 @@ if model_extra_config.operator_opt_config.use_omni_placement:
     from omni_planner import OmniPlanner
 else:
     OmniPlanner = None
+import copy
+import random
+from omni.models.common.layers.attention.mla import group_request_list
 
 
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
@@ -221,7 +228,7 @@ class ParallelDeepseekMLP(nn.Module):
         return self.act_fn_obj(x, quant_symbol)
 
 
-    def forward(self, x, residual, attn_metadata, layerid=None):
+    def forward(self, x, residual, attn_metadata, layerid=None, comm_group: Optional[GroupCoordinator] = None):
         is_prefill = attn_metadata is None or attn_metadata.prefill
         if not is_prefill:
             # P and D are both cut, and are concave at the node
@@ -239,14 +246,14 @@ class ParallelDeepseekMLP(nn.Module):
                 x = torch.nn.functional.pad(
                     x, (0, 0, 0, pad_size)
                 )
-            x = mlp_all_gather(x, dim=0)
+            x = mlp_all_gather(x, dim=0, comm_group=comm_group)
 
         gate_up, _ = self.gate_up_proj.forward(x)
         x = self.act_fn(gate_up, self.quant_symbol)
         x, _ = self.down_proj.forward(x)
 
         # P and D are both cut, and are concave at the node (16)
-        x = mlp_reduce_scatter(x)
+        x = mlp_reduce_scatter(x, comm_group=comm_group)
         if is_prefill and pad_size > 0:
             x = x[:local_length, :]
         return x, residual
@@ -357,17 +364,17 @@ class DeepseekMoE(nn.Module):
             
 
 
-    def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict] = None, comm_group: Optional[GroupCoordinator] = None) -> torch.Tensor:
         if self.redundancy_shared_expert_num > 0:
             if attn_metadata is None or attn_metadata.prefill is not None:
                 return self.forward_separate_expert_prefill(hidden_states, residual, attn_metadata)
             else:
                 return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)
         else:
-            return self.forward_norm(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
+            return self.forward_norm(hidden_states, residual, attn_metadata, layer_id, next_attention_weights, comm_group=comm_group)
 
 
-    def forward_norm(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
+    def forward_norm(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None, comm_group: Optional[GroupCoordinator] = None) -> torch.Tensor:
         if not self.is_init_gate:
             self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
             self.is_init_gate = True
@@ -496,7 +503,8 @@ class DeepseekMoE(nn.Module):
             topk_weights=topk_weights,
             topk_ids=topk_ids,
             pertoken_scale=global_pertoken_scale,
-            attn_metadata=attn_metadata
+            attn_metadata=attn_metadata,
+            comm_group=comm_group
         )
 
         if is_prefill and model_extra_config.operator_opt_config.prefill_dispatch_combine:
@@ -539,6 +547,7 @@ class DeepseekMoE(nn.Module):
         if self.warm_up:
             self.warm_up = False
         router_logits, _ = self.gate.forward(hidden_states.float())
+
         # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
         hidden_states_3d = hidden_states.unsqueeze(1)
         hidden_states = hidden_states_3d.squeeze(1)
@@ -1101,6 +1110,7 @@ class AscendDeepseekAttention_MLA(nn.Module):
             hidden_states: torch.Tensor,
             kv_cache: torch.Tensor,
             attn_metadata: AttentionMetadata,
+            comm_group: Optional[GroupCoordinator] = None
     ) -> torch.Tensor:
 
         return self.attn_mla.impl.forward(
@@ -1108,7 +1118,8 @@ class AscendDeepseekAttention_MLA(nn.Module):
             hidden_states=hidden_states,
             kv_cache=kv_cache,
             attn_metadata=attn_metadata,
-            quant_symbol=self.quant_symbol
+            quant_symbol=self.quant_symbol,
+            comm_group=comm_group
             )
 
 
@@ -1258,6 +1269,69 @@ class DeepseekDecoderLayer(nn.Module):
 
         return hidden_states, residual
 
+    def forward_attn(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor,
+            kv_cache: torch.Tensor,
+            attn_metadata: AttentionMetadata,
+            residual: Optional[torch.Tensor],
+            comm_group: Optional[GroupCoordinator] = None
+    ) -> torch.Tensor:
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.layer_name]
+        # Self Attention
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            # Adapt: adapt for w8a8 dynamic, do quant
+            # Combines residual add and rmsnorm
+            hidden_states, residual = self.input_layernorm(
+                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog))
+            # Adapt end.
+        hidden_states = self.self_attn(
+            positions=positions,
+            hidden_states=hidden_states,
+            kv_cache=kv_cache,
+            attn_metadata=attn_metadata,
+            comm_group=comm_group
+        )
+
+        return hidden_states, residual
+
+    def forward_mlp(
+            self,
+            hidden_states: torch.Tensor,
+            attn_metadata: AttentionMetadata,
+            residual: Optional[torch.Tensor],
+            layer_id: Optional[int] = None,
+            next_attention_weights: Optional[dict] = None,
+            comm_group: Optional[GroupCoordinator] = None
+    ) -> torch.Tensor:
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.layer_name]
+
+        is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+
+        if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
+            with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
+                hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        else:
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
+        if self.is_moe == True:
+            # omni placement do not support super kernel
+            hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights, comm_group=comm_group)
+            if isinstance(hidden_states, (tuple, list)):
+                assert len(hidden_states) == 2
+                # 0 is the shared expert hidden_states, 1 is the routing expert hidden_states, add operation cannot be placed in the super kernel
+                hidden_states = hidden_states[0] + hidden_states[1]
+        else:
+            hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, comm_group=comm_group)
+
+        return hidden_states, residual
+
     CACHED_GATHERED_BUFFER = None
 
     def get_cached_gathered_buffer(self, token_nums, dtype):
@@ -1308,8 +1382,8 @@ class DeepseekV3Model(nn.Module):
     fall_back_to_pt_during_load = False
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
-        super().__init__()
 
+        super().__init__()
         config = vllm_config.model_config.hf_config
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
@@ -1317,7 +1391,8 @@ class DeepseekV3Model(nn.Module):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.first_k_dense_replace = config.first_k_dense_replace
-
+        self.prefix = f"{prefix}.layers"
+        self.postfix = ".self_attn.attn"
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
@@ -1349,6 +1424,11 @@ class DeepseekV3Model(nn.Module):
             self.dp_rank = get_data_parallel_rank()
             self.dp_size = get_data_parallel_world_size()
             self.dp_group = get_dp_group().device_group
+        if model_extra_config.operator_opt_config.enable_prefill_micro_batch:
+            self.stream1 = torch.npu.Stream()
+            self.stream1_attn_group = get_stream1_attn_group()
+            self.stream1_mlp_group = get_stream1_mlp_group()
+            self.stream1_moe_group = get_stream1_moe_group()
 
     CACHED_LOCAL_NUM_TOKENS = None
     CACHED_GLOBAL_NUM_TOKENS = None
@@ -1358,6 +1438,24 @@ class DeepseekV3Model(nn.Module):
         return self.embed_tokens(input_ids, reduce=1)
 
     def forward(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            kv_caches: List[torch.Tensor],
+            attn_metadata: AttentionMetadata,
+            intermediate_tensors: Optional[IntermediateTensors],
+            max_num_tokens=None
+    ) -> Union[torch.Tensor, IntermediateTensors]:
+        if isinstance(attn_metadata, dict) and attn_metadata:
+            attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
+        else:
+            attn_metadata_first = attn_metadata
+        if model_extra_config.operator_opt_config.enable_prefill_micro_batch and attn_metadata is not None and attn_metadata_first is not None and attn_metadata_first.prefill is not None and len(attn_metadata_first.prefill.seq_lens) > 1:
+            return self.forward_micro_batch(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, max_num_tokens)
+        else:
+            return self.forward_normal(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors)
+
+    def forward_normal(
             self,
             input_ids: torch.Tensor,
             positions: torch.Tensor,
@@ -1379,7 +1477,7 @@ class DeepseekV3Model(nn.Module):
             layer = self.layers[i]
             layer_id = i - 3
 
-            if i >= self.first_k_dense_replace and i < self.end_layer - 1: 
+            if i >= self.first_k_dense_replace and i < self.end_layer - 1:
                 next_attention_weights = {
                     'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
                     'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
@@ -1396,7 +1494,7 @@ class DeepseekV3Model(nn.Module):
             hidden_states, residual = layer(positions,
                                             hidden_states,
                                             kv_caches[i - self.start_layer] if kv_caches is not None else None,
-                                            attn_metadata, 
+                                            attn_metadata,
                                             residual,
                                             layer_id,
                                             next_attention_weights)
@@ -1412,7 +1510,6 @@ class DeepseekV3Model(nn.Module):
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
         return hidden_states
-
     def should_use_eager_mode(self, *args, **kwargs):
         attn_metadata_index = 4
 
@@ -1431,6 +1528,242 @@ class DeepseekV3Model(nn.Module):
 
         return False
 
+    def forward_micro_batch(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            kv_caches: List[torch.Tensor],
+            attn_metadata: AttentionMetadata,
+            intermediate_tensors: Optional[IntermediateTensors],
+            max_num_tokens=None
+    ) -> Union[torch.Tensor, IntermediateTensors]:
+        # Split requests into two micro-batches (batch0, batch1) with balanced tokens
+        seq_lens_temp = self.get_layer_attn_metadata(attn_metadata, 0).prefill.seq_lens
+        seq_len_left, seq_len_right, split_idx = self.partition_list(seq_lens_temp, sum(seq_lens_temp))
+        input_ids_mb0, input_ids_mb1 = self.index_batch(input_ids, 0, sum(seq_len_left))
+        positions_mb0, positions_mb1 = self.index_batch(positions, 0, sum(seq_len_left))
+        residual_mb0 = None
+        residual_mb1 = None
+        curr_stream = torch.npu.current_stream()
+
+        if get_pp_group().is_first_rank:
+            # Perform embedding ops on separate streams while maintaining execution order within each stream
+            # Optimized execution order:
+            # 1. stream0: attn (current layer)
+            # 2. stream1: attn (current layer)
+            # 3. stream0: mlp (current layer) + attn (next layer)
+            # 4. stream1: mlp (current layer) + attn (next layer)
+            with torch.npu.stream(curr_stream):
+                pad_size_mb0 = self._get_pad_size(positions_mb0.shape[0])
+                positions_mb0 = self.pad_tensor(positions_mb0, pad_size_mb0, 0)
+                padding = torch.randint(1, self.vocab_size, (pad_size_mb0,),
+                                        dtype=input_ids.dtype,
+                                        device=input_ids.device)
+                input_ids_mb0 = torch.cat([input_ids_mb0, padding])
+                metadata0 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, 0), True, sum(seq_len_left), pad_size_mb0, max_num_tokens)
+                hidden_states_mb0 = self.get_input_embeddings(input_ids_mb0)
+                hidden_states_mb0, residual_mb0 = self.layers[0].forward_attn(positions_mb0,
+                                                                              hidden_states_mb0,
+                                                                              kv_caches[0] if kv_caches is not None else None,
+                                                                              metadata0,
+                                                                              residual_mb0)
+            with torch.npu.stream(self.stream1):
+                pad_size_mb1 = self._get_pad_size(positions_mb1.shape[0])
+                positions_mb1 = self.pad_tensor(positions_mb1, pad_size_mb1, 0)
+                padding = torch.randint(1, self.vocab_size, (pad_size_mb1,),
+                                        dtype=input_ids.dtype,
+                                        device=input_ids.device)
+                input_ids1 = torch.cat([input_ids_mb1, padding])
+                metadata1 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, 0), False, sum(seq_len_left), pad_size_mb1, max_num_tokens)
+                hidden_states_mb1 = self.get_input_embeddings(input_ids1)
+                hidden_states_mb1, residual_mb1 = self.layers[0].forward_attn(positions_mb1,
+                                                                              hidden_states_mb1,
+                                                                              kv_caches[0] if kv_caches is not None else None,
+                                                                              metadata1,
+                                                                              residual_mb1,
+                                                                              comm_group=self.stream1_attn_group)
+        else:
+            assert intermediate_tensors is not None, "intermediate_tensors is None"
+            hidden_states = intermediate_tensors["hidden_states"]
+            residual = intermediate_tensors["residual"]
+
+        for i in range(self.start_layer, self.end_layer):
+            layer = self.layers[i]
+            layer_id = i - 3
+            if i >= self.first_k_dense_replace and i < self.end_layer - 1:
+                next_attention_weights = {
+                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,
+                    'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
+                    'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
+                    'W_UK': self.layers[i + 1].self_attn.attn_mla.impl.W_UK
+                }
+            else:
+                next_attention_weights = {
+                    'q_a_proj_weight': None,
+                    'kv_a_proj_with_mqa_weight': None,
+                    'q_b_proj_weight': None,
+                    'W_UK': None
+                }
+            if i < self.first_k_dense_replace:
+                stream1_mlp_comm_group = self.stream1_mlp_group
+            else:
+                stream1_mlp_comm_group = self.stream1_moe_group
+
+            with torch.npu.stream(curr_stream):
+                metadata0 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i), True, sum(seq_len_left), pad_size_mb0, max_num_tokens)
+                hidden_states_mb0, residual_mb0 = layer.forward_mlp(hidden_states_mb0,
+                                                                    metadata0,
+                                                                    residual_mb0,
+                                                                    layer_id,
+                                                                    next_attention_weights)
+            if (i + 1) in range(self.start_layer, self.end_layer):
+                with torch.npu.stream(curr_stream):
+                    metadata0 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i+1), True,
+                                                               sum(seq_len_left), pad_size_mb0, max_num_tokens)
+                    hidden_states_mb0, residual_mb0 = self.layers[i+1].forward_attn(positions_mb0,
+                                                                                  hidden_states_mb0,
+                                                                                  kv_caches[i + 1 - self.start_layer] if kv_caches is not None else None,
+                                                                                  metadata0,
+                                                                                  residual_mb0)
+            with torch.npu.stream(self.stream1):
+                metadata1 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i), False, sum(seq_len_left), pad_size_mb1, max_num_tokens)
+                hidden_states_mb1, residual_mb1 = layer.forward_mlp(hidden_states_mb1,
+                                                                    metadata1,
+                                                                    residual_mb1,
+                                                                    layer_id,
+                                                                    next_attention_weights,
+                                                                    comm_group=stream1_mlp_comm_group)
+            if (i + 1) in range(self.start_layer, self.end_layer):
+                with torch.npu.stream(self.stream1):
+                    metadata1 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i+1), False,
+                                                               sum(seq_len_left), pad_size_mb1, max_num_tokens)
+                    hidden_states_mb1, residual_mb1 = self.layers[i+1].forward_attn(positions_mb1,
+                                                                                  hidden_states_mb1,
+                                                                                  kv_caches[i + 1 - self.start_layer] if kv_caches is not None else None,
+                                                                                  metadata1,
+                                                                                  residual_mb1,
+                                                                                  comm_group=self.stream1_attn_group)
+
+        curr_stream.wait_stream(self.stream1)
+        self.stream1.wait_stream(curr_stream)
+        hidden_states_mb0, _ = self.norm(hidden_states_mb0, residual_mb0)
+        hidden_states_mb1, _ = self.norm(hidden_states_mb1, residual_mb1)
+        hidden_states_mb0 = tensor_model_parallel_all_gather(hidden_states_mb0, dim=0)
+        hidden_states_mb1 = tensor_model_parallel_all_gather(hidden_states_mb1, dim=0)
+        # Calculate original sequence lengths by removing padding
+        original_size_0 = hidden_states_mb0.shape[0] - pad_size_mb0
+        original_size_1 = hidden_states_mb1.shape[0] - pad_size_mb1
+        # Remove padding from each micro batch
+        hidden_states_mb0 = hidden_states_mb0[:original_size_0]
+        hidden_states_mb1 = hidden_states_mb1[:original_size_1]
+        hidden_states = torch.cat([hidden_states_mb0, hidden_states_mb1], dim=0)
+
+        if not get_pp_group().is_last_rank:
+            return IntermediateTensors({
+                "hidden_states": hidden_states,
+                "residual": residual
+            })
+        return hidden_states
+
+
+    def get_layer_attn_metadata(self, attn_metadata, layer_idx):
+        if isinstance(attn_metadata, dict):
+            key_idx = self.prefix + "." + str(layer_idx) + self.postfix
+            return attn_metadata[key_idx]
+
+    def index_batch(self, ori_tensor, split_dim, split_idx):
+        """Split tensor into two parts along specified dimension at split index."""
+        return torch.split(ori_tensor, [split_idx, ori_tensor.size(split_dim) - split_idx], dim=split_dim)
+
+    def _get_pad_size(self, num_seqs):
+        """Calculate padding size needed to make sequence count divisible by tp size."""
+        tp_size = get_tensor_model_parallel_world_size()
+        return (tp_size - num_seqs % tp_size) % tp_size
+
+    def partition_list(self, lst, pos):
+        """Partition list into two parts with balanced sum around target position."""
+        target = pos // 2
+        left = []
+        right = []
+        cur_sum = 0
+        split_index = 0
+
+        for i, num in enumerate(lst):
+            if cur_sum < target:
+                left.append(num)
+                cur_sum += num
+                split_index = i + 1
+            else:
+                right.append(num)
+
+        if not right:
+            right.append(left.pop())
+            split_index -= 1
+        return left, right, split_index
+
+    def pad_tensor(self, tensor, pad_size, pad_value=0):
+        """Pad tensor with specified value along first dimension."""
+        padding = torch.full(
+            (pad_size,),
+            pad_value,
+            dtype=tensor.dtype,
+            device=tensor.device
+        )
+        return torch.cat([tensor, padding])
+
+    def split_attn_metadata_index(self, metadata, is_local_stream, split_idx, pad_size, max_num_tokens):
+        """Split attention metadata for parallel processing across streams.
+
+        Args:
+            metadata: Original attention metadata
+            is_local_stream: Flag indicating local stream processing
+            split_idx: Index to split metadata
+            pad_size: Padding size for alignment
+            max_num_tokens: Maximum number of tokens
+
+        Returns:
+            Modified metadata split for specified stream
+        """
+        metadata_out = copy.deepcopy(metadata)
+        slot_mapping = metadata.slot_mapping
+        seq_lens = metadata.prefill.seq_lens
+        query_lens = metadata.prefill.query_lens
+        block_table = metadata.prefill.block_table
+
+        slot_mapping1, slot_mapping2 = self.index_batch(slot_mapping, 0, split_idx)
+        seq_lens1, seq_lens2, _ = self.partition_list(seq_lens, sum(seq_lens))
+        query_lens1, query_lens2, _ = self.partition_list(query_lens, sum(query_lens))
+        if is_local_stream:
+            slot_mapping1 = self.pad_tensor(slot_mapping1, pad_size, pad_value=-1)
+            seq_kvlen_group_1, seq_qlen_group_1, block_groups_1 = group_request_list(
+                seq_lens1,
+                query_lens1,
+                block_table,
+                max_num_tokens)
+            seq_qlen_group_1 = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group_1]
+            seq_kvlen_group_1 = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group_1]
+            metadata_out.slot_mapping = slot_mapping1
+            metadata_out.prefill.seq_lens = seq_lens1
+            metadata_out.prefill.query_lens = query_lens1
+            metadata_out.prefill.seq_qlen_group = seq_qlen_group_1
+            metadata_out.prefill.seq_kvlen_group = seq_kvlen_group_1
+        else:
+            slot_mapping2 = self.pad_tensor(slot_mapping2, pad_size, pad_value=-1)
+            seq_kvlen_group_2, seq_qlen_group_2, block_groups_2 = group_request_list(
+                seq_lens2,
+                query_lens2,
+                block_table,
+                max_num_tokens)
+            seq_qlen_group_2 = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group_2]
+            seq_kvlen_group_2 = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group_2]
+            metadata_out.slot_mapping = slot_mapping2
+            metadata_out.prefill.seq_lens = seq_lens2
+            metadata_out.prefill.query_lens = query_lens2
+            metadata_out.prefill.seq_qlen_group = seq_qlen_group_2
+            metadata_out.prefill.seq_kvlen_group = seq_kvlen_group_2
+        return metadata_out
+
+
 class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
     packed_modules_mapping = {
@@ -1445,6 +1778,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
         self.model = DeepseekV3Model(vllm_config=vllm_config, prefix="model")
+
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
@@ -1457,6 +1791,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
         self.return_hidden_states = True
         self.input_marked = False
+        self.max_num_token = vllm_config.scheduler_config.max_num_batched_tokens
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -1472,7 +1807,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             inputs_embeds = None
     ) -> Optional[torch.Tensor]:
         hidden_states = self.model(input_ids, positions, kv_caches,
-                                   attn_metadata, intermediate_tensors)
+                                   attn_metadata, intermediate_tensors, self.max_num_token)
         if attn_metadata is None:
             logits = self.compute_lmhead(self.lm_head, hidden_states[-1:, ...], None)
         else:

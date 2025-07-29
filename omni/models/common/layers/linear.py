@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parameter import Parameter, UninitializedParameter
 # from omni.models.common.utils import is_ray_multi_servers_devices
-from omni.adaptors.vllm.distributed.communication_op import tensor_model_parallel_reduce_scatter
+from omni.adaptors.vllm.distributed.communication_op import tensor_model_parallel_reduce_scatter, mla_tensor_model_parallel_reduce_scatter
 
 
 from vllm.distributed import (divide, split_tensor_along_last_dim,
@@ -54,7 +54,8 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_o_proj_tp_size,
     get_o_proj_tp_rank,
     get_o_proj_world_group,
-    get_npu_device_count
+    get_npu_device_count,
+    GroupCoordinator
 )
 
 class AscendMergedColumnParallelLinear(LinearBase):
@@ -725,7 +726,7 @@ class RowParallelLinearWithReduceScatter(RowParallelLinear):
         if self.bias is not None:
             raise RuntimeError("self.bias is not None")
 
-    def forward(self, input_):
+    def forward(self, input_, comm_group: Optional[GroupCoordinator] = None):
         if self.input_is_parallel:
             input_parallel = input_
         else:
@@ -744,7 +745,7 @@ class RowParallelLinearWithReduceScatter(RowParallelLinear):
                                                   input_parallel,
                                                   bias=bias_)
         if self.reduce_results and self.tp_size > 1:
-            output = tensor_model_parallel_reduce_scatter(output_parallel)
+            output = mla_tensor_model_parallel_reduce_scatter(output_parallel, comm_group=comm_group)
         else:
             output = output_parallel
 
@@ -943,7 +944,7 @@ class RowParallelLinearCross(LinearBase):
                 torch.empty(self.output_size, dtype=params_dtype))
             set_weight_attrs(self.bias, {
                 "output_dim": 0,
-                "weight_loader": self.weight_loader, 
+                "weight_loader": self.weight_loader,
             })
         else:
             self.register_parameter("bias", None)
@@ -984,7 +985,7 @@ class RowParallelLinearCross(LinearBase):
         # have a shape (such as in the case of AutoFP8)
         if len(loaded_weight.shape) == 0:
             loaded_weight = loaded_weight.reshape(1)
-        
+
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 

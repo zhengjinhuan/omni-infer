@@ -28,7 +28,8 @@ from omni.models.common.layers.fused_moe.fused_moe import (
     fused_experts_alltoall_ep, 
     fused_experts_allgather_ep, 
     fused_topk,
-    grouped_topk
+    grouped_topk,
+    GroupCoordinator
 )
 
 __all__ = ['_prune_hidden_states']
@@ -395,7 +396,8 @@ class FusedMoE(torch.nn.Module):
                 topk_weights: torch.Tensor,
                 topk_ids: torch.Tensor,
                 pertoken_scale: torch.Tensor,
-                attn_metadata: AttentionMetadata
+                attn_metadata: AttentionMetadata,
+                comm_group: Optional[GroupCoordinator] = None
                 ):
         if self.quant_method is None:
             raise RuntimeError("self.quant_method must not be None")
@@ -407,7 +409,8 @@ class FusedMoE(torch.nn.Module):
             topk_weights=topk_weights,
             topk_ids=topk_ids,
             pertoken_scale=pertoken_scale,
-            attn_metadata=attn_metadata
+            attn_metadata=attn_metadata,
+            comm_group=comm_group
         )
 
         if self.reduce_results and self.tp_size > 1:
