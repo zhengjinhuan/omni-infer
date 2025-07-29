@@ -710,7 +710,7 @@ class DeepseekMoE(nn.Module):
                                                                           is_prefill=False)
                 max_num_deployed_expert_per_rank = self.planner.get_max_num_deployed_expert_per_rank()
                 max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
-            elif self.experts is not None and self.planner.is_moe_layer(self.experts.moe_layer_idx):
+            elif self.experts is not None and self.experts.planner.is_moe_layer(self.experts.moe_layer_idx):
                 max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
                 max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
         if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
