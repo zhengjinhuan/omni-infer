@@ -32,6 +32,7 @@ import torchair as tng
 import numpy as np
 
 from vllm.config import CacheConfig, QuantizationConfig, VllmConfig
+from vllm.compilation.decorators import support_torch_compile
 from vllm.attention import Attention, AttentionMetadata
 from vllm.distributed import (divide, get_pp_group,
                               get_tensor_model_parallel_world_size,
@@ -688,52 +689,30 @@ class DeepseekMoE(nn.Module):
                 if model_extra_config.operator_opt_config.enable_prefetch:
                     torch_npu.npu_prefetch(self.experts.w13_weight, shared_output, MAX_PREFETCH_SIZE)
         
-        if LARGE_BATCH:
-            with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
-                topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
+        with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+            topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
 
-            input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
-                round0_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
-                round0_swp = get_round_cross_group_from_list(round=0).swap(round0_swp, method="all2allv")
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1'):
-                round1_swp = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
-                round1_swp = get_round_cross_group_from_list(round=1).swap(round1_swp, method="all2allv")
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
-                round2_swp = tng.scope.npu_wait_tensor(hidden_states_int8, round1_swp)
-                round2_swp = get_round_cross_group_from_list(round=2).swap(round2_swp, method="all2allv")
-            
-            with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
-                topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, round0_swp)
-                topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
-            round0_swp = tng.scope.npu_wait_tensor(round0_swp, input_ag)
-            round0_ag = all_gather_local(round0_swp, idx=0, dim=0)
-            round1_swp = tng.scope.npu_wait_tensor(round1_swp, round0_ag)
-            round1_ag = all_gather_local(round1_swp, idx=0, dim=0)
-            round2_swp = tng.scope.npu_wait_tensor(round2_swp, round1_ag)
-            round2_ag = all_gather_local(round2_swp, idx=0, dim=0)
+        input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
+        with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
+            round0_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
+            round0_swp = get_round_cross_group_from_list(round=0).swap(round0_swp, method="all2allv")
+        with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
+            round1_swp = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
+            round1_swp = get_round_cross_group_from_list(round=1).swap(round1_swp, method="all2allv")
+        with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
+            round2_swp = tng.scope.npu_wait_tensor(hidden_states_int8, round1_swp)
+            round2_swp = get_round_cross_group_from_list(round=2).swap(round2_swp, method="all2allv")
+        
+        with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+            topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, round0_swp)
+            topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
+        round0_swp = tng.scope.npu_wait_tensor(round0_swp, input_ag)
+        round0_ag = all_gather_local(round0_swp, idx=0, dim=0)
+        round1_swp = tng.scope.npu_wait_tensor(round1_swp, round0_ag)
+        round1_ag = all_gather_local(round1_swp, idx=0, dim=0)
+        round2_swp = tng.scope.npu_wait_tensor(round2_swp, round1_ag)
+        round2_ag = all_gather_local(round2_swp, idx=0, dim=0)
 
-        else:
-            with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
-                topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
-            
-            input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
-                round0_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
-                round0_swp = get_round_cross_group_from_list(round=0).swap(round0_swp, method="all2allv")
-                round0_ag = all_gather_local(round0_swp, idx=-1, dim=0)
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
-                round1_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
-                round1_swp = get_round_cross_group_from_list(round=1).swap(round1_swp, method="all2allv")
-                round1_ag = all_gather_local(round1_swp, idx=-2, dim=0)
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
-                round2_swp = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
-                round2_swp = get_round_cross_group_from_list(round=2).swap(round2_swp, method="all2allv")
-                round2_ag = all_gather_local(round2_swp, idx=-3, dim=0)
-
-            with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
-                topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, topk_local_all)
-                topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
 
         with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
             if SMALL_BATCH:
@@ -890,7 +869,6 @@ class DeepseekMoE(nn.Module):
 
         if hidden_states.shape[0] > chunk_size:
             out = []
-            prefill_long_seq = True
             hidden_states_list = torch.split(hidden_states, chunk_size)
             topk_weights_list = torch.split(topk_weights, chunk_size)
             topk_ids_list = torch.split(topk_ids, chunk_size)
@@ -900,8 +878,7 @@ class DeepseekMoE(nn.Module):
                                         topk_weights=topk_w,
                                         topk_ids=topk_id,
                                         pertoken_scale=scale,
-                                        attn_metadata=attn_metadata,
-                                        prefill_long_seq=prefill_long_seq))
+                                        attn_metadata=attn_metadata))
             return torch.cat(out)
 
         return self.experts(hidden_states=hidden_states,
@@ -1994,13 +1971,12 @@ class DeepseekDecoderLayer(nn.Module):
 class DeepseekV3Model(nn.Module):
     fall_back_to_pt_during_load = False
 
-    def __init__(self,
-                 config: PretrainedConfig,
-                 cache_config: Optional[CacheConfig] = None,
-                 quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = "",
-                 ):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
+
+        config = vllm_config.model_config.hf_config
+        cache_config = vllm_config.cache_config
+        quant_config = vllm_config.quant_config
 
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -2109,7 +2085,8 @@ class DeepseekV3Model(nn.Module):
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
         
         return hidden_states
-
+    
+@support_torch_compile
 class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
     
     packed_modules_mapping = {
@@ -2122,10 +2099,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
         super().__init__()
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
-        self.model = DeepseekV3Model(self.config,
-                                     vllm_config.cache_config,
-                                     self.quant_config,
-                                     prefix="model")
+        self.model = DeepseekV3Model(vllm_config=vllm_config, prefix="model")
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
@@ -2314,3 +2288,18 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
                 if kv_caches[i][1] is not None:
                     torch._dynamo.mark_static(kv_caches[i][1])
             self.input_marked = True
+
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = None
+        attn_metadata = kwargs.get('attn_metadata', None)
+        
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+
+        if attn_metadata is None:
+            return True
+
+        if attn_metadata.prefill:
+            return True
+
+        return False
