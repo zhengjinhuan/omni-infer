@@ -326,7 +326,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             return 0
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
-    def init_dram_weights(self, param_dict, first_k_dense_replace=3):
+    def init_dram_weights(self, param_dict, first_k_dense_replace):
         if self.enable_dynamic and not self.is_redundant_share_expert_rank():
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
