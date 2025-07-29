@@ -539,9 +539,8 @@ class DecodeConnectorWorker:
                 logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
                 continue
             elif len(meta.remote_block_ids) < len(meta.local_block_ids):
-                raise RuntimeError(
-                    f"Request {req_id} has fewer remote blocks ({len(meta.remote_block_ids)}) "
-                    f"than local blocks ({len(meta.local_block_ids)}).")
+                meta.local_block_ids = meta.local_block_ids[:len(meta.remote_block_ids)]
+                logger.debug("look ahead token num is greater than 0")
             elif len(meta.remote_block_ids) > len(meta.local_block_ids):
                 meta.remote_block_ids = meta.remote_block_ids[-len(meta.local_block_ids):]
             logger.info(
