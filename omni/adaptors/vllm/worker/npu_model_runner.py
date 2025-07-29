@@ -397,7 +397,8 @@ class NPUModelRunner(GPUModelRunner):
         else:
             sample_indices = cu_num_tokens - 1
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
-
+        if self.lora_config:
+            self.set_active_loras(self.input_batch, num_scheduled_tokens)
         return attn_metadata, graph_pad_size, sample_indices, positions, has_spec_tokens
 
     def _simple_prepare_inputs(
@@ -1041,7 +1042,11 @@ class NPUModelRunner(GPUModelRunner):
         with DeviceMemoryProfiler() if not int(os.getenv("NO_NPU_MOCK", "0")) else nullcontext() as m:  # noqa: SIM117
             self.model = get_model(vllm_config=self.vllm_config)
             if self.lora_config:
-                raise ValueError("LoRA model is not supported on NPU now.")
+                self.model = self.load_lora_model(self.model,
+                                                  self.model_config,
+                                                  self.scheduler_config,
+                                                  self.lora_config,
+                                                  self.device)
             if hasattr(self, "drafter"):
                 logger.info("Loading mtp model...")
                 original_arch = self.model_config.hf_config.architectures # ['DeepseekV3ForCausalLM']
