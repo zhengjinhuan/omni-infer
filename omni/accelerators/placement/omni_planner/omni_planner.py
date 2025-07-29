@@ -195,6 +195,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
     def get_max_num_deployed_expert_per_rank(self)-> int:
         return self.expert_mapping.get_max_num_deployed_expert_per_rank()
+    
     def is_expert_on_current_rank(
         self,
         layer_id: int,
@@ -274,7 +275,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
 
     @staticmethod
-    def get_deepseek_v3_moe_layer_idx(prefix: str) -> int:
+    def get_deepseek_v3_moe_layer_idx(prefix: str, first_k_dense_replace=3) -> int:
         """
         Calculate the adjusted DeepSeek-V3 MoE layer index from a model layer prefix.
 
@@ -302,9 +303,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         """
         # Parses prefix string like 'model.layers.3.mlp.experts'
         LAYER_ID_IDX = 2               # Position of the layer ID after splitting by '.'
-        FIRST_K_DENSE_REPLACE = 3      # From config.json: initial dense layers count
 
-        return int(prefix.split(sep='.')[LAYER_ID_IDX]) - FIRST_K_DENSE_REPLACE
+        return int(prefix.split(sep='.')[LAYER_ID_IDX]) - first_k_dense_replace
 
     def get_num_of_redundant_experts(self, moe_layer_idx: int, num_expert_per_device_origin=16, rank_device=0) -> int:
         """
@@ -326,7 +326,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             return 0
         return self.expert_mapping.get_num_of_redundant_experts(moe_layer_idx, num_expert_per_device_origin, rank_device)
 
-    def init_dram_weights(self, param_dict, first_k_dense_replace=3):
+    def init_dram_weights(self, param_dict, first_k_dense_replace):
         if self.enable_dynamic and not self.is_redundant_share_expert_rank():
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)

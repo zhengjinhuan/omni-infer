@@ -315,6 +315,7 @@ class DeepseekMoE(nn.Module):
                 prefix=f"{prefix}.experts",
                 scoring_func=config.scoring_func,
                 e_score_correction_bias=self.gate.e_score_correction_bias,
+                first_k_dense_replace=config.first_k_dense_replace
             )
         self.warm_up = True
         if config.n_shared_experts is not None and \
@@ -327,7 +328,7 @@ class DeepseekMoE(nn.Module):
                                            rank=self.global_rank, world_size=self.ep_size,
                                            num_experts=config.n_routed_experts,
                                            num_redundancy_shared_expert_rank = self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts")
+                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=config.first_k_dense_replace)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
 
             self.shared_experts = ReplicatedDeepseekMLP(
@@ -699,7 +700,7 @@ class DeepseekMoE(nn.Module):
                                                             layer=self.experts)
         max_num_deployed_expert=self.n_routed_experts
         if model_extra_config.operator_opt_config.use_omni_placement:
-            if self.shared_experts is not None and self.moe_layer_idx < 58:
+            if self.shared_experts is not None and self.planner.is_moe_layer(self.moe_layer_idx):
                 hidden_states, topk_ids, topk_weights = self.planner.plan(layer_idx_moe=self.moe_layer_idx,
                                                                           tokens=hidden_states,
                                                                           token_expert_ids=topk_ids,
@@ -709,7 +710,7 @@ class DeepseekMoE(nn.Module):
                                                                           is_prefill=False)
                 max_num_deployed_expert_per_rank = self.planner.get_max_num_deployed_expert_per_rank()
                 max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
-            elif self.experts is not None and self.experts.moe_layer_idx < 58:
+            elif self.experts is not None and self.experts.planner.is_moe_layer(self.experts.moe_layer_idx):
                 max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
                 max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
         if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
