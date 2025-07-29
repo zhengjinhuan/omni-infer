@@ -57,6 +57,7 @@ from omni.models.common.layers.attention.attention import AscendAttentionState
 from omni.models.common.layers.attention.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler
 from omni.adaptors.vllm.platform import NPUPlatform
+from omni.models.common.config.model_config import update_model_extra_config
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.distributed.kv_transfer import (get_kv_transfer_group,
                                           has_kv_transfer_group)
@@ -84,8 +85,8 @@ if TYPE_CHECKING:
 else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
 
-from omni.models.common.config.model_config import model_extra_config
-if model_extra_config.operator_opt_config.use_omni_placement:
+from omni.models.common.config import model_config
+if model_config.model_extra_config.operator_opt_config.use_omni_placement:
     from omni_planner import OmniPlanner
     _GLOBAL_STEP = 0
 
@@ -212,6 +213,7 @@ class NPUModelRunner(GPUModelRunner):
         self.decode_gear_list = self.vllm_config.npu_compilation_config.decode_gear_list
         self.max_batch_size = self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * (
                     1 + self.speculative_config.num_speculative_tokens)
+        update_model_extra_config(decode_gear_list=self.decode_gear_list)
 
     def _make_attention_mask(self, seq_lens, query_lens, position,
                              attn_state) -> torch.Tensor:
@@ -509,7 +511,7 @@ class NPUModelRunner(GPUModelRunner):
                 model_kwargs["attn_metadata"] = attn_metadata
             start_f = time.time()
 
-            if model_extra_config.operator_opt_config.use_omni_placement:
+            if model_config.model_extra_config.operator_opt_config.use_omni_placement:
                 is_prompt = False if attn_state == AscendAttentionState.DecodeOnly else True
                 global _GLOBAL_STEP
                 self.planner.place_experts()
@@ -1024,7 +1026,7 @@ class NPUModelRunner(GPUModelRunner):
 
     def profile_run(self) -> None:
         if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
-            hidden_states = self._dummy_run(self.max_batch_size * model_extra_config.parall_config.dp_size)
+            hidden_states = self._dummy_run(self.max_batch_size * model_config.model_extra_config.parall_config.dp_size)
         else:
             hidden_states = self._dummy_run(self.max_num_tokens)
 
@@ -1062,9 +1064,9 @@ class NPUModelRunner(GPUModelRunner):
             logger.info("Loading model weights took %.4f GB",
                         m.consumed_memory / float(2**30))
 
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_config.model_extra_config.operator_opt_config.use_omni_placement:
             param_dict = dict(self.model.named_parameters())
-            self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
+            self.planner = OmniPlanner(config_file= model_config.model_extra_config.operator_opt_config.omni_placement_config_path)
             self.planner.init_dram_weights(param_dict)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
@@ -1153,8 +1155,8 @@ class NPUModelRunner(GPUModelRunner):
             logger.warning(
                 "Skipping NPU graph capture. Please add "
                 "-O %s to use NPU graphs.", CompilationLevel.PIECEWISE)
-
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        
+        if model_config.model_extra_config.operator_opt_config.use_omni_placement:
             self.planner.start_dynamic_optimize_expert_load_balance()
 
     def _get_closest_gear(self, max_num_token):

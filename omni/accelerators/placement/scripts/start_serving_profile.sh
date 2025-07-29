@@ -9,9 +9,7 @@ export VLLM_ENABLE_PROFILING=1
 export VLLM_TORCH_PROFILER_DIR=/home/yjf/profiling
 
 export ENABLE_MOE_EP=1
-export ENABLE_ALLTOALL=1
 export DP_SIZE=4
-# unset ENABLE_ALLTOALL
 # unset DP_SIZE
 # unset VLLM_ENABLE_PROFILING
 # unset VLLM_TORCH_PROFILER_DIR

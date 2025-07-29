@@ -3,35 +3,15 @@
 
 from dataclasses import dataclass, field
 import json
+import threading
 from vllm.logger import logger
 import omni.adaptors.vllm.envs as envs
 
 @dataclass
 class ModelParallelConfig:
-    dense_mlp_tp_size: int = 1
-    embedding_tp_size: int = 1
-    
-    self_attention_dp_size: int = 1
-    self_attention_tp_size: int = 1
-
-    mlaprolog_dp_size: int = 1
-    mlaprolog_tp_size: int = 1
-
-    fa_dp_size: int = 1
-    fa_tp_size: int = 1
-
-    mlaepilog_dp_size: int = 1
-    mlaepilog_tp_size: int = 1
-    
-    moe_tp_size: int = 1
-    moe_ep_size: int = 1
-    lm_dp_size: int = 1
-    lm_tp_size: int = 1
-    pp_size: int = 1
     dp_size: int = 1
     o_proj_tp_size: int = 1
     
-    redundancy_expert_num: int = 0
     redundancy_shared_expert_num: int = 0
     
 @dataclass    
@@ -46,7 +26,6 @@ class ModelPrecisionDiffConfig:
 class ModelOperatorOptConfig:
     enable_kv_rmsnorm_rope_cache: bool = True
     prefill_dispatch_combine: bool = True
-    prefill_enable_mla_alltoall: bool = False
     enable_node_mlp: bool = False
     moe_multi_stream_tune: bool = False
     best_ep: bool = False
@@ -55,21 +34,17 @@ class ModelOperatorOptConfig:
     two_stage_comm: bool = False
     use_chunked_prefill: bool = False
     use_w8a8_dynamic_quant: bool = True
-    use_copy_blocks_op: bool = False
-    fused_experts_v2: bool = False
     gmm_nz: bool = False
     moe_dispatch_combine: bool = True
     use_omni_placement: bool = False
     omni_placement_config_path:str = None
-    enable_fusion_spec: bool = False
-    enable_alltoall: bool = False
     enable_moe_expert_parallel: bool = True
     use_a3_high_performance_cann: bool = True
     use_super_kernel: bool = False
     use_mlaprolog: bool = False
     opt_w2_scale_cast: bool = False
     enable_mc2_v2: bool = False
-    decode_gear_list: list[int] = field(default_factory=lambda: [16])
+    decode_gear_list: list[int] = field(default_factory=lambda: [1])
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
 
     enable_round_pipeline_comm: bool = False
@@ -89,7 +64,6 @@ class ModelOperatorOptConfig:
             raise ValueError(
                 "When use_omni_placement=True, omni_placement_config_path must be provided!"
             )
- 
 @dataclass      
 class ModelExtraConfig:
     parall_config: ModelParallelConfig = field(default_factory=ModelParallelConfig)
@@ -108,10 +82,10 @@ def init_model_extra_config() -> ModelExtraConfig:
             config_data = json.load(f)
         # Recursively create nested objects
         parall_config = ModelParallelConfig(**config_data['model_parallel_config'])
-        operator_opt_configonfig = ModelOperatorOptConfig(**config_data['operator_optimizition_config'])
+        operator_opt_config = ModelOperatorOptConfig(**config_data['operator_optimizition_config'])
         model_config = ModelExtraConfig(
                 parall_config=parall_config,
-                operator_opt_config=operator_opt_configonfig,
+                operator_opt_config=operator_opt_config,
                 model_extra_cfg_path=model_extra_cfg_path)
     except FileNotFoundError:
         logger.warning(f"[WARNING] Config file not found: {model_extra_cfg_path}, using default configuration.")
@@ -126,4 +100,28 @@ def init_model_extra_config() -> ModelExtraConfig:
 
     return model_config
 
-model_extra_config = init_model_extra_config()
+_model_extra_config = None
+_model_extra_config_lock = threading.Lock()
+
+def get_model_extra_config():
+    global _model_extra_config
+    if _model_extra_config is None:
+        with _model_extra_config_lock:
+            if _model_extra_config is None:
+                _model_extra_config = init_model_extra_config()
+    return _model_extra_config
+
+def update_model_extra_config(**kwargs):
+    global model_extra_config
+    model_extra_config = get_model_extra_config()
+    operator_opt_config = getattr(model_extra_config, 'operator_opt_config', None)
+    if operator_opt_config is not None and kwargs:
+        for key, value in kwargs.items():
+            if hasattr(operator_opt_config, key):
+                setattr(operator_opt_config, key, value)
+                logger.info(f"{key} loads from additional config: {value}")
+            else:
+                logger.warning(f"[WARNING] operator_opt_config has no attribute: {key}")
+
+model_extra_config = get_model_extra_config()
+
