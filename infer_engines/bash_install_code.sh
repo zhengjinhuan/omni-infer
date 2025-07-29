@@ -18,3 +18,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/async_schedule_multi_step.patch
 git apply --whitespace=nowarn $PATCH_ROOT/patch_support_fast_path_pull_kv.patch
 git apply --whitespace=nowarn $PATCH_ROOT/patch_support_prefilled_token_skip_tokenize.patch
 git apply --whitespace=nowarn $PATCH_ROOT/common_dependency.patch
+git apply --whitespace=nowarn $PATCH_ROOT/omni_attn.patch

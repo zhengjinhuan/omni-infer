@@ -22,7 +22,6 @@ from .kv_cache_manager import (
     OmniKVCacheManager,
 )
 from .pd import OmniBiGroupDataDistManager
-from .sched import _connector_finished, _update_waiting_for_remote_kv
 from .utils import compute_omni_attn_metadata
 
 
@@ -68,9 +67,6 @@ def apply_omni_attn_patch(enable=False, is_kv_consumer=True, config=None):
         orig_manager.KVCacheManager = OmniKVCacheManager
         scheduler.KVCacheBlocks = OmniKVCacheBlocks
         scheduler.KVCacheManager = OmniKVCacheManager
-
-        scheduler.Scheduler._connector_finished = _connector_finished
-        scheduler.Scheduler._update_waiting_for_remote_kv = _update_waiting_for_remote_kv
 
 
 __all__ = [
