@@ -593,9 +593,9 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
         topk_ids = torch.Tensor(cur_topk_list).int().view(hidden_states.shape[0], -1).npu()
     else:
         topk_ids = topk_ids.int()
-    max_num_deployed_expert = get_expert_parallel_world_size() * layer.num_experts
-    if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
-        max_num_deployed_expert = w1_scale.shape[0] * get_expert_parallel_world_size()
+    
+    max_num_deployed_expert = w1_scale.shape[0] * get_expert_parallel_world_size()
+    
     expert_range = [0, max_num_deployed_expert]
     expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
         hidden_states,

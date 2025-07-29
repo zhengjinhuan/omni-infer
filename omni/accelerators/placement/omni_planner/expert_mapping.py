@@ -91,6 +91,9 @@ class ExpertMapping:
                     f"evenly divisible by num_devices_per_host ({self.num_devices_per_host})")
         return pattern
 
+    def is_moe_layer(self, layer_idx_moe):
+        return layer_idx_moe < self.max_moe_layer_num
+
     # @calculate_time
     def is_expert_on_current_rank(
         self,
@@ -111,7 +114,7 @@ class ExpertMapping:
         Returns:
             Tuple (exists_on_rank, local_position)
         """
-        if layer_idx_moe > 57:
+        if not self.is_moe_layer(layer_idx_moe):
             return self._default_deployment_check(expert_id, current_rank, experts_per_rank)
 
 
