@@ -19,6 +19,7 @@ from omni.accelerators.pd.ranktable.local_info import LocalInfo
 from omni.accelerators.pd.ranktable.rank_table import GlobalRankTable
 from omni.accelerators.pd.utils import get_p_start_rank, prepare_ranktables
 from vllm.config import VllmConfig
+import os
 
 logger = init_logger(__name__)
 
@@ -236,6 +237,11 @@ class LLMDataDistManager:
         link_num = 0
         registed_link_infos = {}
         for prefill_server in prefill_servers:
+            # count the number of devices in the prefill server
+            self.num_cards_in_server = self.count_devices_for_server_ip(
+                self.data_dist_config.global_rank_table,
+                prefill_server.server_ip
+            )
             registed_link_info = {}
             prefill_cluster_id = self.data_dist_config.global_rank_table.get_cluster_id(prefill_server)
             for decode_server in decode_servers:
@@ -274,6 +280,51 @@ class LLMDataDistManager:
             return self.check_register_status()
         return registed_link_infos, self.check_register_status()
 
+    def count_devices_for_server_ip(self, data, target_ip):
+        """
+        Counts the total number of devices associated with a specific server IP address.
+        This method traverses a nested data structure (which can be either dicts or objects)
+        to find all devices assigned to servers with the given `target_ip`. The data structure
+        is expected to contain a `_rank_table_info` attribute or key, which in turn contains
+        a `server_group_list`. Each group contains a `server_list`, and each server has a
+        `server_ip` and a list of `device`s.
+        Args:
+            data (dict or object): The input data containing server and device information.
+            target_ip (str): The server IP address to search for.
+        Returns:
+            int: The total number of devices associated with the specified server IP.
+        """
+        if isinstance(data, dict):
+            rank_table_info = data.get('_rank_table_info', None)
+        else:
+            rank_table_info = getattr(data, '_rank_table_info', None)
+        if not rank_table_info:
+            return 0
+
+        if isinstance(rank_table_info, dict):
+            server_group_list = rank_table_info.get('server_group_list', [])
+        else:
+            server_group_list = getattr(rank_table_info, 'server_group_list', None)
+        if not server_group_list:
+            return 0
+
+        total_devices = 0
+        for group in server_group_list:
+            if isinstance(group, dict):
+                server_list = group.get('server_list', [])
+            else:
+                server_list = getattr(group, 'server_list', None)
+            for server in server_list:
+                if isinstance(server, dict):
+                    server_ip = server.get('server_ip', None)
+                    device_list = server.get('device', [])
+                else:
+                    server_ip = getattr(server, 'server_ip', None)
+                    device_list = getattr(server, 'device', None)
+                if server_ip == target_ip:
+                    total_devices += len(device_list)
+        return total_devices
+
     def _create_kv_link(
         self, prefill_server, decode_server, d_dp, p_start_rank, p_rank_start, p_rank_end,
         d_rank_start, d_rank_end, prefill_cluster_id, decode_cluster_id, link_num,
@@ -294,6 +345,9 @@ class LLMDataDistManager:
         d_clu_id = decode_cluster_id
 
         if self.multi_rank_pull_kv:
+            # for the case multi-node P instance, only the first node will register the link.
+            # If the first node is not the current node, we skip the link registration.
+            p_start_rank = p_start_rank % self.num_cards_in_server
             if self.data_dist_config.is_prefill:
                 cluster_rank_infos = {
                     rank: {prefill_cluster_id + p_start_rank: 0, decode_cluster_id + d_dp: 1}
