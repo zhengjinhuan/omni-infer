@@ -14,7 +14,7 @@ from vllm.platforms import current_platform
 __all__ = ["AscendCompressedTensorsW8A8Int8MoEMethod"]
 
 from omni.adaptors.vllm.distributed.parallel_state import (
-    get_expert_parallel_rank, get_expert_parallel_world_size)
+    get_expert_parallel_rank, get_expert_parallel_world_size, GroupCoordinator)
 from omni.models.common.config.model_config import model_extra_config
 
 from omni.models.common.layers.fused_moe.fused_moe import (
@@ -111,7 +111,8 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
             topk_weights: torch.Tensor,
             topk_ids: torch.Tensor,
             pertoken_scale: torch.Tensor,
-            attn_metadata: AttentionMetadata
+            attn_metadata: AttentionMetadata,
+            comm_group: Optional[GroupCoordinator] = None
     ) -> torch.Tensor:
         #ENABLE_OMNI_PLANNER
         max_num_deployed_expert_per_rank = self.n_routed_experts
@@ -124,8 +125,20 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
                 if is_prefill and model_extra_config.operator_opt_config.enable_pd_separated:
                     row_idx = torch.arange(topk_ids.numel(), device=current_platform.device_type,
                                        dtype=torch.int32).view(-1,x.shape[0]).transpose(0,1)
-                    out = moe_infer_fusion(layer, x, topk_ids, topk_weights, layer.w13_weight, layer.w2_weight,
-                                           layer.w13_weight_scale, layer.w2_weight_scale, row_idx, self.warm_up, is_prefill)
+                    out = moe_infer_fusion(
+                        layer,
+                        x,
+                        topk_ids,
+                        topk_weights,
+                        layer.w13_weight,
+                        layer.w2_weight,
+                        layer.w13_weight_scale,
+                        layer.w2_weight_scale,
+                        row_idx,
+                        self.warm_up,
+                        is_prefill,
+                        comm_group=comm_group
+                    )
                 else:
                     out = fused_experts_w8a8_moe_dispatch_combine(layer,
                                                                     x,

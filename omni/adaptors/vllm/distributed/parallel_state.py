@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, List
+from typing import Optional, List, Any
 
 import torch
 import torch.distributed
@@ -131,6 +131,12 @@ _CROSS_NEAR_COMM_LIST = None
 _CROSS_ROUND_COMM_LIST = None
 # kept for backward compatibility
 _LOCAL_WORLD: Optional[GroupCoordinator] = None
+_STREAM1_ATTN_GROUP: Optional[GroupCoordinator] = None
+_STREAM1_MLP_GROUP: Optional[GroupCoordinator] = None
+_STREAM1_MOE_GROUP: Optional[GroupCoordinator] = None
+GROUP_STREAM1_ATTN = "stream1_attn" # p侧使能双micro batch为第二个流创建 attention 层通信域
+GROUP_STREAM1_MLP = "stream1_mlp" # p侧使能双micro batch为第二个流创建 mlp 层通信域
+GROUP_STREAM1_MOE = "stream1_moe" # p侧使能双micro batch为第二个流创建 moe 层通信域
 _O_PROJ_WORLD: Optional[GroupCoordinator] = None
 
 
@@ -155,6 +161,11 @@ def initialize_model_parallel(
         initialize_local_comm_group_list(backend)
         initialize_cross_comm_group_list(backend)
 
+    if model_extra_config.operator_opt_config.enable_prefill_micro_batch:
+        initialize_stream1_attn_group(backend)
+        initialize_stream1_mlp_group(backend)
+        initialize_stream1_moe_group(backend)
+
     if model_extra_config.operator_opt_config.enable_round_pipeline_comm:
         num_nodes = torch.distributed.get_world_size() // get_npu_device_count()
         if num_nodes == 4:
@@ -171,6 +182,79 @@ def initialize_model_parallel(
     if model_extra_config.parall_config.o_proj_tp_size > 1:
         initialize_o_proj_tp_world_group(backend)
 
+
+def _init_parallel_group_factory(
+        group_name: str,
+        local_size: int,
+        backend: Optional[str] = None,
+) -> Any:
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
+    if local_size <= 0:
+        raise RuntimeError(f"local_size must be positive, got {local_size}")
+    world_size = torch.distributed.get_world_size()
+    if world_size % local_size != 0:
+        raise RuntimeError(f"world_size[{world_size}] must be divisible by local_size[{local_size}]")
+
+    num_groups = world_size // local_size
+    group_ranks = [
+        list(range(i * local_size, (i + 1) * local_size))
+        for i in range(num_groups)
+    ]
+    return init_model_parallel_group(
+        group_ranks=group_ranks,
+        local_rank=get_world_group().local_rank,
+        backend=backend or torch.distributed.get_backend(),
+        group_name=f'{group_name}'
+    )
+
+def  initialize_stream1_attn_group(backend: Optional[str] = None) -> None:
+    global _STREAM1_ATTN_GROUP
+    if _STREAM1_ATTN_GROUP is not None:
+        raise RuntimeError("stream1 attn group already initialized")
+    _STREAM1_ATTN_GROUP = _init_parallel_group_factory(
+        group_name=GROUP_STREAM1_ATTN,
+        local_size=torch.distributed.get_world_size(),
+        backend=backend,
+    )
+
+def initialize_stream1_mlp_group(backend: Optional[str] = None) -> None:
+    global _STREAM1_MLP_GROUP
+    if _STREAM1_MLP_GROUP is not None:
+        raise RuntimeError("stream1 mlp group already initialized")
+    _STREAM1_MLP_GROUP = _init_parallel_group_factory(
+        group_name=GROUP_STREAM1_MLP,
+        local_size=16,
+        backend=backend,
+    )
+
+def initialize_stream1_moe_group(backend: Optional[str] = None) -> None:
+    global _STREAM1_MOE_GROUP
+    if _STREAM1_MOE_GROUP is not None:
+        raise RuntimeError("stream1 moe group already initialized")
+    _STREAM1_MOE_GROUP = _init_parallel_group_factory(
+        group_name=GROUP_STREAM1_MOE,
+        local_size=get_expert_parallel_world_size(),
+        backend=backend,
+    )
+
+def get_stream1_attn_group() -> Any:
+    global _STREAM1_ATTN_GROUP
+    if _STREAM1_ATTN_GROUP is None:
+        raise RuntimeError("stream1 attn group not initialized")
+    return _STREAM1_ATTN_GROUP
+
+def get_stream1_mlp_group() -> Any:
+    global _STREAM1_MLP_GROUP
+    if _STREAM1_MLP_GROUP is None:
+        raise RuntimeError("stream1 mlp group not initialized")
+    return _STREAM1_MLP_GROUP
+
+def get_stream1_moe_group() -> Any:
+    global _STREAM1_MOE_GROUP
+    if _STREAM1_MOE_GROUP is None:
+        raise RuntimeError("stream1 moe group not initialized")
+    return _STREAM1_MOE_GROUP
 
 def get_mlp_tp_size():
     # Can be enabled
@@ -523,7 +607,7 @@ def initialize_round_cross_comm_group_list(backend) -> None:
                 [i + 1 * num_cross_groups, i + 2 * num_cross_groups]]
         group_ranks_round2.extend(ranks)
 
-    
+
     _CROSS_ROUND_COMM_LIST.append(init_model_parallel_group(group_ranks_round0,
                                     get_world_group().local_rank,
                                     backend,
@@ -554,7 +638,7 @@ def initialize_far_cross_comm_group_list(backend) -> None:
 
     backend = backend or torch.distributed.get_backend(
         get_world_group().device_group)
-    
+
     num_cross_groups: int = (world_size // server_size)
     global _CROSS_FAR_COMM_LIST
     assert _CROSS_FAR_COMM_LIST is None, (
@@ -584,7 +668,7 @@ def initialize_near_cross_comm_group_list(backend) -> None:
 
     backend = backend or torch.distributed.get_backend(
         get_world_group().device_group)
-    
+
     num_cross_groups: int = (world_size // server_size)
     global _CROSS_NEAR_COMM_LIST
     assert _CROSS_NEAR_COMM_LIST is None, (

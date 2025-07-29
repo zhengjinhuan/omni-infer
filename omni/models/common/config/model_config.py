@@ -41,6 +41,7 @@ class ModelOperatorOptConfig:
     enable_moe_expert_parallel: bool = True
     use_a3_high_performance_cann: bool = True
     use_super_kernel: bool = False
+    enable_prefill_micro_batch: bool = False
     use_mlaprolog: bool = False
     opt_w2_scale_cast: bool = False
     enable_mc2_v2: bool = False

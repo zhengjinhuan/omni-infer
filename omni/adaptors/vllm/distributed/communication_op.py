@@ -2,7 +2,7 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import torch
-
+from typing import Optional
 from vllm.distributed import (
     get_tp_group,
     get_ep_group,
@@ -16,7 +16,8 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_o_proj_world_group,
     get_far_cross_group_from_list,
     get_round_cross_group_from_list,
-    get_near_cross_group_from_list
+    get_near_cross_group_from_list,
+    GroupCoordinator,
 )
 from omni.models.common.config.model_config import model_extra_config
 import torchair as tng
@@ -33,6 +34,14 @@ def expert_parallel_all_gather(input_: torch.Tensor,  dim=-1) -> torch.Tensor:
 def tensor_model_parallel_reduce_scatter(input_: torch.Tensor) -> torch.Tensor:
     """All-reduce the input tensor across model parallel group."""
     return get_tp_group().reduce_scatter(input_)
+
+
+def mla_tensor_model_parallel_reduce_scatter(input_: torch.Tensor, comm_group: Optional[GroupCoordinator] = None) -> torch.Tensor:
+    """All-reduce the input tensor across model parallel group."""
+    if comm_group is None:
+        return get_tp_group().reduce_scatter(input_)
+    else:
+        return comm_group.reduce_scatter(input_)
 
 
 def reduce_scatter_two_stage(input_: torch.Tensor, idx: int, reverse=False) -> torch.Tensor:
@@ -75,12 +84,26 @@ def local_rank_all_gather(input_: torch.Tensor, dim=-1):
     return get_local_world_group().all_gather(input_, dim)
 
 
-def mlp_all_gather(input_: torch.Tensor, dim=-1):
-    return get_mlp_world_group().all_gather(input_, dim)
+def mlp_all_gather(input_: torch.Tensor, dim=-1, comm_group: Optional[GroupCoordinator] = None):
+    if comm_group is None:
+        return get_mlp_world_group().all_gather(input_, dim)
+    else:
+        return comm_group.all_gather(input_, dim)
 
 
-def mlp_reduce_scatter(input_: torch.Tensor) -> torch.Tensor:
-    return get_mlp_world_group().reduce_scatter(input_)
+def mlp_reduce_scatter(input_: torch.Tensor, comm_group: Optional[GroupCoordinator] = None) -> torch.Tensor:
+    if comm_group is None:
+        return get_mlp_world_group().reduce_scatter(input_)
+    else:
+        return comm_group.reduce_scatter(input_)
+
+
+def mla_tensor_model_parallel_all_gather(input_: torch.Tensor, dim: int = -1, comm_group: Optional[GroupCoordinator] = None) -> torch.Tensor:
+    """All-reduce the input tensor across model parallel group."""
+    if comm_group is None:
+        return get_tp_group().all_gather(input_, dim)
+    else:
+        return comm_group.all_gather(input_, dim)
 
 def o_proj_reduce_scatter(input_: torch.Tensor) -> torch.Tensor:
     return get_o_proj_world_group().reduce_scatter(input_)
@@ -134,8 +157,8 @@ def all_gather_pipeline(input_:torch.Tensor, idx: int, which_half: int, dim=-1, 
         stage2_far_cross = tng.scope.npu_wait_tensor(stage2_far_cross, stage1_near_cross_ag)
     else:
         stage2_far_cross = get_far_cross_group_from_list(idx).swap(stage1_near_cross, method='all2allv')
-        
-    
+
+
     stage2_far_cross_ag = get_local_group_from_list(idx).all_gather(stage2_far_cross, dim)
 
     if which_half == 0:
