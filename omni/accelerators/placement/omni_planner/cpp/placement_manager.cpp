@@ -106,11 +106,12 @@ const int MAX_LAYER = 58;
  * Calls initialize_components immediately and starts a separate thread to check
  * shared memory weights
  */
-Placement::Placement(int rank, int world_size, int num_devices_per_host,
-                     ClusterActivation *activations,
+Placement::Placement(int rank, int world_size, int hccl_comm_world_size,
+                     int num_devices_per_host, ClusterActivation *activations,
                      PlacementMapping *placement_mapping, char *root_info,
                      bool enable_dynamic)
     : rank_(rank), world_size_(world_size),
+      hccl_comm_world_size_(hccl_comm_world_size),
       num_devices_per_host_(num_devices_per_host), activations_(activations),
       mapping_(placement_mapping), enable_dynamic_(enable_dynamic) {
 
@@ -132,7 +133,7 @@ void Placement::initialize_components(char *root_info) {
     num_deploy_experts_ = mapping_->get_num_deploy_experts();
     num_deploy_experts_per_rank_ = num_deploy_experts_ / world_size_;
 
-    dist_ptr_ = new Distribution(rank_, world_size_, root_info,
+    dist_ptr_ = new Distribution(rank_, hccl_comm_world_size_, root_info,
                                  HcclCommInitType::RootInfoString);
     moe_weight_ = new MoEWeights(num_deploy_experts_, rank_, world_size_);
     optimizer_ = new PlacementOptimizer(mapping_, activations_);
@@ -248,16 +249,19 @@ void Placement::placement_manager(aclrtContext currentContext) {
 
     // 设置Stream
     MoEWeights *moe_weights = get_moe_weights();
-    while (!moe_weight_->isHbmInitialized()) {
-        std::this_thread::sleep_for(
-            std::chrono::seconds(1)); // Run every 1 mins
-    }
-    size_t expert_size =
-        moe_weight_->get_expert_size(); // 根据QueueSize 预分配 接受buffs
-
     Distribution *dist_ptr = get_distribution();
     dist_ptr->set_stream(stream);
-    dist_ptr->allocate_recv_buffs(expert_size);
+
+    if (enable_dynamic_ && !is_redundant_share_expert_rank()) {
+        while (!moe_weight_->isHbmInitialized()) {
+            std::this_thread::sleep_for(
+                std::chrono::seconds(1)); // Run every 1 seconds
+        }
+        size_t expert_size =
+            moe_weight_->get_expert_size(); // 根据QueueSize 预分配 接受buffs
+
+        dist_ptr->allocate_recv_buffs(expert_size);
+    }
 
     // 获取更新的 Mapping
     PlacementMapping *mapping = get_mapping();
@@ -520,7 +524,8 @@ void do_placement_optimizer(Placement &placement) {
     PlacementMapping *mapping = placement.get_mapping();
     std::unique_lock<std::mutex> lock = placement.acquire_lock();
     if (!placement.get_subthread_is_changing()) {
-        dist_ptr->copyAllFromCompletedQueueToHBM();
+        if (!placement.is_redundant_share_expert_rank())
+            dist_ptr->copyAllFromCompletedQueueToHBM();
         mapping->update_selector(placement.get_layer_update());
         placement.reset_layer_update();
     }
@@ -578,12 +583,12 @@ PYBIND11_MODULE(omni_placement, m) {
     // 4. 绑定 Placement 类
     py::class_<Placement>(m, "Placement")
         .def(py::init<>())
-        .def(py::init<int, int, int, ClusterActivation *, PlacementMapping *,
-                      char *, bool>(),
+        .def(py::init<int, int, int, int, ClusterActivation *,
+                      PlacementMapping *, char *, bool>(),
              py::arg("rank"), py::arg("world_size"),
-             py::arg("num_devices_per_host"), py::arg("activation"),
-             py::arg("placement_mapping"), py::arg("root_info"),
-             py::arg("enable_dynamic"))
+             py::arg("hccl_comm_world_size"), py::arg("num_devices_per_host"),
+             py::arg("activation"), py::arg("placement_mapping"),
+             py::arg("root_info"), py::arg("enable_dynamic"))
         .def(py::init<int, int, int, ClusterActivation *, size_t,
                       std::vector<int64_t>, int, size_t, std::vector<int64_t>,
                       int>(),
@@ -607,12 +612,12 @@ PYBIND11_MODULE(omni_placement, m) {
              py::arg("dtype"), py::arg("name"));
 
     py::class_<ClusterActivation>(m, "ClusterActivation")
-        .def(py::init<Tensor, int64_t, size_t, size_t, int, size_t,
+        .def(py::init<Tensor, int64_t, size_t, size_t, int, size_t, size_t,
                       size_t>(), // 按实际构造函数参数补全
              py::arg("npu_count"), py::arg("max_activation_count"),
              py::arg("layer"), py::arg("num_expert"), py::arg("window_size"),
-             py::arg("world_size"), py::arg("rank"),
-             "Initialize with expert activation")
+             py::arg("world_size"), py::arg("hccl_comm_world_size"),
+             py::arg("rank"), "Initialize with expert activation")
         .def("getClusterTotalActivationCount",
              &ClusterActivation::getClusterTotalActivationCount,
              py::arg("layer"), py::arg("expert"), "")

@@ -35,3 +35,6 @@ class Config:
                 setattr(self, key, sub_obj)
             else:
                 setattr(self, key, value)
+    
+    def getattr(self, key, default_value):
+        return getattr(self, key, default_value)
