@@ -39,5 +39,12 @@
         "decode_gear_list": [
             16
         ]
+    },
+    "tfas_scheduler_config": {
+    "intercept": 0.1259,
+    "slope": 0.035,
+    "token_budget": 9154,
+    "waiting_time_out": 20,
+    "profiler_grow_frequency": 20
     }
 }

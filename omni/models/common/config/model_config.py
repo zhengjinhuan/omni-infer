@@ -65,12 +65,22 @@ class ModelOperatorOptConfig:
             raise ValueError(
                 "When use_omni_placement=True, omni_placement_config_path must be provided!"
             )
+
+@dataclass
+class TFASSchedulerConfig: 
+    intercept: float= 0.1259
+    slope: float = 0.035
+    token_budget: int = 9154
+    waiting_time_out: int = 20
+    profiler_grow_frequency: int = 20
+
 @dataclass      
 class ModelExtraConfig:
     parall_config: ModelParallelConfig = field(default_factory=ModelParallelConfig)
     profiling_config: ModelProfilingConfig = field(default_factory=ModelProfilingConfig)
     precision_diff_config: ModelPrecisionDiffConfig = field(default_factory=ModelPrecisionDiffConfig)
     operator_opt_config: ModelOperatorOptConfig = field(default_factory=ModelOperatorOptConfig)
+    tfas_scheduler_config: TFASSchedulerConfig = field(default_factory=TFASSchedulerConfig)
     model_extra_cfg_path: str = ""
     
 
@@ -84,9 +94,15 @@ def init_model_extra_config() -> ModelExtraConfig:
         # Recursively create nested objects
         parall_config = ModelParallelConfig(**config_data['model_parallel_config'])
         operator_opt_config = ModelOperatorOptConfig(**config_data['operator_optimizition_config'])
+        if "tfas_scheduler_config" in config_data:
+            tfas_scheduler_config = TFASSchedulerConfig(**config_data['tfas_scheduler_config'])
+        else:
+            tfas_scheduler_config = TFASSchedulerConfig()
+
         model_config = ModelExtraConfig(
                 parall_config=parall_config,
                 operator_opt_config=operator_opt_config,
+                tfas_scheduler_config=tfas_scheduler_config,
                 model_extra_cfg_path=model_extra_cfg_path)
     except FileNotFoundError:
         logger.warning(f"[WARNING] Config file not found: {model_extra_cfg_path}, using default configuration.")
