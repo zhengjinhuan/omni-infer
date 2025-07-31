@@ -52,12 +52,12 @@ from vllm.v1.sample.sampler import Sampler
 from vllm.v1.utils import bind_kv_cache
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 
-from omni.models.common.layers.attention.attention import AttentionMaskBuilder
-from omni.models.common.layers.attention.attention import AscendAttentionState
-from omni.models.common.layers.attention.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder
+from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler
 from omni.adaptors.vllm.platform import NPUPlatform
-from omni.models.common.config.model_config import update_model_extra_config
+from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.distributed.kv_transfer import (get_kv_transfer_group,
                                           has_kv_transfer_group)
@@ -75,8 +75,6 @@ from contextlib import nullcontext, contextmanager
 
 from abc import abstractmethod, ABCMeta
 
-omni_use_dsv3 = int(os.getenv("OMNI_USE_DSV3", "0"))
-
 MTP_METHOD_NAME = "deepseek_mtp"
 
 if TYPE_CHECKING:
@@ -85,8 +83,7 @@ if TYPE_CHECKING:
 else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
 
-from omni.models.common.config import model_config
-if model_config.model_extra_config.operator_opt_config.use_omni_placement:
+if model_extra_config.operator_opt_config.use_omni_placement:
     from omni_planner import OmniPlanner
     _GLOBAL_STEP = 0
 
@@ -187,7 +184,7 @@ class NPUModelRunner(GPUModelRunner):
         self.max_num_blocks_per_req = cdiv(self.model_config.max_model_len,
                                            self.block_size)
 
-        mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", 10000)
+        mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", 2048)
         self.attn_mask_len = min(self.model_config.max_model_len,
                                  int(mask_len))
         self.attn_mask_builder = AttentionMaskBuilder.initialize_from_len(
@@ -326,8 +323,6 @@ class NPUModelRunner(GPUModelRunner):
             # The reduce_scatter in the TP communication domain after embedding, P goes through this
             graph_pad_size = _get_pad_size(num_input_tokens)
 
-        if not (omni_use_dsv3 or (attn_state == AscendAttentionState.DecodeOnly and self.enable_torchair_graph_mode)):
-            graph_pad_size = 0
 
         if graph_pad_size >= 0:
             padding_positions = torch.zeros(graph_pad_size,
@@ -489,6 +484,7 @@ class NPUModelRunner(GPUModelRunner):
                                       dtype=input_ids.dtype,
                                       device=input_ids.device)
                 input_ids = torch.cat([input_ids, padding])
+            model_kwargs["selected_indices"] = None
         else:
             if graph_pad_size >= 0:
                 vocab_size = self.model_config.get_vocab_size()
@@ -496,8 +492,8 @@ class NPUModelRunner(GPUModelRunner):
                                         dtype=input_ids.dtype,
                                         device=input_ids.device)
                 input_ids = torch.cat([input_ids, padding])
-            if omni_use_dsv3:
-                model_kwargs["prefill_padding_or_selected_indices"] = sample_indices
+
+            model_kwargs["selected_indices"] = sample_indices
 
         start_fc = time.time()
         start_fc_exit = 0
@@ -507,12 +503,11 @@ class NPUModelRunner(GPUModelRunner):
                                  num_tokens=num_input_tokens):
             start_setup_connector = time.time()
             self.maybe_setup_kv_connector(scheduler_output)
-            if omni_use_dsv3:
-                model_kwargs["kv_caches"] = self.kv_caches
-                model_kwargs["attn_metadata"] = attn_metadata
+            model_kwargs["kv_caches"] = self.kv_caches
+            model_kwargs["attn_metadata"] = attn_metadata
             start_f = time.time()
 
-            if model_config.model_extra_config.operator_opt_config.use_omni_placement:
+            if model_extra_config.operator_opt_config.use_omni_placement:
                 is_prompt = False if attn_state == AscendAttentionState.DecodeOnly else True
                 global _GLOBAL_STEP
                 self.planner.place_experts()
@@ -567,10 +562,6 @@ class NPUModelRunner(GPUModelRunner):
                                 inputs_embeds=None,
                                 **model_kwargs,
                             )
-                    if not omni_use_dsv3:
-                        hidden_states = forward_results
-                    else:
-                        raw_hidden_states, hidden_states = forward_results
                     end_model = time.time()
                     cost_model = end_model - start_time
                     cost_os_env = start_time - start_os_env
@@ -599,43 +590,31 @@ class NPUModelRunner(GPUModelRunner):
                                 prof_save_path + "_generate")) as prof:
                         for _ in range(6):
                             torch.npu.synchronize()
-                            if not omni_use_dsv3:
-                                    hidden_states = self.model(
-                                        input_ids=input_ids,
-                                        positions=positions,
-                                        intermediate_tensors=intermediate_tensors,
-                                        inputs_embeds=None
-                                    )
-                            else:
-                                raw_hidden_states, hidden_states = self.model(
-                                        input_ids=input_ids,
-                                        positions=positions,
-                                        intermediate_tensors=intermediate_tensors,
-                                        inputs_embeds=None,
-                                        **model_kwargs,
-                                    )
-                            torch.npu.synchronize()
-                            prof.step()
-                else:
-                    if not omni_use_dsv3:
-                            hidden_states = self.model(
-                                input_ids=input_ids,
-                                positions=positions,
-                                intermediate_tensors=intermediate_tensors,
-                                inputs_embeds=None
-                            )
-                    else:
-                        raw_hidden_states, hidden_states = self.model(
+                            forward_results = self.model(
                                 input_ids=input_ids,
                                 positions=positions,
                                 intermediate_tensors=intermediate_tensors,
                                 inputs_embeds=None,
                                 **model_kwargs,
                             )
+                            torch.npu.synchronize()
+                            prof.step()
+                else:
+                    forward_results = self.model(
+                        input_ids=input_ids,
+                        positions=positions,
+                        intermediate_tensors=intermediate_tensors,
+                        inputs_embeds=None,
+                        **model_kwargs,
+                    )
             self.maybe_wait_for_kv_save()
             finished_sending, finished_recving = (
             self.get_finished_kv_transfers(scheduler_output))
             start_fc_exit = time.time()
+        if isinstance(forward_results, tuple):
+            raw_hidden_states, hidden_states = forward_results
+        else:
+            hidden_states = forward_results
         start_ret = time.time()
         cost_before_fc = start_fc - start_before_f
         cost_fc = start_ret - start_fc
@@ -837,7 +816,7 @@ class NPUModelRunner(GPUModelRunner):
                         attn_metadata=attn_metadata,
                         previous_hidden_states=raw_hidden_states,
                         intermediate_tensors=None,
-                        prefill_padding_or_selected_indices=None,
+                        selected_indices=None,
                         inputs_embeds=None,
                         require_hidden_states=True,
                     )
@@ -862,7 +841,7 @@ class NPUModelRunner(GPUModelRunner):
                         kv_caches=self.kv_caches[-self.speculative_config.num_speculative_tokens + layer_idx:],
                         attn_metadata=attn_metadata,
                         previous_hidden_states=raw_hidden_states,
-                        prefill_padding_or_selected_indices=sample_indices,
+                        selected_indices=sample_indices,
                         intermediate_tensors=None,
                         inputs_embeds=None,
                         require_hidden_states=True,
@@ -913,10 +892,10 @@ class NPUModelRunner(GPUModelRunner):
                                     intermediate_tensors=intermediate_tensors,
                                     inputs_embeds=inputs_embeds,
                                 )
-                if not omni_use_dsv3:
-                    hidden_states = forward_results
-                else:
+                if isinstance(forward_results, tuple):
                     raw_hidden_states, hidden_states = forward_results
+                else:
+                    hidden_states = forward_results
                 if self.use_spec_decode and self.speculative_config.method in (MTP_METHOD_NAME):
                     for layer_idx in range(self.speculative_config.num_speculative_tokens):
                         self.drafter_list[layer_idx](
@@ -955,15 +934,15 @@ class NPUModelRunner(GPUModelRunner):
                     self.attn_metadata_builders[kv_cache_group_id].mark_static_for_attn_metadata(attn_metadata_i)
                 for layer_name in kv_cache_group_spec.layer_names:
                     attn_metadata[layer_name] = attn_metadata_i
+            model_kwargs = {}
+            model_kwargs["kv_caches"] = self.kv_caches
+            model_kwargs["attn_metadata"] = attn_metadata
+            model_kwargs["selected_indices"] = None
             with set_forward_context(attn_metadata, self.vllm_config, num_tokens=num_tokens):
                 is_pd_seperate_d = self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
                 is_not_pd_seperate_and_capture_model = self.vllm_config.kv_transfer_config is None and is_capture_model
                 if self.enable_torchair_graph_mode and (is_pd_seperate_d or is_not_pd_seperate_and_capture_model):
                     logger.debug("Start running dummy compiled model.")
-                    model_kwargs = {}
-                    if omni_use_dsv3:
-                        model_kwargs["kv_caches"] = self.kv_caches
-                        model_kwargs["attn_metadata"] = attn_metadata
                     if isinstance(self.model, GraphCompileConfiguration):
                         self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                     else:
@@ -975,11 +954,11 @@ class NPUModelRunner(GPUModelRunner):
                         inputs_embeds=None,
                         **model_kwargs,
                     )
-                    if not omni_use_dsv3:
-                        hidden_states = forward_results
-                    else:
+                    if isinstance(forward_results, tuple):
                         raw_hidden_states, hidden_states = forward_results
-                    if self.use_spec_decode and self.speculative_config.method in (MTP_METHOD_NAME,):
+                    else:
+                        hidden_states = forward_results
+                    if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
                         if not self.dummy_drafter_mark_static:
                             torch._dynamo.mark_static(input_ids)
                             torch._dynamo.mark_static(raw_hidden_states)
@@ -992,25 +971,24 @@ class NPUModelRunner(GPUModelRunner):
                                 attn_metadata=attn_metadata,
                                 previous_hidden_states=raw_hidden_states,
                                 intermediate_tensors=None,
-                                prefill_padding_or_selected_indices=None,
+                                selected_indices=None,
                                 inputs_embeds=None,
                                 require_hidden_states=True,
                             )
                 else:
                     logger.debug("Start running dummy eager model.")
-                    if not omni_use_dsv3:
-                        hidden_states = self.model(input_ids=input_ids,
-                                            positions=positions,
-                                            intermediate_tensors=intermediate_tensors,
-                                            inputs_embeds=inputs_embeds)
+                    forward_results = self.model(
+                        input_ids=input_ids,
+                        positions=positions,
+                        intermediate_tensors=intermediate_tensors,
+                        inputs_embeds=inputs_embeds,
+                        **model_kwargs
+                    )
+                    if isinstance(forward_results, tuple):
+                        raw_hidden_states, hidden_states = forward_results
                     else:
-                        raw_hidden_states, hidden_states = self.model(input_ids=input_ids,
-                                            positions=positions,
-                                            intermediate_tensors=intermediate_tensors,
-                                            inputs_embeds=inputs_embeds,
-                                            kv_caches=self.kv_caches,
-                                            attn_metadata=attn_metadata)
-                    if self.use_spec_decode and self.speculative_config.method in (MTP_METHOD_NAME):
+                        hidden_states = forward_results
+                    if self.use_spec_decode and self.speculative_config.method in ('deepseek_mtp'):
                         for layer_idx in range(self.speculative_config.num_speculative_tokens):
                             self.drafter_list[layer_idx](
                                 input_ids=input_ids,
@@ -1027,7 +1005,7 @@ class NPUModelRunner(GPUModelRunner):
 
     def profile_run(self) -> None:
         if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
-            hidden_states = self._dummy_run(self.max_batch_size * model_config.model_extra_config.parall_config.dp_size)
+            hidden_states = self._dummy_run(self.max_batch_size * model_extra_config.parall_config.dp_size)
         else:
             hidden_states = self._dummy_run(self.max_num_tokens)
 
@@ -1069,9 +1047,9 @@ class NPUModelRunner(GPUModelRunner):
             logger.info("Loading model weights took %.4f GB",
                         m.consumed_memory / float(2**30))
 
-        if model_config.model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.operator_opt_config.use_omni_placement:
             param_dict = dict(self.model.named_parameters())
-            self.planner = OmniPlanner(config_file= model_config.model_extra_config.operator_opt_config.omni_placement_config_path)
+            self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
             self.planner.init_dram_weights(param_dict, first_k_dense_replace=self.model.config.first_k_dense_replace)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
@@ -1161,7 +1139,7 @@ class NPUModelRunner(GPUModelRunner):
                 "Skipping NPU graph capture. Please add "
                 "-O %s to use NPU graphs.", CompilationLevel.PIECEWISE)
         
-        if model_config.model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.operator_opt_config.use_omni_placement:
             self.planner.start_dynamic_optimize_expert_load_balance()
 
     def _get_closest_gear(self, max_num_token):

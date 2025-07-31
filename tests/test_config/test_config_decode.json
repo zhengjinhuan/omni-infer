@@ -1,18 +1,8 @@
 {
     "model_parallel_config": {
-        "dp_size": 64,
-        "o_proj_tp_size": 1
-    },
-    "profiling_config": {
-        "prof_output_path": ".",
-        "prof_dump_enable": false,
-        "perf_cost_enable": false
-    },
-    "precision_diff": {
-        "diff_enable": false,
-        "fx_graph_dump": false,
-        "ge_graph_dump": false,
-        "dump_path": "."
+        "dense_mlp_tp_size": 4,
+        "o_proj_tp_size": 1,
+        "dp_size": 64
     },
     "operator_optimizition_config": {
         "enable_kv_rmsnorm_rope_cache": true,
@@ -35,8 +25,9 @@
         "use_mlaprolog": false,
         "opt_w2_scale_cast": true,
         "enable_mc2_v2": false,
-        "decode_gear_list": [
-            64
-        ]
+        "use_prefetch": true,
+        "expert_gate_up_prefetch": 70,
+        "expert_down_prefetch": 28, 
+        "attn_prefetch": 96 
     }
 }

@@ -17,12 +17,8 @@
 # limitations under the License.
 # This file is a part of the vllm-ascend project.
 #
-
-import numpy as np
 import torch
-import torch_npu
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Optional
 
 
 class AttentionMaskBuilder:

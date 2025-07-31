@@ -77,13 +77,6 @@ class NPUWorker(WorkerBase):
             # Additional parameters for compatibility with vllm
             **kwargs):
         """Initialize the worker for Ascend."""
-        # register patch for vllm
-        # from vllm_ascend.utils import adapt_patch
-        # adapt_patch()
-        # # Register ops when worker init.
-        # from omni. import ops
-        # ops.register_dummy_fusion_op()
-        # _register_atb_extensions()
 
         if envs.VLLM_ENABLE_V1_MULTIPROCESSING:
             if envs.VLLM_USE_RAY_SPMD_WORKER:

@@ -1,17 +1,8 @@
 {
     "model_parallel_config": {
+        "dense_mlp_tp_size": 4,
+        "o_proj_tp_size": 1,
         "dp_size": 1
-    },
-    "profiling_config": {
-        "prof_output_path": ".",
-        "prof_dump_enable": false,
-        "perf_cost_enable": false
-    },
-    "precision_diff": {
-        "diff_enable": false,
-        "fx_graph_dump": false,
-        "ge_graph_dump": false,
-        "dump_path": "."
     },
     "operator_optimizition_config": {
         "enable_kv_rmsnorm_rope_cache": true,
@@ -32,9 +23,6 @@
         "use_super_kernel": false,
         "use_mlaprolog": false,
         "opt_w2_scale_cast": false,
-        "control_accept_rate": -1,
-        "decode_gear_list": [
-            16
-        ]
+        "control_accept_rate": -1
     }
 }

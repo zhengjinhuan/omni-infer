@@ -25,7 +25,7 @@ from vllm import utils
 from vllm.utils import FlexibleArgumentParser, supports_dynamo, vllm_lib
 from typing import Callable, List, Optional, Tuple
 
-from omni.adaptors.vllm.utils import ASCEND_QUATIZATION_METHOD
+from omni.adaptors.vllm.utils import SUPPORTED_QUANTIZATION_METHODS
 
 CUSTOM_OP_ENABLED = False  # Custom operations not enabled for Omni inference
 
@@ -175,8 +175,9 @@ class ConfigUpdater:
         if parser is None:
             return
         quant_action = parser._option_string_actions.get('--quantization')
-        if quant_action and hasattr(quant_action, 'choices') and ASCEND_QUATIZATION_METHOD not in quant_action.choices:
-            quant_action.choices.append(ASCEND_QUATIZATION_METHOD)
+        for quant_method in SUPPORTED_QUANTIZATION_METHODS:
+            if quant_action and hasattr(quant_action, 'choices') and quant_method not in quant_action.choices:
+                quant_action.choices.append(quant_method)
 
     @classmethod
     def update_vllm_config(cls, vllm_config: 'VllmConfig') -> None:
@@ -272,7 +273,7 @@ class NPUPlatform(Platform):
     ray_device_key: str = "NPU"
     device_control_env_var: str = "ASCEND_RT_VISIBLE_DEVICES"
     dispatch_key: str = "PrivateUse1"
-    supported_quantization: list[str] = [ASCEND_QUATIZATION_METHOD]
+    supported_quantization: list[str] = SUPPORTED_QUANTIZATION_METHODS
 
     def __init__(self):
         """Initialize the NPU platform and configure environment."""
@@ -297,7 +298,7 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
-        from omni.quantization.quant_config import AscendQuantConfig  # noqa: F401
+        import omni.quantization  # noqa: F401
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:
@@ -410,8 +411,8 @@ class NPUPlatform(Platform):
             str: The module path to the attention backend class.
         """
         ensure_v1_engine()
-        return ("omni.models.common.layers.attention.mla.AscendMLABackend" if use_mla
-                else "omni.models.common.layers.attention.attention.AscendAttentionBackend")
+        return ("omni.models.common.layers.attention.backend.mla.AscendMLABackend" if use_mla
+                else "omni.models.common.layers.attention.backend.attention.AscendAttentionBackend")
 
     @classmethod
     def get_punica_wrapper(cls) -> str:

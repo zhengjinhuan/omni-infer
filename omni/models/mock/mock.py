@@ -231,9 +231,10 @@ def mock_model_class_factory(base_class: type) -> type:
         positions: torch.Tensor,
         kv_caches: Optional[List[torch.Tensor]] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+        selected_indices: Optional[torch.Tensor] = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
+        **kwargs
     ) -> Union[torch.Tensor, IntermediateTensors]:
         """
         Performs a mock forward pass of the model.
@@ -288,7 +289,7 @@ def mock_model_class_factory(base_class: type) -> type:
                     positions,
                     kv_caches,
                     attn_metadata,
-                    prefill_padding_or_selected_indices,
+                    selected_indices,
                     intermediate_tensors,
                     inputs_embeds,
                 )
@@ -308,7 +309,7 @@ def mock_model_class_factory(base_class: type) -> type:
             self,
             input_ids,
             positions,
-            prefill_padding_or_selected_indices,
+            selected_indices,
             intermediate_tensors,
             inputs_embeds,
             block_table,
@@ -327,7 +328,7 @@ def mock_model_class_factory(base_class: type) -> type:
                 self,
                 input_ids,
                 positions,
-                prefill_padding_or_selected_indices,
+                selected_indices,
                 intermediate_tensors,
                 inputs_embeds,
                 block_table,
@@ -411,7 +412,7 @@ def mock_model_class_factory(base_class: type) -> type:
         self,
         input_ids,
         positions,
-        prefill_padding_or_selected_indices,
+        selected_indices,
         intermediate_tensors,
         inputs_embeds,
         block_table,
@@ -451,7 +452,7 @@ def mock_model_class_factory(base_class: type) -> type:
                 positions,
                 kv_caches,
                 attn_metadata,
-                prefill_padding_or_selected_indices,
+                selected_indices,
                 intermediate_tensors,
                 inputs_embeds,
             )
@@ -494,7 +495,7 @@ def mock_model_class_factory(base_class: type) -> type:
         self,
         input_ids,
         positions,
-        prefill_padding_or_selected_indices,
+        selected_indices,
         intermediate_tensors,
         inputs_embeds,
         block_table,
@@ -528,7 +529,7 @@ def mock_model_class_factory(base_class: type) -> type:
                 positions,
                 kv_caches,
                 attn_metadata,
-                prefill_padding_or_selected_indices,
+                selected_indices,
                 intermediate_tensors,
                 inputs_embeds,
             )
@@ -586,7 +587,7 @@ def mock_model_class_factory(base_class: type) -> type:
         positions,
         kv_caches,
         attn_metadata,
-        prefill_padding_or_selected_indices,
+        selected_indices,
         intermediate_tensors,
         inputs_embeds,
     ):
@@ -624,7 +625,7 @@ def mock_model_class_factory(base_class: type) -> type:
                 positions,
                 kv_caches,
                 attn_metadata,
-                prefill_padding_or_selected_indices,
+                selected_indices,
                 intermediate_tensors,
                 inputs_embeds,
             )
