@@ -125,8 +125,10 @@ def update_model_extra_config(**kwargs):
             if hasattr(operator_opt_config, key):
                 setattr(operator_opt_config, key, value)
                 logger.info(f"{key} loads from additional config: {value}")
-            else:
-                logger.warning(f"[WARNING] operator_opt_config has no attribute: {key}")
+        if 'enable_torchair_graph_mode' in kwargs and not kwargs['enable_torchair_graph_mode']:
+            operator_opt_config.moe_multi_stream_tune = False
+            operator_opt_config.use_super_kernel = False
+            operator_opt_config.use_prefetch = False
 
 model_extra_config = get_model_extra_config()
 

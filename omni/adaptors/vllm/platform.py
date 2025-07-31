@@ -174,10 +174,6 @@ class ConfigUpdater:
         """
         if parser is None:
             return
-        quant_action = parser._option_string_actions.get('--quantization')
-        for quant_method in SUPPORTED_QUANTIZATION_METHODS:
-            if quant_action and hasattr(quant_action, 'choices') and quant_method not in quant_action.choices:
-                quant_action.choices.append(quant_method)
 
     @classmethod
     def update_vllm_config(cls, vllm_config: 'VllmConfig') -> None:
