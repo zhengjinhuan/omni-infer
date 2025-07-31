@@ -22,7 +22,6 @@
         "enable_moe_expert_parallel": true,
         "use_a3_high_performance_cann": false,
         "use_super_kernel": false,
-        "prefill_enable_mla_alltoall": false,
         "use_mlaprolog": false,
         "opt_w2_scale_cast": false,
         "enable_round_pipeline_comm": false,
