@@ -1700,7 +1700,14 @@ class DeepseekV3Model(nn.Module):
         if not right:
             right.append(left.pop())
             split_index -= 1
-        return left, right, split_index
+        # try to make tokens processed by two streams as evently as possible
+        gap1 = abs(sum(left) - sum(right))
+        gap2 = abs(sum(left) - sum(right) - 2 * left[-1])
+        if gap1 < gap2:
+            return left, right, split_index
+        else:
+            right.insert(0, left.pop())
+            return left, right, split_index - 1
 
     def pad_tensor(self, tensor, pad_size, pad_value=0):
         """Pad tensor with specified value along first dimension."""

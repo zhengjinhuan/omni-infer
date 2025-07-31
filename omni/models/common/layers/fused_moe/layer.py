@@ -59,7 +59,8 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
             topk_weights: torch.Tensor,
             topk_ids: torch.Tensor,
             pertoken_scale: torch.Tensor,
-            attn_metadata: AttentionMetadata
+            attn_metadata: AttentionMetadata,
+            comm_group: Optional[GroupCoordinator]
     ) -> torch.Tensor:
 
         return self.forward_npu(layer=layer,
