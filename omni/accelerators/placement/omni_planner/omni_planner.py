@@ -336,11 +336,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
     def record_activation(self, layer_idx_moe, expert_token_num, is_prefill):
         if  self.is_moe_layer(layer_idx_moe):
-            if is_prefill:
-                self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
-            else:
-                with tng.scope.npu_stream_switch('21'):
-                    self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
+            self.npu_activation_count[layer_idx_moe:layer_idx_moe+1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe+1]+expert_token_num[None]) % self.max_activation_count
 
 # Example usage
 if __name__ == "__main__":
