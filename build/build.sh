@@ -65,10 +65,6 @@ cd $BUILD_ROOT
 python -m build
 mv dist/omni_i* $BUILD_ROOT/build/dist
 
-cd $BUILD_ROOT/omni/accelerators/placement
-python setup.py bdist_wheel
-mv dist/omni_placement* $BUILD_ROOT/build/dist
-
 cd $BUILD_ROOT/omni/accelerators/sched/global_proxy
 bash build.sh
 

@@ -35,6 +35,7 @@
     DOCKER_NAME_D: "you_name_omni_infer_decode"
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
+    ASCEND_TOOLKIT_HOME: "/usr/local/Ascend/latest"
 
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "pd_score_balance"
@@ -414,6 +415,7 @@
       -e NNODES=$NNODES
       -e NODE_RANK=$NODE_RANK
       -e NODE_IP_LIST=$NODE_IP_LIST
+      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME 
       -d $DOCKER_NAME_P
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
@@ -433,6 +435,7 @@
       -e SOCKET_IFNAME=$SOCKET_IFNAME
       -e NUM_SERVERS=$NUM_SERVERS
       -e HOST=$HOST
+      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME 
       -d $DOCKER_NAME_D
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
 
