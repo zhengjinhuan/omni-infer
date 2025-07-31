@@ -239,7 +239,6 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
               num_actual_tokens,
               max_query_len,
               common_prefix_len,
-              common_attn_metadata=None,
               graph_pad_size=-1):
 
         block_table = self.runner.input_batch.block_table[

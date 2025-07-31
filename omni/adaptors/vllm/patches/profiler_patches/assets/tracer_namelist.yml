@@ -34,8 +34,6 @@ targets:
   - module: "omni.adaptors.vllm.worker.npu_model_runner:NPUModelRunner"
     function_name: _update_states
   - module: "omni.adaptors.vllm.worker.npu_model_runner:NPUModelRunner"
-    function_name: _make_attention_mask
-  - module: "omni.adaptors.vllm.worker.npu_model_runner:NPUModelRunner"
     function_name: _process_reqs
   - module: "omni.adaptors.vllm.worker.npu_model_runner:WrapModel"
     function_name: forward
