@@ -1110,8 +1110,9 @@ class AscendDeepseekAttention_MLA(nn.Module):
             self.q_a_layernorm = RMSNorm(self.q_lora_rank,
                                          eps=config.rms_norm_eps)
             self.norm_res = {}
-            for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
-                self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
+            if not model_extra_config.operator_opt_config.pd_seperate_prefill:
+                for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
+                    self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
             self.q_b_proj = ColumnParallelLinear(self.q_lora_rank,
                                                  self.num_heads *
                                                  self.qk_head_dim,
@@ -1147,12 +1148,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
                                                 bias=False,
                                                 quant_config=quant_config,
                                                 prefix=f"{prefix}.o_proj")
-        elif model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-            self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
-                                           hidden_size,
-                                           bias=False,
-                                           quant_config=quant_config,
-                                           prefix=f"{prefix}.o_proj")
         else:
             self.o_proj = RowParallelLinearWithReduceScatter(self.num_heads * self.v_head_dim,
                                                              self.hidden_size,
@@ -1473,15 +1468,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
                 attn_output = all_to_all_local(attn_output, idx=0)
                 output, _ = self.o_proj.forward(attn_output)
                 output = reduce_scatter_cross(output, idx=0)
-            elif model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-                attn_output = attn_output.reshape(-1)
-                all_to_all_attn_output = torch.empty([sum(prefill_metadata.seq_lens) * self.num_local_heads * self.qk_nope_head_dim],
-                                                    dtype=attn_output.dtype, device="npu")
-                dist.all_to_all_single(all_to_all_attn_output, attn_output)
-                attn_output = all_to_all_attn_output.view(self.tp_size, sum(prefill_metadata.seq_lens) // self.tp_size,
-                                                        self.num_local_heads * self.qk_nope_head_dim) \
-                                                    .transpose(0,1).contiguous()
-                output, _ = self.o_proj.forward(attn_output.reshape(sum(prefill_metadata.seq_lens) // self.tp_size, -1))
             else:
                 attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
                 output = self.o_proj.forward(attn_output)[0]
@@ -1633,22 +1619,9 @@ class AscendDeepseekAttention_MLA(nn.Module):
         else:
             attn_output.fill_(0)
 
-        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall and prefill_metadata is not None:
-            attn_output = attn_output.reshape(-1)
-            all_to_all_attn_output = torch.empty(
-                [sum(prefill_metadata.seq_lens) * self.num_local_heads * self.qk_nope_head_dim], dtype=attn_output.dtype,
-                device="npu")
-            dist.all_to_all_single(all_to_all_attn_output,
-                                   attn_output)
-            attn_output = all_to_all_attn_output.view(get_tensor_model_parallel_world_size(),
-                                                      sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(),
-                                                      self.num_local_heads * self.qk_nope_head_dim).transpose(0,
-                                                                                                              1).contiguous()
-            output, _ = self.o_proj.forward(
-                attn_output.reshape(sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(), -1))
-        else:
-            attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
-            output = self.o_proj.forward(attn_output)[0]
+        
+        attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
+        output = self.o_proj.forward(attn_output)[0]
 
         attn_output = None
         return output
