@@ -214,6 +214,7 @@ class FusedMoE(torch.nn.Module):
         custom_routing_function: Optional[Callable] = None,
         scoring_func: str = "softmax",
         e_score_correction_bias: Optional[torch.Tensor] = None,
+        first_k_dense_replace: int = 3
     ):
         super().__init__()
         # ENABLE_OMNI_PLANNER
@@ -225,7 +226,7 @@ class FusedMoE(torch.nn.Module):
                                        num_experts = num_experts,
                                        num_redundancy_shared_expert_rank=model_extra_config.parall_config.redundancy_shared_expert_num
                                        )
-            self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(prefix)
+            self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(prefix, first_k_dense_replace=first_k_dense_replace)
             self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:

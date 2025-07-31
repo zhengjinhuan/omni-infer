@@ -245,13 +245,12 @@ class PrefillConnectorWorker:
             thread_name = "prefill_connector_get_pulled_kv_req_list"
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True, name=thread_name)
             self.thread.start()
-            set_thread_affinity(self.thread, 31)  # Set affinity to CPU 31
             dump_thread_to_file(self.thread, thread_name, thread_dump_path)
         from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
         if ENABLED:
             manager_cls = OmniBiGroupDataDistManager
             logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
-            self.datadist_manager = manager_cls(vllm_config.kv_transfer_config)
+            self.datadist_manager = manager_cls(vllm_config)
         else:
             manager_cls = LLMDataDistManager
             self.datadist_manager = manager_cls(vllm_config)
@@ -416,14 +415,13 @@ class DecodeConnectorWorker:
         if ENABLED:
             manager_cls = OmniBiGroupDataDistManager
             logger.warning(f"DecodeConnector is using Omni datadist manager for KV transfer.")
-            self.datadist_manager = manager_cls(vllm_config.kv_transfer_config)
+            self.datadist_manager = manager_cls(vllm_config)
         else:
             manager_cls = LLMDataDistManager
             self.datadist_manager = manager_cls(vllm_config)
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
-        self.core_bases = [91, 100, 110, 120, 130, 140, 150, 160, 170, 180]
         self._pull_kv_lock = threading.Lock()
         self.queues = {} # cluster_id -> queue.Queue
         self.threads = {} # cluster_id -> threading.Thread
@@ -438,9 +436,6 @@ class DecodeConnectorWorker:
                         thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
                         t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
                         t.start()
-                        idx_tmp = vllm_config.parallel_config.data_parallel_rank_local + pod_idx
-                        idx_core = min((idx_tmp - 1) // 10, len(self.core_bases) - 1)
-                        set_thread_affinity(t, self.core_bases[idx_core] + idx_tmp)
                         self.threads[cluster_id] = t  # Store the thread for this cluster_id
                         logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
 
@@ -460,10 +455,6 @@ class DecodeConnectorWorker:
             thread_name = f"async_pull_kv_{self.dp_rank}"
             self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req, daemon=True, name=thread_name)
             self.thread_on_fast_path_req.start()
-            if vllm_config.parallel_config.data_parallel_rank_local < 11:
-                set_thread_affinity(self.thread_on_fast_path_req, 31 + self.dp_rank)
-            else:
-                set_thread_affinity(self.thread_on_fast_path_req, 60 + self.dp_rank)
             logger.warning(f"DecodeConnectorWorker initialized with self.async_pull_kv enabled.")
 
             # Write thread name and native_id to file
@@ -520,9 +511,6 @@ class DecodeConnectorWorker:
                         thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
                         t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
                         t.start()
-                        idx_tmp = self.vllm_config.parallel_config.data_parallel_rank_local + idx_count
-                        idx_core = min((idx_tmp - 1) // 10, len(self.core_bases) - 1)
-                        set_thread_affinity(t, self.core_bases[idx_core] + idx_tmp)
                         self.threads[cluster_id] = t
                         logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
                         dump_thread_to_file(t, thread_name, thread_dump_path)
@@ -534,33 +522,94 @@ class DecodeConnectorWorker:
         logger.info(f" ***** start_load_kv: {len(metadata.requests)}")
         futures = []
         for req_id, meta in metadata.requests.items():
-            if len(meta.local_block_ids) == 0 or \
-                    all(isinstance(group_blk, list) and len(group_blk) == 0 for group_blk in meta.local_block_ids):
+            # if the local_block_ids is empty, skip pulling kv for the request
+            if len(meta.local_block_ids) == 0:
                 logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
                 continue
-            elif len(meta.remote_block_ids) < len(meta.local_block_ids):
-                meta.local_block_ids = meta.local_block_ids[:len(meta.remote_block_ids)]
-                logger.debug("look ahead token num is greater than 0")
-            elif len(meta.remote_block_ids) > len(meta.local_block_ids):
-                meta.remote_block_ids = meta.remote_block_ids[-len(meta.local_block_ids):]
-            logger.info(
-                " ***** start_load_kv for request %s "
-                "Num local_block_ids: %s. Num remote_block_ids: %s.",
-                req_id,
-                len(meta.local_block_ids),
-                len(meta.remote_block_ids)
-            )
+            # If local_block_ids is a flat list of int, omni-attention is not used
+            # and we can directly use the local_block_ids and remote_block_ids
+            if isinstance(meta.local_block_ids[0], int):
+                # local_block_ids (kv blocks in D) is more than remote_block_ids (kv blocks in P)
+                # leaded by lookahead num, which is used by eagle and multi step
+                if len(meta.remote_block_ids) < len(meta.local_block_ids):
+                    meta.local_block_ids = meta.local_block_ids[:len(meta.remote_block_ids)]
+                    logger.debug("look ahead token num is greater than 0")
+                # If remote_block_ids is more than local_block_ids, we only need the last N remote blocks
+                # where N is the number of local blocks
+                elif len(meta.remote_block_ids) > len(meta.local_block_ids):
+                    meta.remote_block_ids = meta.remote_block_ids[-len(meta.local_block_ids):]
+                logger.info(
+                    " ***** start_load_kv for request %s "
+                    "Num local_block_ids: %s. Num remote_block_ids: %s.",
+                    req_id,
+                    len(meta.local_block_ids),
+                    len(meta.remote_block_ids)
+                )
+            # If local_block_ids is a list of lists (e.g., [[], []]), omni-attention is used
+            # local_block_ids[0] is a list of local block ids for uncompressed layers
+            # local_block_ids[1] is a list of local block ids for compressed layers
+            elif isinstance(meta.local_block_ids[0], list):
+                # If local_block_ids[0] is a list of lists, we need to ensure that remote_block_ids
+                # is a list of lists as well, where each sublist corresponds to the local_block
+                meta.remote_block_ids = [meta.remote_block_ids] * len(meta.local_block_ids)
+                # If local_block_ids[0] is empty, skip pulling kv for the request
+                if len(meta.local_block_ids[0]) == 0:
+                    logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
+                    continue
+                # remote_block_ids in P is less than local_block_ids[0] in D, 
+                # leaded by lookahead num, which is used by eagle and multi step
+                elif len(meta.remote_block_ids[0]) < len(meta.local_block_ids[0]):
+                    meta.local_block_ids[0] = meta.local_block_ids[0][:len(meta.remote_block_ids[0])]
+                    logger.debug("look ahead token num is greater than 0")
+                # If remote_block_ids in P is more than local_block_ids[0] in D, we only need the last N remote blocks
+                elif len(meta.remote_block_ids[0]) > len(meta.local_block_ids[0]):
+                    meta.remote_block_ids[0] = meta.remote_block_ids[0][-len(meta.local_block_ids[0]):]
+                logger.info(
+                    " ***** start_load_kv for request %s "
+                    "Num local_block_ids: %s. Num remote_block_ids: %s.",
+                    req_id,
+                    len(meta.local_block_ids[0]),
+                    len(meta.remote_block_ids[0])
+                )
+            # handle the unexpected case where local_block_ids is not a list of int or list of lists
+            else:
+                logger.error(f"Unexpected type for meta.local_block_ids[0]: {type(meta.local_block_ids[0])}")
+                raise RuntimeError(f"Unexpected type for meta.local_block_ids[0]: {type(meta.local_block_ids[0])}")
             if self.multi_rank_pull_kv:
-                cluster_ids =  self.registed_link_infos[meta.remote_cluster_id][self.cluster_id + self.datadist_manager.local_rank]
-                block_thre = len(meta.local_block_ids) // 2
+                # If multi_rank_pull_kv is enabled, each DP rank will pull kv from multiple P ranks
+                # and the cluster_ids are obtained from registed_link_infos
+                cluster_ids = self.registed_link_infos[meta.remote_cluster_id][self.cluster_id + self.datadist_manager.local_rank]
+                # If the local_block_ids is a flat list of int, we can directly use it
+                # As multi_rank_pull_kv is designed to pull kv from two P ranks,
+                # we split the local_block_ids and remote_block_ids into two parts
+                if not isinstance(meta.local_block_ids[0], list):
+                    block_thre = len(meta.local_block_ids) // 2
+                # If the local_block_ids is a flat list of list, only split the blocks for uncompressed layers
+                else:
+                    block_thre = len(meta.local_block_ids[0]) // 2
                 for idx_cluster, cluster_id in enumerate(cluster_ids):
-                    if idx_cluster == 0:
-                        local_blocks = meta.local_block_ids[:block_thre]
-                        remote_blocks = meta.remote_block_ids[:block_thre]
+                    if not isinstance(meta.local_block_ids[0], list):
+                        if idx_cluster == 0:
+                            local_blocks = meta.local_block_ids[:block_thre]
+                            remote_blocks = meta.remote_block_ids[:block_thre]
+                            len_local_blocks = len(local_blocks)
+                        else:
+                            local_blocks = meta.local_block_ids[block_thre:]
+                            remote_blocks = meta.remote_block_ids[block_thre:]
+                            len_local_blocks = len(local_blocks)
                     else:
-                        local_blocks = meta.local_block_ids[block_thre:]
-                        remote_blocks = meta.remote_block_ids[block_thre:]
-                    if len(local_blocks) > 0:
+                        if idx_cluster == 0:
+                            # For uncompressed layers, split the local_block_ids[0] and remote_block_ids
+                            # For compressed layers, only pull kv from the second P rank
+                            local_blocks = [meta.local_block_ids[0][:block_thre], []]
+                            # remote_blocks need to be split as well for getting kv blocks for compressed layers in P
+                            remote_blocks = [meta.remote_block_ids[0][:block_thre], []]
+                            len_local_blocks = len(local_blocks[0])
+                        else:
+                            local_blocks = [meta.local_block_ids[0][block_thre:], meta.local_block_ids[1]]
+                            remote_blocks = [meta.remote_block_ids[0][block_thre:], meta.remote_block_ids[1]]
+                            len_local_blocks = len(local_blocks[0])
+                    if len_local_blocks > 0:
                         task = {
                             'request_id': req_id,
                             'dst_cluster_id': cluster_id,
@@ -652,14 +701,6 @@ def handle_exception(future):
     if future.exception():
         logger.error(f"Exception occurred in future: {future.exception()}")
         raise future.exception()
-
-def set_thread_affinity(thread, cpu_id):
-    import threading
-    import ctypes
-    while not hasattr(thread, "native_id"):
-        pass
-    tid = thread.native_id
-    os.sched_setaffinity(tid, {cpu_id})
 
 def dump_thread_to_file(thread, thread_name: str, folder_path: str):
 

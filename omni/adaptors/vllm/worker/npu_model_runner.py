@@ -1081,7 +1081,7 @@ class NPUModelRunner(GPUModelRunner):
         if model_config.model_extra_config.operator_opt_config.use_omni_placement:
             param_dict = dict(self.model.named_parameters())
             self.planner = OmniPlanner(config_file= model_config.model_extra_config.operator_opt_config.omni_placement_config_path)
-            self.planner.init_dram_weights(param_dict)
+            self.planner.init_dram_weights(param_dict, first_k_dense_replace=self.model.config.first_k_dense_replace)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """

@@ -116,7 +116,7 @@ class AscendCompressedTensorsW8A8Int8MoEMethod:
     ) -> torch.Tensor:
         #ENABLE_OMNI_PLANNER
         max_num_deployed_expert_per_rank = self.n_routed_experts
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
+        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.is_moe_layer(layer.moe_layer_idx):
             max_num_deployed_expert_per_rank = layer.planner.get_max_num_deployed_expert_per_rank()
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
