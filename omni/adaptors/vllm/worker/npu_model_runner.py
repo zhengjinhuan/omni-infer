@@ -432,7 +432,7 @@ class NPUModelRunner(GPUModelRunner):
         attn_state = next(iter(attn_metadata.values())).attn_state
 
         # padding input_ids
-        if graph_pad_size > 0:
+        if graph_pad_size >= 0:
             if attn_state == AscendAttentionState.DecodeOnly:
                 padding = torch.zeros(graph_pad_size, dtype=input_ids.dtype, device=input_ids.device)
             else:
