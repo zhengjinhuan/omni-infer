@@ -1,4 +1,4 @@
-# TFAS：基于队列信息感知的动态最优组batch策略的优化调度算法
+### TFAS：基于队列信息感知的动态最优组batch策略的优化调度算法
 
 vLLM原生调度器采用以内存最大化为中心的策略，优化利用NPU内存资源，通过最大化批处理量（batch size）来提升系统吞吐量。这种策略可以实现内存的高效利用，但是原生调度策略主要关注吞吐量（throughput），未充分考虑首token时延（TTFT），即从请求到达系统到生成第一个token的延迟。
 
@@ -19,7 +19,7 @@ vLLM原生调度器采用以内存最大化为中心的策略，优化利用NPU�
 
    在启动服务时，请配置以下关键参数:
 
-   -  `--scheduler-cls=omni.accelerators.batch_sched.tfas.tfas_scheduler.TFASProfilerScheduler`
+   -  `--scheduler-cls="omni.adaptors.vllm.worker.tfas.tfas_scheduler.TFASProfilerScheduler"`
    - `--max-num-seqs`为一个较大的值。
 
 ​       **验证方式**：当在日志中看到`TFASProfilerScheduler enabled`提示时，表示TFAS调度策略已成功启用。
@@ -35,14 +35,27 @@ vLLM原生调度器采用以内存最大化为中心的策略，优化利用NPU�
    测试完成后：
 
    - 收集prefill端的完整日志
-   - 调用`omniinfer/omni/accelerators/batch_sched/tfas/tfas_profiler.py`脚本分析日志，生成优化的策略超参数。
+   - 调用`omniinfer/omni/adaptors/vllm/worker/tfas/tfas_profiler.py`脚本分析日志，生成优化的策略超参数。
 
     
 
-**后续使用**：无需profiling。在文件`omniinfer/tests/test_config/test_config_prefill.json`中设置第一次profiler生成的策略参数。prefill实例服务启动时，设置启动参数`--scheduler-cls=omni.accelerators.batch_sched.tfas.tfas_scheduler.TFASScheduler`。日志中出现`TFAS enabled`证明策略使用成功
+**后续使用**：无需profiling。
+
+1. **启动Prefill实例服务** 
+配置如下启动参数
+- `--scheduler-cls="omni.adaptors.vllm.worker.tfas.tfas_scheduler.TFASScheduler"`
+- `--additional-config='{"tfas_scheduler_config"={"slope"=0.1, "intercept"=0.1, "token_budget"=9000}}'`
+- `--max-num-seqs`为一个较大的值。
+
+其中`additional-config`中的`slope`, `intercept`, `token_budget`的值为profilling得到的策略超参数。
+
+日志中出现`TFAS enabled`证明策略使用成功。
 
 **注意事项**：由于 `tfas` 在每次组 batch 时会根据队列中的请求信息（请求数量和输入长度）动态计算最优的 `batch_size`，为避免因序列数限制导致越界，需要在启服务时将`max-num-seqs`设置成一个较大的值。
 
+在omni/adaptors/vllm/worker/tfas/tfas_scheduler.py中针对TFAS策略配有默认参数，
+- `{"slope"=0.035, "intercept"=0.1259, "token_budget"=9154}`
 
-当前的test_config_prefill.json配有默认参数，它们是基于 deepseek v3/r1 w8a8 量化权重和华为昇腾芯片 910C 获取的，如果你要测试的配置和我们的默认配置相同，可直接基于默认参数进行测试，否则需要重新进行 profiling 获取策略所需要的超参信息。
+
+它们是基于 deepseek v3/r1 w8a8 量化权重和华为昇腾芯片 910C 获取的，如果你要测试的配置和我们的默认配置相同，可直接基于默认参数进行测试，否则需要重新进行 profiling 获取策略所需要的超参信息。
 

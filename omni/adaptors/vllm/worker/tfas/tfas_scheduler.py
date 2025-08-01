@@ -8,13 +8,12 @@ from vllm.config import VllmConfig
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.logger import logger
-from omni.models.common.config.model_config import model_extra_config
 
 class TFASScheduler(Scheduler):
     DEFAULT_TFAS_CONFIG = {
-    "intercept": 1.0,
-    "slope": 0.1,
-    "token_budget": 4096,
+    "intercept": 0.1259,
+    "slope": 0.035,
+    "token_budget": 9154,
     }
 
     def __init__(
@@ -36,29 +35,31 @@ class TFASScheduler(Scheduler):
         if (self.vllm_config.kv_transfer_config is not None and 
             self.vllm_config.kv_transfer_config.is_kv_consumer):
             raise ValueError("TFASScheduler does not support KV consumer mode.")
-        tfas_config = getattr(
-            vllm_config.additional_config, "tfas_scheduler_config", None)
+        additional_cfg = vllm_config.additional_config
+        tfas_config = additional_cfg.get("tfas_scheduler_config", None)
         if tfas_config is None:
-            logger.warn("Missing tfas_scheduler_config. Using default config.")
-            tfas_config = type(
-                "DefaultTFASConfig", (), self.DEFAULT_TFAS_CONFIG)()  # 动态对象包装
+            logger.warning("Missing tfas_scheduler_config. Using default config.")
+            tfas_config = self.DEFAULT_TFAS_CONFIG.copy()
+        else:
+            # 确保是字典
+            if not isinstance(tfas_config, dict):
+                raise TypeError("tfas_scheduler_config must be a dict.")
 
-        for field, default_val in self.DEFAULT_TFAS_CONFIG.items():
-            if not hasattr(tfas_config, field):
-                logger.warn(f"Missing '{field}', using default: {default_val}")
-                setattr(tfas_config, field, default_val)
+            # 补充缺失的字段
+            for field, default_val in self.DEFAULT_TFAS_CONFIG.items():
+                if field not in tfas_config:
+                    logger.warning(f"Missing '{field}', using default: {default_val}")
+                    tfas_config[field] = default_val
 
-        self.tfas_intercept = tfas_config.intercept
-        self.tfas_slope = tfas_config.slope
+        # 从字典中读取配置
+        self.tfas_intercept = tfas_config["intercept"]
+        self.tfas_slope = tfas_config["slope"]
         self.tfas_waiting_time_out = 20
-        self.tfas_token_budget = tfas_config.token_budget
+        self.tfas_token_budget = tfas_config["token_budget"]
 
         logger.info(
-            "TFASScheduler enabled"
-            "(intercept=%s, slope=%s, token_budget=%s)",
-            self.tfas_intercept,
-            self.tfas_slope,
-            self.tfas_token_budget
+            f"TFASScheduler enabled (intercept={self.tfas_intercept}, "
+            f"slope={self.tfas_slope}, token_budget={self.tfas_token_budget})"
         )
 
             
@@ -92,7 +93,7 @@ class TFASScheduler(Scheduler):
                 return bound + request.num_tokens_with_spec
         return bound
     
-    def _compute_upper_bound(self, waiting_queue: list[Request]) -> int:
+    def _compute_upper_bound(self, waiting_queue: deque[Request]) -> int:
         """
         Compute the token budget upper bound based on the waiting queue.
         """
@@ -142,7 +143,7 @@ class TFASProfilerScheduler(Scheduler):
         self.trigger_num = 0
         self.grow_frequency =20
         logger.info("TFASProfilerScheduler enabled"
-                    " (grow frequency={self.grow_frequency})")
+                    f" (grow frequency={self.grow_frequency})")
 
     def schedule(self):
         self.trigger_num += 1
