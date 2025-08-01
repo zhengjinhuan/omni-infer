@@ -11,6 +11,12 @@ from vllm.logger import logger
 from omni.models.common.config.model_config import model_extra_config
 
 class TFASScheduler(Scheduler):
+    DEFAULT_TFAS_CONFIG = {
+    "intercept": 1.0,
+    "slope": 0.1,
+    "token_budget": 4096,
+    }
+
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -30,33 +36,28 @@ class TFASScheduler(Scheduler):
         if (self.vllm_config.kv_transfer_config is not None and 
             self.vllm_config.kv_transfer_config.is_kv_consumer):
             raise ValueError("TFASScheduler does not support KV consumer mode.")
-        tfas_config = getattr(model_extra_config, "tfas_scheduler_config", None)
+        tfas_config = getattr(
+            vllm_config.additional_config, "tfas_scheduler_config", None)
         if tfas_config is None:
-            raise ValueError(
-                "Missing tfas_scheduler_config in model_extra_config."
-            )
+            logger.warn("Missing tfas_scheduler_config. Using default config.")
+            tfas_config = type(
+                "DefaultTFASConfig", (), self.DEFAULT_TFAS_CONFIG)()  # 动态对象包装
 
-        required_fields = ["intercept", 
-                           "slope", 
-                           "waiting_time_out", 
-                           "token_budget"]
-        for field in required_fields:
+        for field, default_val in self.DEFAULT_TFAS_CONFIG.items():
             if not hasattr(tfas_config, field):
-                raise ValueError(
-                    f"Missing required field '{field}' in tfas_scheduler_config."
-                )
+                logger.warn(f"Missing '{field}', using default: {default_val}")
+                setattr(tfas_config, field, default_val)
 
         self.tfas_intercept = tfas_config.intercept
         self.tfas_slope = tfas_config.slope
-        self.tfas_waiting_time_out = tfas_config.waiting_time_out
+        self.tfas_waiting_time_out = 20
         self.tfas_token_budget = tfas_config.token_budget
 
         logger.info(
             "TFASScheduler enabled"
-            "(intercept=%s, slope=%s, timeout=%s, token_budget=%s)",
+            "(intercept=%s, slope=%s, token_budget=%s)",
             self.tfas_intercept,
             self.tfas_slope,
-            self.tfas_waiting_time_out,
             self.tfas_token_budget
         )
 
@@ -138,19 +139,8 @@ class TFASProfilerScheduler(Scheduler):
             self.vllm_config.kv_transfer_config.is_kv_consumer):
             raise ValueError(
                 "TFASProfilerScheduler does not support KV consumer mode.")
-        tfas_config = getattr(model_extra_config, "tfas_scheduler_config", None)
-        if tfas_config is None:
-            raise ValueError(
-                "Missing tfas_scheduler_config in model_extra_config."
-            )
-        if not hasattr(tfas_config, "profiler_grow_frequency"):
-            raise ValueError(
-                "Missing required field 'profiler_grow_frequency'"
-                "in tfas_scheduler_config."
-            )
-
         self.trigger_num = 0
-        self.grow_frequency = tfas_config.profiler_grow_frequency
+        self.grow_frequency =20
         logger.info("TFASProfilerScheduler enabled"
                     " (grow frequency={self.grow_frequency})")
 
