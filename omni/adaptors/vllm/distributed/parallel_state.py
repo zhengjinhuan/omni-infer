@@ -137,7 +137,8 @@ _STREAM1_MOE_GROUP: Optional[GroupCoordinator] = None
 GROUP_STREAM1_ATTN = "stream1_attn" # p侧使能双micro batch为第二个流创建 attention 层通信域
 GROUP_STREAM1_MLP = "stream1_mlp" # p侧使能双micro batch为第二个流创建 mlp 层通信域
 GROUP_STREAM1_MOE = "stream1_moe" # p侧使能双micro batch为第二个流创建 moe 层通信域
-_O_PROJ_WORLD: Optional[GroupCoordinator] = None
+_O_PROJ_TP: Optional[GroupCoordinator] = None
+_O_PROJ_DP: Optional[GroupCoordinator] = None
 
 
 def initialize_model_parallel(
@@ -181,6 +182,7 @@ def initialize_model_parallel(
 
     if model_extra_config.parall_config.o_proj_tp_size > 1:
         initialize_o_proj_tp_world_group(backend)
+        initialize_o_proj_dp_world_group(backend)
 
 
 def _init_parallel_group_factory(
@@ -259,20 +261,19 @@ def get_stream1_moe_group() -> Any:
 def get_mlp_tp_size():
     # Can be enabled
     if model_extra_config.operator_opt_config.enable_node_mlp:
-        return get_local_group_world_size_from_list(0)
+        return get_local_world_group().world_size
     else:
-        return get_expert_parallel_world_size()
-
+        return 1
 
 def get_mlp_tp_rank():
     if model_extra_config.operator_opt_config.enable_node_mlp:
-        return get_local_group_rank_from_list(0)
+        return get_local_world_group().rank_in_group
     else:
-        return get_expert_parallel_rank()
+        return 0
 
 
 def get_mlp_world_group():
-    return get_local_group_from_list(0)
+    return get_local_world_group()
 
 
 def calculate_effective_local_size(local_size: int, world_size: int) -> int:
@@ -334,34 +335,58 @@ def initialize_o_proj_tp_world_group(backend) -> None:
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
 
     num_local_groups: int = world_size // local_size
-    global _O_PROJ_WORLD
-    if _O_PROJ_WORLD is not None:
-        raise RuntimeError("_O_PROJ_WORLD must be None")
+    global _O_PROJ_TP
+    if _O_PROJ_TP is not None:
+        raise RuntimeError("_O_PROJ_TP must be None")
     group_ranks = []
     for i in range(num_local_groups):
         ranks = list(range(i * local_size, (i + 1) * local_size))
         group_ranks.append(ranks)
 
     # message queue broadcaster is only used in tensor model parallel group
-    _O_PROJ_WORLD = init_model_parallel_group(
+    _O_PROJ_TP = init_model_parallel_group(
         group_ranks,
         get_world_group().local_rank,
         backend,
-        use_message_queue_broadcaster=True,
-        group_name="o_proj_local",
+        use_message_queue_broadcaster=False,
+        group_name="o_proj_tp_world_group",
+    )
+
+def initialize_o_proj_dp_world_group(backend) -> None:
+    # Get world size and rank. Ensure some consistencies.
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
+    world_size: int = torch.distributed.get_world_size()
+    tp_size = model_extra_config.parall_config.o_proj_tp_size
+    backend = backend or torch.distributed.get_backend(get_world_group().device_group)
+
+    dp_size: int = world_size // tp_size
+    global _O_PROJ_DP
+    if _O_PROJ_DP is not None:
+        raise RuntimeError("_O_PROJ_DP must be None")
+    all_ranks = torch.arange(world_size).reshape(dp_size, tp_size)
+    group_ranks = all_ranks.transpose(0, 1)
+    group_ranks = [x.tolist() for x in group_ranks]
+    # message queue broadcaster is only used in tensor model parallel group
+    _O_PROJ_DP = init_model_parallel_group(
+        group_ranks,
+        get_world_group().local_rank,
+        backend,
+        use_message_queue_broadcaster=False,
+        group_name="o_proj_dp_world_group",
     )
 
 
 def get_o_proj_tp_size():
-    return get_o_proj_world_group().world_size
+    return get_o_proj_tp_world_group().world_size
 
 
 def get_o_proj_tp_rank():
-    return get_o_proj_world_group().rank_in_group
+    return get_o_proj_tp_world_group().rank_in_group
 
 
-def get_o_proj_world_group():
-    return _O_PROJ_WORLD
+def get_o_proj_dp_world_group():
+    return _O_PROJ_DP
 
 
 def initialize_local_world_group(backend) -> None:
@@ -414,6 +439,8 @@ def initialize_local_world_group(backend) -> None:
         group_name="world_local",
     )
 
+def get_o_proj_tp_world_group():
+    return _O_PROJ_TP
 
 def initialize_local_comm_group_list(backend) -> None:
     # Get world size and rank. Ensure some consistencies.

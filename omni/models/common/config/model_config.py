@@ -26,6 +26,7 @@ class ModelPrecisionDiffConfig:
 class ModelOperatorOptConfig:
     enable_kv_rmsnorm_rope_cache: bool = True
     prefill_dispatch_combine: bool = True
+    prefill_enable_mla_alltoall: bool = False
     enable_node_mlp: bool = False
     moe_multi_stream_tune: bool = False
     best_ep: bool = False
