@@ -134,6 +134,9 @@ class AscendMLAPrefillMetadata:
     seq_kvlen_group: Optional[list] = None
     kv_index_list: Optional[list] = None
 
+    cos: Optional[torch.Tensor] = None
+    sin: Optional[torch.Tensor] = None
+
 @dataclass
 class AscendMLADecodeMetadata:
     # Input positions for rotrary embeddings since for MLA the rotary
@@ -407,16 +410,21 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
 
+            tmp_input_position = input_positions[tokens_start:]
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(tmp_input_position)
+
             prefill_metadata = AscendMLAPrefillMetadata(
                 attn_mask=self.runner.attn_mask,
                 query_lens=query_lens_list[reqs_start:],
                 seq_lens=seq_lens_list,
-                input_positions=input_positions[tokens_start:],
+                input_positions=tmp_input_position,
                 block_table=block_table[reqs_start:, ...],
                 max_query_len=max_query_len,
                 seq_qlen_group=seq_qlen_group,
                 seq_kvlen_group=seq_kvlen_group,
-                kv_index_list=kv_index_list
+                kv_index_list=kv_index_list,
+                sin=sin,
+                cos=cos
             )
 
         decode_metadata = None
@@ -807,7 +815,10 @@ class AscendMLAImpl(MLAAttentionImpl):
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim],  dim=-1)
         # k_pe:BNS,64 kv_a:BNS, 512, kv_states:bnsd, cos,sin:bnsd, kv cache:bsnd
         q_pe = q_pe.unsqueeze(2)
-        cos, sin = self.rotary_emb.get_cos_sin(positions)
+        if attn_metadata is None or model_extra_config.operator_opt_config.enable_prefill_micro_batch:
+            cos, sin = self.rotary_emb.get_cos_sin(positions)
+        else:
+            cos, sin = attn_metadata.prefill.cos, attn_metadata.prefill.sin
         q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin) # BNSD
         q_pe = q_pe.squeeze(2) #BSH
         q[..., self.qk_nope_head_dim:] = q_pe
