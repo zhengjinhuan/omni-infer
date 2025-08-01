@@ -678,7 +678,6 @@ class AscendMLAImpl(MLAAttentionImpl):
         #         functools.partial(flash_attn_varlen_func,
         #                           fa_version=self.vllm_flash_attn_version)
 
-        self.enable_graph_mode = False
         from vllm.config import get_current_vllm_config, CompilationLevel
         from vllm.utils import supports_dynamo
 

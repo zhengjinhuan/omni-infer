@@ -1378,7 +1378,7 @@ class DeepseekDecoderLayer(nn.Module):
         return gathered_tensors, start_index, end_index
 
 
-@support_torch_compile
+
 class DeepseekV3Model(nn.Module):
     fall_back_to_pt_during_load = False
 
@@ -1511,23 +1511,6 @@ class DeepseekV3Model(nn.Module):
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
         return hidden_states
-    def should_use_eager_mode(self, *args, **kwargs):
-        attn_metadata_index = 4
-
-        if len(args) < attn_metadata_index:
-           return True
-
-        attn_metadata = args[attn_metadata_index-1]
-        if not attn_metadata:
-            return True
-
-        if isinstance(attn_metadata, dict):
-            attn_metadata = attn_metadata[self.layers[self.start_layer].layer_name]
-
-        if attn_metadata.prefill:
-            return True
-
-        return False
 
     def forward_micro_batch(
             self,
@@ -1764,7 +1747,7 @@ class DeepseekV3Model(nn.Module):
             metadata_out.prefill.seq_kvlen_group = seq_kvlen_group_2
         return metadata_out
 
-
+@support_torch_compile
 class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
     packed_modules_mapping = {
@@ -1981,3 +1964,16 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
         # if hasattr(self.model.layers[0].self_attn, "rotary_emb") and self.config.architectures[0] not in  ['DeepseekV2ForCausalLM', 'DeepseekV3ForCausalLM']:
         #     torch._dynamo.mark_static(self.model.layers[0].self_attn.rotary_emb.sin)
         #     torch._dynamo.mark_static(self.model.layers[0].self_attn.rotary_emb.cos)
+
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+
+        if attn_metadata.prefill:
+            return True
+
+        return False

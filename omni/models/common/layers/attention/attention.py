@@ -384,11 +384,13 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.key_cache = None
         self.value_cache = None
 
-        self.enable_graph_mode = False
-        additional_config = get_current_vllm_config().additional_config
-        if additional_config:
-            self.enable_graph_mode = additional_config.get(
-                "enable_graph_mode", False)
+        from vllm.config import get_current_vllm_config, CompilationLevel
+        from vllm.utils import supports_dynamo
+
+        cur_vllm_config = get_current_vllm_config()
+        self.enable_graph_mode = (
+            cur_vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+
 
         if AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE is None:
             AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE = ~torch.tril(
