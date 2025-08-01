@@ -723,7 +723,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         tp_size = get_tensor_model_parallel_world_size()
         self.norm_res = {}
         self.actual_seq_lengths = {}
-        if self.enable_graph_mode:
+        if model_extra_config.parall_config.dp_size > 1:
             for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
                 self.norm_res[batch_size] = torch.zeros([batch_size * tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
                 self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
