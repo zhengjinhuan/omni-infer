@@ -25,7 +25,7 @@ from vllm import utils
 from vllm.utils import FlexibleArgumentParser, supports_dynamo, vllm_lib
 from typing import Callable, List, Optional, Tuple
 
-from omni.adaptors.vllm.utils import ASCEND_QUATIZATION_METHOD, update_aclgraph_sizes
+from omni.adaptors.vllm.utils import SUPPORTED_QUANTIZATION_METHODS
 
 CUSTOM_OP_ENABLED = False  # Custom operations not enabled for Omni inference
 
@@ -174,9 +174,6 @@ class ConfigUpdater:
         """
         if parser is None:
             return
-        quant_action = parser._option_string_actions.get('--quantization')
-        if quant_action and hasattr(quant_action, 'choices') and ASCEND_QUATIZATION_METHOD not in quant_action.choices:
-            quant_action.choices.append(ASCEND_QUATIZATION_METHOD)
 
     @classmethod
     def update_vllm_config(cls, vllm_config: 'VllmConfig') -> None:
@@ -185,26 +182,13 @@ class ConfigUpdater:
         Args:
             vllm_config: The vLLM configuration to update.
         """
-        from vllm.config import CompilationLevel
-        compilation_config = vllm_config.compilation_config
-        model_config = vllm_config.model_config
-        enforce_eager = getattr(model_config, "enforce_eager", False) if model_config else False
-
-        # Force eager mode until NPU compilation is supported
-        enforce_eager = True
-        if enforce_eager or compilation_config.level == CompilationLevel.NO_COMPILATION:
-            logger.info("Using eager mode for NPU execution.")
-            compilation_config.level = CompilationLevel.NO_COMPILATION
-        elif compilation_config.level != CompilationLevel.PIECEWISE:
-            logger.warning("NPU does not support %s compilation level. Using NO_COMPILATION.", compilation_config.level)
-            compilation_config.level = CompilationLevel.NO_COMPILATION
-        else:
-            logger.info("Enabling PIECEWISE compilation with ACL Graph mode.")
-            compilation_config.use_inductor = False
-            compilation_config.splitting_ops.append("vllm.unified_ascend_attention_with_output")
-            update_aclgraph_sizes(vllm_config)
-
-        if vllm_config.additional_config:
+        from omni.adaptors.vllm.compilation.compile_config import NPUCompilationConfig
+        additional_config = vllm_config.additional_config
+        vllm_config.npu_compilation_config = NPUCompilationConfig()
+        if additional_config:
+            graph_model_compile_config = additional_config.get("graph_model_compile_config", {})
+            vllm_config.npu_compilation_config.build_from_cli(graph_model_compile_config, vllm_config)
+            logger.debug(f"Graph model compile config: {graph_model_compile_config}")
             cls._handle_graph_mode(vllm_config)
 
         cls._update_parallel_config(vllm_config)
@@ -214,17 +198,22 @@ class ConfigUpdater:
 
     @staticmethod
     def _handle_graph_mode(vllm_config: 'VllmConfig') -> None:
+        from vllm.config import CompilationLevel
         """Handle graph mode configuration for NPU."""
-        enable_graph_mode = vllm_config.additional_config.get("enable_graph_mode", False)
-        if enable_graph_mode and not supports_dynamo():
+        enable_graph_mode = (vllm_config.npu_compilation_config.level != CompilationLevel.NO_COMPILATION)
+        if not enable_graph_mode:
+            return
+
+        if not supports_dynamo():
             logger.warning("Graph mode unsupported due to low torch version. Disabling.")
-            vllm_config.additional_config["enable_graph_mode"] = False
-        if enable_graph_mode and envs.VLLM_USE_V1 and envs.VLLM_MLA_DISABLE:
+            vllm_config.npu_compilation_config.level = CompilationLevel.NO_COMPILATION
+        if envs.VLLM_USE_V1 and envs.VLLM_MLA_DISABLE:
             logger.warning("Graph mode not supported for V1 without MLA. Disabling.")
-            vllm_config.additional_config["enable_graph_mode"] = False
-        if int(os.getenv("RANDOM_MODE", default='0')) or int(os.getenv("CAPTURE_MODE", default='0')) or int(os.getenv("REPLAY_MODE", default='0')):
+            vllm_config.npu_compilation_config.level = CompilationLevel.NO_COMPILATION
+        if int(os.getenv("RANDOM_MODE", default='0')) or int(os.getenv("CAPTURE_MODE", default='0')) or int(
+                os.getenv("REPLAY_MODE", default='0')):
             logger.warning("Graph mode not supported for MOCK mode. Disabling.")
-            vllm_config.additional_config["enable_graph_mode"] = False
+            vllm_config.npu_compilation_config.level = CompilationLevel.NO_COMPILATION
 
     @staticmethod
     def _update_parallel_config(vllm_config: 'VllmConfig') -> None:
@@ -280,14 +269,13 @@ class NPUPlatform(Platform):
     ray_device_key: str = "NPU"
     device_control_env_var: str = "ASCEND_RT_VISIBLE_DEVICES"
     dispatch_key: str = "PrivateUse1"
-    supported_quantization: list[str] = [ASCEND_QUATIZATION_METHOD]
+    supported_quantization: list[str] = SUPPORTED_QUANTIZATION_METHODS
 
     def __init__(self):
         """Initialize the NPU platform and configure environment."""
         EnvironmentSetup.configure_visible_devices()
         update_utils_custom_op()
         super().__init__()
-
 
     def is_sleep_mode_available(self) -> bool:
         """Check if sleep mode is available for NPU.
@@ -306,7 +294,7 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
-        from omni.quantization.quant_config import AscendQuantConfig  # noqa: F401
+        import omni.quantization  # noqa: F401
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:
@@ -390,6 +378,14 @@ class NPUPlatform(Platform):
         Args:
             vllm_config: The vLLM configuration to update.
         """
+        additional_config = vllm_config.additional_config
+        if additional_config and vllm_config.additional_config.get("enable_hybrid_graph_mode", False):
+            from omni.adaptors.vllm.worker.npu_schedule import HybridSchedulerConfig
+            ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
+                vllm_config.scheduler_config)
+            vllm_config.scheduler_config = ascend_scheduler_config
+            logger.info("--------enbale hybrid graph mode----------------")
+            
         ConfigUpdater.update_vllm_config(vllm_config)
 
     @classmethod
@@ -411,8 +407,8 @@ class NPUPlatform(Platform):
             str: The module path to the attention backend class.
         """
         ensure_v1_engine()
-        return ("omni.models.common.layers.attention.mla.AscendMLABackend" if use_mla
-                else "omni.models.common.layers.attention.attention.AscendAttentionBackend")
+        return ("omni.models.common.layers.attention.backend.mla.AscendMLABackend" if use_mla
+                else "omni.models.common.layers.attention.backend.attention.AscendAttentionBackend")
 
     @classmethod
     def get_punica_wrapper(cls) -> str:

@@ -13,16 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, List
+from typing import Optional, List, Any
 
 import torch
 import torch.distributed
 from vllm.distributed import GroupCoordinator as GroupCoordinatorGPU
+from vllm.logger import logger
 from vllm.distributed import (
     parallel_state,
     init_model_parallel_group,
     get_world_group,
-    get_dp_group,
     get_ep_group
 )
 from vllm.logger import logger
@@ -30,6 +30,18 @@ from omni.models.common.config.model_config import model_extra_config
 import os
 
 initialize_model_parallel_default = parallel_state.initialize_model_parallel
+
+_DIE_PER_NODE_910C = 16
+_DIE_PER_NODE_910B = 8
+
+is_device_a2 = os.getenv("ASCEND_PLATFORM", "A3") == "A2"
+
+
+def get_npu_device_count():
+    if is_device_a2:
+        return _DIE_PER_NODE_910B
+    else:
+        return _DIE_PER_NODE_910C
 
 
 class GroupCoordinator(GroupCoordinatorGPU):
@@ -46,18 +58,84 @@ class GroupCoordinator(GroupCoordinatorGPU):
             return input_
         return self.device_communicator.all_to_all(input_, scatter_dim, gather_dim, scatter_sizes, gather_sizes)
 
-    def reduce_scatter(self, input_: torch.Tensor) -> torch.Tensor:
+    def swap(self, input: torch.Tensor, method="all2allv") -> torch.Tensor:
+        if len(self.ranks) != 2:
+            return input
+
+        if method == "all2allv":
+            rank_0 = self.ranks[0]
+            rank_1 = self.ranks[1]
+            input_shape = input.shape
+            input = input.view(-1)
+            output = torch.empty_like(input, dtype=input.dtype, device=input.device)
+
+            if self.rank == rank_0:
+                split_sizes = [0, input.shape[0]]
+            elif self.rank == rank_1:
+                split_sizes = [input.shape[0], 0]
+
+            torch.distributed.all_to_all_single(output, input,
+                                                output_split_sizes=split_sizes,
+                                                input_split_sizes=split_sizes,
+                                                group=self.device_group)
+            return output.view(input_shape)
+
+        if method == "allgather":
+            rank_0 = self.ranks[0]
+            rank_1 = self.ranks[1]
+            output = torch.empty_like(input, dtype=input.dtype, device=input.device)
+            input_size = input.size()
+            output_size= (input_size[0] * 2, ) + input_size[1:]
+            output_tensor = torch.empty(output_size, dtype=input.dtype, device=input.device)
+            torch.distributed.all_gather_into_tensor(output_tensor, input, group=self.device_group)
+
+            if self.rank == rank_1:
+                output, _ = torch.split(output_tensor, output_tensor.shape[0] // 2, dim=0)
+            elif self.rank == rank_0:
+                _, output = torch.split(output_tensor, output_tensor.shape[0] // 2, dim=0)
+
+            return output
+        return input
+
+    def all_reduce_async(self, input_: torch.Tensor):
+        # Bypass the function if we are using only 1 GPU.
+        if self.world_size == 1:
+            return input_, None
+
+        return self.device_communicator.all_reduce_async(input_)
+
+    def all_gather_async(self, input_: torch.Tensor, dim: int = -1):
+        world_size = self.world_size
+        # Bypass the function if we are using only 1 GPU.
+        if world_size == 1:
+            return input_
+        # assert -input_.dim() <= dim < input_.dim(), (
+        #     f"Invalid dim ({dim}) for input tensor with shape {input_.size()}")
+
+        return self.device_communicator.all_gather_async(input_, dim)
+
+    def reduce_scatter_async(self, input_: torch.Tensor) -> torch.Tensor:
         if self.world_size == 1:
             return input_
-        return self.device_communicator.reduce_scatter(input_)
-
+        return self.device_communicator.reduce_scatter_async(input_)
 
 _NUM_COMM_GROUP = 2
 _LOCAL_COMM_LIST = None
 _CROSS_COMM_LIST = None
 _GLOBAL_COMM_LIST = None
-
+_CROSS_FAR_COMM_LIST = None
+_CROSS_NEAR_COMM_LIST = None
+_CROSS_ROUND_COMM_LIST = None
+# kept for backward compatibility
 _LOCAL_WORLD: Optional[GroupCoordinator] = None
+_MLP_TP: Optional[GroupCoordinator] = None
+_STREAM1_ATTN_GROUP: Optional[GroupCoordinator] = None
+_STREAM1_MLP_GROUP: Optional[GroupCoordinator] = None
+_STREAM1_MOE_GROUP: Optional[GroupCoordinator] = None
+GROUP_STREAM1_ATTN = "stream1_attn" # p侧使能双micro batch为第二个流创建 attention 层通信域
+GROUP_STREAM1_MLP = "stream1_mlp" # p侧使能双micro batch为第二个流创建 mlp 层通信域
+GROUP_STREAM1_MOE = "stream1_moe" # p侧使能双micro batch为第二个流创建 moe 层通信域
+_O_PROJ_TP: Optional[GroupCoordinator] = None
 
 
 def initialize_model_parallel(
@@ -66,39 +144,124 @@ def initialize_model_parallel(
     enable_expert_parallel: bool = False,
     backend: Optional[str] = None,
 ) -> None:
+    # TP、PP、EP、DP
     initialize_model_parallel_default(
         tensor_model_parallel_size,
         pipeline_model_parallel_size,
-        enable_expert_parallel,
         backend,
     )
-
+    initialize_mlp_tp_group(backend)
     initialize_local_world_group(backend)
-    if model_extra_config.operator_opt_config.two_stage_comm:
-        initialize_cross_comm_group_list(backend)
-        initialize_local_comm_group_list(backend)
-    else:
-        initialize_world_comm_group_list(backend)
-        initialize_local_comm_group_list(backend)
+
+    if model_extra_config.operator_opt_config.enable_prefill_micro_batch:
+        initialize_stream1_attn_group(backend)
+        initialize_stream1_mlp_group(backend)
+        initialize_stream1_moe_group(backend)
+
+    if model_extra_config.parall_config.o_proj_tp_size > 1:
+        initialize_o_proj_tp_group(backend)
+
+    if is_device_a2:
+        if model_extra_config.operator_opt_config.two_stage_comm:
+            initialize_cross_comm_group_list(backend)
+            initialize_local_comm_group_list(backend)
+        else:
+            initialize_world_comm_group_list(backend)
+            initialize_local_comm_group_list(backend)
+            initialize_cross_comm_group_list(backend)
+
+        if model_extra_config.operator_opt_config.enable_round_pipeline_comm:
+            num_nodes = torch.distributed.get_world_size() // get_npu_device_count()
+            if num_nodes == 4:
+                initialize_round_cross_comm_group_list(backend)
+                model_extra_config.operator_opt_config.enable_pipeline_comm = 0
+            else:
+                model_extra_config.operator_opt_config.enable_pipeline_comm = 1
+                model_extra_config.operator_opt_config.enable_round_pipeline_comm = 0
+
+            if model_extra_config.operator_opt_config.enable_pipeline_comm:
+                initialize_far_cross_comm_group_list(backend)
+                initialize_near_cross_comm_group_list(backend)
 
 
-def get_mlp_tp_size():
-    # Can be enabled
-    if model_extra_config.operator_opt_config.enable_node_mlp:
-        return get_local_group_world_size_from_list(0)
-    else:
-        return get_expert_parallel_world_size()
+def _init_parallel_group_factory(
+        group_name: str,
+        local_size: int,
+        backend: Optional[str] = None,
+) -> Any:
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
+    if local_size <= 0:
+        raise RuntimeError(f"local_size must be positive, got {local_size}")
+    world_size = torch.distributed.get_world_size()
+    if world_size % local_size != 0:
+        raise RuntimeError(f"world_size[{world_size}] must be divisible by local_size[{local_size}]")
+
+    num_groups = world_size // local_size
+    group_ranks = [
+        list(range(i * local_size, (i + 1) * local_size))
+        for i in range(num_groups)
+    ]
+    return init_model_parallel_group(
+        group_ranks=group_ranks,
+        local_rank=get_world_group().local_rank,
+        backend=backend or torch.distributed.get_backend(),
+        group_name=f'{group_name}'
+    )
 
 
-def get_mlp_tp_rank():
-    if model_extra_config.operator_opt_config.enable_node_mlp:
-        return get_local_group_rank_from_list(0)
-    else:
-        return get_expert_parallel_rank()
+def  initialize_stream1_attn_group(backend: Optional[str] = None) -> None:
+    global _STREAM1_ATTN_GROUP
+    if _STREAM1_ATTN_GROUP is not None:
+        raise RuntimeError("stream1 attn group already initialized")
+    _STREAM1_ATTN_GROUP = _init_parallel_group_factory(
+        group_name=GROUP_STREAM1_ATTN,
+        local_size=torch.distributed.get_world_size(),
+        backend=backend,
+    )
 
 
-def get_mlp_world_group():
-    return get_local_group_from_list(0)
+def initialize_stream1_mlp_group(backend: Optional[str] = None) -> None:
+    global _STREAM1_MLP_GROUP
+    if _STREAM1_MLP_GROUP is not None:
+        raise RuntimeError("stream1 mlp group already initialized")
+    _STREAM1_MLP_GROUP = _init_parallel_group_factory(
+        group_name=GROUP_STREAM1_MLP,
+        local_size=16,
+        backend=backend,
+    )
+
+
+def initialize_stream1_moe_group(backend: Optional[str] = None) -> None:
+    global _STREAM1_MOE_GROUP
+    if _STREAM1_MOE_GROUP is not None:
+        raise RuntimeError("stream1 moe group already initialized")
+    _STREAM1_MOE_GROUP = _init_parallel_group_factory(
+        group_name=GROUP_STREAM1_MOE,
+        local_size=get_ep_group().world_size,
+        backend=backend,
+    )
+
+
+def get_stream1_attn_group() -> Any:
+    global _STREAM1_ATTN_GROUP
+    if _STREAM1_ATTN_GROUP is None:
+        raise RuntimeError("stream1 attn group not initialized")
+    return _STREAM1_ATTN_GROUP
+
+
+def get_stream1_mlp_group() -> Any:
+    global _STREAM1_MLP_GROUP
+    if _STREAM1_MLP_GROUP is None:
+        raise RuntimeError("stream1 mlp group not initialized")
+    return _STREAM1_MLP_GROUP
+
+
+def get_stream1_moe_group() -> Any:
+    global _STREAM1_MOE_GROUP
+    if _STREAM1_MOE_GROUP is None:
+        raise RuntimeError("stream1 moe group not initialized")
+    return _STREAM1_MOE_GROUP
 
 
 def calculate_effective_local_size(local_size: int, world_size: int) -> int:
@@ -127,29 +290,63 @@ def calculate_effective_local_size(local_size: int, world_size: int) -> int:
     return effective_local_size
 
 
+def initialize_mlp_tp_group(backend) -> None:
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
+    world_size: int = torch.distributed.get_world_size()
+    mtp_tp_size = model_extra_config.parall_config.dense_mlp_tp_size
+    backend = backend or torch.distributed.get_backend(get_world_group().device_group)
+    if world_size % mtp_tp_size != 0:
+        raise RuntimeError(f"Dense MLP TP Size ({mtp_tp_size}) should be divisible by world size ({world_size})")
+    num_groups: int = world_size // mtp_tp_size
+    global _MLP_TP
+    if _MLP_TP is not None:
+        raise RuntimeError("_MLP_TP must be None")
+    group_ranks = []
+    for i in range(num_groups):
+        ranks = list(range(i * mtp_tp_size, (i + 1) * mtp_tp_size))
+        group_ranks.append(ranks)
+
+    # message queue broadcaster is only used in tensor model parallel group
+    _MLP_TP = init_model_parallel_group(
+        group_ranks,
+        get_world_group().local_rank,
+        backend,
+        use_message_queue_broadcaster=True,
+        group_name="mlp_tp_group",
+    )
+
+
+def initialize_o_proj_tp_group(backend) -> None:
+    # Get world size and rank. Ensure some consistencies.
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
+    world_size: int = torch.distributed.get_world_size()
+    o_proj_tp_size = model_extra_config.parall_config.o_proj_tp_size
+    if world_size % o_proj_tp_size != 0:
+        raise RuntimeError(f"o_proj TP Size ({o_proj_tp_size}) should be divisible by world size ({world_size})")
+    backend = backend or torch.distributed.get_backend(get_world_group().device_group)
+
+    num_local_groups: int = world_size // o_proj_tp_size
+    global _O_PROJ_TP
+    if _O_PROJ_TP is not None:
+        raise RuntimeError("_O_PROJ_TP must be None")
+    group_ranks = []
+    for i in range(num_local_groups):
+        ranks = list(range(i * o_proj_tp_size, (i + 1) * o_proj_tp_size))
+        group_ranks.append(ranks)
+
+    # message queue broadcaster is only used in tensor model parallel group
+    _O_PROJ_TP = init_model_parallel_group(
+        group_ranks,
+        get_world_group().local_rank,
+        backend,
+        use_message_queue_broadcaster=True,
+        group_name="o_proj_local",
+    )
+
+
 def initialize_local_world_group(backend) -> None:
-    """
-    Initialize model parallel groups.
-
-    Arguments:
-        tensor_model_parallel_size: number of GPUs used for tensor model
-            parallelism.
-        pipeline_model_parallel_size: number of GPUs used for pipeline model
-            parallelism.
-
-    Let's say we have a total of 8 GPUs denoted by g0 ... g7 and we
-    use 2 GPUs to parallelize the model tensor, and 4 GPUs to parallelize
-    the model pipeline. The present function will
-    create 4 tensor model-parallel groups and 2 pipeline model-parallel groups:
-        4 tensor model-parallel groups:
-            [g0, g1], [g2, g3], [g4, g5], [g6, g7]
-        2 pipeline model-parallel groups:
-            [g0, g2, g4, g6], [g1, g3, g5, g7]
-    Note that for efficiency, the caller should make sure adjacent ranks
-    are on the same DGX box. For example if we are using 2 DGX-1 boxes
-    with a total of 16 GPUs, rank 0 to 7 belong to the first box and
-    ranks 8 to 15 belong to the second box.
-    """
     # Get world size and rank. Ensure some consistencies.
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
@@ -271,6 +468,14 @@ def initialize_world_comm_group_list(backend) -> None:
         )
 
 
+def get_mlp_tp_group() -> GroupCoordinator:
+    return _MLP_TP
+
+
+def get_o_proj_tp_group() -> GroupCoordinator:
+    return _O_PROJ_TP
+
+
 def get_local_world_group() -> GroupCoordinator:
     return _LOCAL_WORLD
 
@@ -287,37 +492,145 @@ def get_world_group_from_list(idx: int) -> GroupCoordinator:
     return _GLOBAL_COMM_LIST[idx]
 
 
-def get_data_parallel_world_size():
-    """Return world size for the tensor model parallel group."""
-    group = get_dp_group()
-    if group is not None:
-        return group.world_size
-    else:
-        return 1
-
-
-def get_data_parallel_rank():
-    """Return my rank for the tensor model parallel group."""
-    group = get_dp_group()
-    if group is not None:
-        return group.rank_in_group
-    else:
-        return 0
-
-
-def get_expert_parallel_world_size():
-    """Return world size for the tensor model parallel group."""
-    return get_ep_group().world_size
-
-
-def get_expert_parallel_rank():
-    """Return my rank for the tensor model parallel group."""
-    return get_ep_group().rank_in_group
-
-
 def get_local_group_world_size_from_list(idx: int):
     return _LOCAL_COMM_LIST[idx].world_size
 
 
 def get_local_group_rank_from_list(idx: int):
     return _LOCAL_COMM_LIST[idx].rank_in_group
+
+
+def get_near_cross_group_from_list(idx: int) -> GroupCoordinator:
+    return _CROSS_NEAR_COMM_LIST[idx]
+
+
+def get_far_cross_group_from_list(idx: int) -> GroupCoordinator:
+    return _CROSS_FAR_COMM_LIST[idx]
+
+
+def get_local_group_size():
+    return get_local_group_from_list(idx=0).world_size
+
+
+def get_local_group_rank():
+    return get_local_group_from_list(idx=0).rank_in_group
+
+
+def initialize_round_cross_comm_group_list(backend) -> None:
+    # Get world size and rank. Ensure some consistencies.
+    assert torch.distributed.is_initialized()
+    world_size: int = torch.distributed.get_world_size()
+
+    local_size = get_npu_device_count()
+    assert world_size % local_size == 0
+
+    server_size = world_size // local_size
+
+    backend = backend or torch.distributed.get_backend(
+        get_world_group().device_group)
+
+    num_cross_groups: int = (world_size // server_size)
+    global _CROSS_ROUND_COMM_LIST
+    assert _CROSS_ROUND_COMM_LIST is None, (
+        "pipeline model parallel group is already initialized")
+    _CROSS_ROUND_COMM_LIST = list()
+
+    group_ranks_round0 = []
+    group_ranks_round1 = []
+    group_ranks_round2 = []
+    for i in range(num_cross_groups):
+        ranks = [[i + 0 * num_cross_groups, i + 1 * num_cross_groups], \
+                [i + 2 * num_cross_groups, i + 3 * num_cross_groups]]
+        group_ranks_round0.extend(ranks)
+
+        ranks = [[i + 0 * num_cross_groups, i + 2 * num_cross_groups], \
+                [i + 1 * num_cross_groups, i + 3 * num_cross_groups]]
+        group_ranks_round1.extend(ranks)
+
+        ranks = [[i + 0 * num_cross_groups, i + 3 * num_cross_groups], \
+                [i + 1 * num_cross_groups, i + 2 * num_cross_groups]]
+        group_ranks_round2.extend(ranks)
+
+
+    _CROSS_ROUND_COMM_LIST.append(init_model_parallel_group(group_ranks_round0,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="world_round0_cross"))
+
+    _CROSS_ROUND_COMM_LIST.append(init_model_parallel_group(group_ranks_round1,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="world_round1_cross"))
+
+    _CROSS_ROUND_COMM_LIST.append(init_model_parallel_group(group_ranks_round2,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="world_round2_cross"))
+
+
+def get_round_cross_group_from_list(round: int) -> GroupCoordinator:
+    return _CROSS_ROUND_COMM_LIST[round]
+
+
+def initialize_far_cross_comm_group_list(backend) -> None:
+    # Get world size and rank. Ensure some consistencies.
+    assert torch.distributed.is_initialized()
+    world_size: int = torch.distributed.get_world_size()
+
+    local_size  = get_npu_device_count()
+    assert world_size % local_size == 0
+
+    server_size = world_size // local_size
+
+    backend = backend or torch.distributed.get_backend(
+        get_world_group().device_group)
+
+    num_cross_groups: int = (world_size // server_size)
+    global _CROSS_FAR_COMM_LIST
+    assert _CROSS_FAR_COMM_LIST is None, (
+        "pipeline model parallel group is already initialized")
+    _CROSS_FAR_COMM_LIST = list()
+    group_ranks = []
+    for i in range(num_cross_groups):
+        for j in range(server_size // 2):
+            ranks = list(range(i + j * num_cross_groups, world_size, world_size // 2))
+            group_ranks.append(ranks)
+
+    for i in range(_NUM_COMM_GROUP):
+        _CROSS_FAR_COMM_LIST.append(init_model_parallel_group(group_ranks,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="world_far_cross"))
+
+
+def initialize_near_cross_comm_group_list(backend) -> None:
+    # Get world size and rank. Ensure some consistencies.
+    assert torch.distributed.is_initialized()
+    world_size: int = torch.distributed.get_world_size()
+
+    local_size = get_npu_device_count()
+    assert world_size % local_size == 0
+
+    server_size = world_size // local_size
+
+    backend = backend or torch.distributed.get_backend(
+        get_world_group().device_group)
+
+    num_cross_groups: int = (world_size // server_size)
+    global _CROSS_NEAR_COMM_LIST
+    assert _CROSS_NEAR_COMM_LIST is None, (
+        "pipeline model parallel group is already initialized")
+    _CROSS_NEAR_COMM_LIST = list()
+    group_ranks = []
+    for i in range(num_cross_groups):
+        ranks = list(range(i, world_size // 2, num_cross_groups))
+        group_ranks.append(ranks)
+
+        ranks = list(range(world_size // 2 + i, world_size, num_cross_groups))
+        group_ranks.append(ranks)
+
+    for i in range(_NUM_COMM_GROUP):
+        _CROSS_NEAR_COMM_LIST.append(init_model_parallel_group(group_ranks,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="world_near_cross"))

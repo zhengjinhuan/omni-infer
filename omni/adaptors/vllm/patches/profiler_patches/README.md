@@ -4,9 +4,10 @@ This folder provides a **non-intrusive way to apply function-level profiling**.
 
 ### Supported Profilers
 
-1. **Timer** – basic time measurement for target functions.
-2. **VizTracer** – execution trace visualization using VizTracer
-3. **Torch-NPU** – via `torch_npu.profiler`
+1. **Marker** - Simply add something before/after target functions.
+2. **Timer** – Basic time measurement for target functions.
+3. **VizTracer** – Execution trace visualization using VizTracer.
+4. **Torch-NPU** – Profiling via `torch_npu.profiler`.
 
 ### Enable Profiling
 
@@ -16,4 +17,4 @@ Set the corresponding environment variable to a YAML config file:
 
 ### Usage
 * export PROFILING_NAMELIST=/path/to/namelist.yml
-Example yaml configs are in the [`assets/`](./assets) folder.
+* Example yaml configs are in the [`assets/`](./assets) folder.

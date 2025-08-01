@@ -68,10 +68,10 @@ graph:
     HCCL_OP_EXPANSION_MODE: "AIV" # use is AIV
     VLLM_ENABLE_MC2: "1"
   api_servers_params:
-    --additional-config: '{"enable_graph_mode": true}'
+    --additional-config: '{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true, "block_num_floating_range":50}}'
 mtp:
   api_servers_params:
-    --speculative_config: '{"method": "mtp", "num_speculative_tokens": 1}'
+    --speculative_config: '{"method": "deepseek_mtp", "num_speculative_tokens": 1}'
 mock_model:
   env:
     RANDOM_MODE: "1" # Enable mock model when set to 1 p/d node
@@ -81,3 +81,6 @@ mock_model:
 async_schedule:
   api_servers_params:
     --additional-config: '{"async_schedule": true}' # Enable async scheduler at D node. DO NOT enable it at P side
+omni_attention:
+  api_servers_params:
+    --additional-config: '{"enable_omni_attn": true}'  # if p/d, set this on both sides

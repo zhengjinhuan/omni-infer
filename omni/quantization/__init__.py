@@ -1,0 +1,1 @@
+from omni.quantization.compressed_tensors import compressed_tensors

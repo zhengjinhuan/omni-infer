@@ -12,6 +12,10 @@ targets:
     function_name: execute_model
   - module: "vllm.v1.core.sched.scheduler:Scheduler"
     function_name: schedule
+    operation: |
+      print(f"Args: {args}, kwargs: {kwargs} Result: {result}", flush=True)
+    entry_message: Start pull kv
+    exit_message: Finish pull kv
   - module: "vllm.v1.engine.core:EngineCore"
     function_name: execute_model
   - module: "vllm.v1.engine.core:EngineCore"
@@ -28,8 +32,6 @@ targets:
     function_name: compute_logits
   - module: "omni.adaptors.vllm.worker.npu_model_runner:NPUModelRunner"
     function_name: _update_states
-  - module: "omni.adaptors.vllm.worker.npu_model_runner:NPUModelRunner"
-    function_name: _make_attention_mask
   - module: "omni.adaptors.vllm.worker.npu_model_runner:NPUModelRunner"
     function_name: _process_reqs
   - module: "omni.adaptors.vllm.worker.npu_model_runner:WrapModel"

@@ -64,17 +64,24 @@ class OmniAttentionSpec(AttentionSpec):
 class OmniMultiGroupBlockTable(MultiGroupBlockTable):
     def __init__(self, max_num_reqs: int, max_model_len: int,
                  max_num_batched_tokens: int, pin_memory: bool,
-                 device: torch.device, kv_cache_config: OmniKVCacheConfig) -> None:
-        max_num_blocks_per_req = [
-            cdiv(max_model_len, g.kv_cache_spec.block_size)
-            if not isinstance(g.kv_cache_spec, OmniAttentionSpec) else g.kv_cache_spec.max_num_blocks
-            for g in kv_cache_config.kv_cache_groups
-        ]
-
+                 device: torch.device, *args, **kwargs) -> None:
+        if len(args) > 0:
+            raise RuntimeError("All arguments should be passed with keywords"
+                               f", but {len(args)} positional args are given.")
+        if 'block_size' in kwargs:
+            block_size = kwargs['block_size']
+        elif 'block_sizes' in kwargs:
+            # when upgraded to vllm 0.9.2, this argument will change from block_size to block_sizes
+            block_size = kwargs['block_sizes'][0]
+        else:
+            raise RuntimeError("Neither `block_size` nor `block_sizes` is given.")
+        if not isinstance(block_size, int) or block_size <= 0:
+            raise ValueError(f"block_size should be a positive int, but is {block_size}.")
         self.block_tables = [
-            BlockTable(max_num_reqs, max_num_blocks_per_req[i],
+            BlockTable(max_num_reqs, cdiv(max_model_len, block_size),
+                       max_num_batched_tokens, pin_memory, device),
+            BlockTable(max_num_reqs, SINK + RECENT,
                        max_num_batched_tokens, pin_memory, device)
-            for i in range(len(kv_cache_config.kv_cache_groups))
         ]
 
 

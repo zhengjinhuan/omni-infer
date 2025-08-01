@@ -36,6 +36,10 @@
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
 
+    #Configuration for lb_sdk in global proxy
+    PREFILL_LB_SDK: "pd_score_balance"
+    DECODE_LB_SDK: "pd_score_balance"
+
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
 
@@ -170,7 +174,6 @@
       #!/bin/bash
 
       . ~/.bashrc
-      HCCL_BUFFSIZE=500
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
@@ -259,7 +262,7 @@
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32'
       GPU_UTIL=0.92
-      ADDITIONAL_CONFIG='{"enable_graph_mode": true, "use_cached_npu_graph": true}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -348,7 +351,9 @@
         --log-file ${LOG_PATH}/nginx_error.log \
         --log-level notice \
         --core-num 4 \
-        --start-core-index 16
+        --start-core-index 16 \
+        --prefill-lb-sdk ${PREFILL_LB_SDK} \
+        --decode-lb-sdk ${DECODE_LB_SDK}
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -441,6 +446,8 @@
       {{ docker_exec_cmd }}
       -e http_proxy=$HTTP_PROXY
       -e https_proxy=$HTTP_PROXY
+      -e PREFILL_LB_SDK=$PREFILL_LB_SDK
+      -e DECODE_LB_SDK=$DECODE_LB_SDK
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 

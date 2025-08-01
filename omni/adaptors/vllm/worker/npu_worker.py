@@ -40,6 +40,7 @@ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.worker.worker_base import WorkerBase
 from vllm.platforms import current_platform
+from vllm.lora.request import LoRARequest
 
 from omni.adaptors.vllm.platform import NPUPlatform
 # from vllm.v1.worker.gpu_model_runner import GPUModelRunner
@@ -53,7 +54,6 @@ import os
 import ray
 from omni.models.common.config.model_config import model_extra_config
 
-BLOCK_NUM_FLOATING_RANGE = 32768
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
 class NPUDeviceProperties:
@@ -77,13 +77,6 @@ class NPUWorker(WorkerBase):
             # Additional parameters for compatibility with vllm
             **kwargs):
         """Initialize the worker for Ascend."""
-        # register patch for vllm
-        # from vllm_ascend.utils import adapt_patch
-        # adapt_patch()
-        # # Register ops when worker init.
-        # from omni. import ops
-        # ops.register_dummy_fusion_op()
-        # _register_atb_extensions()
 
         if envs.VLLM_ENABLE_V1_MULTIPROCESSING:
             if envs.VLLM_USE_RAY_SPMD_WORKER:
@@ -155,18 +148,11 @@ class NPUWorker(WorkerBase):
         self.model_runner = NPUModelRunner(self.vllm_config, self.device)
 
     def _init_graph_options(self):
-        self.block_num_floating_range = BLOCK_NUM_FLOATING_RANGE
-        additional_config = self.vllm_config.additional_config
-        self.enable_torchair_graph_mode = False
-        self.use_cached_npu_graph = False
-        if additional_config:
-           self.block_num_floating_range = additional_config.get(
-                "block_num_floating_range", BLOCK_NUM_FLOATING_RANGE)
-           self.enable_torchair_graph_mode = additional_config.get(
-                "enable_graph_mode",
-                False) and self.vllm_config.model_config.use_mla
-           self.use_cached_npu_graph = additional_config.get(
-                "use_cached_npu_graph", False)
+        from vllm.utils import supports_dynamo
+        from vllm.config import CompilationLevel
+
+        self.enable_torchair_graph_mode = (self.vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+        self.use_cached_npu_graph = self.vllm_config.npu_compilation_config.use_ge_graph_cached
 
     def page_size_bytes(self) -> int:
         # For MLA we only store a single latent vector
@@ -175,7 +161,7 @@ class NPUWorker(WorkerBase):
         block_size = self.vllm_config.cache_config.block_size
         kv_lora_rank = config.kv_lora_rank
         qk_rope_head_dim = config.qk_rope_head_dim
-        return coef * block_size * (kv_lora_rank + qk_rope_head_dim) * 2
+        return coef * config.num_hidden_layers * block_size * (kv_lora_rank + qk_rope_head_dim) * 2
 
     def determine_available_memory(self) -> int:
         if int(os.getenv("NO_NPU_MOCK", "0")):
@@ -236,7 +222,6 @@ class NPUWorker(WorkerBase):
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
         self.model_runner.profile_run()
-
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
         free_npu_memory, total_npu_memory = NPUPlatform.mem_get_info()
@@ -269,16 +254,7 @@ class NPUWorker(WorkerBase):
         self.model_runner.load_model()
 
     def compile_or_warm_up_model(self) -> None:
-        warmup_sizes = self.vllm_config.compilation_config.compile_sizes.copy()
-        if not self.model_config.enforce_eager:
-            warmup_sizes = [
-                x for x in warmup_sizes if x not in
-                self.vllm_config.compilation_config.cudagraph_capture_sizes
-            ]
-        for size in sorted(warmup_sizes, reverse=True):
-            logger.info("Compile and warming up model for size %d", size)
-            self.model_runner._dummy_run(size)
-        if not self.model_config.enforce_eager:
+        if self.enable_torchair_graph_mode:
             self.model_runner.capture_model()
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
@@ -308,9 +284,17 @@ class NPUWorker(WorkerBase):
             self.profiler.stop()
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
-        if model_extra_config.operator_opt_config.use_omni_placement:
-            self.model_runner.planner.place_experts()
+    def add_lora(self, lora_request: LoRARequest) -> bool:
+        return self.model_runner.add_lora(lora_request)
 
+    def remove_lora(self, lora_id: int) -> bool:
+        return self.model_runner.remove_lora(lora_id)
+
+    def list_loras(self) -> set[int]:
+        return self.model_runner.list_loras()
+
+    def pin_lora(self, lora_id: int) -> bool:
+        return self.model_runner.pin_lora(lora_id)
     def _init_worker_distributed_environment(self) -> None:
         """Initialize the distributed environment."""
         additional_config = self.vllm_config.additional_config

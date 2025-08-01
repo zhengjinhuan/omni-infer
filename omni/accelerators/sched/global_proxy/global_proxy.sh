@@ -349,21 +349,38 @@ function nginx_set_upstream() {
     local lb_sdk_extra=""
     case "$lb_sdk_line" in
         "weighted_least_active")
-            lb_sdk_line="weighted_least_active on"
+            lb_sdk_line="weighted_least_active on;"
             ;;
         "greedy_timeout")
-            lb_sdk_line="greedy_timeout on"
+            lb_sdk_line="greedy_timeout on;"
             ;;
         "prefill_score_balance")
-            lb_sdk_line="prefill_score_balance on"
+            lb_sdk_line="prefill_score_balance on;"
             ;;
         "pd_score_balance")
             if [ "$upstream_name" = "prefill_servers" ]; then
-                lb_sdk_line="pd_score_balance prefill"
+                lb_sdk_line="pd_score_balance prefill;"
             elif [ "$upstream_name" = "decode_servers" ]; then
-                lb_sdk_line="pd_score_balance decode"
+                lb_sdk_line="pd_score_balance decode;"
                 lb_sdk_extra="pd_score_balance_decode_req_limit 25;"
             fi
+            ;;
+        "least_total_load")
+            lb_sdk_line="least_total_load on;"
+            lb_sdk_extra="least_total_load_batch_size 16;"
+            ;;
+        "auto_balance_controller")
+            lb_sdk_line="auto_balance_controller on;"
+            lb_sdk_extra="auto_balance_controller_batch_size 32;"
+            ;;
+        "length_balance")
+            lb_sdk_line="length_balance;"
+            ;;
+        "round_robin")
+            lb_sdk_line=""
+            ;;
+        "least_conn")
+            lb_sdk_line="least_conn;"
             ;;
     esac
 
@@ -371,7 +388,7 @@ function nginx_set_upstream() {
     local upstream_block="    upstream $upstream_name {
         ${zone_line}
         ${lb_sdk_extra}
-        ${lb_sdk_line};
+        ${lb_sdk_line}
         keepalive 2048;
         keepalive_timeout 110s;
         keepalive_requests 20000;
@@ -417,6 +434,7 @@ function nginx_set_location_openai_compatible() {
 
         # match /v1/completions and /v1/chat/completions
         location ~ ^/v1(/chat)?/completions$ {
+            set_request_id on;
             prefill /prefill_internal;
             proxy_pass http://decode_servers;
             proxy_http_version 1.1;
@@ -465,21 +483,58 @@ function nginx_set_location_openai_compatible() {
 
 function nginx_set_load_modules() {
     local nginx_conf_file="$1"
+    local prefill_lb_sdk="$2"
+    local decode_lb_sdk="$3"
+
     local load_module_set_request_id_line="load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;"
     local load_module_prefill_line="load_module /usr/local/nginx/modules/ngx_http_prefill_module.so;"
-    local load_module_upstream_length_balance_line="load_module /usr/local/nginx/modules/ngx_http_upstream_length_balance_module.so;"
-    local load_module_upstream_wla_line="load_module /usr/local/nginx/modules/ngx_http_upstream_weighted_least_active_module.so;"
-    local load_module_upstream_psb_line="load_module /usr/local/nginx/modules/ngx_http_upstream_prefill_score_balance_module.so;"
-    local load_module_upstream_pds_line="load_module /usr/local/nginx/modules/ngx_http_upstream_pd_score_balance_module.so;"
 
-    # Add all load module at the top
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
     sed -i "2i ${load_module_prefill_line}" "$nginx_conf_file"
-    sed -i "3i ${load_module_upstream_length_balance_line}" "$nginx_conf_file"
-    sed -i "3i ${load_module_upstream_wla_line}" "$nginx_conf_file"
-    sed -i "3i ${load_module_upstream_psb_line}" "$nginx_conf_file"
-    sed -i "3i ${load_module_upstream_pds_line}" "$nginx_conf_file"
 
+    function _load_lb_sdk_module() {
+        local lb_sdk="$1"
+        case "$lb_sdk" in
+            "weighted_least_active")
+                echo "load_module /usr/local/nginx/modules/ngx_http_upstream_weighted_least_active_module.so;"
+                ;;
+            "prefill_score_balance")
+                echo "load_module /usr/local/nginx/modules/ngx_http_upstream_prefill_score_balance_module.so;"
+                ;;
+            "pd_score_balance")
+                echo "load_module /usr/local/nginx/modules/ngx_http_upstream_pd_score_balance_module.so;"
+                ;;
+            "least_total_load")
+                echo "load_module /usr/local/nginx/modules/ngx_http_upstream_least_total_load_module.so;"
+                ;;
+            "auto_balance_controller")
+                echo "load_module /usr/local/nginx/modules/ngx_http_upstream_auto_balance_controller_module.so;"
+                ;;
+            "greedy_timeout")
+                echo "load_module /usr/local/nginx/modules/ngx_http_upstream_greedy_timeout_module.so;"
+                ;;
+            "length_balance")
+                echo "load_module /usr/local/nginx/modules/ngx_http_upstream_length_balance_module.so;"
+                ;;
+            *)
+                ;;
+        esac
+    }
+
+    local lb_modules=()
+    lb_modules+=("$(_load_lb_sdk_module "$prefill_lb_sdk")")
+    lb_modules+=("$(_load_lb_sdk_module "$decode_lb_sdk")")
+
+    local unique_lb_modules=()
+    for mod in "${lb_modules[@]}"; do
+        [[ -n "$mod" ]] && [[ ! " ${unique_lb_modules[@]} " =~ " $mod " ]] && unique_lb_modules+=("$mod")
+    done
+
+    local insert_line=3
+    for mod in "${unique_lb_modules[@]}"; do
+        sed -i "${insert_line}i ${mod}" "$nginx_conf_file"
+        insert_line=$((insert_line+1))
+    done
 }
 
 function nginx_configuration() {
@@ -507,7 +562,7 @@ function nginx_configuration() {
     nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers" true "$decode_lb_sdk"
     nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false "$prefill_lb_sdk"
     nginx_set_location_openai_compatible $nginx_conf_file
-    nginx_set_load_modules $nginx_conf_file
+    nginx_set_load_modules $nginx_conf_file $prefill_lb_sdk $decode_lb_sdk
 }
 
 function rollback_nginx_config() {

@@ -23,10 +23,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Inference-only DeepseekV3 model."""
+import copy
 import itertools
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
-from contextlib import nullcontext
-import torch, torch_npu
+from typing import Iterable, List, Optional, Set, Tuple, Union
+import torch
 from torch import nn
 from transformers import PretrainedConfig
 import torch.distributed as dist
@@ -35,18 +35,18 @@ torch._logging.set_logs(recompiles=True)
 # vllm adaptor
 from vllm.platforms import current_platform
 from vllm.config import CacheConfig, QuantizationConfig, VllmConfig
-from vllm.attention import Attention, AttentionMetadata
+from vllm.compilation.decorators import support_torch_compile
+from vllm.attention import AttentionMetadata
 from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
     get_dp_group,
     get_pp_group,
-    get_world_group,
     get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_gather
 )
-from vllm.distributed.communication_op import tensor_model_parallel_all_gather
-
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.models.utils import (
     PPMissingLayer, 
     is_pp_missing_parameter, 
@@ -54,132 +54,33 @@ from vllm.model_executor.models.utils import (
     make_empty_intermediate_tensors_factory,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.layers.linear import (
-    ReplicatedLinear,
-    ColumnParallelLinear
-)
-# Huawei Cloud
-from omni.models.common.layers.rotary_embedding import get_rope
+
 from omni.models.common.layers.linear import (
-    MergedReplicatedLinear,
-    RowParallelLinearWithReduceScatter,
     AscendMergedColumnParallelLinear,
-    AscendRowParallelLinear
+    AscendRowParallelLinear,
 )
 from omni.models.common.layers.vocab_parallel_embedding import (
     ParallelLMHead, 
     VocabParallelEmbedding
 )
-from omni.models.common.layers.logits_processor import LogitsProcessor
 from omni.models.common.layers.activation import SiluAndMul
 from omni.models.common.layers.layernorm import RMSNorm
 from omni.adaptors.vllm.distributed.parallel_state import (
-    get_data_parallel_world_size,
-    get_data_parallel_rank,
-    get_expert_parallel_world_size
+    get_stream1_attn_group,
+    get_stream1_mlp_group,
+    get_stream1_moe_group,
+    get_mlp_tp_group,
+    GroupCoordinator
 )
-from omni.adaptors.vllm.distributed.communication_op import (
-    mlp_all_gather,
-    mlp_reduce_scatter,
-    all_gather_two_stage,
-    reduce_scatter_two_stage,
-)
-from omni.models.common.layers.fused_moe.layer import FusedMoE, UNQUANT_MODE, DYNAMIC_QUANT_MODE
-from omni.models.common.layers.logits_processor import _prune_hidden_states
+
+from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
+from omni.models.common.layers.moe.deepseek_moe import DeepseekMoE 
+from omni.models.common.layers.attention.deepseek_mla import DeepseekMLA 
 from omni.models.common.config.model_config import model_extra_config
+from omni.models.common.layers.attention.backend.mla import group_request_list
 from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
-from omni.models.common.layers.fused_moe.fused_moe import fused_experts_w8a8_moe_dispatch_combine
-
-if model_extra_config.operator_opt_config.use_omni_placement:
-    from omni_planner import OmniPlanner
-else:
-    OmniPlanner = None
-
-
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
-SEQ_SPLIT_LENGTH = 4096
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
-KVCACHE_NZ_DIM = 16
-# Load FFN weights into L1Cache in advance, and add them after debugging is stable.
-
-
-def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
-    import math
-    if scale <= 1:
-        return 1.0
-    return 0.1 * mscale * math.log(scale) + 1.0
-
-def condition_context(context, enable=True):
-    return context if (enable and model_extra_config.operator_opt_config.use_super_kernel) else nullcontext()
-
-
-class ReplicatedDeepseekMLP(nn.Module):
-    """Replicates the inputs and weights across multiple GPUs. No memory saving."""
-    def __init__(
-            self,
-            hidden_size: int,
-            intermediate_size: int,
-            hidden_act: str,
-            quant_config: Optional[QuantizationConfig] = None,
-            reduce_results: bool = True,
-            prefix: str = "",
-    ) -> None:
-        super().__init__()
-        self.gate_up_proj = MergedReplicatedLinear(
-            hidden_size, [intermediate_size] * 2,
-            bias=False,
-            quant_config=quant_config,
-            prefix=f"{prefix}.gate_up_proj")
-        self.gate_up_proj.throw_dequant = True
-        self.down_proj = ReplicatedLinear(intermediate_size,
-                                          hidden_size,
-                                          bias=False,
-                                          quant_config=quant_config,
-                                          prefix=f"{prefix}.down_proj")
-        if hidden_act != "silu":
-            raise ValueError(f"Unsupported activation: {hidden_act}. "
-                             "Only silu is supported for now.")
-        self.act_fn_obj = SiluAndMul()
-        self.quant_symbol = True if quant_config else False
-        self.tp_size = 1
-        self.quant_mode = DYNAMIC_QUANT_MODE if quant_config else UNQUANT_MODE
-        if model_extra_config.operator_opt_config.moe_dispatch_combine:
-            # adapter fusion op dispatch and combine
-            self.ep_size = get_expert_parallel_world_size()
-            self.global_rank = get_world_group().rank_in_group
-            self.world_size = get_world_group().world_size
-            self.moe_all_to_all_group = get_world_group().device_group
-            self.moe_all_to_all_group_name = self.moe_all_to_all_group._get_backend(torch.device("npu")).get_hccl_comm_name(self.global_rank)
-            self.moe_rs_group = get_pp_group().device_group
-            self.moe_rs_group_rank = get_pp_group().rank_in_group
-            self.moe_rs_group_name = self.moe_rs_group._get_backend(torch.device("npu")).get_hccl_comm_name(self.moe_rs_group_rank)
-
-
-    def act_fn(self, x, quant_symbol):
-        if quant_symbol and isinstance(x, tuple):
-            x = dict(zip(['x_int8', 'pertoken_scale'], x))
-            x['out_scale'] = self.gate_up_proj.weight_scale
-        return self.act_fn_obj(x, quant_symbol)
-
-    def forward(self, x, attn_metadata=None):
-        if isinstance(x, Dict):
-            token_num = x.get('x_int8').shape[0]
-        else:
-            token_num = x.shape[0]
-        if token_num > SEQ_SPLIT_LENGTH:  # Split seq to reduce memory usage
-            x_list = x.split(SEQ_SPLIT_LENGTH)
-            out = []
-            for i in range(len(x_list)):
-                x = x_list[i]
-                gate_up, _ = self.gate_up_proj.forward(x)
-                x = self.act_fn(gate_up, self.quant_symbol)
-                x, _ = self.down_proj.forward(x)
-                out.append(x)
-            return torch.concat(out)
-        gate_up, _ = self.gate_up_proj.forward(x)
-        x = self.act_fn(gate_up, self.quant_symbol)
-        x, _ = self.down_proj.forward(x)
-        return x
 
 
 class ParallelDeepseekMLP(nn.Module):
@@ -197,12 +98,16 @@ class ParallelDeepseekMLP(nn.Module):
         self.prefix = prefix
         self.gate_up_proj = AscendMergedColumnParallelLinear(
             hidden_size, [intermediate_size] * 2,
+            tp_size=get_mlp_tp_group().world_size,
+            tp_rank=get_mlp_tp_group().rank_in_group,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.gate_up_proj")
         self.down_proj = AscendRowParallelLinear(intermediate_size,
                                            hidden_size,
                                            bias=False,
+                                           tp_size=get_mlp_tp_group().world_size,
+                                           tp_rank=get_mlp_tp_group().rank_in_group,
                                            quant_config=quant_config,
                                            reduce_results=False,
                                            prefix=f"{prefix}.down_proj")
@@ -220,711 +125,15 @@ class ParallelDeepseekMLP(nn.Module):
 
 
     def forward(self, x, residual, attn_metadata, layerid=None):
-        is_prefill = attn_metadata is None or attn_metadata.prefill
-        if not is_prefill:
-            # P and D are both cut, and are concave at the node
-            x = mlp_all_gather(x, dim=0)
-        else:
-            pad_size = 0
-            # pd mix use
-            if model_extra_config.parall_config.dp_size > 1:
-                local_length = x.shape[0]
-                reduce_length = torch.tensor(x.shape[0], dtype=torch.int64, device=current_platform.device_type)
-                dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
-                global_max_length = reduce_length.item()
-                pad_size = global_max_length - x.shape[0]
-
-                x = torch.nn.functional.pad(
-                    x, (0, 0, 0, pad_size)
-                )
-            x = mlp_all_gather(x, dim=0)
+        x = get_mlp_tp_group().all_gather(x, dim=0)
 
         gate_up, _ = self.gate_up_proj.forward(x)
         x = self.act_fn(gate_up, self.quant_symbol)
         x, _ = self.down_proj.forward(x)
 
         # P and D are both cut, and are concave at the node (16)
-        x = mlp_reduce_scatter(x)
-        if is_prefill and pad_size > 0:
-            x = x[:local_length, :]
+        x = get_mlp_tp_group().reduce_scatter(x)
         return x, residual
-
-
-class DeepseekMoE(nn.Module):
-
-    def __init__(
-            self,
-            config: PretrainedConfig,
-            quant_config: Optional[QuantizationConfig] = None,
-            prefix: str = "",
-    ):
-        super().__init__()
-        self.prefix = prefix
-        self.ep_size = get_expert_parallel_world_size()
-        self.routed_scaling_factor = config.routed_scaling_factor
-        self.n_shared_experts = config.n_shared_experts
-        self.n_routed_experts = config.n_routed_experts
-        self.device_count = torch.npu.device_count()
-
-        self.world_size = get_world_group().world_size
-        self.current_rank = dist.get_rank()
-        self.top_k = config.num_experts_per_tok
-        self.use_grouped_topk = True
-        self.renormalize = config.norm_topk_prob
-        self.topk_group = config.topk_group
-        self.num_expert_group = config.n_group
-        self.custom_routing_function = None
-        self.scoring_func = config.scoring_func
-        self.redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
-        if self.ep_size > (config.n_routed_experts + self.redundancy_shared_expert_num):
-            raise ValueError(
-                f"Tensor parallel size {self.ep_size} is greater than "
-                f"the number of experts {config.n_routed_experts} + {self.redundancy_shared_expert_num}.")
-
-        if config.hidden_act != "silu":
-            raise ValueError(f"Unsupported activation: {config.hidden_act}. "
-                             "Only silu is supported for now.")
-
-        self.gate = ReplicatedLinear(config.hidden_size,
-                                     config.n_routed_experts,
-                                     bias=False,
-                                     quant_config=None,
-                                     params_dtype=torch.float32,
-                                     prefix=f"{prefix}.gate")
-        if config.topk_method == "noaux_tc":
-            self.gate.e_score_correction_bias = nn.Parameter(
-                torch.empty(config.n_routed_experts, dtype=torch.float), requires_grad=False)
-        else:
-            self.gate.e_score_correction_bias = None
-
-        self.shared_experts = None
-        self.experts = None
-        self.global_rank = get_world_group().rank_in_group
-        if self.global_rank >= self.redundancy_shared_expert_num:
-            self.experts = FusedMoE(
-                num_experts=config.n_routed_experts,
-                top_k=config.num_experts_per_tok,
-                hidden_size=config.hidden_size,
-                intermediate_size=config.moe_intermediate_size,
-                reduce_results=False,
-                renormalize=config.norm_topk_prob,
-                quant_config=quant_config,
-                use_grouped_topk=True,
-                num_expert_group=config.n_group,
-                topk_group=config.topk_group,
-                prefix=f"{prefix}.experts",
-                scoring_func=config.scoring_func,
-                e_score_correction_bias=self.gate.e_score_correction_bias,
-            )
-        self.warm_up = True
-        if config.n_shared_experts is not None and \
-            (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
-            intermediate_size = config.moe_intermediate_size * config.n_shared_experts
-
-            self.shared_experts = ReplicatedDeepseekMLP(
-                hidden_size=config.hidden_size,
-                intermediate_size=intermediate_size,
-                hidden_act=config.hidden_act,
-                quant_config=quant_config,
-                reduce_results=False,
-                prefix=f"{prefix}.shared_experts",
-            )
-            if self.redundancy_shared_expert_num > 0 and OmniPlanner is not None:
-                self.planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
-                                           rank=self.global_rank, world_size=self.ep_size - self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts")
-                self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
-
-        if self.experts is not None:
-            self.local_expert_num = self.experts.w13_weight_scale.shape[0]
-            self.in_scale_2 = torch.ones((self.local_expert_num, self.experts.w13_weight_scale.shape[-1] // 2), dtype=torch.float32, device=current_platform.device_type)
-            torch._dynamo.mark_static(self.in_scale_2)
-            self.w13_prefetch_size = 70 * 1024 * 1024
-            self.w2_prefetch_size = 0 if self.ep_size <= 64 else 14 * 2 * 1024 * 1024
-
-
-    def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
-        if self.redundancy_shared_expert_num > 0:
-            if attn_metadata is None or attn_metadata.prefill is not None:
-                return self.forward_separate_expert_prefill(hidden_states, residual, attn_metadata)
-            else:
-                return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)
-        else:
-            return self.forward_norm(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
-
-
-    def forward_norm(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
-        is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
-
-        if (model_extra_config.operator_opt_config.moe_multi_stream_tune and
-            not is_prefill and 
-            self.n_shared_experts is not None and 
-            model_extra_config.operator_opt_config.moe_dispatch_combine):
-            if self.warm_up:
-                self.warm_up = False
-            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
-                router_logits, _ = self.gate.forward(hidden_states.float())
-                # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
-                hidden_states_3d = hidden_states.unsqueeze(1)
-                hidden_states = hidden_states_3d.squeeze(1)
-
-                with tng.scope.npu_stream_switch('21'):
-                    hidden_states = tng.scope.npu_wait_tensor(hidden_states, router_logits)
-                    # shared_experts w13
-                    gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states)
-                wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
-			
-            # expert weight prefetch
-            if self.w13_prefetch_size > 0:
-                torch_npu.npu_prefetch(self.experts.w13_weight, wait_gate, self.w13_prefetch_size)
-            if self.w2_prefetch_size > 0:
-                torch_npu.npu_prefetch(self.experts.w2_weight, wait_gate, self.w2_prefetch_size)
-
-            topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
-                                                                    self.experts.top_k, self.experts.use_grouped_topk,
-                                                                    self.experts.renormalize,
-                                                                    self.experts.topk_group, self.experts.num_expert_group,
-                                                                    self.experts.custom_routing_function,
-                                                                    self.experts.scoring_func,
-                                                                    self.experts.e_score_correction_bias,
-                                                                    self.routed_scaling_factor,
-                                                                    layer=self.experts  # ENABLE_OMNI_PLANNER
-                                                                    )
-            
-            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
-
-                if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-                    faka_topk_ids = attn_metadata.decode.best_topk
-                    topk_ids = tng.scope.npu_wait_tensor(faka_topk_ids, topk_ids)
-
-                mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and attn_metadata.decode is not None else None
-                layer = self.experts
-                
-                max_num_deployed_expert = self.local_expert_num * get_data_parallel_world_size()
-                act_dtype = hidden_states.dtype
-                shared_expert_rank_num = 0
-                kwargs = {
-                    "x": hidden_states,
-                    "expert_ids": topk_ids,  # [n*topk]
-                    "expert_shard_type": 0,  # Set it to 0 for now
-                    "shared_expert_rank_num": shared_expert_rank_num,  # 32
-                    "moe_expert_num": max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0 redundancy 256, 1 redundancy expert 320
-                    "global_bs": 0,  # 0 Default (all); all tokens can be set
-                }
-
-                experts_tp_size = layer.tp_size
-                world_size = get_world_group().world_size
-                # In fact, what we get is the die number, and the ep group is not adapted by default.
-                # The default ep group is experts_num/die_num.
-                global_rank = get_world_group().rank_in_group
-                all_to_all_group_size = world_size // experts_tp_size
-
-                kwargs.update({
-                    "scales": None,  # Quantization coefficient
-                    "quant_mode": layer.quant_mode,  # 0: Non-quantization; 1: Static quantization; 2: Dynamic quantization
-                    "group_ep": layer.moe_all_to_all_group_name,  # Unlike torch, it is obtained by name.
-                    "ep_world_size": all_to_all_group_size,
-                    "ep_rank_id": global_rank // experts_tp_size,
-                    "group_tp": layer.moe_rs_group_name,
-                    "tp_world_size": experts_tp_size,
-                    "tp_rank_id": global_rank % experts_tp_size,
-                    "x_active_mask": mc2_mask,
-                })
-
-                output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
-                expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
-
-                group_list = expert_token_nums.to(torch.int64)
-                if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
-                    layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
-
-                # cal experts
-                weight1_3 = self.experts.w13_weight
-                weight2 = self.experts.w2_weight
-                weight_scale1_3 = self.experts.w13_weight_scale
-                weight_scale2 = self.experts.w2_weight_scale
-
-                if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
-                    pertoken_scale = dynamic_scale
-                else:
-                    expand_x, pertoken_scale = torch_npu.npu_dynamic_quant(expand_x)
-
-                with tng.scope.npu_stream_switch('21'):
-                    wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
-                    wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
-                    if not isinstance(gate_up_share, torch.Tensor):
-                        gate_up_share = (wait_gate, gate_up_share[1])
-                    intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
-
-                gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
-                                                            split_item=3, output_dtype=torch.int32, group_type=0,
-                                                            group_list_type=1)[0]
-                
-                gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-                    gate_up_proj, weight_scale=weight_scale1_3, activation_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
-                    group_index=group_list, activate_left=True, quant_mode=1)
-
-                hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
-                                                per_token_scale=[pertoken_scale],bias=None,
-                                                group_list=group_list, split_item=3, output_dtype=act_dtype,
-                                                group_type=0,
-                                                group_list_type=1)[0]
-
-                # moeCombine
-                kwargs = {
-                    "expand_x": hidden_states_experts,
-                    "expert_ids": topk_ids,  # [n*topk]
-                    "expand_idx": expand_idx,
-                    "expert_scales": topk_weights.to(torch.float32),  # weight [n*topk]
-                    "expert_shard_type": 0,
-                    "shared_expert_rank_num": shared_expert_rank_num,
-                    "moe_expert_num":  max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0 redundancy 256, 1 redundancy expert 320
-                    "global_bs": 0,  # 0 Default (all); all tokens can be set
-                }
-                tp_recv_counts = output[5]
-                stage3_kwargs = {
-                    "ep_send_counts": ep_recv_counts,  # dispatch's send_counts
-                    "group_ep": layer.moe_all_to_all_group_name,  # Unlike torch, it is obtained by name.
-                    "ep_world_size": all_to_all_group_size,
-                    "ep_rank_id": global_rank // experts_tp_size,
-                    "tp_send_counts": tp_recv_counts,
-                    "group_tp": layer.moe_rs_group_name,
-                    "tp_world_size": experts_tp_size,
-                    "tp_rank_id": global_rank % experts_tp_size,
-                    "x_active_mask": mc2_mask,
-                }
-                kwargs.update(stage3_kwargs)
-
-                with tng.scope.npu_stream_switch('21'):
-                    if isinstance(intermediate_hiddenstates_share, dict):
-                        intermediate_hiddenstates_share['x_int8'] = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share.get('x_int8'), hidden_states_experts)
-                    else:
-                        intermediate_hiddenstates_share = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share, hidden_states_experts)
-                    shared_output, _ = self.shared_experts.down_proj.forward(intermediate_hiddenstates_share)
-
-            # prefetch weights for attention next layer
-            if next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
-                    attn_prefetch_size = 96*1024*1024
-                    attn_prefetch_flag = shared_output
-                    torch_npu.npu_prefetch(next_attention_weights['q_a_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
-                    torch_npu.npu_prefetch(next_attention_weights['kv_a_proj_with_mqa_weight'], attn_prefetch_flag, attn_prefetch_size)
-                    torch_npu.npu_prefetch(next_attention_weights['q_b_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
-                    torch_npu.npu_prefetch(next_attention_weights['W_UK'], attn_prefetch_flag, attn_prefetch_size)
-
-            with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
-                hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
-
-                if shared_output is not None:
-                    final_hidden_states = (hidden_states_route, shared_output)
-
-                return final_hidden_states, residual
-
-        if self.n_shared_experts is not None:
-            if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
-                shared_output = self.shared_experts(hidden_states, attn_metadata)
-            else:
-                if model_extra_config.operator_opt_config.moe_multi_stream_tune:
-                    with tng.scope.npu_stream_switch('21'):
-                        hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
-                        shared_output = self.shared_experts(hidden_states, attn_metadata)
-                else:
-                    shared_output = self.shared_experts(hidden_states, attn_metadata)
-
-        # skip when use dispatch&combine
-        if (is_prefill and
-            not model_extra_config.operator_opt_config.prefill_dispatch_combine) or (
-            not is_prefill and
-            not model_extra_config.operator_opt_config.moe_dispatch_combine):
-            hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
-            global_hidden_states = all_gather_two_stage(hidden_states_int8, idx=0, dim=0)
-        else:
-            global_hidden_states = hidden_states
-            global_pertoken_scale = None
-
-        if self.warm_up:
-            self.warm_up = False
-
-        if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
-            router_logits, _ = self.gate.forward(hidden_states.float())
-            topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
-                                                                      self.experts.top_k, self.experts.use_grouped_topk, self.experts.renormalize,
-                                                                      self.experts.topk_group, self.experts.num_expert_group, self.experts.custom_routing_function,
-                                                                      self.experts.scoring_func, self.experts.e_score_correction_bias, self.routed_scaling_factor,
-                                                                      layer=self.experts  # ENABLE_OMNI_PLANNER
-                                                                      )
-            if not is_prefill and model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-                topk_ids = attn_metadata.decode.best_topk
-            # skip when use dispatch&combine
-            if (is_prefill and
-                not model_extra_config.operator_opt_config.prefill_dispatch_combine) or (
-                not is_prefill and
-                not model_extra_config.operator_opt_config.moe_dispatch_combine):
-                topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
-                topk_all = all_gather_two_stage(topk_cat, idx=1, dim=0)
-                topk_weights, topk_ids, global_pertoken_scale = torch.split(
-                    topk_all, [topk_weights.shape[-1], topk_ids.shape[-1], 1], dim=-1)
-                topk_ids = torch.round(topk_ids).to(torch.int32)
-                global_pertoken_scale = global_pertoken_scale.squeeze(-1)
-        else:
-            if model_extra_config.operator_opt_config.moe_multi_stream_tune:
-                with tng.scope.npu_stream_switch('22'):
-                    hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
-                    router_logits, _ = self.gate.forward(hidden_states.float())
-                    # Here, we do a 2d-3d conversion and then convert back to 2d to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
-                    hidden_states_3d = hidden_states.unsqueeze(1)
-                    hidden_states = hidden_states_3d.squeeze(1)
-                    topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
-                                                                        self.experts.top_k, self.experts.use_grouped_topk,
-                                                                        self.experts.renormalize,
-                                                                        self.experts.topk_group, self.experts.num_expert_group,
-                                                                        self.experts.custom_routing_function,
-                                                                        self.experts.scoring_func,
-                                                                        self.experts.e_score_correction_bias,
-                                                                        self.routed_scaling_factor,
-                                                                        layer=self.experts  # ENABLE_OMNI_PLANNER
-                                                                        )
-                    if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-                        topk_ids = attn_metadata.decode.best_topk
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
-                        pertoken_scale = tng.scope.npu_wait_tensor(pertoken_scale, pertoken_scale)
-                        topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
-                with tng.scope.npu_stream_switch('23'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
-                        topk_cat = tng.scope.npu_wait_tensor(topk_cat, topk_cat)
-                        topk_all = all_gather_two_stage(topk_cat, idx=1, dim=0, reverse=True)
-                with tng.scope.npu_stream_switch('22'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
-                        topk_all = tng.scope.npu_wait_tensor(topk_all, topk_all)
-                        topk_all = topk_all.view(-1, self.device_count, topk_weights.shape[0], topk_all.shape[-1]) \
-                                        .transpose(0, 1) \
-                                        .reshape(-1, topk_all.shape[-1])
-                        topk_weights, topk_ids, global_pertoken_scale = torch.split(topk_all, [topk_weights.shape[-1], topk_ids.shape[-1], 1], dim=-1)
-                        topk_ids = torch.round(topk_ids).to(torch.int32)
-                        global_pertoken_scale = global_pertoken_scale.squeeze(-1)
-            else:
-                router_logits, _ = self.gate.forward(hidden_states.float())
-                # Here, we do a 2d-3d conversion and then convert back to 2d to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
-                hidden_states_3d = hidden_states.unsqueeze(1)
-                hidden_states = hidden_states_3d.squeeze(1)
-                topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
-                                                                    self.experts.top_k, self.experts.use_grouped_topk,
-                                                                    self.experts.renormalize,
-                                                                    self.experts.topk_group, self.experts.num_expert_group,
-                                                                    self.experts.custom_routing_function,
-                                                                    self.experts.scoring_func,
-                                                                    self.experts.e_score_correction_bias,
-                                                                    self.routed_scaling_factor,
-                                                                    layer=self.experts  # ENABLE_OMNI_PLANNER
-                                                                    )
-                if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-                    topk_ids = attn_metadata.decode.best_topk
-                if not model_extra_config.operator_opt_config.moe_dispatch_combine:
-                    topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
-                    topk_all = all_gather_two_stage(topk_cat, idx=1, dim=0, reverse=True)
-
-                    topk_all = topk_all.view(-1, self.device_count, topk_weights.shape[0], topk_all.shape[-1]) \
-                                       .transpose(0, 1) \
-                                       .reshape(-1, topk_all.shape[-1])
-                    topk_weights, topk_ids, global_pertoken_scale = torch.split(topk_all, [topk_weights.shape[-1], topk_ids.shape[-1], 1], dim=-1)
-                    topk_ids = torch.round(topk_ids).to(torch.int32)
-                    global_pertoken_scale = global_pertoken_scale.squeeze(-1)
-
-        final_hidden_states_list = self.experts(
-            hidden_states=global_hidden_states,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            pertoken_scale=global_pertoken_scale,
-            attn_metadata=attn_metadata
-        )
-
-        if is_prefill and model_extra_config.operator_opt_config.prefill_dispatch_combine:
-            if len(final_hidden_states_list) != 4:
-                raise RuntimeError("len(final_hidden_states_list) != 4")
-            final_hidden_states = final_hidden_states_list[0]
-            gathered_tokens = final_hidden_states_list[1]
-            expanded_row_idx = final_hidden_states_list[3]
-        else:
-            final_hidden_states = final_hidden_states_list
-
-
-        # skip when use dispatch&combine
-        if (is_prefill and
-            not model_extra_config.operator_opt_config.prefill_dispatch_combine) or (
-            not is_prefill and
-            not model_extra_config.operator_opt_config.moe_dispatch_combine):
-            final_hidden_states = reduce_scatter_two_stage(final_hidden_states, idx=0)
-
-        if shared_output is not None:
-            if is_prefill and model_extra_config.operator_opt_config.prefill_dispatch_combine:
-                final_hidden_states = torch_npu.npu_moe_finalize_routing(
-                	gathered_tokens,
-                	skip1=shared_output,
-					skip2=None,
-                	bias=None,
-                	scales=topk_weights.to(gathered_tokens.dtype),
-                	expanded_src_to_dst_row=expanded_row_idx,
-                	export_for_source_row=None,
-                	drop_pad_mode=2
-                )
-            else:
-                final_hidden_states = final_hidden_states + shared_output
-
-        return final_hidden_states, residual
-
-
-    def forward_separate_expert_decode(self,
-                                       hidden_states: torch.Tensor,
-                                       residual: torch.Tensor,
-                                       attn_metadata: AttentionMetadata) -> torch.Tensor:
-        router_logits, _ = self.gate.forward(hidden_states.float())
-        
-        # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
-        hidden_states_3d = hidden_states.unsqueeze(1)
-        hidden_states = hidden_states_3d.squeeze(1)
-
-        topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
-                                                            self.top_k, self.use_grouped_topk,
-                                                            self.renormalize,
-                                                            self.topk_group, self.num_expert_group,
-                                                            self.custom_routing_function,
-                                                            self.scoring_func,
-                                                            self.gate.e_score_correction_bias,
-                                                            self.routed_scaling_factor,
-                                                            layer=self.experts)
-        max_num_deployed_expert=self.n_routed_experts
-        if model_extra_config.operator_opt_config.use_omni_placement:
-            if self.shared_experts is not None and self.moe_layer_idx < 58:
-                hidden_states, topk_ids, topk_weights = self.planner.plan(layer_idx_moe=self.moe_layer_idx,
-                                                                          tokens=hidden_states,
-                                                                          token_expert_ids=topk_ids,
-                                                                          token_expert_scores=topk_weights,
-                                                                          top_k=self.top_k,
-                                                                          expert_mapping=self.expert_mapping,
-                                                                          is_prefill=False)
-                max_num_deployed_expert_per_rank = self.planner.get_max_num_deployed_expert_per_rank()
-                max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
-            elif self.experts is not None and self.experts.moe_layer_idx < 58:
-                max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
-                max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
-        if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
-            faka_topk_ids = attn_metadata.decode.best_topk
-            topk_ids = tng.scope.npu_wait_tensor(faka_topk_ids, topk_ids)
-        hidden_states = fused_experts_w8a8_moe_dispatch_combine(self.shared_experts or self.experts,
-                                                                hidden_states,
-                                                                topk_weights,
-                                                                topk_ids,
-                                                                max_num_deployed_expert=max_num_deployed_expert,
-                                                                is_prefill=False,
-                                                                is_route_expert=self.experts is not None)
-        return hidden_states, residual
-
-    def forward_separate_expert_prefill(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata) -> torch.Tensor:
-        global_hidden_states = all_gather_two_stage(hidden_states, idx=0, dim=0)
-        if self.shared_experts:
-            avg_tokens_per_shared_experts = global_hidden_states.shape[0] // self.redundancy_shared_expert_num
-            shared_experts_mask = torch.zeros(global_hidden_states.shape[0], 1, dtype=torch.int32, device="npu")
-            shared_experts_mask[self.global_rank * avg_tokens_per_shared_experts : (self.global_rank + 1) * avg_tokens_per_shared_experts] = 1
-            shared_experts_hidden_states = global_hidden_states * shared_experts_mask
-            shared_output = self.shared_experts(shared_experts_hidden_states, attn_metadata)
-        else:
-            shared_output = torch.zeros_like(global_hidden_states)
-        shared_output = reduce_scatter_two_stage(shared_output, idx=0)
-
-        if self.experts:
-            router_logits, _ = self.gate.forward(global_hidden_states)
-            topk_weights, topk_ids, _ = FusedMoE.select_experts(global_hidden_states, router_logits,
-                                                                self.experts.top_k, self.experts.use_grouped_topk,
-                                                                self.experts.renormalize,
-                                                                self.experts.topk_group, self.experts.num_expert_group,
-                                                                self.experts.custom_routing_function,
-                                                                self.experts.scoring_func,
-                                                                self.experts.e_score_correction_bias,
-                                                                self.routed_scaling_factor,
-                                                                layer=self.experts)
-            global_hidden_states, global_pertoken_scale = torch_npu.npu_dynamic_quant(global_hidden_states)
-            output = self.experts(
-                hidden_states=global_hidden_states,
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
-                pertoken_scale=global_pertoken_scale,
-                attn_metadata=attn_metadata
-            )
-        else:
-            output = torch.zeros_like(global_hidden_states)
-        final_hidden_states = reduce_scatter_two_stage(output, idx=0)
-        if shared_output is not None:
-            final_hidden_states = final_hidden_states + shared_output
-        return final_hidden_states, residual
-
-
-def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
-    import math
-    if scale <= 1:
-        return 1.0
-    return 0.1 * mscale * math.log(scale) + 1.0
-
-
-class AscendDeepseekAttention_MLA(nn.Module):
-
-    def __init__(
-            self,
-            config: PretrainedConfig,
-            hidden_size: int,
-            num_heads: int,
-            qk_nope_head_dim: int,
-            qk_rope_head_dim: int,
-            v_head_dim: int,
-            q_lora_rank: int,
-            kv_lora_rank: int,
-            rope_theta: float = 10000,
-            rope_scaling: Optional[Dict[str, Any]] = None,
-            max_position_embeddings: int = 8192,
-            cache_config: Optional[CacheConfig] = None, # type: ignore
-            quant_config: Optional[QuantizationConfig] = None,
-            prefix: str = "",
-    ) -> None:
-        super().__init__()
-        self.prefix = prefix
-        self.hidden_size = hidden_size
-        self.qk_nope_head_dim = qk_nope_head_dim
-        self.qk_rope_head_dim = qk_rope_head_dim
-        self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
-        self.v_head_dim = v_head_dim
-        self.q_lora_rank = q_lora_rank
-        self.kv_lora_rank = kv_lora_rank
-        self.num_heads = num_heads
-        tp_size = get_tensor_model_parallel_world_size()
-        if num_heads % tp_size != 0:
-            raise RuntimeError("num_heads % tp_size != 0")
-        self.num_local_heads = num_heads // tp_size
-        self.scaling = self.qk_head_dim ** -0.5
-        self.rope_theta = rope_theta
-        self.max_position_embeddings = max_position_embeddings
-        self.kv_scale = None
-        # FA is fully quantized, KVCache is not quantized, and the function is not enabled.
-        self.use_faquant = False
-
-        self.merge_qkv = model_extra_config.operator_opt_config.merge_qkv
-        if self.q_lora_rank is not None:
-            if self.merge_qkv:
-                self.qkv_a_proj = MergedReplicatedLinear(self.hidden_size,
-                                                         [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim],
-                                                         bias=False,
-                                                         quant_config=quant_config,
-                                                         prefix=f"{prefix}.qkv_a_proj")
-            else:
-                self.q_a_proj = ReplicatedLinear(self.hidden_size,
-                                                 self.q_lora_rank,
-                                                 bias=False,
-                                                 quant_config=quant_config,
-                                                 prefix=f"{prefix}.q_a_proj")
-                self.kv_a_proj_with_mqa = ReplicatedLinear(
-                    self.hidden_size,
-                    self.kv_lora_rank + self.qk_rope_head_dim,
-                    bias=False,
-                    quant_config=quant_config,
-                    prefix=f"{prefix}.kv_a_proj_with_mqa")
-            self.q_a_layernorm = RMSNorm(self.q_lora_rank,
-                                         eps=config.rms_norm_eps)
-
-            self.q_b_proj = ColumnParallelLinear(q_lora_rank,
-                                                 self.num_heads *
-                                                 self.qk_head_dim,
-                                                 bias=False,
-                                                 quant_config=quant_config,
-                                                 prefix=f"{prefix}.q_b_proj")
-        else:
-            self.q_proj = ColumnParallelLinear(self.hidden_size,
-                                               self.num_heads *
-                                               self.qk_head_dim,
-                                               bias=False,
-                                               quant_config=quant_config,
-                                               prefix=f"{prefix}.q_proj")
-            self.kv_a_proj_with_mqa = ReplicatedLinear(
-                self.hidden_size,
-                self.kv_lora_rank + self.qk_rope_head_dim,
-                bias=False,
-                quant_config=quant_config,
-                prefix=f"{prefix}.kv_a_proj_with_mqa")
-
-        self.kv_a_layernorm = RMSNorm(self.kv_lora_rank,
-                                      eps=config.rms_norm_eps)
-        self.kv_b_proj = ColumnParallelLinear(
-            self.kv_lora_rank,
-            self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
-            bias=False,
-            quant_config=None,
-            prefix=f"{prefix}.kv_b_proj")
-        # O projection.
-        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-            self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
-                                            hidden_size,
-                                            bias=False,
-                                            quant_config=quant_config,
-                                            prefix=f"{prefix}.o_proj")
-        else:
-            self.o_proj = RowParallelLinearWithReduceScatter(self.num_heads * self.v_head_dim,
-                                            self.hidden_size,
-                                            bias=False,
-                                            quant_config=quant_config,
-                                            prefix=f"{prefix}.o_proj")
-
-        rope_scaling["rope_type"] = 'deepseek_yarn'
-        self.rotary_emb = get_rope(qk_rope_head_dim,
-                                   rotary_dim=qk_rope_head_dim,
-                                   max_position=max_position_embeddings,
-                                   base=rope_theta,
-                                   rope_scaling=rope_scaling,
-                                   is_neox_style=False)
-
-        if rope_scaling:
-            mscale_all_dim = rope_scaling.get("mscale_all_dim", False)
-            scaling_factor = rope_scaling["factor"]
-            mscale = yarn_get_mscale(scaling_factor, float(mscale_all_dim))
-            self.scaling = self.scaling * mscale * mscale
-
-        self.attn_mla = Attention(
-            num_heads=self.num_local_heads,
-            head_size=self.kv_lora_rank + self.qk_rope_head_dim,
-            scale=self.scaling,
-            use_mla=True,
-            num_kv_heads=1,
-            cache_config=cache_config,
-            quant_config=quant_config,
-            prefix=f"{prefix}.attn",
-            # MLA Args
-            q_lora_rank=self.q_lora_rank,
-            kv_lora_rank=self.kv_lora_rank,
-            qk_nope_head_dim=self.qk_nope_head_dim,
-            qk_rope_head_dim=self.qk_rope_head_dim,
-            qk_head_dim=self.qk_head_dim,
-            v_head_dim=self.v_head_dim,
-            rotary_emb=self.rotary_emb,
-            q_proj=self.q_proj if self.q_lora_rank is None else self.q_b_proj,
-            kv_a_proj_with_mqa=self.kv_a_proj_with_mqa if hasattr(self, 'kv_a_proj_with_mqa') else None,
-            kv_a_layernorm=self.kv_a_layernorm,
-            kv_b_proj=self.kv_b_proj,
-            o_proj=self.o_proj,
-            qkv_a_proj=self.qkv_a_proj if hasattr(self, 'qkv_a_proj') else None,
-            q_a_layernorm=self.q_a_layernorm if hasattr(self, 'q_a_layernorm') else None,
-            q_b_proj=self.q_b_proj if hasattr(self, 'q_b_proj') else None,
-            q_a_proj=self.q_a_proj if hasattr(self, 'q_a_proj') else None
-        )
-
-
-    def forward(
-            self,
-            positions: torch.Tensor,
-            hidden_states: torch.Tensor,
-            kv_cache: torch.Tensor,
-            attn_metadata: AttentionMetadata,
-    ) -> torch.Tensor:
-
-        return self.attn_mla.impl.forward(
-            positions=positions,
-            hidden_states=hidden_states,
-            kv_cache=kv_cache,
-            attn_metadata=attn_metadata)
 
 
 class DeepseekDecoderLayer(nn.Module):
@@ -940,6 +149,7 @@ class DeepseekDecoderLayer(nn.Module):
         self.prefix = prefix
         self.layer_name = f"{prefix}.self_attn.attn"
         self.hidden_size = config.hidden_size
+        self.quant_symbol = quant_config is not None
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         max_position_embeddings = getattr(config, "max_position_embeddings",
@@ -947,7 +157,7 @@ class DeepseekDecoderLayer(nn.Module):
         # DecoderLayers are created with `make_layers` which passes the prefix
         # with the layer's index.
         layer_idx = int(prefix.split(sep='.')[-1])
-        self.self_attn = AscendDeepseekAttention_MLA(
+        self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
@@ -987,16 +197,6 @@ class DeepseekDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
 
-        self.enable_dp_attention = get_data_parallel_world_size() > 1
-        if self.enable_dp_attention:
-            self.dp_rank = get_data_parallel_rank()
-            self.dp_size = get_data_parallel_world_size()
-            self.dp_group = get_dp_group().device_group
-        else:
-            self.dp_rank = None
-            self.dp_size = None
-            self.dp_group = None
-
     def forward(
             self,
             positions: torch.Tensor,
@@ -1017,7 +217,7 @@ class DeepseekDecoderLayer(nn.Module):
             # Adapt: adapt for w8a8 dynamic, do quant
             # Combines residual add and rmsnorm
             hidden_states, residual = self.input_layernorm(
-                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog))
+                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
             # Adapt end.
         hidden_states = self.self_attn(
             positions=positions,
@@ -1072,67 +272,86 @@ class DeepseekDecoderLayer(nn.Module):
 
         return hidden_states, residual
 
-    CACHED_GATHERED_BUFFER = None
-
-    def get_cached_gathered_buffer(self, token_nums, dtype):
-        if DeepseekDecoderLayer.CACHED_GATHERED_BUFFER is None \
-                or DeepseekDecoderLayer.CACHED_GATHERED_BUFFER.shape[0] != token_nums \
-                or DeepseekDecoderLayer.CACHED_GATHERED_BUFFER.dtype != dtype:
-            DeepseekDecoderLayer.CACHED_GATHERED_BUFFER = torch.zeros((token_nums, self.hidden_size), dtype=dtype,
-                                                                      device=current_platform.device_type)
-        return DeepseekDecoderLayer.CACHED_GATHERED_BUFFER
-
-    def data_parallel_all_gather(
-            self, input_tensor: torch.Tensor, attn_metadata):
-        if self.dp_size == 1:
-            return input_tensor
-
-        global_num_tokens = attn_metadata.global_num_tokens.tolist()
-        all_lens = global_num_tokens
-        max_len = max(global_num_tokens)
-        need_pad = min(global_num_tokens) != max_len
-
-        gathered_buffer = self.get_cached_gathered_buffer(max_len * self.dp_size, input_tensor.dtype)
-
-        if need_pad:
-            padded_tensor = torch.nn.functional.pad(
-                input_tensor, (0, 0, 0, max_len - input_tensor.shape[0])
-            )
+    def forward_attn(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor,
+            kv_cache: torch.Tensor,
+            attn_metadata: AttentionMetadata,
+            residual: Optional[torch.Tensor],
+            comm_group: Optional[GroupCoordinator] = None
+    ) -> torch.Tensor:
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.layer_name]
+        # Self Attention
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
         else:
-            padded_tensor = input_tensor
-
-        torch.distributed.all_gather_into_tensor(
-            gathered_buffer, padded_tensor, group=self.dp_group
+            # Adapt: adapt for w8a8 dynamic, do quant
+            # Combines residual add and rmsnorm
+            hidden_states, residual = self.input_layernorm(
+                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog))
+            # Adapt end.
+        hidden_states = self.self_attn(
+            positions=positions,
+            hidden_states=hidden_states,
+            kv_cache=kv_cache,
+            attn_metadata=attn_metadata,
+            comm_group=comm_group
         )
 
-        if need_pad:
-            select_index = list(
-                itertools.chain(*(range(i * max_len, i * max_len + all_lens[i]) for i in range(self.dp_size))))
-            gathered_tensors = gathered_buffer[select_index, :]
+        return hidden_states, residual
+
+    def forward_mlp(
+            self,
+            hidden_states: torch.Tensor,
+            attn_metadata: AttentionMetadata,
+            residual: Optional[torch.Tensor],
+            layer_id: Optional[int] = None,
+            next_attention_weights: Optional[dict] = None,
+            comm_group: Optional[GroupCoordinator] = None
+    ) -> torch.Tensor:
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.layer_name]
+
+        is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+
+        if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
+            with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
+                hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         else:
-            gathered_tensors = gathered_buffer
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
-        start_index = 0 if self.dp_rank == 0 else sum(all_lens[:self.dp_rank])
-        end_index = start_index + all_lens[self.dp_rank]
-        return gathered_tensors, start_index, end_index
+        if self.is_moe == True:
+            # omni placement do not support super kernel
+            hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights, comm_group=comm_group)
+            if isinstance(hidden_states, (tuple, list)):
+                assert len(hidden_states) == 2
+                # 0 is the shared expert hidden_states, 1 is the routing expert hidden_states, add operation cannot be placed in the super kernel
+                hidden_states = hidden_states[0] + hidden_states[1]
+        else:
+            hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, comm_group=comm_group)
+
+        return hidden_states, residual
 
 
-# @support_torch_compile
 class DeepseekV3Model(nn.Module):
     fall_back_to_pt_during_load = False
 
-    def __init__(self,
-                 config: PretrainedConfig,
-                 cache_config: Optional[CacheConfig] = None,
-                 quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = "",
-                 ):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+
         super().__init__()
+        config = vllm_config.model_config.hf_config
+        cache_config = vllm_config.cache_config
+        quant_config = vllm_config.quant_config
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.first_k_dense_replace = config.first_k_dense_replace
-
+        self.prefix = f"{prefix}.layers"
+        self.postfix = ".self_attn.attn"
+        self.tp_size = get_tensor_model_parallel_world_size()
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
@@ -1159,15 +378,11 @@ class DeepseekV3Model(nn.Module):
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
 
-        self.enable_dp_attention = get_data_parallel_world_size() > 1
-        if self.enable_dp_attention:
-            self.dp_rank = get_data_parallel_rank()
-            self.dp_size = get_data_parallel_world_size()
-            self.dp_group = get_dp_group().device_group
-
-    CACHED_LOCAL_NUM_TOKENS = None
-    CACHED_GLOBAL_NUM_TOKENS = None
- 
+        if model_extra_config.operator_opt_config.enable_prefill_micro_batch:
+            self.stream1 = torch.npu.Stream()
+            self.stream1_attn_group = get_stream1_attn_group()
+            self.stream1_mlp_group = get_stream1_mlp_group()
+            self.stream1_moe_group = get_stream1_moe_group()
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids, reduce=1)
@@ -1179,9 +394,25 @@ class DeepseekV3Model(nn.Module):
             kv_caches: List[torch.Tensor],
             attn_metadata: AttentionMetadata,
             intermediate_tensors: Optional[IntermediateTensors],
+            max_num_tokens=None
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        # adapt dp allgather batchinfo
+        attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
+        if model_extra_config.operator_opt_config.enable_prefill_micro_batch and \
+            attn_metadata is not None and attn_metadata_first is not None \
+            and attn_metadata_first.prefill is not None and \
+            len(attn_metadata_first.prefill.seq_lens) > 1:
+            return self.forward_micro_batch(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, max_num_tokens)
+        else:
+            return self.forward_normal(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors)
 
+    def forward_normal(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            kv_caches: List[torch.Tensor],
+            attn_metadata: AttentionMetadata,
+            intermediate_tensors: Optional[IntermediateTensors],
+    ) -> Union[torch.Tensor, IntermediateTensors]:
         if get_pp_group().is_first_rank:
             hidden_states = self.get_input_embeddings(input_ids)
             residual = None
@@ -1194,12 +425,12 @@ class DeepseekV3Model(nn.Module):
             layer = self.layers[i]
             layer_id = i - 3
 
-            if i >= self.first_k_dense_replace and i < self.end_layer - 1: 
+            if i >= self.first_k_dense_replace and i < self.end_layer - 1:
                 next_attention_weights = {
                     'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
                     'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
                     'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
-                    'W_UK': self.layers[i + 1].self_attn.attn_mla.impl.W_UK
+                    'W_UK': self.layers[i + 1].self_attn.W_UK
                 }
             else:
                 next_attention_weights = {
@@ -1211,7 +442,7 @@ class DeepseekV3Model(nn.Module):
             hidden_states, residual = layer(positions,
                                             hidden_states,
                                             kv_caches[i - self.start_layer] if kv_caches is not None else None,
-                                            attn_metadata, 
+                                            attn_metadata,
                                             residual,
                                             layer_id,
                                             next_attention_weights)
@@ -1228,7 +459,235 @@ class DeepseekV3Model(nn.Module):
 
         return hidden_states
 
+    def forward_micro_batch(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            kv_caches: List[torch.Tensor],
+            attn_metadata: AttentionMetadata,
+            intermediate_tensors: Optional[IntermediateTensors],
+            max_num_tokens=None
+    ) -> Union[torch.Tensor, IntermediateTensors]:
+        # Split requests into two micro-batches (batch0, batch1) with balanced tokens
+        seq_lens_temp = self.get_layer_attn_metadata(attn_metadata, 0).prefill.seq_lens
+        seq_len_left, seq_len_right, split_idx = self.partition_list(seq_lens_temp, sum(seq_lens_temp))
+        input_ids_mb0, input_ids_mb1 = self.index_batch(input_ids, 0, sum(seq_len_left))
+        positions_mb0, positions_mb1 = self.index_batch(positions, 0, sum(seq_len_left))
+        residual_mb0 = None
+        residual_mb1 = None
+        curr_stream = torch.npu.current_stream()
 
+        if get_pp_group().is_first_rank:
+            # Perform embedding ops on separate streams while maintaining execution order within each stream
+            # Optimized execution order:
+            # 1. stream0: attn (current layer)
+            # 2. stream1: attn (current layer)
+            # 3. stream0: mlp (current layer) + attn (next layer)
+            # 4. stream1: mlp (current layer) + attn (next layer)
+            with torch.npu.stream(curr_stream):
+                pad_size_mb0 = self._get_pad_size(positions_mb0.shape[0])
+                positions_mb0 = self.pad_tensor(positions_mb0, pad_size_mb0, 0)
+                padding = torch.randint(1, self.vocab_size, (pad_size_mb0,),
+                                        dtype=input_ids.dtype,
+                                        device=input_ids.device)
+                input_ids_mb0 = torch.cat([input_ids_mb0, padding])
+                metadata0 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, 0), True, sum(seq_len_left), pad_size_mb0, max_num_tokens)
+                hidden_states_mb0 = self.get_input_embeddings(input_ids_mb0)
+                hidden_states_mb0, residual_mb0 = self.layers[0].forward_attn(positions_mb0,
+                                                                              hidden_states_mb0,
+                                                                              kv_caches[0] if kv_caches is not None else None,
+                                                                              metadata0,
+                                                                              residual_mb0)
+            with torch.npu.stream(self.stream1):
+                pad_size_mb1 = self._get_pad_size(positions_mb1.shape[0])
+                positions_mb1 = self.pad_tensor(positions_mb1, pad_size_mb1, 0)
+                padding = torch.randint(1, self.vocab_size, (pad_size_mb1,),
+                                        dtype=input_ids.dtype,
+                                        device=input_ids.device)
+                input_ids1 = torch.cat([input_ids_mb1, padding])
+                metadata1 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, 0), False, sum(seq_len_left), pad_size_mb1, max_num_tokens)
+                hidden_states_mb1 = self.get_input_embeddings(input_ids1)
+                hidden_states_mb1, residual_mb1 = self.layers[0].forward_attn(positions_mb1,
+                                                                              hidden_states_mb1,
+                                                                              kv_caches[0] if kv_caches is not None else None,
+                                                                              metadata1,
+                                                                              residual_mb1,
+                                                                              comm_group=self.stream1_attn_group)
+        else:
+            assert intermediate_tensors is not None, "intermediate_tensors is None"
+            hidden_states = intermediate_tensors["hidden_states"]
+            residual = intermediate_tensors["residual"]
+
+        for i in range(self.start_layer, self.end_layer):
+            layer = self.layers[i]
+            layer_id = i - 3
+            if i >= self.first_k_dense_replace and i < self.end_layer - 1:
+                next_attention_weights = {
+                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,
+                    'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
+                    'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
+                    'W_UK': self.layers[i + 1].self_attn.W_UK
+                }
+            else:
+                next_attention_weights = {
+                    'q_a_proj_weight': None,
+                    'kv_a_proj_with_mqa_weight': None,
+                    'q_b_proj_weight': None,
+                    'W_UK': None
+                }
+            if i < self.first_k_dense_replace:
+                stream1_mlp_comm_group = self.stream1_mlp_group
+            else:
+                stream1_mlp_comm_group = self.stream1_moe_group
+
+            with torch.npu.stream(curr_stream):
+                metadata0 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i), True, sum(seq_len_left), pad_size_mb0, max_num_tokens)
+                hidden_states_mb0, residual_mb0 = layer.forward_mlp(hidden_states_mb0,
+                                                                    metadata0,
+                                                                    residual_mb0,
+                                                                    layer_id,
+                                                                    next_attention_weights)
+            if (i + 1) in range(self.start_layer, self.end_layer):
+                with torch.npu.stream(curr_stream):
+                    metadata0 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i+1), True,
+                                                               sum(seq_len_left), pad_size_mb0, max_num_tokens)
+                    hidden_states_mb0, residual_mb0 = self.layers[i+1].forward_attn(positions_mb0,
+                                                                                  hidden_states_mb0,
+                                                                                  kv_caches[i + 1 - self.start_layer] if kv_caches is not None else None,
+                                                                                  metadata0,
+                                                                                  residual_mb0)
+            with torch.npu.stream(self.stream1):
+                metadata1 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i), False, sum(seq_len_left), pad_size_mb1, max_num_tokens)
+                hidden_states_mb1, residual_mb1 = layer.forward_mlp(hidden_states_mb1,
+                                                                    metadata1,
+                                                                    residual_mb1,
+                                                                    layer_id,
+                                                                    next_attention_weights,
+                                                                    comm_group=stream1_mlp_comm_group)
+            if (i + 1) in range(self.start_layer, self.end_layer):
+                with torch.npu.stream(self.stream1):
+                    metadata1 = self.split_attn_metadata_index(self.get_layer_attn_metadata(attn_metadata, i+1), False,
+                                                               sum(seq_len_left), pad_size_mb1, max_num_tokens)
+                    hidden_states_mb1, residual_mb1 = self.layers[i+1].forward_attn(positions_mb1,
+                                                                                  hidden_states_mb1,
+                                                                                  kv_caches[i + 1 - self.start_layer] if kv_caches is not None else None,
+                                                                                  metadata1,
+                                                                                  residual_mb1,
+                                                                                  comm_group=self.stream1_attn_group)
+
+        curr_stream.wait_stream(self.stream1)
+        self.stream1.wait_stream(curr_stream)
+        hidden_states_mb0, _ = self.norm(hidden_states_mb0, residual_mb0)
+        hidden_states_mb1, _ = self.norm(hidden_states_mb1, residual_mb1)
+        hidden_states_mb0 = tensor_model_parallel_all_gather(hidden_states_mb0, dim=0)
+        hidden_states_mb1 = tensor_model_parallel_all_gather(hidden_states_mb1, dim=0)
+        # Calculate original sequence lengths by removing padding
+        original_size_0 = hidden_states_mb0.shape[0] - pad_size_mb0
+        original_size_1 = hidden_states_mb1.shape[0] - pad_size_mb1
+        # Remove padding from each micro batch
+        hidden_states_mb0 = hidden_states_mb0[:original_size_0]
+        hidden_states_mb1 = hidden_states_mb1[:original_size_1]
+        hidden_states = torch.cat([hidden_states_mb0, hidden_states_mb1], dim=0)
+
+        if not get_pp_group().is_last_rank:
+            return IntermediateTensors({
+                "hidden_states": hidden_states,
+                "residual": residual
+            })
+        return hidden_states
+
+    def get_layer_attn_metadata(self, attn_metadata, layer_idx):
+        if attn_metadata is None:
+            return None
+        if isinstance(attn_metadata, dict):
+            key_idx = self.prefix + "." + str(layer_idx) + self.postfix
+            return attn_metadata[key_idx]
+
+    def index_batch(self, ori_tensor, split_dim, split_idx):
+        """Split tensor into two parts along specified dimension at split index."""
+        return torch.split(ori_tensor, [split_idx, ori_tensor.size(split_dim) - split_idx], dim=split_dim)
+
+    def _get_pad_size(self, num_seqs):
+        """Calculate padding size needed to make sequence count divisible by tp size."""
+        return (self.tp_size - num_seqs % self.tp_size) % self.tp_size
+
+    def partition_list(self, lst, pos):
+        """Partition list into two parts with balanced sum around target position."""
+        target = pos // 2
+        left = []
+        right = []
+        cur_sum = 0
+        split_index = 0
+
+        for i, num in enumerate(lst):
+            if cur_sum < target:
+                left.append(num)
+                cur_sum += num
+                split_index = i + 1
+            else:
+                right.append(num)
+
+        if not right:
+            right.append(left.pop())
+            split_index -= 1
+        return left, right, split_index
+
+    def pad_tensor(self, tensor, pad_size, pad_value=0):
+        """Pad tensor with specified value along first dimension."""
+        padding = torch.full(
+            (pad_size,),
+            pad_value,
+            dtype=tensor.dtype,
+            device=tensor.device
+        )
+        return torch.cat([tensor, padding])
+
+    def split_attn_metadata_index(self, metadata, is_local_stream, split_idx, pad_size, max_num_tokens):
+        """Split attention metadata for parallel processing across streams.
+
+        Args:
+            metadata: Original attention metadata
+            is_local_stream: Flag indicating local stream processing
+            split_idx: Index to split metadata
+            pad_size: Padding size for alignment
+            max_num_tokens: Maximum number of tokens
+
+        Returns:
+            Modified metadata split for specified stream
+        """
+        slot_mapping = metadata.slot_mapping
+        seq_lens = metadata.prefill.seq_lens
+        query_lens = metadata.prefill.query_lens
+        block_table = metadata.prefill.block_table
+
+        slot_mapping1, slot_mapping2 = self.index_batch(slot_mapping, 0, split_idx)
+        seq_lens1, seq_lens2, _ = self.partition_list(seq_lens, sum(seq_lens))
+        query_lens1, query_lens2, _ = self.partition_list(query_lens, sum(query_lens))
+        if is_local_stream:
+            metadata_out = self.refresh_metadata(slot_mapping1, pad_size, seq_lens1, query_lens1, block_table, max_num_tokens, metadata)
+        else:
+            metadata_out = self.refresh_metadata(slot_mapping2, pad_size, seq_lens2, query_lens2, block_table, max_num_tokens, metadata)
+        return metadata_out
+    
+    def refresh_metadata(self, slot_mapping, pad_size, seq_lens, query_lens, block_table, max_num_tokens, metadata):
+        metadata_out = copy.deepcopy(metadata)
+        slot_mapping = self.pad_tensor(slot_mapping, pad_size, pad_value=-1)
+        seq_kvlen_group, seq_qlen_group, _ = group_request_list(
+            seq_lens,
+            query_lens,
+            block_table,
+            max_num_tokens)
+        seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
+        seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
+        metadata_out.slot_mapping = slot_mapping
+        metadata_out.prefill.seq_lens = seq_lens
+        metadata_out.prefill.query_lens = query_lens
+        metadata_out.prefill.seq_qlen_group = seq_qlen_group
+        metadata_out.prefill.seq_kvlen_group = seq_kvlen_group
+        return metadata_out
+
+
+@support_torch_compile
 class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
     packed_modules_mapping = {
@@ -1242,10 +701,8 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
-        self.model = DeepseekV3Model(self.config,
-                                     vllm_config.cache_config,
-                                     self.quant_config,
-                                     prefix="model")
+        self.model = DeepseekV3Model(vllm_config=vllm_config, prefix="model")
+
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
@@ -1258,6 +715,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
         self.return_hidden_states = True
         self.input_marked = False
+        self.max_num_token = vllm_config.scheduler_config.max_num_batched_tokens
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -1267,17 +725,18 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             input_ids: torch.Tensor,
             positions: torch.Tensor,
             kv_caches: List[torch.Tensor] = None,
-            attn_metadata: AttentionMetadata = None,
-            prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+            attn_metadata: Union[AttentionMetadata, dict] = None,
+            selected_indices: Optional[torch.Tensor] = None,
             intermediate_tensors: Optional[IntermediateTensors] = None,
-            inputs_embeds = None
+            inputs_embeds = None,
+            **kwargs
     ) -> Optional[torch.Tensor]:
         hidden_states = self.model(input_ids, positions, kv_caches,
-                                   attn_metadata, intermediate_tensors)
+                                   attn_metadata, intermediate_tensors, self.max_num_token)
         if attn_metadata is None:
-            logits = self.logits_processor._get_logits(hidden_states[-1:, ...], self.lm_head, None)
+            logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:
-            logits = self.compute_lmhead(self.lm_head, hidden_states, prefill_padding_or_selected_indices)
+            logits = self.compute_lmhead(hidden_states, selected_indices)
 
         if self.return_hidden_states:
             return hidden_states, logits
@@ -1286,19 +745,17 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
     def compute_lmhead(
             self,
-            lm_head: VocabParallelEmbedding,
             hidden_states: torch.Tensor,
-            prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+            selected_indices: Optional[torch.Tensor] = None,
             embedding_bias: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
-        if prefill_padding_or_selected_indices is not None:
-            hidden_states = _prune_hidden_states(hidden_states, prefill_padding_or_selected_indices)
+        if selected_indices is not None:
+            hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+            if hidden_states.shape[0] != selected_indices.shape[0]:
+                hidden_states = hidden_states.index_select(0, selected_indices)
 
         # Get the logits for the next tokens.
-        if model_extra_config.parall_config.dp_size > 1:
-            logits = self.logits_processor._get_logits_decode(hidden_states, lm_head, embedding_bias)
-        else:
-            logits = self.logits_processor._get_logits(hidden_states, lm_head, embedding_bias)
+        logits = self.lm_head(hidden_states, embedding_bias)
         return logits
 
     def compute_logits(
@@ -1430,6 +887,18 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             loaded_params.add(name)
         return loaded_params
 
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+
+        if attn_metadata.prefill:
+            return True
+
+        return False
 
     def mark_static_for_graph(self, input_ids, positions, attn_metadata, kv_caches):
         if not self.input_marked:
@@ -1441,8 +910,3 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
                 if kv_caches[i][1] is not None:
                     torch._dynamo.mark_static(kv_caches[i][1])
             self.input_marked = True
-        # adapt 1. baichuan2-13b do not use rope, so att do not have rotary_emb attribute
-        # adapt 2. DeepseekV2 rotary_emb do not have sin, cos attribute
-        # if hasattr(self.model.layers[0].self_attn, "rotary_emb") and self.config.architectures[0] not in  ['DeepseekV2ForCausalLM', 'DeepseekV3ForCausalLM']:
-        #     torch._dynamo.mark_static(self.model.layers[0].self_attn.rotary_emb.sin)
-        #     torch._dynamo.mark_static(self.model.layers[0].self_attn.rotary_emb.cos)
