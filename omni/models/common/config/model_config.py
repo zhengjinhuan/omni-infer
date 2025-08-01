@@ -47,6 +47,7 @@ class ModelOperatorOptConfig:
     opt_w2_scale_cast: bool = False
     enable_mc2_v2: bool = False
     decode_gear_list: list[int] = field(default_factory=lambda: [1])
+    enable_combine_addrmsnorm_fusion: bool = False
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
 
     enable_round_pipeline_comm: bool = False

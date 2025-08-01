@@ -36,6 +36,7 @@
         "control_accept_rate": -1,
         "enable_mc2_v2": false,
         "enable_prefill_micro_batch": false,
+        "enable_combine_addrmsnorm_fusion": false,
         "decode_gear_list": [
             16
         ]
