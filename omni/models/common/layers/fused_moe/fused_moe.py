@@ -542,6 +542,83 @@ def fused_experts_w8a8_allgather_ep(hidden_states: torch.Tensor,
 
         return output
 
+def fused_experts_w4a8_allgather_ep(hidden_states: torch.Tensor,
+                                    pertoken_scale: torch.Tensor,
+                                    w1: torch.Tensor,
+                                    w2: torch.Tensor,
+                                    w1_scale: torch.Tensor,
+                                    w2_scale: torch.Tensor,
+                                    w1_bias: torch.Tensor,
+                                    w2_bias: torch.Tensor,
+                                    topk_weights: torch.Tensor,
+                                    topk_ids: torch.Tensor,
+                                    n_routed_experts: int,
+                                    attn_metadata: AttentionMetadata,
+                                    max_num_deployed_expert_per_rank: int  # ENABLE_OMNI_PLANNER
+                                    ):
+    expert_parallel_size = get_expert_parallel_world_size()
+    is_prefill = attn_metadata is not None and attn_metadata.prefill_metadata is not None
+
+    if expert_parallel_size > 1:
+        batch_size, hidden_size = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_size)
+        n_total_expert = n_routed_experts * get_expert_parallel_world_size()
+
+        experts_start_idx = get_expert_parallel_rank() * max_num_deployed_expert_per_rank
+        experts_end_idx = experts_start_idx + n_routed_experts
+        expert_range = [experts_start_idx, experts_end_idx]
+
+        sorted_tokens, expanded_x_idx, expert_tokens, dynamic_quant_scale = torch_npu.npu_moe_init_routing_v2(
+            hidden_states, topk_ids, scale=pertoken_scale, offset=None,
+            active_num=topk_ids.numel(), expert_num=n_total_expert, expert_capacity=-1,
+            drop_pad_mode=0, expert_tokens_num_type=1, expert_tokens_num_flag=True,
+            active_expert_range=expert_range, quant_mode=-1, row_idx_type=1)  # row_idx_type=1 for gmm+finalize
+
+        if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
+            expanded_x_idx = torch.clamp(expanded_x_idx, 0, expanded_x_idx.shape[0] - 1)
+            sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
+            row_index = torch.floor(torch.div(expanded_x_idx, topk_ids.shape[-1]))
+            row_index = row_index.to(torch.int64)
+            share_input = torch.zeros((batch_size // get_data_parallel_world_size(), hidden_size), dtype=torch.bfloat16,
+                                      device="npu")
+            scale_2 = torch.ones((n_routed_experts, w1_scale.shape[-1] // 2), dtype=torch.float32, device="npu")
+        else:
+            with tng.scope.npu_stream_switch('11'):
+                expanded_x_idx = tng.scope.npu_wait_tensor(expanded_x_idx, expanded_x_idx)
+                expanded_x_idx = torch.clamp(expanded_x_idx, 0, expanded_x_idx.shape[0] - 1)
+                sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
+                row_index = expanded_x_idx // topk_ids.shape[-1]
+                row_index = row_index.to(torch.int64)
+                share_input = torch.zeros((batch_size // get_data_parallel_world_size(), hidden_size),
+                                          dtype=torch.bfloat16, device="npu")
+                scale_2 = torch.ones((n_routed_experts, w1_scale.shape[-1] // 2), dtype=torch.float32, device="npu")
+
+        gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=[w1_bias], scale=[w1_scale],
+                                                    offset=None, antiquant_scale=None, antiquant_offset=None,
+                                                    per_token_scale=[dynamic_quant_scale],
+                                                    group_list=expert_tokens,
+                                                    activation_input=None, activation_quant_scale=None,
+                                                    activation_quant_offset=None, split_item=3, group_type=0,
+                                                    group_list_type=1, act_type=0, output_dtype=torch.bfloat16)[0]
+
+        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
+        dynamic_quant_scale = torch.ones(dynamic_quant_scale.shape, dtype=torch.float32, device="npu")
+        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=fake_scale,
+                                                                          activation_scale=dynamic_quant_scale,
+                                                                          bias=None, quant_scale=scale_2,
+                                                                          quant_offset=None, group_index=expert_tokens,
+                                                                          activate_left=True, quant_mode=1)
+
+        output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2,
+                                                               group_list=expert_tokens, scale=w2_scale,
+                                                               bias=w2_bias,
+                                                               pertoken_scale=pertoken_scale,
+                                                               shared_input=share_input, logit=sorted_topk_weight,
+                                                               row_index=row_index,
+                                                               output_bs=batch_size, group_list_type=1).to(
+            torch.bfloat16)
+
+        return output
 
 def gmm_expert(x, expert_tokens, w1, w2, w1_scale, w2_scale, dynamic_scale=None, avg_tokens_per_expert=None, warm_up=False):
     # no need to transpose weight here if weight_nz enabled
@@ -579,6 +656,55 @@ def gmm_expert(x, expert_tokens, w1, w2, w1_scale, w2_scale, dynamic_scale=None,
                                             group_list_type=1, tuning_config=avg_tokens_per_expert)[0]
     return out_hidden
 
+def gmm_expert_w4a8(x, expert_tokens, w1, w2, w1_scale, w2_scale, w1_bias=None, w2_bias=None, dynamic_scale=None,
+                    avg_tokens_per_expert=None, warm_up=False):
+    # no need to transpose weight here if weight_nz enabled
+    hidden_size = x.size(-1)
+    h = x
+    pertoken_scale = dynamic_scale
+
+    if pertoken_scale.dim() > 1:
+        pertoken_scale = pertoken_scale.reshape(-1)
+        h = h.view(-1, hidden_size)
+
+    avg_tokens_per_expert = avg_tokens_per_expert or [0]
+
+    mm1_mm3 = torch_npu.npu_grouped_matmul([h], [w1], bias=[w1_bias], scale=[w1_scale],
+                                           offset=None, antiquant_scale=None, antiquant_offset=None,
+                                           per_token_scale=[pertoken_scale],
+                                           group_list=expert_tokens,
+                                           activation_input=None, activation_quant_scale=None,
+                                           activation_quant_offset=None, split_item=3, group_type=0,
+                                           group_list_type=1, act_type=0, output_dtype=torch.bfloat16)[0]
+
+    if model_extra_config.operator_opt_config.use_dequant_swiglu_quant:
+        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
+        pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
+        intermediate_h, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(mm1_mm3, weight_scale=fake_scale,
+                                                                            activation_scale=pertoken_scale,
+                                                                            bias=None, quant_scale=None,
+                                                                            quant_offset=None,
+                                                                            group_index=expert_tokens,
+                                                                            activate_left=True, quant_mode=1)
+    else:
+        intermediate_h = torch_npu.npu_swiglu(mm1_mm3)
+        intermediate_h, pertoken_scale = torch_npu.npu_dynamic_quant(intermediate_h)
+
+    if pertoken_scale.dim() > 1:
+        inter_size = intermediate_h.size(-1)
+        pertoken_scale = pertoken_scale.reshape(-1)
+        intermediate_h = intermediate_h.view(-1, inter_size)
+
+    # out_dtype = x.dtype # TODO
+    out_dtype = torch.bfloat16
+    # w2_scale = w2_scale.to(torch.bfloat16)
+    out_hidden = torch_npu.npu_grouped_matmul([intermediate_h], [w2], bias=[w2_bias],
+                                              scale=[w2_scale], per_token_scale=[pertoken_scale],
+                                              group_list=expert_tokens, split_item=3,
+                                              output_dtype=out_dtype, group_type=0,
+                                              group_list_type=1, tuning_config=avg_tokens_per_expert)[0]
+    return out_hidden
+
 def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale, row_idx=None, warm_up=False, is_prefill=True):
     _, h = x.shape
     hidden_states = x.view(-1, h)
@@ -593,9 +719,9 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
         topk_ids = torch.Tensor(cur_topk_list).int().view(hidden_states.shape[0], -1).npu()
     else:
         topk_ids = topk_ids.int()
-    
+
     max_num_deployed_expert = w1_scale.shape[0] * get_expert_parallel_world_size()
-    
+
     expert_range = [0, max_num_deployed_expert]
     expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
         hidden_states,
@@ -652,6 +778,103 @@ def moe_infer_fusion(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale
  
     return hidden_states, gathered_tokens, topk_weight, expanded_row_idx
 
+def moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_scale, w1_bias=None, w2_bias=None,
+                          row_idx=None, warm_up=False, is_prefill=True):
+    _, h = x.shape
+    hidden_states = x.view(-1, h)
+    topk_weight = topk_weight.to(x.dtype)
+    max_num_deployed_expert = get_expert_parallel_world_size() * layer.num_experts
+    if warm_up:
+        # 此处是强制均衡，目标是为了降低峰值内存
+        global_rank = get_world_group().rank_in_group
+        step = hidden_states.shape[0] * 8  # topk 8 expert todo：get from config
+        cur_topk_list = [
+            (i + global_rank // 1) % max_num_deployed_expert for i in range(
+                global_rank // 1 * step, (global_rank // 1 + 1) * step)]
+        topk_ids = torch.Tensor(cur_topk_list).int().view(hidden_states.shape[0], -1).npu()
+    else:
+        topk_ids = topk_ids.int()
+
+    # if ENV.use_omni_planner and layer.moe_layer_idx < 58:
+    #     max_num_deployed_expert = layer.planner.get_max_num_deployed_expert_per_rank() * get_world_group().world_size
+
+    expert_range = [0, max_num_deployed_expert]
+    expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
+        hidden_states,
+        expert_idx=topk_ids,
+        scale=None,
+        expert_num=max_num_deployed_expert,
+        active_expert_range=expert_range,
+        expert_tokens_num_type=1,
+        expert_tokens_num_flag=True,
+        active_num=topk_ids.numel(),
+        drop_pad_mode=0,
+        row_idx_type=0,
+        quant_mode=1)
+
+    tokens_per_expert_group = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
+    dist.all_to_all_single(tokens_per_expert_group,
+                           tokens_per_expert)  # (total_experts,) --> (total_ranks * n_routed_experts_per_rank)
+
+    # combine tensors, do reduceSum and D2H together
+    combine_tokens = torch.stack([tokens_per_expert_group, tokens_per_expert], dim=0)
+    # view: EP, E//EP
+    # sum: EP, 每个rank拿到的其他卡的token数
+    ep_size = get_expert_parallel_world_size()
+    combine_tokens = combine_tokens.view(2, ep_size, -1).sum(2)
+    all_tokens = combine_tokens[0].sum()
+
+    combine_tokens_cpu = combine_tokens.cpu().tolist()
+    # alltoall input splits, 大小为当前rank路由到其他rank的token数总和
+    input_splits = combine_tokens_cpu[1]
+    # alltoall output splits, 每个rank拿到的其他卡的token数
+    output_splits = combine_tokens_cpu[0]
+    # alltoall output, 展开成一维, 大小为其他卡路由到当前rank的token数总和
+    gathered_tokens = expanded_x.new_empty(
+        all_tokens.item(), expanded_x.shape[1]
+    )
+
+    dist.all_to_all_single(gathered_tokens, expanded_x, output_splits, input_splits)
+    gathered_pertoken_scale = pertoken_scale.new_empty(gathered_tokens.shape[0])
+    dist.all_to_all_single(gathered_pertoken_scale, pertoken_scale, output_splits, input_splits)
+
+    # reroute
+    # 按专家归并后的tokens,按专家归并后的scales,给FinalizeRouting用的索引,每个专家处理的token数
+    hidden_states_sorted_by_experts, gathered_pertoken_scale, gathered_idxs_unsort, tokens_per_local_expert = torch_npu.npu_moe_re_routing(
+        gathered_tokens,
+        tokens_per_expert_group.view(ep_size, -1),
+        per_token_scales=gathered_pertoken_scale
+    )
+    group_list = tokens_per_local_expert.to(torch.int64)
+    # if ENV.use_omni_planner and layer.planner.enable_dump and layer.moe_layer_idx < 58:
+    #     if is_prefill:
+    #         layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+    #     else:
+    #         with tng.scope.npu_stream_switch('22'):
+    #             layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+
+    if w1_bias is not None and w2_bias is not None:
+        hidden_states_ordered_by_experts = gmm_expert_w4a8(hidden_states_sorted_by_experts,
+                                                           tokens_per_local_expert.to(torch.int64),
+                                                           w1, w2, w1_scale, w2_scale,
+                                                           w1_bias,
+                                                           w2_bias,
+                                                           gathered_pertoken_scale, None, warm_up)
+    else:
+        hidden_states_ordered_by_experts = gmm_expert(hidden_states_sorted_by_experts,
+                                                      tokens_per_local_expert.to(torch.int64),
+                                                      w1, w2, w1_scale, w2_scale,
+                                                      w1_bias,
+                                                      w2_bias,
+                                                      gathered_pertoken_scale, None, warm_up)
+
+    new_x = torch.index_select(hidden_states_ordered_by_experts, 0,
+                               gathered_idxs_unsort.to(torch.float32).argsort().to(torch.int32))
+    gathered_tokens = new_x.new_empty(*expanded_x.shape)
+
+    dist.all_to_all_single(gathered_tokens, new_x, input_splits, output_splits)
+
+    return hidden_states, gathered_tokens, topk_weight, expanded_row_idx
 
 def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_tokens, act_dtype, quant_mode,
                              dynamic_scale=None):
@@ -679,6 +902,44 @@ def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_t
 
     return out
 
+def moe_expert_quant_forword_w4a8(sorted_tokens, w1, w2, w1_scale, w2_scale, w1_bias, w2_bias, expert_tokens, act_dtype,
+                                  quant_mode, n_routed_experts,
+                                  dynamic_scale=None):
+    # TODO 对比quant_tool 缺少avg_routing功能
+    if quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
+        pertoken_scale = dynamic_scale
+    else:
+        sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_quant(sorted_tokens)
+
+    gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=[w1_bias], scale=[w1_scale],
+                                                offset=None, antiquant_scale=None, antiquant_offset=None,
+                                                per_token_scale=[pertoken_scale],
+                                                group_list=expert_tokens,
+                                                activation_input=None, activation_quant_scale=None,
+                                                activation_quant_offset=None, split_item=3, group_type=0,
+                                                group_list_type=1, act_type=0,
+                                                tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
+                                                              0:], output_dtype=torch.bfloat16)[0]
+
+    if model_extra_config.operator_opt_config.use_dequant_swiglu_quant:
+        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
+        pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
+        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=fake_scale,
+                                                                          activation_scale=pertoken_scale,
+                                                                          bias=None, quant_scale=None,
+                                                                          quant_offset=None, group_index=expert_tokens,
+                                                                          activate_left=True, quant_mode=1)
+    else:
+        gate_up_proj = torch_npu.npu_swiglu(gate_up_proj)
+        gate_up_proj, pertoken_scale = torch_npu.npu_dynamic_quant(gate_up_proj)
+
+    out = torch_npu.npu_grouped_matmul([gate_up_proj], [w2], scale=[w2_scale],
+                                       per_token_scale=[pertoken_scale], bias=[w2_bias],
+                                       group_list=expert_tokens, split_item=3, output_dtype=act_dtype,
+                                       group_type=0,
+                                       group_list_type=1,
+                                       tuning_config=model_extra_config.operator_opt_config.decode_gear_list[0:])[0]
+    return out
 
 def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
                                             hidden_states: torch.Tensor,
@@ -760,6 +1021,112 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
         stage3_kwargs = {
             "ep_send_counts": ep_recv_counts,  # dispatch's send_counts
             "group_ep": layer.moe_all_to_all_group_name,  # Unlike torch, it is obtained by name.
+            "ep_world_size": all_to_all_group_size,
+            "ep_rank_id": global_rank // experts_tp_size,
+            "tp_send_counts": tp_recv_counts,
+            "group_tp": layer.moe_rs_group_name,
+            "tp_world_size": experts_tp_size,
+            "tp_rank_id": global_rank % experts_tp_size,
+            "x_active_mask": mc2_mask,
+        }
+        kwargs.update(stage3_kwargs)
+
+        expand_idx = kwargs.pop('expand_idx', None)
+        kwargs['assist_info_for_combine'] = expand_idx
+        hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
+    else:
+        raise ValueError("ep number should be greater than 1.")
+    return hidden_states_route
+
+def fused_experts_w4a8_moe_dispatch_combine(layer: torch.nn.Module,
+                                            hidden_states: torch.Tensor,
+                                            w1: torch.Tensor,
+                                            w2: torch.Tensor,
+                                            w1_scale: torch.Tensor,
+                                            w2_scale: torch.Tensor,
+                                            w1_bias: torch.Tensor,
+                                            w2_bias: torch.Tensor,
+                                            topk_weights: torch.Tensor,
+                                            topk_ids: torch.Tensor,
+                                            n_routed_experts: int,
+                                            max_num_deployed_expert: int, #ENABLE_OMNI_PLANNER
+                                            is_prefill: bool, #ENABLE_OMNI_PLANNER
+                                            ):
+    expert_parallel_size = get_expert_parallel_world_size()
+
+    if expert_parallel_size > 1:
+        attn_metadata = get_forward_context().attn_metadata
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[next(iter(attn_metadata))]
+        mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None else None
+        global_bs = 0
+        act_dtype = hidden_states.dtype
+        # TODO shared_expert_rank_num的计算
+        # shared_expert_rank_num = n_shared_experts * ENV.redundancy_expert_num
+
+        # route
+        shared_expert_rank_num = 0
+        kwargs = {
+            "x": hidden_states,
+            "expert_ids": topk_ids,  # [n*topk]
+            "expert_shard_type": 0,  # 先传 0
+            "shared_expert_rank_num": shared_expert_rank_num,  # 32
+            "moe_expert_num": max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0冗余256， 1个冗余专家320
+            "global_bs": global_bs,  # 0 默认（全部）； 可以设置所有token
+        }
+        experts_tp_size = layer.tp_size
+        world_size = get_world_group().world_size
+        global_rank = get_world_group().rank_in_group  # 实际上拿到的是die数，没有对ep组做适配，默认ep组就是 experts_num/die_num
+        all_to_all_group_size = world_size // experts_tp_size
+
+        kwargs.update({
+            "scales": None,  # 量化系数,
+            "quant_mode": layer.quant_mode,  # 0: 非量化；1: 静态量化；2：动态量化
+            "group_ep": layer.moe_all_to_all_group_name,  # 与torch不一样，通过名字来获取
+            "ep_world_size": all_to_all_group_size,
+            "ep_rank_id": global_rank // experts_tp_size,
+            "group_tp": layer.moe_rs_group_name,
+            "tp_world_size": experts_tp_size,
+            "tp_rank_id": global_rank % experts_tp_size,
+            "x_active_mask": mc2_mask,
+        })
+
+        output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
+        expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
+
+        group_list = expert_token_nums.to(torch.int64)
+
+        # if ENV.use_omni_planner and layer.planner.enable_dump and layer.moe_layer_idx < 58:
+        #     if is_prefill:
+        #         layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+        #     else:
+        #         with tng.scope.npu_stream_switch('22'):
+        #             layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
+
+        group_list = group_list[:len(w1)] #适配到冗余以及非冗余层, #ENABLE_OMNI_PLANNER
+
+        # cal experts
+        weight1_3 = w1
+        weight2 = w2
+        hidden_states_experts = moe_expert_quant_forword_w4a8(expand_x, weight1_3, weight2, w1_scale, w2_scale, w1_bias, w2_bias,
+                                                            group_list,
+                                                            act_dtype, layer.quant_mode, n_routed_experts, dynamic_scale)
+
+        # moeCombine
+        kwargs = {
+            "expand_x": hidden_states_experts,
+            "expert_ids": topk_ids,  # [n*topk]
+            "expand_idx": expand_idx,
+            "expert_scales": topk_weights.to(torch.float32),  # weight [n*topk]
+            "expert_shard_type": 0,
+            "shared_expert_rank_num": shared_expert_rank_num,
+            "moe_expert_num":  max_num_deployed_expert, #ENABLE_OMNI_PLANNER, 0冗余256， 1个冗余专家320
+            "global_bs": global_bs,  # 0 默认（全部）； 可以设置所有token
+        }
+        tp_recv_counts = output[5]
+        stage3_kwargs = {
+            "ep_send_counts": ep_recv_counts,  # dispatch的send_counts
+            "group_ep": layer.moe_all_to_all_group_name,  # 与torch不一样，通过名字来获取
             "ep_world_size": all_to_all_group_size,
             "ep_rank_id": global_rank // experts_tp_size,
             "tp_send_counts": tp_recv_counts,

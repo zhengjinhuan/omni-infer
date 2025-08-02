@@ -341,9 +341,9 @@ class DeepseekMoE(nn.Module):
             )
 
         if self.experts is not None:
-            self.local_expert_num = self.experts.w13_weight_scale.shape[0]
-            self.in_scale_2 = torch.ones((self.local_expert_num, self.experts.w13_weight_scale.shape[-1] // 2), dtype=torch.float32, device=current_platform.device_type)
-            torch._dynamo.mark_static(self.in_scale_2)
+            self.local_expert_num = self.n_routed_experts
+            self.in_scale_2 = torch.ones((self.local_expert_num, config.moe_intermediate_size), dtype=torch.float32,
+                                         device=current_platform.device_type)
             self.w13_prefetch_size = 70 * 1024 * 1024
             self.w2_prefetch_size = 0 if self.ep_size <= 64 else 14 * 2 * 1024 * 1024
 
@@ -444,36 +444,95 @@ class DeepseekMoE(nn.Module):
                     layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
                 # cal experts
-                weight1_3 = self.experts.w13_weight
-                weight2 = self.experts.w2_weight
-                weight_scale1_3 = self.experts.w13_weight_scale
-                weight_scale2 = self.experts.w2_weight_scale
+                elif self.experts.num_bits == 8:
+                    weight1_3 = self.experts.w13_weight
+                    weight2 = self.experts.w2_weight
+                    weight_scale1_3 = self.experts.w13_weight_scale
+                    weight_scale2 = self.experts.w2_weight_scale
 
-                if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
-                    pertoken_scale = dynamic_scale
-                else:
-                    expand_x, pertoken_scale = torch_npu.npu_dynamic_quant(expand_x)
+                    if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
+                        pertoken_scale = dynamic_scale
+                    else:
+                        expand_x, pertoken_scale = torch_npu.npu_dynamic_quant(expand_x)
 
-                with tng.scope.npu_stream_switch('21'):
-                    wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
-                    wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
-                    if not isinstance(gate_up_share, torch.Tensor):
-                        gate_up_share = (wait_gate, gate_up_share[1])
-                    intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
+                    with tng.scope.npu_stream_switch('21'):
+                        wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
+                        wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
+                        if not isinstance(gate_up_share, torch.Tensor):
+                            gate_up_share = (wait_gate, gate_up_share[1])
+                        intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
 
-                gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
-                                                            split_item=3, output_dtype=torch.int32, group_type=0,
-                                                            group_list_type=1)[0]
-                
-                gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-                    gate_up_proj, weight_scale=weight_scale1_3, activation_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
-                    group_index=group_list, activate_left=True, quant_mode=1)
+                    gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
+                                                                split_item=3, output_dtype=torch.int32, group_type=0,
+                                                                group_list_type=1)[0]
+                    
+                    gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
+                        gate_up_proj, weight_scale=weight_scale1_3, activation_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
+                        group_index=group_list, activate_left=True, quant_mode=1)
 
-                hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
-                                                per_token_scale=[pertoken_scale],bias=None,
-                                                group_list=group_list, split_item=3, output_dtype=act_dtype,
-                                                group_type=0,
-                                                group_list_type=1)[0]
+                    hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
+                                                    per_token_scale=[pertoken_scale],bias=None,
+                                                    group_list=group_list, split_item=3, output_dtype=act_dtype,
+                                                    group_type=0,
+                                                    group_list_type=1)[0]
+                elif self.experts.num_bits == 4:
+                    weight1_3 = self.experts.w13_weight
+                    weight2 = self.experts.w2_weight
+                    w1_scale = self.experts.w13_weight_int4_scale
+                    w2_scale = self.experts.w2_weight_int4_scale
+                    w1_bias = self.experts.w13_weight_bias
+                    w2_bias = self.experts.w2_weight_bias
+
+                    if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
+                        pertoken_scale = dynamic_scale
+                    else:
+                        expand_x, pertoken_scale = torch_npu.npu_dynamic_quant(expand_x)
+
+                    with tng.scope.npu_stream_switch('21'):
+                        wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
+                        wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
+                        if not isinstance(gate_up_share, torch.Tensor):
+                            gate_up_share = (wait_gate, gate_up_share[1])
+                        intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share,
+                                                                                     self.shared_experts.quant_symbol)
+
+                    gate_up_proj = \
+                    torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=[w1_bias], scale=[w1_scale],
+                                                 offset=None, antiquant_scale=None, antiquant_offset=None,
+                                                 per_token_scale=[pertoken_scale],
+                                                 group_list=group_list,
+                                                 activation_input=None, activation_quant_scale=None,
+                                                 activation_quant_offset=None, split_item=3, group_type=0,
+                                                 group_list_type=1, act_type=0,
+                                                 tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
+                                                               0:], output_dtype=torch.bfloat16)[0]
+
+                    if model_extra_config.operator_opt_config.use_dequant_swiglu_quant:
+                        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1,
+                                                                                                        w1_scale.shape[
+                                                                                                            -1])
+                        pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
+                        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj,
+                                                                                          weight_scale=fake_scale,
+                                                                                          activation_scale=pertoken_scale,
+                                                                                          bias=None, quant_scale=None,
+                                                                                          quant_offset=None,
+                                                                                          group_index=group_list,
+                                                                                          activate_left=True,
+                                                                                          quant_mode=1)
+                    else:
+                        gate_up_proj = torch_npu.npu_swiglu(gate_up_proj)
+                        gate_up_proj, pertoken_scale = torch_npu.npu_dynamic_quant(gate_up_proj)
+
+                    hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[w2_scale],
+                                                                         per_token_scale=[pertoken_scale],
+                                                                         bias=[w2_bias],
+                                                                         group_list=group_list, split_item=3,
+                                                                         output_dtype=act_dtype,
+                                                                         group_type=0,
+                                                                         group_list_type=1,
+                                                                         tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
+                                                                                       0:])[0]
 
                 # moeCombine
                 kwargs = {
@@ -792,6 +851,7 @@ class AscendDeepseekAttention_MLA(nn.Module):
     ) -> None:
         super().__init__()
         self.prefix = prefix
+        self.layer_idx = int(prefix.split(sep='.')[2])
         self.hidden_size = hidden_size
         self.qk_nope_head_dim = qk_nope_head_dim
         self.qk_rope_head_dim = qk_rope_head_dim
@@ -915,7 +975,8 @@ class AscendDeepseekAttention_MLA(nn.Module):
             qkv_a_proj=self.qkv_a_proj if hasattr(self, 'qkv_a_proj') else None,
             q_a_layernorm=self.q_a_layernorm if hasattr(self, 'q_a_layernorm') else None,
             q_b_proj=self.q_b_proj if hasattr(self, 'q_b_proj') else None,
-            q_a_proj=self.q_a_proj if hasattr(self, 'q_a_proj') else None
+            q_a_proj=self.q_a_proj if hasattr(self, 'q_a_proj') else None,
+            layer_idx=self.layer_idx
         )
 
 
