@@ -26,7 +26,6 @@ torch.npu.config.allow_internal_format = True
 class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
     def __init__(self):
-        self.initialized = False
         self.warm_up = True
         self.n_routed_experts = None
         self.smooth_scale = None
@@ -109,8 +108,8 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         self.local_expert_indices = [
             self.local_expert_indices_offset + i for i in range(self.n_routed_experts)
         ]
-        self.initialized = True
-        self.smooth_scale = torch.ones((self.n_routed_experts, layer.w13_weight_scale.shape[-1]//2), dtype=torch.float32, device="npu")
+        self.smooth_scale = torch.ones((self.n_routed_experts, layer.w13_weight_scale.shape[-1]//2),
+                                       dtype=torch.float32, device=current_platform.device_type)
         torch._dynamo.mark_static(self.smooth_scale)
 
     def apply(

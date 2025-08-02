@@ -78,7 +78,6 @@ from omni.models.common.layers.moe.deepseek_moe import DeepseekMoE
 from omni.models.common.layers.attention.deepseek_mla import DeepseekMLA 
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.attention.backend.mla import group_request_list
-from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
@@ -164,8 +163,7 @@ class DeepseekDecoderLayer(nn.Module):
             qk_nope_head_dim=config.qk_nope_head_dim,
             qk_rope_head_dim=config.qk_rope_head_dim,
             v_head_dim=config.v_head_dim,
-            q_lora_rank=config.q_lora_rank
-            if hasattr(config, "q_lora_rank") else None,
+            q_lora_rank=config.q_lora_rank if hasattr(config, "q_lora_rank") else None,
             kv_lora_rank=config.kv_lora_rank,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
@@ -695,7 +693,7 @@ class DeepseekV3Model(nn.Module):
 
 
 @support_torch_compile
-class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
+class DeepseekV3ForCausalLM(nn.Module):
 
     packed_modules_mapping = {
         "gate_up_proj": ["gate_proj", "up_proj"],
@@ -721,7 +719,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             self.model.make_empty_intermediate_tensors)
 
         self.return_hidden_states = True
-        self.input_marked = False
         self.max_num_token = vllm_config.scheduler_config.max_num_batched_tokens
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -906,14 +903,3 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             return True
 
         return False
-
-    def mark_static_for_graph(self, input_ids, positions, attn_metadata, kv_caches):
-        if not self.input_marked:
-            torch._dynamo.mark_static(input_ids)
-            torch._dynamo.mark_static(positions)
-            for i in range(len(kv_caches)):
-                if kv_caches[i][0] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][0])
-                if kv_caches[i][1] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][1])
-            self.input_marked = True

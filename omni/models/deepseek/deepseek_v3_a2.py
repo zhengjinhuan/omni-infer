@@ -90,7 +90,6 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
-from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 
 
 """MLP 模块激活拆分长度，按64G显存拆分，需要根据序列长度以及性能确认最佳拆分长度"""
@@ -1632,7 +1631,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
         else:
             attn_output.fill_(0)
 
-        
         attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
         output = self.o_proj.forward(attn_output)[0]
 
@@ -2074,7 +2072,7 @@ class DeepseekV3Model(nn.Module):
 
 
 @support_torch_compile
-class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
+class DeepseekV3ForCausalLM(nn.Module):
     
     packed_modules_mapping = {
         "gate_up_proj": ["gate_proj", "up_proj"],
@@ -2098,7 +2096,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             self.model.make_empty_intermediate_tensors)
 
         self.return_hidden_states = True
-        self.input_marked = False
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -2262,17 +2259,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
-
-    def mark_static_for_graph(self, input_ids, positions, attn_metadata, kv_caches):
-        if not self.input_marked:
-            torch._dynamo.mark_static(input_ids)
-            torch._dynamo.mark_static(positions)
-            for i in range(len(kv_caches)):
-                if kv_caches[i][0] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][0])
-                if kv_caches[i][1] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][1])
-            self.input_marked = True
 
     def should_use_eager_mode(self, *args, **kwargs):
         attn_metadata = kwargs.get('attn_metadata', None)

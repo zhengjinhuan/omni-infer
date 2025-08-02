@@ -34,10 +34,9 @@ from omni.models.common.layers.vocab_parallel_embedding import (
 )
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
-from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 
 @support_torch_compile
-class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
+class DeepseekV3MTP(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "", layer_index: int = 61, ):
         super().__init__()
         self.config = vllm_config.model_config.hf_config
