@@ -33,6 +33,7 @@ from transformers import PretrainedConfig
 
 from vllm.forward_context import get_forward_context, set_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
+from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.logger import init_logger
@@ -54,7 +55,7 @@ from vllm.sequence import IntermediateTensors
 from omni.adaptors.vllm.distributed.communication_op import (tensor_model_parallel_all_reduce_async,
                                                              tensor_model_parallel_all_gather_async,
                                                              tensor_model_parallel_reduce_scatter_async)
-
+from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 from vllm.model_executor.models.interfaces import SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
@@ -169,6 +170,7 @@ class Qwen2DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.layer_name = f"{prefix}.self_attn.attn"
         # Requires transformers > 4.32.0
         rope_theta = getattr(config, "rope_theta", 1000000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -478,8 +480,8 @@ class Qwen2Model(nn.Module):
             loaded_params.add(name)
         return loaded_params
 
-
-class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
+@support_torch_compile
+class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, GraphCompileConfiguration):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -563,3 +565,11 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
+    
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+        return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
