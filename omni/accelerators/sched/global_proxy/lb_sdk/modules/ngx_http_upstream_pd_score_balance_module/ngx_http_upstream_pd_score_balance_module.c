@@ -337,8 +337,21 @@ static ngx_int_t ngx_http_pd_score_body_filter(ngx_http_request_t *r,
                     num_start++;
                 }
                 total_tokens = val;
+            } else {
+                if (pdata->first_chunk) {
+                    total_tokens = pdata->decode_token_count + 1;
+                } else {
+                    total_tokens = pdata->last_total_tokens + 1;
+                }
             }
         }
+    }
+
+    if (pdata->first_chunk) {
+        pdata->first_chunk = 0;
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, 
+            "[PDScore-Filter] first chunk, peer #%ui, request_decode_token_count %ui, peer_total_decode_token %ui,", pdata->chosen, pdata->decode_token_count, pd_shm->peers_D[pdata->chosen].total_decode_num);
+        pdata->decode_token_count = 0;
     }
 
     ngx_uint_t added_tokens = 0;
@@ -531,8 +544,8 @@ ngx_http_pd_score_decode_strategy(ngx_http_request_t *r,
     pdata->chosen = chosen;
 
     pdata->my_time_cost = 0;
-    pdata->decode_token_count = 0;
-    pdata->first_chunk = 0;
+    pdata->decode_token_count = (ngx_atomic_t)r->request_length / 4;
+    pdata->first_chunk = 1;
     pdata->request_length = (ngx_uint_t)r->request_length;
     pdata->last_total_tokens = 0;
     u->peer.data = pdata;
