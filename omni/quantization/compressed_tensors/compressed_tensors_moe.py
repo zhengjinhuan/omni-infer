@@ -128,7 +128,7 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
             is_prefill = attn_metadata is None or attn_metadata.prefill is not None
-            if model_extra_config.operator_opt_config.prefill_dispatch_combine or (model_extra_config.operator_opt_config.moe_dispatch_combine and not is_prefill):
+            if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
                 if is_prefill and model_extra_config.operator_opt_config.enable_pd_separated:
                     out = moe_infer_fusion(
                         layer,

@@ -7,7 +7,7 @@
     },
     "operator_optimizition_config": {
         "enable_kv_rmsnorm_rope_cache": true,
-        "prefill_dispatch_combine": false,
+        "prefill_moe_all_to_all": false,
         "enable_node_mlp": true,
         "moe_multi_stream_tune": false,
         "best_ep": false,
@@ -17,7 +17,7 @@
         "use_chunked_prefill": false,
         "use_w8a8_dynamic_quant": true,
         "gmm_nz": true,
-        "moe_dispatch_combine": true,
+        "decode_moe_dispatch_combine": true,
         "use_omni_placement": false,
         "omni_placement_config_path": ".",
         "enable_moe_expert_parallel": true,

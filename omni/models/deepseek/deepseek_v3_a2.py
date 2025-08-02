@@ -94,7 +94,7 @@ from omni.models.common.config.model_config import model_extra_config
 
 """MLP 模块激活拆分长度，按64G显存拆分，需要根据序列长度以及性能确认最佳拆分长度"""
 SEQ_SPLIT_LENGTH = 4096
-SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_dispatch_combine else 256
+SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_moe_all_to_all else 256
 KVCACHE_NZ_DIM = 16
 """stream name"""
 STREAM_TOPK_COMPUTE = 'topk_compute'
@@ -965,7 +965,7 @@ class DeepseekMoE(nn.Module):
                                                                 .repeat(1, self.experts.top_k)
                         topk_ids = actual_batch_mask * topk_ids + (1 - actual_batch_mask) * self.n_total_experts
                     
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         pertoken_scale = tng.scope.npu_wait_tensor(pertoken_scale, pertoken_scale)
                         topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
 
@@ -975,12 +975,12 @@ class DeepseekMoE(nn.Module):
                         shared_output, _ = self.shared_experts(hidden_states, None, attn_metadata)
 
                 with tng.scope.npu_stream_switch('23'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         topk_cat = tng.scope.npu_wait_tensor(topk_cat, topk_cat)
                         topk_all = all_gather_two_stage(topk_cat, idx=1, dim=0, reverse=True)
 
                 with tng.scope.npu_stream_switch('22'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         topk_all = tng.scope.npu_wait_tensor(topk_all, topk_all)
                         if model_extra_config.operator_opt_config.enable_round_pipeline_comm:
                             pass
@@ -1907,7 +1907,7 @@ class DeepseekDecoderLayer(nn.Module):
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
-        if (model_extra_config.operator_opt_config.prefill_dispatch_combine or model_extra_config.parall_config.dp_size > 1) and is_prefill:
+        if (model_extra_config.operator_opt_config.prefill_moe_all_to_all or model_extra_config.parall_config.dp_size > 1) and is_prefill:
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device="npu")
             local_length = hidden_states.shape[0]
             dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)

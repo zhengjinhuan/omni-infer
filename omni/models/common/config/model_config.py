@@ -19,7 +19,7 @@ class ModelParallelConfig:
 @dataclass
 class ModelOperatorOptConfig:
     enable_kv_rmsnorm_rope_cache: bool = True
-    prefill_dispatch_combine: bool = True
+    prefill_moe_all_to_all: bool = True
     enable_node_mlp: bool = False
     moe_multi_stream_tune: bool = False
     best_ep: bool = False
@@ -29,7 +29,7 @@ class ModelOperatorOptConfig:
     use_chunked_prefill: bool = False
     use_w8a8_dynamic_quant: bool = True
     gmm_nz: bool = False
-    moe_dispatch_combine: bool = True
+    decode_moe_dispatch_combine: bool = True
     use_omni_placement: bool = False
     omni_placement_config_path:str = None
     enable_moe_expert_parallel: bool = True
