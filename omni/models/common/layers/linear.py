@@ -37,6 +37,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     GroupCoordinator
 )
 
+
 class AscendMergedColumnParallelLinear(LinearBase):
     def __init__(self,
                  input_size: int,
@@ -240,17 +241,24 @@ class AscendRowParallelLinear(LinearBase):
     def __init__(self,
                  input_size: int,
                  output_size: int,
+                 tp_size: int = 1,
+                 tp_rank: int = 0,
                  bias: bool = True,
                  input_is_parallel: bool = True,
                  skip_bias_add: bool = False,
-                 tp_size: int = 1,
-                 tp_rank: int = 0,
                  params_dtype: Optional[torch.dtype] = None,
                  reduce_results: bool = True,
                  quant_config: Optional[QuantizationConfig] = None,
                  prefix: str = ""):
         super().__init__(input_size, output_size, skip_bias_add, params_dtype,
                          quant_config, prefix)
+
+        if self.quant_method is None:
+            raise RuntimeError("self.quant_method must not be None")
+
+        if not reduce_results and (bias and not skip_bias_add):
+            raise ValueError("When not reduce the results, adding bias to the "
+                             "results can lead to incorrect results")
 
         self.input_is_parallel = input_is_parallel
         self.reduce_results = reduce_results
@@ -259,20 +267,17 @@ class AscendRowParallelLinear(LinearBase):
         self.tp_rank = tp_rank
         # Divide the weight matrix along the last dimension.
         self.input_size_per_partition = divide(input_size, self.tp_size)
-        if self.quant_method is None:
-            raise RuntimeError("self.quant_method must not be None")
+        self.output_size_per_partition = output_size
+        self.output_partition_sizes = [output_size]
 
         self.quant_method.create_weights(
             layer=self,
             input_size_per_partition=self.input_size_per_partition,
-            output_partition_sizes=[self.output_size],
+            output_partition_sizes=self.output_partition_sizes,
             input_size=self.input_size,
             output_size=self.output_size,
             params_dtype=self.params_dtype,
             weight_loader=self.weight_loader)
-        if not reduce_results and (bias and not skip_bias_add):
-            raise ValueError("When not reduce the results, adding bias to the "
-                             "results can lead to incorrect results")
 
         if bias:
             self.bias = Parameter(
@@ -353,44 +358,14 @@ class AscendRowParallelLinear(LinearBase):
         s += f", reduce_results={self.reduce_results}"
         return s
 
-class DP2TPRowParallelLinear(LinearBase):
-    """Linear layer with row parallelism.
 
-    The linear layer is defined as Y = XA + b. A is parallelized along
-    its first dimension and X along its second dimension as:
-               -   -
-              | A_1 |
-              | .   |
-          A = | .   |        X = [X_1, ..., X_p]
-              | .   |
-              | A_p |
-               -   -
-    Arguments:
-        input_size: first dimension of matrix A.
-        output_size: second dimension of matrix A.
-        bias: If true, add bias. Note that bias is not parallelized.
-        input_is_parallel: If true, we assume that the input is already
-                           split across the GPUs and we do not split
-                           again.
-        skip_bias_add: This was added to enable performance optimization where
-                       bias can be fused with other element-wise operations.
-                       We skip adding bias but instead return it.
-        params_dtype: Data type for the parameters.
-        reduce_results: If true, call all-reduce on output and make Y available
-                       to all GPUs, otherwise, every GPU will have its output
-                       which is Y = X_iA_i
-        quant_config: Quantization configure.
-        prefix: The name of the layer in the state dict, including all parents
-                        (e.g. model.layers.0.down_proj)
-        return_bias: If true, return bias together with outputs in forward pass.
-    """
-
+class DP2TPRowParallelLinear(AscendRowParallelLinear):
     def __init__(
         self,
         input_size: int,
         output_size: int,
-        tp_size = 1,
-        tp_rank = 0,
+        tp_size: int = 1,
+        tp_rank: int = 0,
         bias: bool = True,
         input_is_parallel: bool = True,
         skip_bias_add: bool = False,
@@ -398,89 +373,20 @@ class DP2TPRowParallelLinear(LinearBase):
         reduce_results: bool = True,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
-        *,
-        return_bias: bool = True,
     ):
-        # Divide the weight matrix along the first dimension.
-        self.tp_rank = tp_rank
-        self.tp_size = tp_size
-        self.input_size_per_partition = divide(input_size, self.tp_size)
-        self.output_size_per_partition = output_size
-        self.output_partition_sizes = [output_size]
-
         super().__init__(input_size,
                          output_size,
+                         tp_size,
+                         tp_rank,
+                         bias,
+                         input_is_parallel,
                          skip_bias_add,
                          params_dtype,
+                         reduce_results,
                          quant_config,
-                         prefix,
-                         return_bias=return_bias)
+                         prefix)
 
-        self.input_is_parallel = input_is_parallel
-        self.reduce_results = reduce_results
-
-        assert self.quant_method is not None
-        self.quant_method.create_weights(
-            layer=self,
-            input_size_per_partition=self.input_size_per_partition,
-            output_partition_sizes=self.output_partition_sizes,
-            input_size=self.input_size,
-            output_size=self.output_size,
-            params_dtype=self.params_dtype,
-            weight_loader=self.weight_loader)
-        if not reduce_results and (bias and not skip_bias_add):
-            raise ValueError("When not reduce the results, adding bias to the "
-                             "results can lead to incorrect results")
-
-        if bias:
-            self.bias = Parameter(
-                torch.empty(self.output_size, dtype=params_dtype))
-            set_weight_attrs(self.bias, {
-                "output_dim": 0,
-                "weight_loader": self.weight_loader,
-            })
-        else:
-            self.register_parameter("bias", None)
-
-    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
-        input_dim = getattr(param, "input_dim", None)
-        use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
-        is_sharded_weight = getattr(param, "is_sharded_weight", False)
-        # bitsandbytes loads the weights of the specific portion
-        # no need to narrow
-        is_sharded_weight = is_sharded_weight or use_bitsandbytes_4bit
-
-        # Special case for GGUF
-        is_gguf_weight = getattr(param, "is_gguf_weight", False)
-        is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
-        if is_gguf_weight_type:
-            param.weight_type = loaded_weight.item()
-
-        # Materialize GGUF UninitializedParameter
-        if is_gguf_weight and isinstance(param, UninitializedParameter):
-            weight_shape = list(loaded_weight.shape)
-            if input_dim:
-                weight_shape[input_dim] = weight_shape[input_dim] // self.tp_size
-            param.materialize(tuple(weight_shape), dtype=loaded_weight.dtype)
-
-        param_data = param.data
-        if input_dim is not None and not is_sharded_weight:
-            shard_size = param_data.shape[input_dim]
-            start_idx = self.tp_rank * shard_size
-            loaded_weight = loaded_weight.narrow(input_dim, start_idx,
-                                                 shard_size)
-
-        # Special case for loading scales off disk, which often do not
-        # have a shape (such as in the case of AutoFP8).
-        if len(loaded_weight.shape) == 0:
-            loaded_weight = loaded_weight.reshape(1)
-
-        assert param_data.shape == loaded_weight.shape
-        param_data.copy_(loaded_weight)
-
-    def forward(
-        self, input_, bsz, q_len, num_heads, v_head_dim,
-    ):
+    def forward(self, input_, bsz, q_len, num_heads, v_head_dim,):
         if self.input_is_parallel:
             input_parallel = input_
         else:
@@ -507,18 +413,104 @@ class DP2TPRowParallelLinear(LinearBase):
 
         output_bias = self.bias if self.skip_bias_add else None
 
-        if not self.return_bias:
-            return output
         return output, output_bias
 
-    def extra_repr(self) -> str:
-        s = f"input_features={self.input_size_per_partition}"
-        s += f", output_features={self.output_size}"
-        s += f", bias={self.bias is not None}"
-        s += f", tp_size={self.tp_size}"
-        s += f", reduce_results={self.reduce_results}"
-        return s
-    
+
+class Tp2DpAndTpRowParallelLinear(AscendRowParallelLinear):
+    def __init__(self,
+                 input_size: int,
+                 output_size: int,
+                 tp_size: int = 1,
+                 tp_rank: int = 0,
+                 bias: bool = True,
+                 input_is_parallel: bool = True,
+                 skip_bias_add: bool = False,
+                 params_dtype: Optional[torch.dtype] = None,
+                 reduce_results: bool = True,
+                 quant_config: Optional[QuantizationConfig] = None,
+                 prefix: str = ""):
+        super().__init__(input_size,
+                         output_size,
+                         tp_size,
+                         tp_rank,
+                         bias,
+                         input_is_parallel,
+                         skip_bias_add,
+                         params_dtype,
+                         reduce_results,
+                         quant_config,
+                         prefix)
+
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        input_dim = getattr(param, "input_dim", None)
+        use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
+
+        # Special case for GGUF
+        is_gguf_weight = getattr(param, "is_gguf_weight", False)
+        is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
+        if is_gguf_weight_type:
+            param.weight_type = loaded_weight.item()
+
+        # Materialize GGUF UninitializedParameter
+        if is_gguf_weight and isinstance(param, UninitializedParameter):
+            weight_shape = list(loaded_weight.shape)
+            if input_dim:
+                weight_shape[input_dim] = weight_shape[input_dim] // self.tp_size
+            param.materialize(tuple(weight_shape), dtype=loaded_weight.dtype)
+
+        param_data = param.data
+        # bitsandbytes loads the weights of the specific portion
+        # adapter
+        world_size = torch.distributed.get_world_size()
+        rank_list = torch.arange(world_size).reshape(-1, self.tp_size).T
+        dp_size = world_size // self.tp_size
+        if input_dim is not None and not use_bitsandbytes_4bit:
+            shard_size = param_data.shape[input_dim] // dp_size
+            res = []
+            for rank in rank_list[self.tp_rank]:
+                start_idx = rank * shard_size
+                tmp_weight = loaded_weight.narrow(input_dim, start_idx,
+                                                  shard_size)
+                res.append(tmp_weight)
+            loaded_weight = torch.cat(res, dim=input_dim)
+
+        # adapter end
+
+        # Special case for loading scales off disk, which often do not
+        # have a shape (such as in the case of AutoFP8).
+        if len(loaded_weight.shape) == 0:
+            loaded_weight = loaded_weight.reshape(1)
+
+        if param_data.shape != loaded_weight.shape:
+            raise RuntimeError("param_data.shape != loaded_weight.shape")
+        param_data.copy_(loaded_weight)
+
+    def forward(self, input_):
+        if self.input_is_parallel:
+            input_parallel = input_
+        else:
+            splitted_input = split_tensor_along_last_dim(
+                input_, num_partitions=self.tp_size)
+            input_parallel = splitted_input[self.tp_rank].contiguous()
+
+        # Matrix multiply.
+        if self.quant_method is None:
+            raise RuntimeError("self.quant_method is None")
+        # Only fuse bias add into GEMM for rank 0 (this ensures that
+        # bias will not get added more than once in TP>1 case)
+        bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
+        output_parallel = self.quant_method.apply(self,
+                                                  input_parallel,
+                                                  bias=bias_)
+        if self.reduce_results and self.tp_size > 1:
+            output = get_o_proj_tp_group.reduce_scatter(output_parallel)
+        else:
+            output = output_parallel
+
+        output_bias = self.bias if self.skip_bias_add else None
+
+        return output, output_bias
+
 
 class ColumnParallelLinearQuantGather(ColumnParallelLinear):
     def __init__(self, input_size, output_size, bias, quant_config, prefix):

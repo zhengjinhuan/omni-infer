@@ -263,7 +263,6 @@ class DeepseekDecoderLayer(nn.Module):
                 hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
                 if isinstance(hidden_states, (tuple, list)):
                     assert len(hidden_states) == 2
-                    # 0 is the shared expert hidden_states, 1 is the routing expert hidden_states, add operation cannot be placed in the super kernel
                     hidden_states = hidden_states[0] + hidden_states[1]
             else:
                 hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)

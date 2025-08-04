@@ -116,6 +116,9 @@ class AscendMLAPrefillMetadata:
     seq_kvlen_group: Optional[list] = None
     kv_index_list: Optional[list] = None
 
+    cos: Optional[torch.Tensor] = None
+    sin: Optional[torch.Tensor] = None
+
 @dataclass
 class AscendMLADecodeMetadata:
     # Input positions for rotrary embeddings since for MLA the rotary
@@ -196,6 +199,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self.decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
         if self.decode_gear_list:
             self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device=current_platform.device_type)
+        self.already_mark_static = False
 
     def generate_activate_mask(self, actual_seqs_num, batch_size):
         if len(self.decode_gear_list) > 1:
@@ -388,16 +392,21 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
 
+            tmp_input_position = input_positions[tokens_start:]
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(tmp_input_position)
+
             prefill_metadata = AscendMLAPrefillMetadata(
                 attn_mask=self.runner.attn_mask,
                 query_lens=query_lens_list[reqs_start:],
                 seq_lens=seq_lens_list,
-                input_positions=input_positions[tokens_start:],
+                input_positions=tmp_input_position,
                 block_table=block_table[reqs_start:, ...],
                 max_query_len=max_query_len,
                 seq_qlen_group=seq_qlen_group,
                 seq_kvlen_group=seq_kvlen_group,
-                kv_index_list=kv_index_list
+                kv_index_list=kv_index_list,
+                sin=sin,
+                cos=cos
             )
 
         decode_metadata = None
@@ -563,6 +572,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         )
 
     def mark_static_for_attn_metadata(self, attn_metadata):
+        if self.already_mark_static:
+            return
         if attn_metadata.decode.cos is not None:
             torch._dynamo.mark_static(attn_metadata.decode.cos)
         if attn_metadata.decode.sin is not None:
@@ -577,6 +588,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             torch._dynamo.mark_static(attn_metadata.decode.seq_lens)
         if attn_metadata.slot_mapping is not None:
             torch._dynamo.mark_static(attn_metadata.slot_mapping)
+        self.already_mark_static = True
 
 
 class AscendMLAImpl(MLAAttentionImpl):
