@@ -341,7 +341,7 @@ class DeepseekMoE(nn.Module):
             )
 
         if self.experts is not None:
-            self.local_expert_num = self.n_routed_experts
+            self.local_expert_num = self.n_routed_experts // self.ep_size
             self.in_scale_2 = torch.ones((self.local_expert_num, config.moe_intermediate_size), dtype=torch.float32,
                                          device=current_platform.device_type)
             self.w13_prefetch_size = 70 * 1024 * 1024
