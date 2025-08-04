@@ -36,6 +36,7 @@ class ModelOperatorOptConfig:
     use_chunked_prefill: bool = False
     use_w8a8_dynamic_quant: bool = True
     gmm_nz: bool = False
+    unquant_bmm_nz: bool = False
     moe_dispatch_combine: bool = True
     use_omni_placement: bool = False
     omni_placement_config_path:str = None
