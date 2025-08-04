@@ -825,11 +825,12 @@ class NPUModelRunner(GPUModelRunner):
                 raw_hidden_states, hidden_states = forward_results
             else:
                 hidden_states = forward_results
-            run_spec_decode(
-                raw_hidden_states, attn_metadata,
-                self.kv_caches[-self.speculative_config.num_speculative_tokens:] if self.kv_caches else None,
-                self.drafter_list, mark_static=use_compile
-            )
+            if self.use_spec_decode:
+                run_spec_decode(
+                    raw_hidden_states, attn_metadata,
+                    self.kv_caches[-self.speculative_config.num_speculative_tokens:] if self.kv_caches else None,
+                    self.drafter_list, mark_static=use_compile
+                )
         return hidden_states
 
     def profile_run(self) -> None:

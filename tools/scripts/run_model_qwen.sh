@@ -30,6 +30,8 @@ python run_model_qwen.py \
 #     --graph-true 'false' \
 #     --model-name qwen \
 #     --network-interface enp23s0f3 \
+#     --prefill-server-list 0,1,2,3,4,5,6,7 \
+#     --decode-server-list 8,9,10,11,12,13,14,15 \
 #     --host-ip 7.150.12.75 \
 #     --https-port 8001 \
 #     --service-port 6660
@@ -43,6 +45,8 @@ python run_model_qwen.py \
 #     --graph-true 'true' \
 #     --model-name qwen \
 #     --network-interface enp23s0f3 \
+#     --prefill-server-list 0,1,2,3,4,5,6,7 \
+#     --decode-server-list 8,9,10,11,12,13,14,15 \
 #     --host-ip 7.150.12.75 \
 #     --https-port 8001 \
 #     --service-port 6660
