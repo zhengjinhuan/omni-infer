@@ -90,7 +90,7 @@ class TFASScheduler(Scheduler):
                     continue
             total_request_len += request.num_tokens_with_spec
             if total_request_len > bound:
-                return bound + request.num_tokens_with_spec
+                return total_request_len+1
         return bound
     
     def _compute_upper_bound(self, waiting_queue: deque[Request]) -> int:
