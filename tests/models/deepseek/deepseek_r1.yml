@@ -84,3 +84,12 @@ async_schedule:
 omni_attention:
   api_servers_params:
     --additional-config: '{"enable_omni_attn": true}'  # if p/d, set this on both sides
+tfas_scheduler: #set only on p
+  api_servers_params:
+    --scheduler-cls: "omni.adaptors.vllm.worker.tfas.tfas_scheduler.TFASScheduler"
+    --additional-config: '{"tfas_scheduler_config"={"slope"=0.035, "intercept"=0.1259, "token_budget"=9154}}'
+    --max-num-seqs: 128
+tfas_profiler_scheduler: #set only on p
+  api_servers_params:
+    --scheduler-cls: "omni.adaptors.vllm.worker.tfas.tfas_scheduler.TFASProfilerScheduler"
+    --max-num-seqs: 128
