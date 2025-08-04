@@ -622,7 +622,7 @@ class DeepseekMoE(nn.Module):
 
         group_list = expert_token_nums.to(torch.int64)
         if model_extra_config.operator_opt_config.use_omni_placement:
-            layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream = model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
+            layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
 
         # cal experts
         weight1_3 = self.experts.w13_weight
@@ -775,7 +775,7 @@ class DeepseekMoE(nn.Module):
 
             group_list = expert_token_nums.to(torch.int64)
             if model_extra_config.operator_opt_config.use_omni_placement:
-                layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream = model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
+                layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
 
             # cal experts
             weight1_3 = self.experts.w13_weight
