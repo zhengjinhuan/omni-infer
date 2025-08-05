@@ -11,8 +11,7 @@ from vllm.logger import logger
 
 class TFASScheduler(Scheduler):
     DEFAULT_TFAS_CONFIG = {
-    "intercept": 0.1259,
-    "slope": 0.035,
+    "adjust_param": 3.60,
     "token_budget": 9154,
     }
 
@@ -52,14 +51,14 @@ class TFASScheduler(Scheduler):
                     tfas_config[field] = default_val
 
         # 从字典中读取配置
-        self.tfas_intercept = tfas_config["intercept"]
-        self.tfas_slope = tfas_config["slope"]
+        self.tfas_adjust_param = tfas_config["adjust_param"]
         self.tfas_waiting_time_out = 20
         self.tfas_token_budget = tfas_config["token_budget"]
 
+
         logger.info(
-            f"TFASScheduler enabled (intercept={self.tfas_intercept}, "
-            f"slope={self.tfas_slope}, token_budget={self.tfas_token_budget})"
+            f"TFASScheduler enabled (adjust_param={self.tfas_adjust_param}"
+            f", token_budget={self.tfas_token_budget})"
         )
 
             
@@ -104,7 +103,7 @@ class TFASScheduler(Scheduler):
         bound1 = self.tfas_token_budget
         bound2 = int(
             math.sqrt(
-                req_in_waiting_queue * self.tfas_intercept / self.tfas_slope
+                req_in_waiting_queue * self.tfas_adjust_param
             ) * 1024
         )
         return max(bound1, bound2)

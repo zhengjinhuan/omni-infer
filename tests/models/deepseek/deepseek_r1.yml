@@ -87,7 +87,7 @@ omni_attention:
 tfas_scheduler: #set only on p
   api_servers_params:
     --scheduler-cls: "omni.adaptors.vllm.worker.tfas.tfas_scheduler.TFASScheduler"
-    --additional-config: '{"tfas_scheduler_config"={"slope"=0.035, "intercept"=0.1259, "token_budget"=9154}}'
+    --additional-config: '{"tfas_scheduler_config"={"adjust_param"=3.6, "token_budget"=9154}}'
     --max-num-seqs: 128
 tfas_profiler_scheduler: #set only on p
   api_servers_params:

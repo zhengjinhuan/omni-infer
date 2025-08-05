@@ -44,17 +44,17 @@ vLLM原生调度器采用以内存最大化为中心的策略，优化利用NPU�
 1. **启动Prefill实例服务** 
 配置如下启动参数
 - `--scheduler-cls="omni.adaptors.vllm.worker.tfas.tfas_scheduler.TFASScheduler"`
-- `--additional-config='{"tfas_scheduler_config"={"slope"=0.1, "intercept"=0.1, "token_budget"=9000}}'`
+- `--additional-config='{"tfas_scheduler_config"={"adjust_param"=3.6, "token_budget"=9154}}'`
 - `--max-num-seqs`为一个较大的值。
 
-其中`additional-config`中的`slope`, `intercept`, `token_budget`的值为profilling得到的策略超参数。
+其中`additional-config`中的`adjust_param`, `token_budget`的值为profilling得到的策略超参数。
 
 日志中出现`TFAS enabled`证明策略使用成功。
 
 **注意事项**：由于 `tfas` 在每次组 batch 时会根据队列中的请求信息（请求数量和输入长度）动态计算最优的 `batch_size`，为避免因序列数限制导致越界，需要在启服务时将`max-num-seqs`设置成一个较大的值。
 
 在omni/adaptors/vllm/worker/tfas/tfas_scheduler.py中针对TFAS策略配有默认参数，
-- `{"slope"=0.035, "intercept"=0.1259, "token_budget"=9154}`
+- `{"adjust_param"=3.6, "token_budget"=9154}`
 
 
 它们是基于 deepseek v3/r1 w8a8 量化权重和华为昇腾芯片 910C 获取的，如果你要测试的配置和我们的默认配置相同，可直接基于默认参数进行测试，否则需要重新进行 profiling 获取策略所需要的超参信息。
