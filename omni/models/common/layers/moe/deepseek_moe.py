@@ -221,6 +221,7 @@ class DeepseekMoE(nn.Module):
             self.local_expert_num = self.experts.w13_weight.shape[0]
             if self.quant_symbol:
                 self.in_scale_2 = torch.ones((self.local_expert_num, self.experts.w13_weight_scale.shape[-1] // 2), dtype=torch.float32, device=current_platform.device_type)
+                # call the mark_static to reduce memory usage
                 torch._dynamo.mark_static(self.in_scale_2)
                 if self.ep_size > 64:
                     self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
@@ -243,7 +244,7 @@ class DeepseekMoE(nn.Module):
     def _forward_prefill_norm(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata) -> torch.Tensor:
         shared_output = self.shared_experts(hidden_states)
 
-        if not model_extra_config.operator_opt_config.prefill_dispatch_combine:
+        if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
             global_hidden_states = get_world_group().all_gather(hidden_states_int8, dim=0)
         else:
@@ -258,8 +259,7 @@ class DeepseekMoE(nn.Module):
                                                                     layer=self.experts  # ENABLE_OMNI_PLANNER
                                                                     )
         topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids)
-            # skip when use dispatch&combine
-        if not model_extra_config.operator_opt_config.prefill_dispatch_combine:
+        if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
             topk_all = get_world_group().all_gather(topk_cat, dim=0)
             topk_weights, topk_ids, global_pertoken_scale = torch.split(
@@ -275,7 +275,7 @@ class DeepseekMoE(nn.Module):
             attn_metadata=attn_metadata
         )
 
-        if model_extra_config.operator_opt_config.prefill_dispatch_combine:
+        if model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             if len(final_hidden_states_list) != 4:
                 raise RuntimeError("len(final_hidden_states_list) != 4")
             final_hidden_states = final_hidden_states_list[0]
@@ -284,11 +284,10 @@ class DeepseekMoE(nn.Module):
         else:
             final_hidden_states = final_hidden_states_list
 
-        # skip when use dispatch&combine
-        if not model_extra_config.operator_opt_config.prefill_dispatch_combine:
+        if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             final_hidden_states = get_world_group().reduce_scatter(final_hidden_states)
 
-        if model_extra_config.operator_opt_config.prefill_dispatch_combine:
+        if model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             final_hidden_states = torch_npu.npu_moe_finalize_routing(
                 gathered_tokens,
                 skip1=shared_output,
@@ -306,7 +305,7 @@ class DeepseekMoE(nn.Module):
 
     def _forward_decode_norm(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         if model_extra_config.operator_opt_config.moe_multi_stream_tune and \
-            model_extra_config.operator_opt_config.moe_dispatch_combine:
+            model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             if model_extra_config.operator_opt_config.use_super_kernel:
                 with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
                     return self._forward_decode_dispatch_combine(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
@@ -319,7 +318,7 @@ class DeepseekMoE(nn.Module):
         else:
             shared_output = self.shared_experts(hidden_states)
 
-        if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+        if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
             global_hidden_states = get_world_group().all_gather(hidden_states_int8, dim=0)
         else:
@@ -341,7 +340,7 @@ class DeepseekMoE(nn.Module):
                                                             layer=self.experts  # ENABLE_OMNI_PLANNER
                                                             )
         topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids, best_topk_ids=attn_metadata.decode.best_topk)
-        if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+        if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
             topk_all = get_world_group().all_gather(topk_cat, dim=0)
 
@@ -360,7 +359,7 @@ class DeepseekMoE(nn.Module):
             attn_metadata=attn_metadata
         )
 
-        if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+        if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             final_hidden_states = get_world_group().reduce_scatter(final_hidden_states)
 
         final_hidden_states = final_hidden_states + shared_output
@@ -439,8 +438,8 @@ class DeepseekMoE(nn.Module):
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
         group_list = expert_token_nums.to(torch.int64)
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and self.experts.moe_layer_idx < 58:
-            layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
 
         # cal experts
         weight1_3 = self.experts.w13_weight

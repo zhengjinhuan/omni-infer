@@ -152,6 +152,13 @@ class OmniKVCacheManager:
         """
         return self.hybrid_managers[0]
 
+    @property
+    def block_pool(self) -> BlockPool:
+        """For compatibility, we create a pseudo `block_pool` which
+        is actually the full attention manager.
+        """
+        return self.block_pools[0]
+
     def make_prefix_cache_stats(self) -> Optional[PrefixCacheStats]:
         """Get (and reset) the prefix cache stats.
 
