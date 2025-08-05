@@ -242,18 +242,18 @@ class PrefillConnectorWorker:
             self.input_socket.bind(f"tcp://{self.host_ip}:{self.host_port}")
             self._transfer_lock = threading.Lock()
             self.receive_req_list = []
-            thread_name = "prefill_connector_get_pulled_kv_req_list"
-            self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True, name=thread_name)
+            self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True)
             self.thread.start()
-            dump_thread_to_file(self.thread, thread_name, thread_dump_path)
-        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
-        if ENABLED:
+
+        # check whether omni attention is enabled
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+        use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+        if use_omni_attn_mgr:
             manager_cls = OmniBiGroupDataDistManager
             logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
-            self.datadist_manager = manager_cls(vllm_config)
         else:
             manager_cls = LLMDataDistManager
-            self.datadist_manager = manager_cls(vllm_config)
+        self.datadist_manager = manager_cls(vllm_config)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.datadist_manager.register_memory(kv_caches)
