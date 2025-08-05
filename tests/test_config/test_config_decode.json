@@ -21,13 +21,13 @@
         "omni_placement_config_path": "../../tests/test_config/config_d.yaml",
         "enable_moe_expert_parallel": true,
         "use_a3_high_performance_cann": true,
-        "use_super_kernel": true,
+        "use_super_kernel": false,
         "use_mlaprolog": false,
         "opt_w2_scale_cast": true,
         "enable_mc2_v2": false,
         "use_prefetch": true,
-        "expert_gate_up_prefetch": 70,
-        "expert_down_prefetch": 28, 
-        "attn_prefetch": 96 
+        "expert_gate_up_prefetch": 50,
+        "expert_down_prefetch": 28,
+        "attn_prefetch": 96
     }
 }

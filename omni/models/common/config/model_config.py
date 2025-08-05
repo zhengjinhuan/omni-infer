@@ -43,7 +43,7 @@ class ModelOperatorOptConfig:
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
 
     use_prefetch: bool = True # 是否开启预取
-    expert_gate_up_prefetch: int = 70 # 默认预取大小为 70Mb；如果是权重是BF16型，设置为 30Mb
+    expert_gate_up_prefetch: int = 50 # 默认预取大小为 50Mb；如果是权重是BF16型，设置为 30Mb
     expert_down_prefetch: int = 28 # 当权重是BF16且ep_size > 64 时，默认预取大小为 28Mb，否则为0
     attn_prefetch: int = 96 # 默认预取大小为 96Mb
 
@@ -129,6 +129,7 @@ def update_model_extra_config(**kwargs):
             operator_opt_config.moe_multi_stream_tune = False
             operator_opt_config.use_super_kernel = False
             operator_opt_config.use_prefetch = False
+            operator_opt_config.use_mlaprolog = False
 
 model_extra_config = get_model_extra_config()
 
