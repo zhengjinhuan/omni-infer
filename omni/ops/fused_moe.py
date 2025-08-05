@@ -143,7 +143,7 @@ def fused_experts_with_mc2(
         "tp_rank_id": tp_rank,
     }
     kwargs.update(stage3_kwargs)
-    
+
     hidden_states = torch_npu.npu_moe_distribute_combine(**kwargs)
 
     return hidden_states
