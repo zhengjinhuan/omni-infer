@@ -507,6 +507,7 @@ class NPUModelRunner(GPUModelRunner):
                                  num_tokens=num_input_tokens):
             start_setup_connector = time.time()
             self.maybe_setup_kv_connector(scheduler_output)
+            
             model_kwargs["kv_caches"] = self.kv_caches
             model_kwargs["attn_metadata"] = attn_metadata
             start_f = time.time()
@@ -553,6 +554,7 @@ class NPUModelRunner(GPUModelRunner):
                                 positions=positions,
                                 intermediate_tensors=intermediate_tensors,
                                 inputs_embeds=None,
+                                prefill_padding_or_selected_indices=None,
                                 **model_kwargs,
                             )
                             torch.npu.synchronize()
@@ -564,6 +566,7 @@ class NPUModelRunner(GPUModelRunner):
                                 positions=positions,
                                 intermediate_tensors=intermediate_tensors,
                                 inputs_embeds=None,
+                                prefill_padding_or_selected_indices=None,
                                 **model_kwargs,
                             )
                     if not omni_use_dsv3:
@@ -971,6 +974,7 @@ class NPUModelRunner(GPUModelRunner):
                         positions=positions,
                         intermediate_tensors=intermediate_tensors,
                         inputs_embeds=None,
+                        prefill_padding_or_selected_indices=None,
                         **model_kwargs,
                     )
                     if not omni_use_dsv3:
