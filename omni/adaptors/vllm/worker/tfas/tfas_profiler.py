@@ -13,7 +13,7 @@ tfas算法超参调试工具
 tfas_profiler.py - 分析prefill服务器日志并进行性能分析
 
 该脚本用于解析prefill服务器的日志文件，提取关键性能指标，
-并通过分段线性拟合法分析系统性能特性，确定组batch_tokens的最优值token_budget, 和对应的超参数intercept, slope。
+并通过分段线性拟合法分析系统性能特性，确定组batch_tokens的最优值token_budget, 和对应的动态调整参数adjust_param。
  
  
 使用方法：
@@ -34,7 +34,7 @@ tfas_profiler.py - 分析prefill服务器日志并进行性能分析
 输出格式：
     脚本会输出分段线性拟合的结果，包括：
     - token_budget
-    - 超参数 intercept slope
+    - 动态调整参数 adjust_param
     - 分析曲线图.png
 """
     
@@ -92,8 +92,7 @@ def get_update_params(output_path, segments, models, x, y):
     tfas_intercept = intercept_set[-1]
     tfas_slope = slope_set[-1]
     print("token_budget = ", B_start)
-    print("intercept = ", tfas_intercept)
-    print("slope = ", tfas_slope)
+    print("adjust_param =", tfas_intercept/tfas_slope)
     
 def IQR_filter(df):
     groups = df.groupby("seqs")
