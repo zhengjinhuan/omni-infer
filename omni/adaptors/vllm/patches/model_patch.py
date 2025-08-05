@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
+from omni.models.common.config.model_config import model_extra_config
 
 def patch_vllm_distributed():
     from vllm import distributed
@@ -60,7 +61,8 @@ def patch_all():
     patch_embedding()
     patch_sampler()
     patch_compilation()
-    patch_linear()
+    if model_extra_config.operator_opt_config.unquant_bmm_nz:
+        patch_linear()
     _patch_done = True
 
 patch_all() 

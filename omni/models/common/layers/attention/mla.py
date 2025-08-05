@@ -924,8 +924,10 @@ class AscendMLAImpl(MLAAttentionImpl):
         # if also set o_proj_tp_size means prefill o_proj tp to dp + tp
         if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
             if attn_metadata is not None:
-                attn_output = attn_output.view(get_o_proj_dp_world_group().world_size, -1, self.num_heads,
-                                               self.v_head_dim).reshape(-1)
+                if model_extra_config.parall_config.o_proj_tp_size > 1:
+                    attn_output = attn_output.view(get_o_proj_dp_world_group().world_size, -1, self.num_heads,
+                                                   self.v_head_dim)
+                attn_output = attn_output.reshape(-1)
                 all_to_all_attn_output = torch.empty(
                     [q.shape[0] * self.num_heads * self.v_head_dim],
                     dtype=attn_output.dtype,
