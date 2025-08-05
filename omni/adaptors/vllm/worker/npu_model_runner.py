@@ -507,8 +507,9 @@ class NPUModelRunner(GPUModelRunner):
                                  num_tokens=num_input_tokens):
             start_setup_connector = time.time()
             self.maybe_setup_kv_connector(scheduler_output)
-            model_kwargs["kv_caches"] = self.kv_caches
-            model_kwargs["attn_metadata"] = attn_metadata
+            if omni_use_dsv3:
+                model_kwargs["kv_caches"] = self.kv_caches
+                model_kwargs["attn_metadata"] = attn_metadata
             start_f = time.time()
 
             if model_config.model_extra_config.operator_opt_config.use_omni_placement:
@@ -553,6 +554,7 @@ class NPUModelRunner(GPUModelRunner):
                                 positions=positions,
                                 intermediate_tensors=intermediate_tensors,
                                 inputs_embeds=None,
+                                prefill_padding_or_selected_indices=None,
                                 **model_kwargs,
                             )
                             torch.npu.synchronize()
@@ -564,6 +566,7 @@ class NPUModelRunner(GPUModelRunner):
                                 positions=positions,
                                 intermediate_tensors=intermediate_tensors,
                                 inputs_embeds=None,
+                                prefill_padding_or_selected_indices=None,
                                 **model_kwargs,
                             )
                     if not omni_use_dsv3:
@@ -579,7 +582,7 @@ class NPUModelRunner(GPUModelRunner):
                 if self.model is None:
                     raise RuntimeError("self.model must not be None")
                 logger.info("Start running eager model.")
-                if os.environ.get('PROFILING_FORWARD', "0") == '1' and num_input_tokens > 20000:
+                if os.environ.get('PROFILING_FORWARD', "0") == '1' and num_input_tokens > 16000:
                     import torch_npu
                     prof_save_path = os.environ.get("PROFILING_SAVE_PATH", "./")
                     experimental_config = torch_npu.profiler._ExperimentalConfig(
@@ -861,7 +864,7 @@ class NPUModelRunner(GPUModelRunner):
                         kv_caches=self.kv_caches[-self.speculative_config.num_speculative_tokens + layer_idx:],
                         attn_metadata=attn_metadata,
                         previous_hidden_states=raw_hidden_states,
-                        prefill_padding_or_selected_indices=None if attn_state == AscendAttentionState.DecodeOnly else sample_indices,
+                        prefill_padding_or_selected_indices=sample_indices,
                         intermediate_tensors=None,
                         inputs_embeds=None,
                         require_hidden_states=True,
@@ -960,8 +963,9 @@ class NPUModelRunner(GPUModelRunner):
                 if self.enable_torchair_graph_mode and (is_pd_seperate_d or is_not_pd_seperate_and_capture_model):
                     logger.debug("Start running dummy compiled model.")
                     model_kwargs = {}
-                    model_kwargs["kv_caches"] = self.kv_caches
-                    model_kwargs["attn_metadata"] = attn_metadata
+                    if omni_use_dsv3:
+                        model_kwargs["kv_caches"] = self.kv_caches
+                        model_kwargs["attn_metadata"] = attn_metadata
                     if isinstance(self.model, GraphCompileConfiguration):
                         self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                     else:
@@ -971,6 +975,7 @@ class NPUModelRunner(GPUModelRunner):
                         positions=positions,
                         intermediate_tensors=intermediate_tensors,
                         inputs_embeds=None,
+                        prefill_padding_or_selected_indices=None,
                         **model_kwargs,
                     )
                     if not omni_use_dsv3:
