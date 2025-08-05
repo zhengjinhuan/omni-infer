@@ -85,7 +85,7 @@ def fused_experts_with_mc2(
     }
     kwargs.update(stage1_kwargs)
 
-    output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
+    output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
     # comm_stream.wait_stream(torch.npu.current_stream())
     expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[
         0:5]
@@ -143,10 +143,8 @@ def fused_experts_with_mc2(
         "tp_rank_id": tp_rank,
     }
     kwargs.update(stage3_kwargs)
-
-    expand_idx = kwargs.pop('expand_idx', None)
-    kwargs['assist_info_for_combine'] = expand_idx
-    hidden_states = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
+    
+    hidden_states = torch_npu.npu_moe_distribute_combine(**kwargs)
 
     return hidden_states
 
