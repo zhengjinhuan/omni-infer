@@ -196,7 +196,7 @@ def _apply_top_k_top_p_faster(
 
     # Return partial tensor with index.
     return logits_sort, logits_idx, top_p_mask
-  
+
 def _need_log_probs(sampling_metadata, include_gpu_probs_tensor):
     need_log_probs = False
     # if use speculation need_log_probs must be true
@@ -636,16 +636,16 @@ class RejectionSampler(RejectionSamplerGPU):
         return output_with_bonus_tokens
 
 class SimpleSampler(RejectionSamplerV1):
- 
+
     def __init__(self, main_sampler, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.previous_frequency_penalties = []
-        self.previous_repetition_penalties = [] 
+        self.previous_repetition_penalties = []
         self.previous_presence_penalties = []
         self.main_sampler = main_sampler
         self.minus_one = None
 
-    def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
+    def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills, next_tokens: list[int] = None):
 
         if num_decodes != 0 and num_prefills != 0:
             raise ("Chunked prefill is not supported in current version.")
@@ -675,11 +675,14 @@ class SimpleSampler(RejectionSamplerV1):
         if num_prefills > 0:
             mtp_input_tokens = torch.empty_like(input_ids)
             mtp_input_tokens[:-1] = input_ids[1:] # for prefill
+            # for chunk prefill, should use the next prompt token instead of the predicted token
+            next_tokens = torch.tensor(next_tokens).to(forward_tokens).view_as(forward_tokens)
+            forward_tokens = torch.where(next_tokens != VLLM_INVALID_TOKEN_ID, next_tokens, forward_tokens)
         else:
             mtp_input_tokens = input_ids.clone()
         mtp_input_tokens[logits_indices] = forward_tokens.view(-1)
         # Create output buffer.
-        # output_token_ids: 
+        # output_token_ids:
         # if accepted [input_ids[-1], forward_tokens_result]
         # else [forward_tokens_result, -1]
 
