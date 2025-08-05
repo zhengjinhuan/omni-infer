@@ -41,7 +41,6 @@ from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
-    get_dp_group,
     get_pp_group,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_gather
@@ -234,7 +233,7 @@ class DeepseekDecoderLayer(nn.Module):
         # hidden : tokens * 7168
 
         # Perform full hidden splitting to avoid OOM
-        if model_extra_config.parall_config.dp_size > 1 and (attn_metadata is None or attn_metadata.prefill is not None):
+        if model_extra_config.parall_config.dp_size > 1 and attn_metadata is None:
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
             local_length = hidden_states.shape[0]
             # global_max_length = torch.tensor(0, dtype=torch.int64)
