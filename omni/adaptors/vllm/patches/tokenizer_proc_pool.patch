@@ -97,7 +97,7 @@ index c73575b48..2f35619ca 100644
 +        self.available_cores = list(map(int, affinity_str.split(",")))
 +        self.do_lower_case = False
 +        if model_config and model_config.encoder_config:
-+            self.do_lower_case = model_config.encoder_config.do_lower_case
++            self.do_lower_case = model_config.encoder_config.get("do_lower_case", False)
 +        if self.enable_tokenizer_proc_pool:
 +            logger.info(f"Tokenizer process pool is enabled.")
 +            logger.info(f"Tokenizer worker num is {self.tokenizer_worker_num}.")
