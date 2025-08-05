@@ -255,7 +255,7 @@ class FusedMoE(torch.nn.Module):
             raise ValueError("Only softmax scoring function is supported for "
                              "non-grouped topk.")
 
-        if model_extra_config.operator_opt_config.moe_dispatch_combine:
+        if model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             # Adapt the dispatch combine operator
             self.ep_size = get_ep_group().world_size
             self.global_rank = get_world_group().rank_in_group
