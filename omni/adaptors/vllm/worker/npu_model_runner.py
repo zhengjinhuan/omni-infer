@@ -582,7 +582,7 @@ class NPUModelRunner(GPUModelRunner):
                 if self.model is None:
                     raise RuntimeError("self.model must not be None")
                 logger.info("Start running eager model.")
-                if os.environ.get('PROFILING_FORWARD', "0") == '1' and num_input_tokens > 16000:
+                if os.environ.get('PROFILING_FORWARD', "0") == '1' and num_input_tokens > 20000:
                     import torch_npu
                     prof_save_path = os.environ.get("PROFILING_SAVE_PATH", "./")
                     experimental_config = torch_npu.profiler._ExperimentalConfig(
