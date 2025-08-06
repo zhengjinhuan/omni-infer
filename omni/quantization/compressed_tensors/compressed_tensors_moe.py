@@ -363,7 +363,7 @@ class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         if model_extra_config.operator_opt_config.gmm_nz:
             layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
-            if not model_extra_config.operator_opt_config.is_910B:
+            if "Ascend910B" not in torch.npu.get_device_name(0):
                 layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
 
         layer.w13_weight.data = layer.w13_weight.data.view(torch.int32).contiguous()

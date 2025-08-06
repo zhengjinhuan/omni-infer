@@ -68,7 +68,6 @@ class ModelOperatorOptConfig:
     use_mlaprolog: bool = False
     opt_w2_scale_cast: bool = False    
     use_dequant_swiglu_quant: bool = False
-    is_910B: bool = False
     use_faquant: bool = False
     quantization_param_path: str = ''
     decode_gear_list: list[int] = field(default_factory=lambda: [16])
