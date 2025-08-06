@@ -35,6 +35,7 @@ from vllm.config import QuantizationConfig
 from vllm.attention import AttentionMetadata
 from vllm.distributed import (
     get_ep_group,
+    get_pp_group,
     get_dp_group,
     get_world_group,
 )
@@ -45,11 +46,7 @@ from omni.models.common.layers.linear import (
     MergedReplicatedLinear,
 )
 from omni.models.common.layers.activation import SiluAndMul
-from omni.adaptors.vllm.distributed.communication_op import (
-    all_gather_two_stage,
-    reduce_scatter_two_stage
-)
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
+from omni.models.common.layers.moe.fused_moe.layer import FusedMoE, UNQUANT_MODE, DYNAMIC_QUANT_MODE
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_w8a8_moe_dispatch_combine
 
@@ -89,6 +86,22 @@ class ReplicatedDeepseekMLP(nn.Module):
                              "Only silu is supported for now.")
         self.act_fn_obj = SiluAndMul()
         self.quant_symbol = True if quant_config else False
+        self.tp_size = 1
+        self.quant_mode = DYNAMIC_QUANT_MODE if quant_config else UNQUANT_MODE
+        if model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
+            # Adapt the dispatch combine operator
+            self.ep_size = get_ep_group().world_size
+            self.global_rank = get_world_group().rank_in_group
+            self.world_size = get_world_group().world_size
+            # self.n_shared_experts = n_shared_experts
+
+            self.moe_all_to_all_group = get_world_group().device_group
+            self.moe_all_to_all_group_name = self.moe_all_to_all_group._get_backend(torch.device(current_platform.device_type)).get_hccl_comm_name(
+                self.global_rank)
+            self.moe_rs_group = get_pp_group().device_group
+            self.moe_rs_group_rank = get_pp_group().rank_in_group
+            self.moe_rs_group_name = self.moe_rs_group._get_backend(torch.device(current_platform.device_type)).get_hccl_comm_name(
+                                                 self.moe_rs_group_rank)
 
 
     def act_fn(self, x, quant_symbol):
@@ -132,37 +145,47 @@ class DeepseekMoE(nn.Module):
         self.routed_scaling_factor = config.routed_scaling_factor
         self.device_count = torch.npu.device_count()
 
+        self.n_routed_experts = config.n_routed_experts
         self.redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
         self.quant_symbol = quant_config is not None
         self.is_init_gate = False
-        if self.ep_size > (config.n_routed_experts + self.redundancy_shared_expert_num):
+        if self.ep_size > (self.n_routed_experts + self.redundancy_shared_expert_num):
             raise ValueError(
                 f"Tensor parallel size {self.ep_size} is greater than "
-                f"the number of experts {config.n_routed_experts} + {self.redundancy_shared_expert_num}.")
+                f"the number of experts {self.n_routed_experts} + {self.redundancy_shared_expert_num}.")
 
         if config.hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {config.hidden_act}. "
                              "Only silu is supported for now.")
 
         self.gate = ReplicatedLinear(config.hidden_size,
-                                     config.n_routed_experts,
+                                     self.n_routed_experts,
                                      bias=False,
                                      quant_config=None,
                                      params_dtype=torch.float32,
                                      prefix=f"{prefix}.gate")
         if config.topk_method == "noaux_tc":
             self.gate.e_score_correction_bias = nn.Parameter(
-                torch.empty(config.n_routed_experts, dtype=torch.float), requires_grad=False)
+                torch.empty(self.n_routed_experts, dtype=torch.float), requires_grad=False)
         else:
             self.gate.e_score_correction_bias = None
 
+        self.top_k = config.num_experts_per_tok
+        self.use_grouped_topk = True
+        self.renormalize = config.norm_topk_prob
+        self.topk_group = config.topk_group
+        self.num_expert_group = config.n_group
+        self.custom_routing_function = None
+        self.scoring_func = config.scoring_func
+        
+        
         self.shared_experts = None
         self.experts = None
         self.global_rank = get_world_group().rank_in_group
         self.planner = None
         self.moe_layer_idx = None
         self.expert_mapping = None
-        
+
         if self.global_rank >= self.redundancy_shared_expert_num:
             moe_prefix = f"{prefix}.experts"
             # omni placement for redundancy route experts
@@ -170,23 +193,23 @@ class DeepseekMoE(nn.Module):
                 self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
                                            rank=get_world_group().rank_in_group,
                                            world_size=get_world_group().world_size,
-                                           num_experts=config.n_routed_experts,
+                                           num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
                 self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
             self.experts = FusedMoE(
-                num_experts=config.n_routed_experts,
-                top_k=config.num_experts_per_tok,
+                num_experts=self.n_routed_experts,
+                top_k=self.top_k,
                 hidden_size=config.hidden_size,
                 intermediate_size=config.moe_intermediate_size,
                 reduce_results=False,
-                renormalize=config.norm_topk_prob,
+                renormalize=self.renormalize,
                 quant_config=quant_config,
-                use_grouped_topk=True,
-                num_expert_group=config.n_group,
-                topk_group=config.topk_group,
+                use_grouped_topk=self.use_grouped_topk,
+                num_expert_group=self.num_expert_group,
+                topk_group=self.topk_group,
                 prefix=moe_prefix,
-                scoring_func=config.scoring_func,
+                scoring_func=self.scoring_func,
                 e_score_correction_bias=self.gate.e_score_correction_bias,
                 planner=self.planner,
                 moe_layer_idx=self.moe_layer_idx,
@@ -201,7 +224,7 @@ class DeepseekMoE(nn.Module):
                 # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
                 self.planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
                                            rank=self.global_rank, world_size=self.ep_size,
-                                           num_experts=config.n_routed_experts,
+                                           num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
                 self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=config.first_k_dense_replace)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
@@ -586,16 +609,16 @@ class DeepseekMoE(nn.Module):
         return hidden_states, residual
 
     def forward_separate_expert_prefill(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata) -> torch.Tensor:
-        global_hidden_states = all_gather_two_stage(hidden_states, idx=0, dim=0)
+        global_hidden_states = get_ep_group().all_gather(hidden_states, dim=0)
         if self.shared_experts:
             avg_tokens_per_shared_experts = global_hidden_states.shape[0] // self.redundancy_shared_expert_num
             shared_experts_mask = torch.zeros(global_hidden_states.shape[0], 1, dtype=torch.int32, device="npu")
             shared_experts_mask[self.global_rank * avg_tokens_per_shared_experts : (self.global_rank + 1) * avg_tokens_per_shared_experts] = 1
             shared_experts_hidden_states = global_hidden_states * shared_experts_mask
-            shared_output = self.shared_experts(shared_experts_hidden_states, attn_metadata)
+            shared_output = self.shared_experts(shared_experts_hidden_states)
         else:
             shared_output = torch.zeros_like(global_hidden_states)
-        shared_output = reduce_scatter_two_stage(shared_output, idx=0)
+        shared_output = get_ep_group().reduce_scatter(shared_output)
 
         if self.experts:
             router_logits, _ = self.gate.forward(global_hidden_states)
@@ -618,7 +641,7 @@ class DeepseekMoE(nn.Module):
             )
         else:
             output = torch.zeros_like(global_hidden_states)
-        final_hidden_states = reduce_scatter_two_stage(output, idx=0)
+        final_hidden_states = get_ep_group().reduce_scatter(output)
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
         return final_hidden_states, residual
