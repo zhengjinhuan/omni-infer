@@ -1113,6 +1113,8 @@ class AscendDeepseekAttention_MLA(nn.Module):
             if not model_extra_config.operator_opt_config.pd_seperate_prefill:
                 for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
                     self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
+                    torch._dynamo.mark_static(self.norm_res[batch_size])
+
             self.q_b_proj = ColumnParallelLinear(self.q_lora_rank,
                                                  self.num_heads *
                                                  self.qk_head_dim,
@@ -1374,9 +1376,7 @@ class AscendDeepseekAttention_MLA(nn.Module):
                     kv_stream2.wait_stream(torch.npu.current_stream())
 
                 if prefill_metadata.max_query_len > 1:
-                    attn_mask = ~torch.tril(
-                    torch.ones((2048, 2048), dtype=torch.bool, device="npu")
-                ) #(self.attn_prefill.impl.SHARE_MASK_TRIL_SPARSE)
+                    attn_mask = self.attn_prefill.impl.attn_mask
                 else:
                     attn_mask = None
         
@@ -1436,8 +1436,7 @@ class AscendDeepseekAttention_MLA(nn.Module):
                         dim=-1)
 
                     if prefill_metadata.max_query_len > 1:
-                        attn_mask = ~torch.tril(torch.ones((2048, 2048), dtype=torch.bool, device="npu"))
-                        #attn_mask = (self.attn_prefill.impl.SHARE_MASK_TRIL_SPARSE)
+                        attn_mask = self.attn_prefill.impl.attn_mask
                     else:
                         attn_mask = None
 
@@ -1579,8 +1578,8 @@ class AscendDeepseekAttention_MLA(nn.Module):
                         .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
                 prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
                 prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
-                is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
-                if not is_prefill:
+
+                if os.environ["ROLE"] == "decode":
                     self.kv_b_proj.weight = torch.nn.Parameter(torch.cat((self.W_UK.permute(2,0,1), self.W_UV.transpose(0,1)), dim=-1) \
                                                                     .view(self.kv_lora_rank,-1).T, requires_grad=False)
                     kv = self.kv_b_proj.forward(prefill_kv_a)[0]
@@ -1595,8 +1594,7 @@ class AscendDeepseekAttention_MLA(nn.Module):
                 k_nope, prefill_k_pe = None, None
 
                 if prefill_metadata.max_query_len > 1:
-                    attn_mask = ~torch.tril(torch.ones((2048, 2048), dtype=torch.bool, device="npu"))
-                    #attn_mask = (self.attn_prefill.impl.SHARE_MASK_TRIL_SPARSE)
+                    attn_mask = self.attn_prefill.impl.attn_mask
                 else:
                     attn_mask = None
                 v = torch.nn.functional.pad(v, [0, self.qk_rope_head_dim], value=0)
@@ -1971,7 +1969,7 @@ class DeepseekV3Model(nn.Module):
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
                 config.hidden_size,
-                # parallel_lmhead=(model_extra_config.parall_config.dp_size > 1),
+                parallel_lmhead=(model_extra_config.parall_config.dp_size > 1),
             )
         else:
             self.embed_tokens = PPMissingLayer()

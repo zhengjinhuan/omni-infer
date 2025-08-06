@@ -231,6 +231,9 @@ class NPUWorker(WorkerBase):
         self.model_runner.profile_run()
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
+        if os.environ["ROLE"] == "decode":
+            NPUPlatform.empty_cache()
+
         free_npu_memory, total_npu_memory = NPUPlatform.mem_get_info()
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
