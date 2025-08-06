@@ -55,6 +55,8 @@ def parse_args():
                         help="List of decode servers (default is an empty list).")
     parser.add_argument('--save-dir', default='./', type=str,
                         help="Directory to save files (default is './').")
+    parser.add_argument('--ip', default='', type=str,
+                        help="local ip.")
 
     # For merge mode.
     parser.add_argument('--global-ranktable-list', nargs='*', default=[], type=str,
@@ -112,13 +114,14 @@ def generate_global_ranktable(args):
         "server_group_list": []
     }
     if args.api_server:
-        global_ranktable["server_group_list"].append(generate_group(SCHEDULER_GROUP))
+        global_ranktable["server_group_list"].append(generate_group(args, SCHEDULER_GROUP))
     if args.prefill_server_list:
-        global_ranktable["server_group_list"].append(generate_group(PREFILL_GROUP, args.prefill_server_list))
+        global_ranktable["server_group_list"].append(generate_group(args, PREFILL_GROUP, args.prefill_server_list))
     if args.decode_server_list:
-        global_ranktable["server_group_list"].append(generate_group(DECODE_GROUP, args.decode_server_list))
+        global_ranktable["server_group_list"].append(generate_group(args, DECODE_GROUP, args.decode_server_list))
 
-    dump_json(os.path.join(args.save_dir, f"global_ranktable_{get_host_ip()}.json"), global_ranktable)
+    local_ip = args.ip if args.ip else get_host_ip()
+    dump_json(os.path.join(args.save_dir, f"global_ranktable_{local_ip}.json"), global_ranktable)
 
 
 def generate_local_ranktable(args):
@@ -138,24 +141,26 @@ def generate_local_ranktable(args):
 
     for device_list in args.prefill_server_list + args.decode_server_list + (['host'] if args.api_server else []):
         local_ranktable = deepcopy(local_ranktable_base)
-        local_ranktable['server_list'][0]["server_id"] = get_host_ip()
-        local_ranktable['server_list'][0]["server_ip"] = get_host_ip()
+        local_ip = args.ip if args.ip else get_host_ip()
+        local_ranktable['server_list'][0]["server_id"] = local_ip
+        local_ranktable['server_list'][0]["server_ip"] = local_ip
         if device_list != 'host':
             local_ranktable['server_list'][0]["device"] = get_device(device_list)
 
-        dump_json(os.path.join(args.save_dir, f"local_ranktable_{get_host_ip()}_{''.join(device_list)}.json"),
+        dump_json(os.path.join(args.save_dir, f"local_ranktable_{local_ip}_{''.join(device_list)}.json"),
                   local_ranktable)
 
 
-def generate_group(group_id, server_list=None):
+def generate_group(args, group_id, server_list=None):
     group_info = {
         "group_id": group_id,
         "server_count": str(len(server_list) if server_list else 1),
         "server_list": []
     }
+    local_ip = args.ip if args.ip else get_host_ip()
     default_server = {
-        "server_id": get_host_ip(),
-        "server_ip": get_host_ip(),
+        "server_id": local_ip,
+        "server_ip": local_ip,
     }
     if server_list is None:
         group_info["server_list"].append(default_server)
@@ -309,7 +314,8 @@ def main():
     os.makedirs(args.save_dir, exist_ok=True)
     if args.mode == 'gen':
         generate_global_ranktable(args)
-        logging.info(f'Generate global ranktable successful, host ip is %s', get_host_ip())
+        local_ip = args.ip if args.ip else get_host_ip()
+        logging.info(f'Generate global ranktable successful, host ip is %s', local_ip)
         generate_local_ranktable(args)
         logging.info(f'Generate local ranktable successful.')
     elif args.mode == 'merge':
