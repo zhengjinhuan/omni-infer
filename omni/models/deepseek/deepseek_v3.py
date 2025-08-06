@@ -444,7 +444,7 @@ class DeepseekMoE(nn.Module):
                     layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
                 # cal experts
-                elif self.experts.num_bits == 8:
+                if self.experts.num_bits == 8:
                     weight1_3 = self.experts.w13_weight
                     weight2 = self.experts.w2_weight
                     weight_scale1_3 = self.experts.w13_weight_scale
@@ -533,6 +533,8 @@ class DeepseekMoE(nn.Module):
                                                                          group_list_type=1,
                                                                          tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
                                                                                        0:])[0]
+                else:
+                    raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.num_bits}")
 
                 # moeCombine
                 kwargs = {
