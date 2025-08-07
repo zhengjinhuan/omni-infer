@@ -540,7 +540,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         seq_lens = torch.ones(max_pad_size, dtype=torch.long, device=self.runner.device, pin_memory=True) * 2
         cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
         best_topk = None
-        self.generate_activate_mask(num_tokens, max_pad_size)
+        self.generate_activate_mask(0, max_pad_size)
         if model_extra_config.operator_opt_config.best_ep:
             best_topk = self.cal_best_topk(max_pad_size)
         decode_metadata = AscendMLADecodeMetadata(

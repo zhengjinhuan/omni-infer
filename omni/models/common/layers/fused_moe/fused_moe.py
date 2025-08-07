@@ -779,7 +779,7 @@ def moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_
     _, h = x.shape
     hidden_states = x.view(-1, h)
     topk_weight = topk_weight.to(x.dtype)
-    max_num_deployed_expert = get_expert_parallel_world_size() * layer.num_experts
+    max_num_deployed_expert = get_expert_parallel_world_size() * w1_scale.shape[0]
     if warm_up:
         # 此处是强制均衡，目标是为了降低峰值内存
         global_rank = get_world_group().rank_in_group
@@ -791,8 +791,6 @@ def moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_
     else:
         topk_ids = topk_ids.int()
 
-    # if ENV.use_omni_planner and layer.moe_layer_idx < 58:
-    #     max_num_deployed_expert = layer.planner.get_max_num_deployed_expert_per_rank() * get_world_group().world_size
 
     expert_range = [0, max_num_deployed_expert]
     expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
@@ -842,6 +840,10 @@ def moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_
         per_token_scales=gathered_pertoken_scale
     )
     group_list = tokens_per_local_expert.to(torch.int64)
+
+    if model_extra_config.operator_opt_config.use_omni_placement:
+        layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
+
     if w1_bias is not None and w2_bias is not None:
         hidden_states_ordered_by_experts = gmm_expert_w4a8(hidden_states_sorted_by_experts,
                                                            tokens_per_local_expert.to(torch.int64),
@@ -1077,7 +1079,8 @@ def fused_experts_w4a8_moe_dispatch_combine(layer: torch.nn.Module,
 
         group_list = expert_token_nums.to(torch.int64)
 
-        group_list = group_list[:len(w1)] #适配到冗余以及非冗余层, #ENABLE_OMNI_PLANNER
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
 
         # cal experts
         weight1_3 = w1
