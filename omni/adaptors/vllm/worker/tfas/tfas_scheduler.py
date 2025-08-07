@@ -52,7 +52,7 @@ class TFASScheduler(Scheduler):
 
         # 从字典中读取配置
         self.tfas_adjust_param = tfas_config["adjust_param"]
-        self.tfas_waiting_time_out = 20
+        self.tfas_waiting_time_out = 60
         self.tfas_token_budget = tfas_config["token_budget"]
 
 
@@ -106,6 +106,8 @@ class TFASScheduler(Scheduler):
                 req_in_waiting_queue * self.tfas_adjust_param
             ) * 1024
         )
+        alpha = 0.9
+        bound2 = int(alpha*bound2)
         return max(bound1, bound2)
 
     def _length_sort_time_decay(self, now_time: float, request: Request) -> int:
