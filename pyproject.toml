@@ -25,6 +25,8 @@ npu = "omni.adaptors.vllm.platform:register"
 [project.entry-points."vllm.general_plugins"]
 npu_optimized_models = "omni.models:register_model"
 kv_connectors = "omni.accelerators.pd:register"
+tool_parsers = "omni.adaptors.vllm.entrypoints.openai.tool_parsers:register_tool"
+reasoning = "omni.adaptors.vllm.reasoning:register_reasoning"
 
 [tool.setuptools.packages.find]
 include = ["omni*"]
