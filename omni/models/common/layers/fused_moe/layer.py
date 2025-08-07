@@ -484,12 +484,14 @@ class FusedMoE(torch.nn.Module):
             return
 
         # Case weight scales and zero_points
-        if ("scale" in weight_name or "zero" in weight_name or "offset" in weight_name):
+        if ("scale" in weight_name or "zero" in weight_name or "offset" in weight_name or "bias" in weight_name):
             # load the weight scales and zp based on the quantization scheme
             # supported weight scales/zp can be found in
             # FusedMoeWeightScaleSupported
             quant_method = getattr(param, "quant_method", None)
             if quant_method == FusedMoeWeightScaleSupported.CHANNEL.value:
+                if "int4_scale" in weight_name:
+                    shard_dim = 1
                 self._load_per_channel_weight_scale(
                     shard_id=shard_id,
                     shard_dim=shard_dim,
@@ -497,6 +499,9 @@ class FusedMoE(torch.nn.Module):
                     expert_data=expert_data,
                     tp_rank=tp_rank)
             elif quant_method == FusedMoeWeightScaleSupported.GROUP.value:
+                shard_dim = 1
+                if "bias" in weight_name:
+                    shard_dim = 0
                 self._load_model_weight_or_group_weight_scale(
                     shard_id=shard_id,
                     shard_dim=shard_dim,

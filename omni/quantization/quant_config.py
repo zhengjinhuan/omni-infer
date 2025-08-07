@@ -18,7 +18,8 @@
 # By using quantization case, this file is called before worker patch achieve,
 
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, cast
+from pydantic import BaseModel
 
 import torch
 from vllm.distributed import get_tensor_model_parallel_rank
@@ -41,17 +42,27 @@ from omni.adaptors.vllm.utils import ASCEND_QUATIZATION_METHOD
 from .quantizer import AscendQuantizer
 
 from vllm.attention.backends.abstract import AttentionMetadata
+from .compressed_tensors.compressed_tensors_linear import AscendCompressedTensorsW8A8Int8LinearMethod
+from .compressed_tensors.compressed_tensors_moe import AscendCompressedTensorsW8A8Int8MoEMethod, \
+    AscendCompressedTensorsW4A8Int8MoEMethod
+from compressed_tensors.quantization import QuantizationArgs, QuantizationStrategy
+from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
+    find_matched_target, is_activation_quantization_format,
+    should_ignore_layer)
+from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsLinearMethod, \
+    CompressedTensorsKVCacheMethod
+from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsConfig
 
 @register_quantization_config(ASCEND_QUATIZATION_METHOD)
-class AscendQuantConfig(QuantizationConfig):
+class AscendQuantConfig(CompressedTensorsConfig):
     """Config class for Ascend
     
     This class is a general class that parse quantization configs
     that are supported on ascend hardware.
     """
 
-    def __init__(self, quant_config: Dict[str, Any]):
-        super().__init__()
+    def __init__(self, quant_config: Dict[str, Any], **kwargs):
+        super().__init__(**kwargs)
         self.quant_description = quant_config
 
     def __repr__(self) -> str:
@@ -75,8 +86,45 @@ class AscendQuantConfig(QuantizationConfig):
         return ["quant_model_description.json"]
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> "AscendQuantConfig":
-        return cls(config)
+    def from_config(cls, config: Dict[str, Any]) -> "CompressedTensorsConfig":
+        cls.quant_description = config
+        target_scheme_map: Dict[str, Any] = dict()
+        ignore = cast(List[str], config.get("ignore"))
+        quant_format = cast(str, config.get("format"))
+
+        # The quant_config has multiple config_groups, each containing
+        # an input_activations key with details about how the activations are
+        # quantized, a weights key indicating how the weights are quantized,
+        # and a list of targets under the `targets` key, dictating which
+        # layers are impacted by the quantization details. The quantization
+        # details follow the structure defined by the QuantizationArgs
+        # pydantic model, which is used to verify the structure of the
+        # quant_config and also store the details for later use.
+        for _, quant_config in config["config_groups"].items():
+            targets = quant_config.get("targets")
+            for target in targets:
+                target_scheme_map[target] = {}
+                # adapt: do not validate parameters
+                module_num_bits = quant_config.get("weights").get("num_bits")
+                quant_config["weights"]["num_bits"] = 0
+                target_scheme_map[target][
+                    "weights"] = QuantizationArgs.parse_obj(quant_config.get("weights"))
+                quant_config["weights"]["num_bits"] = module_num_bits
+                target_scheme_map[target]["weights"].num_bits = module_num_bits
+                try:
+                    target_scheme_map[target][
+                        "input_activations"] = QuantizationArgs.parse_obj(
+                        quant_config.get("input_activations"))
+                except Exception:
+                    target_scheme_map[target]["input_activations"] = None
+
+        return cls(quant_config=config,
+                   target_scheme_map=target_scheme_map,
+                   ignore=ignore,
+                   quant_format=quant_format,
+                   kv_cache_scheme=config.get("kv_cache_scheme"),
+                   sparsity_scheme_map=None,
+                   sparsity_ignore_list=None)
 
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg,
@@ -84,6 +132,70 @@ class AscendQuantConfig(QuantizationConfig):
         if torch.npu.is_available():
             return ASCEND_QUATIZATION_METHOD
         return None
+
+    def _get_weight_num_bits(self,
+                             layer_name: str,
+                             weight_quant: BaseModel) -> bool:
+        if isinstance(weight_quant.num_bits, dict):
+            for module, module_num_bits in weight_quant.num_bits.items():
+                if module in layer_name:
+                    return module_num_bits
+            raise ValueError(
+                f"weight name mismatch, please check weights num_bits in config.json and model weight name. layer_name={layer_name}")
+
+        else:
+            return weight_quant.num_bits
+
+    def _is_dynamic_token_w8a8(self,
+                               weight_quant: BaseModel,
+                               input_quant: BaseModel,
+                               weight_num_bits: int) -> bool:
+        is_8_bits = weight_num_bits == input_quant.num_bits == 8
+        weight_strategy = (
+                weight_quant.strategy == QuantizationStrategy.TENSOR.value
+                or weight_quant.strategy == QuantizationStrategy.CHANNEL.value
+                or weight_quant.strategy == QuantizationStrategy.GROUP.value)
+        is_token = (weight_strategy and input_quant.strategy
+                    == QuantizationStrategy.TOKEN.value)
+        is_dynamic = not weight_quant.dynamic and input_quant.dynamic
+
+        # Both symmetric and asymmetric input quantization supported.
+        # Only symmetric weight quantization supported.
+        return is_8_bits and is_token and weight_quant.symmetric and is_dynamic
+
+    def _is_dynamic_token_w4a8(self,
+                               weight_quant: BaseModel,
+                               input_quant: BaseModel,
+                               weight_num_bits: int) -> bool:
+        is_w4a8_bits = (weight_num_bits == 4) and (input_quant.num_bits == 8)
+        weight_strategy = (
+                weight_quant.strategy == QuantizationStrategy.TENSOR.value
+                or weight_quant.strategy == QuantizationStrategy.CHANNEL.value
+                or weight_quant.strategy == QuantizationStrategy.GROUP.value)
+        is_token = (weight_strategy and input_quant.strategy
+                    == QuantizationStrategy.TOKEN.value)
+        is_dynamic = not weight_quant.dynamic and input_quant.dynamic
+
+        # Both symmetric and asymmetric input quantization supported.
+        # Only symmetric weight quantization supported.
+        return is_w4a8_bits and is_token and weight_quant.symmetric and is_dynamic
+
+    def get_moe_method(self, prefix):
+        # TODO: @dsikka: refactor this to use schemes as other kernels
+        # are supported + check if the layer is being ignored.
+        weight_quant = self.target_scheme_map["Linear"].get("weights")
+        input_quant = self.target_scheme_map["Linear"].get(
+            "input_activations")
+
+        weight_num_bits = self._get_weight_num_bits("mlp.experts", weight_quant)
+        if self._is_dynamic_token_w8a8(weight_quant, input_quant, weight_num_bits):
+            return AscendFusedMoEMethod(self, prefix, self.packed_modules_mapping)
+            # return AscendCompressedTensorsW8A8Int8MoEMethod()
+        elif self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
+            return AscendCompressedTensorsW4A8Int8MoEMethod(self)
+        else:
+            raise RuntimeError(
+                f"Unsupported FusedMoe scheme: {weight_quant}, {input_quant}")
 
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
@@ -96,8 +208,14 @@ class AscendQuantConfig(QuantizationConfig):
             self.quant_description['fa_quant_type'] is not None:
             return AscendKVCacheMethod(self, prefix)
         elif isinstance(layer, FusedMoE):
-            return AscendFusedMoEMethod(self, prefix,
-                                        self.packed_modules_mapping)
+            moe_method = self.get_moe_method(prefix)
+            if isinstance(moe_method, AscendFusedMoEMethod):
+                layer.num_bits = 8
+            elif isinstance(moe_method, AscendCompressedTensorsW4A8Int8MoEMethod):
+                layer.num_bits = 4
+            else:
+                layer.num_bits = 0
+            return moe_method
         return None
 
     def get_scaled_act_names(self) -> List[str]:

@@ -106,7 +106,7 @@ class AscendMLABackend(AttentionBackend):
         layer_kv_cache_nope = torch.zeros(
                         kv_cache_shape[:-2] +
                         (1, model_config.hf_config.kv_lora_rank, ),
-                        dtype=dtype,
+                        dtype=torch.int8 if model_extra_config.operator_opt_config.use_faquant else dtype,
                         pin_memory=True,
                         device=device)
         layer_kv_cache_pe = torch.zeros(
@@ -617,8 +617,10 @@ class AscendMLAImpl(MLAAttentionImpl):
         q_b_proj: ColumnParallelLinear,
         q_a_proj: ReplicatedLinear,
         prefix: str = "",
+        layer_idx: int = -1,
         **kwargs,
     ) -> None:
+        self.layer_idx = layer_idx
         self.num_heads = num_heads
         self.head_size = head_size
         self.num_kv_heads = num_kv_heads
@@ -674,7 +676,8 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.scale = scale
         self.q_a_proj = q_a_proj
         self.kv_scale = None
-        self.use_faquant = False
+        self.use_faquant = model_extra_config.operator_opt_config.use_faquant
+        self.use_mlaprolog = model_extra_config.operator_opt_config.use_mlaprolog
         kv_b_proj_weight = self.kv_b_proj.weight.T
 
         expected_shape = (
@@ -704,6 +707,14 @@ class AscendMLAImpl(MLAAttentionImpl):
             self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
             torch._dynamo.mark_static(self.norm_res[batch_size])
             torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
+
+        self.kv_scale_reci_tile = None
+        if self.use_mlaprolog:
+            self.q_b_proj.weight_scale.data = self.q_b_proj.weight_scale.data.to(torch.float)
+            self.q_a_proj.weight_scale.data = self.q_a_proj.weight_scale.data.to(torch.float)
+            self.kv_a_proj_with_mqa.weight_scale.data = self.kv_a_proj_with_mqa.weight_scale.data.to(torch.float)
+        if self.use_faquant:
+            self.load_kv_cache_scale(model_extra_config.operator_opt_config.quantization_param_path)
 
     def forward(
         self,
@@ -779,7 +790,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                 kv_cache[1],
                 kv_cache[0],
                 k_rope_scale=None,
-                c_kv_scale=torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(-1) if self.use_faquant else None,
+                c_kv_scale=self.kv_scale_reci_tile,
                 k_rope_offset=None, c_kv_offset=None,
                 epsilon=self.kv_a_layernorm.variance_epsilon,
                 cache_mode="PA_NZ",
@@ -809,7 +820,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                 prefill_metadata.seq_kvlen_group)
             ):
                 if prefill_metadata.kv_index_list and kv_cache is not None and isinstance(kv_cache, Tuple) and\
-                        kv_cache[0].numel() > 0:
+                        kv_cache[0].numel() > 0 and not self.use_faquant:
                     # adapt nz
                     block_num, block_size, head_size, _ = kv_cache[0].shape
                     kv_cache_a = (kv_cache[0]
@@ -880,8 +891,14 @@ class AscendMLAImpl(MLAAttentionImpl):
             q_len = 1
             if model_extra_config.operator_opt_config.use_mlaprolog:
                 block_num, block_size, head_size, _ = key_cache.shape
-                bsz, _ = hidden_states.view(-1, 7168).shape
-                hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
+
+                if isinstance(hidden_states, Dict):
+                    hidden_states_int8 = hidden_states["x_int8"]
+                    pertoken_scale = hidden_states["pertoken_scale"]
+                else:
+                    hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
+                bsz, _ = hidden_states_int8.view(-1, 7168).shape
+
                 cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
                 cache_index = attn_metadata.slot_mapping.view(bsz, -1)
 
@@ -895,7 +912,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                     dequant_scale_w_dq=self.q_a_proj.weight_scale.view(1, -1),
                     dequant_scale_w_uq_qr=self.q_b_proj.weight_scale.view(1, -1),
                     dequant_scale_w_dkv_kr=self.kv_a_proj_with_mqa.weight_scale.view(1, -1),
-                    quant_scale_ckv=torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(1, -1) if self.use_faquant else None,
+                    quant_scale_ckv=self.kv_scale_reci_tile,
                     quant_scale_ckr=None,
                     smooth_scales_cq=None,
                     rmsnorm_epsilon_cq=self.q_a_layernorm.variance_epsilon,
@@ -980,7 +997,10 @@ class AscendMLAImpl(MLAAttentionImpl):
                     q_nope = q_nope.view(bsz, self.num_heads, self.kv_lora_rank)
                     q_pe = q_pe.view(bsz, self.num_heads, -1)
 
-            bsz, _, q_dim = q_nope.size()
+            
+            if not self.use_mlaprolog:
+                bsz, _, q_dim = q_nope.size()
+
             input_layout = "TND_NTD" if model_extra_config.operator_opt_config.use_a3_high_performance_cann else "TND"
             # FIA super kernel wait for support
             if False and model_extra_config.operator_opt_config.use_super_kernel:
@@ -1009,29 +1029,65 @@ class AscendMLAImpl(MLAAttentionImpl):
                     output, _ = self.o_proj.forward(attn_output)
             else:
                 if self.enable_graph_mode:
-                    attn_output, _ = tng.ops.npu_fused_infer_attention_score(
+                    if self.use_faquant:
+                        attn_output, _ = tng.ops.npu_fused_infer_attention_v2(
                             q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                            num_heads=self.num_heads,
+                            dequant_scale_query=dequant_scale_q_nope.view(-1, self.num_heads),
+                            dequant_scale_key=self.kv_scale,
+                            dequant_scale_value=self.kv_scale,
                             num_key_value_heads=1, input_layout=input_layout,
-                            scale=self.scale,
-                            antiquant_mode=0, antiquant_scale=None,
+                            num_query_heads=self.num_heads,
+                            softmax_scale=self.scale,
+                            sparse_mode=0,
+                            query_quant_mode=3,
                             block_table=attn_metadata.decode.block_table,
                             block_size=128,
-                            actual_seq_lengths=self.actual_seq_lengths[bsz],
-                            actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
-                            )
+                            actual_seq_qlen=self.actual_seq_lengths[bsz],
+                            actual_seq_kvlen=attn_metadata.decode.seq_lens,
+                            return_softmax_lse=False,
+                        )
+                    else:
+                        attn_output, _ = tng.ops.npu_fused_infer_attention_score(
+                                q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                                num_heads=self.num_heads,
+                                num_key_value_heads=1, input_layout=input_layout,
+                                scale=self.scale,
+                                antiquant_mode=0, antiquant_scale=None,
+                                block_table=attn_metadata.decode.block_table,
+                                block_size=128,
+                                actual_seq_lengths=self.actual_seq_lengths[bsz],
+                                actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                                )
                 else:
-                    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                    if self.use_faquant:
+                        attn_output, _ = torch_npu.npu_fused_infer_attention_v2(
                             q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                            num_heads=self.num_heads,
+                            dequant_scale_query=dequant_scale_q_nope.view(-1, self.num_heads),
+                            dequant_scale_key=self.kv_scale,
+                            dequant_scale_value=self.kv_scale,
                             num_key_value_heads=1, input_layout=input_layout,
-                            scale=self.scale,
-                            antiquant_mode=0, antiquant_scale=None,
+                            num_query_heads=self.num_heads,
+                            softmax_scale=self.scale,
+                            sparse_mode=0,
+                            query_quant_mode=3,
                             block_table=attn_metadata.decode.block_table,
                             block_size=128,
-                            actual_seq_lengths=self.actual_seq_lengths[bsz],
-                            actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
-                            )
+                            actual_seq_qlen=self.actual_seq_lengths[bsz],
+                            actual_seq_kvlen=attn_metadata.decode.seq_lens,
+                            return_softmax_lse=False,
+                        )
+                    else:
+                        attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                                q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
+                                num_heads=self.num_heads,
+                                num_key_value_heads=1, input_layout=input_layout,
+                                scale=self.scale,
+                                antiquant_mode=0, antiquant_scale=None,
+                                block_table=attn_metadata.decode.block_table,
+                                block_size=128,
+                                actual_seq_lengths=self.actual_seq_lengths[bsz],
+                                actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
+                                )
 
                 # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
                 if model_extra_config.operator_opt_config.use_a3_high_performance_cann:
@@ -1134,3 +1190,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                 -1, self.num_heads * self.v_head_dim)
             output, _ = self.o_proj.forward(attn_output)
         return output
+
+    def load_kv_cache_scale(self, quantization_param_path):
+        self.kv_scale = torch.load(quantization_param_path + f'/quant_parameters_{self.layer_idx}.pth')['k_cache_quantizer.scale'].npu()
+        self.kv_scale_reci_tile = torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(1, -1)
