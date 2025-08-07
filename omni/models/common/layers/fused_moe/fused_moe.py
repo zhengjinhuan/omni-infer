@@ -677,18 +677,14 @@ def gmm_expert_w4a8(x, expert_tokens, w1, w2, w1_scale, w2_scale, w1_bias=None, 
                                            activation_quant_offset=None, split_item=3, group_type=0,
                                            group_list_type=1, act_type=0, output_dtype=torch.bfloat16)[0]
 
-    if model_extra_config.operator_opt_config.use_dequant_swiglu_quant:
-        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
-        pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
-        intermediate_h, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(mm1_mm3, weight_scale=fake_scale,
-                                                                            activation_scale=pertoken_scale,
-                                                                            bias=None, quant_scale=None,
-                                                                            quant_offset=None,
-                                                                            group_index=expert_tokens,
-                                                                            activate_left=True, quant_mode=1)
-    else:
-        intermediate_h = torch_npu.npu_swiglu(mm1_mm3)
-        intermediate_h, pertoken_scale = torch_npu.npu_dynamic_quant(intermediate_h)
+    fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
+    pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
+    intermediate_h, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(mm1_mm3, weight_scale=fake_scale,
+                                                                        activation_scale=pertoken_scale,
+                                                                        bias=None, quant_scale=None,
+                                                                        quant_offset=None,
+                                                                        group_index=expert_tokens,
+                                                                        activate_left=True, quant_mode=1)
 
     if pertoken_scale.dim() > 1:
         inter_size = intermediate_h.size(-1)
@@ -846,13 +842,6 @@ def moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_
         per_token_scales=gathered_pertoken_scale
     )
     group_list = tokens_per_local_expert.to(torch.int64)
-    # if ENV.use_omni_planner and layer.planner.enable_dump and layer.moe_layer_idx < 58:
-    #     if is_prefill:
-    #         layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-    #     else:
-    #         with tng.scope.npu_stream_switch('22'):
-    #             layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-
     if w1_bias is not None and w2_bias is not None:
         hidden_states_ordered_by_experts = gmm_expert_w4a8(hidden_states_sorted_by_experts,
                                                            tokens_per_local_expert.to(torch.int64),
@@ -875,6 +864,7 @@ def moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weight, w1, w2, w1_scale, w2_
     dist.all_to_all_single(gathered_tokens, new_x, input_splits, output_splits)
 
     return hidden_states, gathered_tokens, topk_weight, expanded_row_idx
+
 
 def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_tokens, act_dtype, quant_mode,
                              dynamic_scale=None):
@@ -902,14 +892,9 @@ def moe_expert_quant_farword(sorted_tokens, w1, w2, w1_scale, w2_scale, expert_t
 
     return out
 
-def moe_expert_quant_forword_w4a8(sorted_tokens, w1, w2, w1_scale, w2_scale, w1_bias, w2_bias, expert_tokens, act_dtype,
-                                  quant_mode, n_routed_experts,
-                                  dynamic_scale=None):
-    # TODO 对比quant_tool 缺少avg_routing功能
-    if quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
-        pertoken_scale = dynamic_scale
-    else:
-        sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_quant(sorted_tokens)
+
+def moe_expert_quant_forward_w4a8(sorted_tokens, w1, w2, w1_scale, w2_scale, w1_bias, w2_bias, expert_tokens, act_dtype):
+    sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_quant(sorted_tokens)
 
     gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=[w1_bias], scale=[w1_scale],
                                                 offset=None, antiquant_scale=None, antiquant_offset=None,
@@ -921,17 +906,13 @@ def moe_expert_quant_forword_w4a8(sorted_tokens, w1, w2, w1_scale, w2_scale, w1_
                                                 tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
                                                               0:], output_dtype=torch.bfloat16)[0]
 
-    if model_extra_config.operator_opt_config.use_dequant_swiglu_quant:
-        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
-        pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
-        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=fake_scale,
-                                                                          activation_scale=pertoken_scale,
-                                                                          bias=None, quant_scale=None,
-                                                                          quant_offset=None, group_index=expert_tokens,
-                                                                          activate_left=True, quant_mode=1)
-    else:
-        gate_up_proj = torch_npu.npu_swiglu(gate_up_proj)
-        gate_up_proj, pertoken_scale = torch_npu.npu_dynamic_quant(gate_up_proj)
+    fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
+    pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
+    gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=fake_scale,
+                                                                      activation_scale=pertoken_scale,
+                                                                      bias=None, quant_scale=None,
+                                                                      quant_offset=None, group_index=expert_tokens,
+                                                                      activate_left=True, quant_mode=1)
 
     out = torch_npu.npu_grouped_matmul([gate_up_proj], [w2], scale=[w2_scale],
                                        per_token_scale=[pertoken_scale], bias=[w2_bias],
@@ -1096,21 +1077,13 @@ def fused_experts_w4a8_moe_dispatch_combine(layer: torch.nn.Module,
 
         group_list = expert_token_nums.to(torch.int64)
 
-        # if ENV.use_omni_planner and layer.planner.enable_dump and layer.moe_layer_idx < 58:
-        #     if is_prefill:
-        #         layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-        #     else:
-        #         with tng.scope.npu_stream_switch('22'):
-        #             layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx+1].add_(group_list[None])
-
         group_list = group_list[:len(w1)] #适配到冗余以及非冗余层, #ENABLE_OMNI_PLANNER
 
         # cal experts
         weight1_3 = w1
         weight2 = w2
-        hidden_states_experts = moe_expert_quant_forword_w4a8(expand_x, weight1_3, weight2, w1_scale, w2_scale, w1_bias, w2_bias,
-                                                            group_list,
-                                                            act_dtype, layer.quant_mode, n_routed_experts, dynamic_scale)
+        hidden_states_experts = moe_expert_quant_forward_w4a8(expand_x, weight1_3, weight2, w1_scale, w2_scale, w1_bias,
+                                                              w2_bias, group_list, act_dtype)
 
         # moeCombine
         kwargs = {

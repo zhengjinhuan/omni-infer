@@ -507,22 +507,18 @@ class DeepseekMoE(nn.Module):
                                                  tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
                                                                0:], output_dtype=torch.bfloat16)[0]
 
-                    if model_extra_config.operator_opt_config.use_dequant_swiglu_quant:
-                        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1,
-                                                                                                        w1_scale.shape[
-                                                                                                            -1])
-                        pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
-                        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj,
-                                                                                          weight_scale=fake_scale,
-                                                                                          activation_scale=pertoken_scale,
-                                                                                          bias=None, quant_scale=None,
-                                                                                          quant_offset=None,
-                                                                                          group_index=group_list,
-                                                                                          activate_left=True,
-                                                                                          quant_mode=1)
-                    else:
-                        gate_up_proj = torch_npu.npu_swiglu(gate_up_proj)
-                        gate_up_proj, pertoken_scale = torch_npu.npu_dynamic_quant(gate_up_proj)
+                    fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1,
+                                                                                                    w1_scale.shape[
+                                                                                                        -1])
+                    pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
+                    gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj,
+                                                                                      weight_scale=fake_scale,
+                                                                                      activation_scale=pertoken_scale,
+                                                                                      bias=None, quant_scale=None,
+                                                                                      quant_offset=None,
+                                                                                      group_index=group_list,
+                                                                                      activate_left=True,
+                                                                                      quant_mode=1)
 
                     hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[w2_scale],
                                                                          per_token_scale=[pertoken_scale],
