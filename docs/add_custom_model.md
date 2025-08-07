@@ -432,25 +432,44 @@ classDiagram
   - 基本通信算子扩展
   如果需要新增通信算子，或为已有的通信算子替换昇腾算子，需要修改`omni/adaptors/vllm/distributed/communicator.py`
 ## 6. 图模式
-在推理框架中可通过命令行参数启用图模式，以 vllm 为例，参数为`--additional_config={'enable_graph_mode': True}`。
-另外，对于使用GE图的场景下，还提供了`GraphCompileConfiguration`类用于图模式配置，如下所示：
+> 在推理框架中可通过命令行参数启用图模式，以 vllm 为例，参数为`--additional_config='{"graph_model_compile_config": {"level":1}}'`，其中level为1表示图模式，level为0表示eager模式 。
+
+新增模型如果想要使能GE图，需要在模型类名上添加@support_torch_compile装饰器，同时需要实现should_use_eager_mode(self, *args, **kwargs)函数，告知框架该模型什么情况下走图模式，什么情况下走eager模式，默认走eager模式。
+
+比如deepseekV3模型，在模型类中添加@support_torch_compile装饰器，并实现should_use_eager_mode(self, *args, **kwargs)函数，如下所示：
+
+```python
+@support_torch_compile
+class DeepseekV3ForCausalLM(nn.Module):
+    
+     def should_use_eager_mode(self, *args, **kwargs):
+            attn_metadata = kwargs.get("attn_metadata", None)
+            if not attn_metadata:
+                return True
+    
+            if isinstance(attn_metadata, dict):
+                attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+    
+            if attn_metadata.prefill:
+                return True
+    
+            return False
+```
+
+如果模型中需要使用静态shape（框架默认已对input、position、kv_cache、attn_metadata做静态shape标记），则需要继承`GraphCompileConfiguration`类，并实现`mark_static_for_graph`方法，该方法中需要对模型中的tensor进行静态标记，如下所示：
 ```python
 class GraphCompileConfiguration:
     """
     When the graph mode is turned on
     you can set the gear or clarify the static shape by inheriting this class to speed up the model running
     """
-
-    def set_dynamic_gears(self, *args, **kwargs):
-        pass
-
-
     def mark_static_for_graph(self, *args, **kwargs):
         torch._dynamo.mark_static(args[0])
         torch._dynamo.mark_static(args[1])
 #模型中需要对特定的tensor做mark static操作时，继承GraphCompileConfiguration类
-class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
+class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
 ```
+
 ## 7. 模型配置
 模型配置独立于推理框架提供的命令行参数、环境变量，当前实现位于`omni/models/common/model_config.py`，
 可以通过环境变量`MODEL_EXTRA_CFG_PATH`来指定json格式的模型配置文件，PD分离场景可以为P/D分别指定不同的配置文件。如下所示：
