@@ -29,12 +29,14 @@ from transformers import PretrainedConfig
 import torch.distributed as dist
 import torchair._contrib.custom_torch_ops
 import torchair as tng
-import numpy as np
 
 from vllm.config import CacheConfig, QuantizationConfig, VllmConfig
 from vllm.compilation.decorators import support_torch_compile
 from vllm.attention import Attention, AttentionMetadata
-from vllm.distributed import (divide, get_pp_group,
+from vllm.distributed import (divide, 
+                              get_pp_group,
+                              get_ep_group,
+                              get_dp_group,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_gather,
                               get_world_group)
@@ -46,6 +48,7 @@ from vllm.model_executor.layers.linear import (WEIGHT_LOADER_V2_SUPPORTED,
                                                logger)
 from vllm.config import QuantizationConfig
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.utils import (
     PPMissingLayer, is_pp_missing_parameter, make_layers, make_empty_intermediate_tensors_factory)
@@ -66,7 +69,7 @@ from omni.models.common.layers.vocab_parallel_embedding import (
     ParallelLMHead, 
     VocabParallelEmbedding
 )
-from omni.models.common.layers.logits_processor import LogitsProcessor
+
 from omni.models.common.layers.linear import (
     MergedReplicatedLinear,
     RowParallelLinearWithReduceScatter,
@@ -79,20 +82,19 @@ from omni.adaptors.vllm.distributed.communication_op import (
     reduce_scatter_round_pipeline, all_gather_round_pipeline,
     all_to_all_local, reduce_scatter_cross)
 from omni.adaptors.vllm.distributed.parallel_state import (
-    get_data_parallel_rank, get_data_parallel_world_size, get_dp_group, get_npu_device_count,
-     get_local_group_size, get_local_group_rank,
-    get_round_cross_group_from_list,
-    get_expert_parallel_rank, get_expert_parallel_world_size)
+    get_npu_device_count,
+    get_local_group_size, 
+    get_local_group_rank,
+    get_round_cross_group_from_list
+)
 
-from omni.models.common.layers.fused_moe.layer import FusedMoE
-from omni.models.common.layers.logits_processor import _prune_hidden_states
+from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
-from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 
 
 """MLP 模块激活拆分长度，按64G显存拆分，需要根据序列长度以及性能确认最佳拆分长度"""
 SEQ_SPLIT_LENGTH = 4096
-SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_dispatch_combine else 256
+SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_moe_all_to_all else 256
 KVCACHE_NZ_DIM = 16
 """stream name"""
 STREAM_TOPK_COMPUTE = 'topk_compute'
@@ -432,8 +434,8 @@ class ParallelDeepseekMLP(nn.Module):
             self.tp_size = get_local_group_size()
             self.tp_rank = get_local_group_rank()
         elif tp_parallel == "global":
-            self.tp_size = get_expert_parallel_world_size()
-            self.tp_rank = get_expert_parallel_rank()
+            self.tp_size = get_ep_group().world_size
+            self.tp_rank = get_ep_group().rank_in_group
         elif tp_parallel == "no_tp":
             self.tp_size = 1
             self.tp_rank = 0
@@ -584,7 +586,7 @@ class DeepseekMoE(nn.Module):
             prefix: str = "",
     ):
         super().__init__()
-        self.ep_size = get_expert_parallel_world_size()
+        self.ep_size = get_ep_group().world_size
         self.routed_scaling_factor = config.routed_scaling_factor
         self.n_shared_experts = config.n_shared_experts
         self.n_total_experts = config.n_routed_experts
@@ -674,6 +676,10 @@ class DeepseekMoE(nn.Module):
                                                                 self.experts.e_score_correction_bias,
                                                                 self.routed_scaling_factor,
                                                                 layer=self.experts)
+            topk_ids = self.experts.apply_expert_load_balance(
+                topk_ids=topk_ids, 
+                best_topk_ids=attn_metadata.decode.best_topk if attn_metadata is not None and attn_metadata.decode is not None else None
+            )
             if attn_metadata is not None and attn_metadata.decode is not None:
                 actual_batch_mask = attn_metadata.decode.mc2_mask \
                                                         .to(torch.int32).view(-1, 1) \
@@ -801,7 +807,7 @@ class DeepseekMoE(nn.Module):
     def forward_prefill_pd_seperate(self, hidden_states: torch.Tensor, residual: torch.Tensor,
                                     attn_metadata: AttentionMetadata, layer_id: int) -> torch.Tensor:
         MULTISTREAM_THRESHOLD = 1200
-        GMM_CHUNK_SIZE = MULTISTREAM_THRESHOLD * get_expert_parallel_world_size()
+        GMM_CHUNK_SIZE = MULTISTREAM_THRESHOLD * get_ep_group().world_size
         enable_prefill_moe_multi_stream = model_extra_config.operator_opt_config.prefill_moe_multi_stream and hidden_states.shape[0] <= MULTISTREAM_THRESHOLD
         enable_prefill_pipeline_comm = model_extra_config.operator_opt_config.prefill_enable_pipeline_comm and hidden_states.shape[0] <= MULTISTREAM_THRESHOLD
         hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
@@ -832,6 +838,10 @@ class DeepseekMoE(nn.Module):
                                                             self.routed_scaling_factor,
                                                             layer=self.experts
                                                             )
+        topk_ids = self.experts.apply_expert_load_balance(
+            topk_ids=topk_ids, 
+            best_topk_ids=attn_metadata.decode.best_topk if attn_metadata is not None and attn_metadata.decode is not None else None
+        )
         
         topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
         topk_all = all_gather_world(topk_cat, idx=1, dim=0)
@@ -918,8 +928,10 @@ class DeepseekMoE(nn.Module):
                                                                 self.experts.e_score_correction_bias,
                                                                 self.routed_scaling_factor,
                                                                 layer=self.experts)
-            if not is_prefill and model_extra_config.operator_opt_config.best_ep:
-                topk_ids = attn_metadata.decode.best_topk
+            topk_ids = self.experts.apply_expert_load_balance(
+                topk_ids=topk_ids, 
+                best_topk_ids=attn_metadata.decode.best_topk if attn_metadata is not None and attn_metadata.decode is not None else None
+            )
 
             topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
             topk_all = all_gather_two_stage(topk_cat, idx=1, dim=0)
@@ -943,14 +955,17 @@ class DeepseekMoE(nn.Module):
                                                                         self.routed_scaling_factor,
                                                                         layer=self.experts,
                                                                     )
+                    topk_ids = self.experts.apply_expert_load_balance(
+                        topk_ids=topk_ids, 
+                        best_topk_ids=attn_metadata.decode.best_topk if attn_metadata is not None and attn_metadata.decode is not None else None
+                    )
                     if attn_metadata is not None and attn_metadata.decode is not None:
                         actual_batch_mask = attn_metadata.decode.mc2_mask \
                                                                 .to(torch.int32).view(-1, 1) \
                                                                 .repeat(1, self.experts.top_k)
                         topk_ids = actual_batch_mask * topk_ids + (1 - actual_batch_mask) * self.n_total_experts
-                    if model_extra_config.operator_opt_config.best_ep:
-                        topk_ids = attn_metadata.decode.best_topk
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         pertoken_scale = tng.scope.npu_wait_tensor(pertoken_scale, pertoken_scale)
                         topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
 
@@ -960,12 +975,12 @@ class DeepseekMoE(nn.Module):
                         shared_output, _ = self.shared_experts(hidden_states, None, attn_metadata)
 
                 with tng.scope.npu_stream_switch('23'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         topk_cat = tng.scope.npu_wait_tensor(topk_cat, topk_cat)
                         topk_all = all_gather_two_stage(topk_cat, idx=1, dim=0, reverse=True)
 
                 with tng.scope.npu_stream_switch('22'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         topk_all = tng.scope.npu_wait_tensor(topk_all, topk_all)
                         if model_extra_config.operator_opt_config.enable_round_pipeline_comm:
                             pass
@@ -994,13 +1009,10 @@ class DeepseekMoE(nn.Module):
                                                                     self.routed_scaling_factor,
                                                                     layer=self.experts,
                                                                 	)
-                # if attn_metadata is not None and attn_metadata.decode is not None:
-                #     actual_batch_mask = attn_metadata.decode.mc2_mask \
-                #                                             .to(torch.int32).view(-1, 1) \
-                #                                             .repeat(1, self.experts.top_k)
-                #     topk_ids = actual_batch_mask * topk_ids + (1 - actual_batch_mask) * self.n_total_experts
-                if model_extra_config.operator_opt_config.best_ep:
-                    topk_ids = attn_metadata.decode.best_topk
+                topk_ids = self.experts.apply_expert_load_balance(
+                    topk_ids=topk_ids, 
+                    best_topk_ids=attn_metadata.decode.best_topk if attn_metadata is not None and attn_metadata.decode is not None else None
+                )
 
                 if self.n_shared_experts is not None:
                     shared_output, _ = self.shared_experts(hidden_states, None, attn_metadata)
@@ -1110,8 +1122,9 @@ class AscendDeepseekAttention_MLA(nn.Module):
             self.q_a_layernorm = RMSNorm(self.q_lora_rank,
                                          eps=config.rms_norm_eps)
             self.norm_res = {}
-            for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
-                self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
+            if not model_extra_config.operator_opt_config.pd_seperate_prefill:
+                for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
+                    self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
             self.q_b_proj = ColumnParallelLinear(self.q_lora_rank,
                                                  self.num_heads *
                                                  self.qk_head_dim,
@@ -1147,12 +1160,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
                                                 bias=False,
                                                 quant_config=quant_config,
                                                 prefix=f"{prefix}.o_proj")
-        elif model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-            self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
-                                           hidden_size,
-                                           bias=False,
-                                           quant_config=quant_config,
-                                           prefix=f"{prefix}.o_proj")
         else:
             self.o_proj = RowParallelLinearWithReduceScatter(self.num_heads * self.v_head_dim,
                                                              self.hidden_size,
@@ -1473,15 +1480,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
                 attn_output = all_to_all_local(attn_output, idx=0)
                 output, _ = self.o_proj.forward(attn_output)
                 output = reduce_scatter_cross(output, idx=0)
-            elif model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-                attn_output = attn_output.reshape(-1)
-                all_to_all_attn_output = torch.empty([sum(prefill_metadata.seq_lens) * self.num_local_heads * self.qk_nope_head_dim],
-                                                    dtype=attn_output.dtype, device="npu")
-                dist.all_to_all_single(all_to_all_attn_output, attn_output)
-                attn_output = all_to_all_attn_output.view(self.tp_size, sum(prefill_metadata.seq_lens) // self.tp_size,
-                                                        self.num_local_heads * self.qk_nope_head_dim) \
-                                                    .transpose(0,1).contiguous()
-                output, _ = self.o_proj.forward(attn_output.reshape(sum(prefill_metadata.seq_lens) // self.tp_size, -1))
             else:
                 attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
                 output = self.o_proj.forward(attn_output)[0]
@@ -1633,22 +1631,8 @@ class AscendDeepseekAttention_MLA(nn.Module):
         else:
             attn_output.fill_(0)
 
-        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall and prefill_metadata is not None:
-            attn_output = attn_output.reshape(-1)
-            all_to_all_attn_output = torch.empty(
-                [sum(prefill_metadata.seq_lens) * self.num_local_heads * self.qk_nope_head_dim], dtype=attn_output.dtype,
-                device="npu")
-            dist.all_to_all_single(all_to_all_attn_output,
-                                   attn_output)
-            attn_output = all_to_all_attn_output.view(get_tensor_model_parallel_world_size(),
-                                                      sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(),
-                                                      self.num_local_heads * self.qk_nope_head_dim).transpose(0,
-                                                                                                              1).contiguous()
-            output, _ = self.o_proj.forward(
-                attn_output.reshape(sum(prefill_metadata.seq_lens) // get_tensor_model_parallel_world_size(), -1))
-        else:
-            attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
-            output = self.o_proj.forward(attn_output)[0]
+        attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
+        output = self.o_proj.forward(attn_output)[0]
 
         attn_output = None
         return output
@@ -1878,10 +1862,10 @@ class DeepseekDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
 
-        self.enable_dp_attention = get_data_parallel_world_size() > 1
+        self.enable_dp_attention = get_dp_group().world_size > 1
         if self.enable_dp_attention:
-            self.dp_rank = get_data_parallel_rank()
-            self.dp_size = get_data_parallel_world_size()
+            self.dp_rank = get_dp_group().rank_in_group
+            self.dp_size = get_dp_group().world_size
             self.dp_group = get_dp_group().device_group
         else:
             self.dp_rank = None
@@ -1923,7 +1907,7 @@ class DeepseekDecoderLayer(nn.Module):
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
-        if (model_extra_config.operator_opt_config.prefill_dispatch_combine or model_extra_config.parall_config.dp_size > 1) and is_prefill:
+        if (model_extra_config.operator_opt_config.prefill_moe_all_to_all or model_extra_config.parall_config.dp_size > 1) and is_prefill:
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device="npu")
             local_length = hidden_states.shape[0]
             dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
@@ -2021,10 +2005,10 @@ class DeepseekV3Model(nn.Module):
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
 
-        self.enable_dp_attention = get_data_parallel_world_size() > 1
+        self.enable_dp_attention = get_dp_group().world_size > 1
         if self.enable_dp_attention:
-            self.dp_rank = get_data_parallel_rank()
-            self.dp_size = get_data_parallel_world_size()
+            self.dp_rank = get_dp_group().rank_in_group
+            self.dp_size = get_dp_group().world_size
             self.dp_group = get_dp_group().device_group
 
         self.is_init = False
@@ -2085,9 +2069,10 @@ class DeepseekV3Model(nn.Module):
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
         
         return hidden_states
-    
+
+
 @support_torch_compile
-class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
+class DeepseekV3ForCausalLM(nn.Module):
     
     packed_modules_mapping = {
         "gate_up_proj": ["gate_proj", "up_proj"],
@@ -2111,7 +2096,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             self.model.make_empty_intermediate_tensors)
 
         self.return_hidden_states = True
-        self.input_marked = False
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -2122,17 +2106,18 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             positions: torch.Tensor,
             kv_caches: List[torch.Tensor] = None,
             attn_metadata: AttentionMetadata = None,
-            prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+            selected_indices: Optional[torch.Tensor] = None,
             intermediate_tensors: Optional[IntermediateTensors] = None,
-            inputs_embeds = None
+            inputs_embeds = None,
+            **kwargs
     ) -> Optional[torch.Tensor]:
         hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors)
-
+        
         if attn_metadata is None:
-            logits = self.logits_processor._get_logits(hidden_states[-1:, ...], self.lm_head, None)
+            logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:
-            logits = self.compute_lmhead(self.lm_head, hidden_states, prefill_padding_or_selected_indices)
+            logits = self.compute_lmhead(hidden_states, selected_indices)
 
         if self.return_hidden_states:
             return hidden_states, logits
@@ -2141,19 +2126,16 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
 
     def compute_lmhead(
             self,
-            lm_head: VocabParallelEmbedding,
             hidden_states: torch.Tensor,
-            prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+            selected_indices: Optional[torch.Tensor] = None,
             embedding_bias: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
-        if prefill_padding_or_selected_indices is not None:
-            hidden_states = _prune_hidden_states(hidden_states, prefill_padding_or_selected_indices)
+        if selected_indices is not None:
+            hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+            if hidden_states.shape[0] != selected_indices.shape[0]:
+                hidden_states = hidden_states.index_select(0, selected_indices)
 
-        # Get the logits for the next tokens.
-        if model_extra_config.parall_config.dp_size > 1:
-            logits = self.logits_processor._get_logits_decode(hidden_states, lm_head, embedding_bias)
-        else:
-            logits = self.logits_processor._get_logits(hidden_states, lm_head, embedding_bias)
+        logits = self.lm_head(hidden_states, embedding_bias)
 
         return logits
 
@@ -2278,19 +2260,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             loaded_params.add(name)
         return loaded_params
 
-    def mark_static_for_graph(self, input_ids, positions, attn_metadata, kv_caches):
-        if not self.input_marked:
-            torch._dynamo.mark_static(input_ids)
-            torch._dynamo.mark_static(positions)
-            for i in range(len(kv_caches)):
-                if kv_caches[i][0] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][0])
-                if kv_caches[i][1] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][1])
-            self.input_marked = True
-
     def should_use_eager_mode(self, *args, **kwargs):
-        attn_metadata = None
         attn_metadata = kwargs.get('attn_metadata', None)
         
         if isinstance(attn_metadata, dict):

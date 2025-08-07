@@ -1,36 +1,12 @@
 {
     "model_parallel_config": {
         "dense_mlp_tp_size": 4,
-        "embedding_tp_size": 3,
-        "self_attention_dp_size": 4,
-        "self_attention_tp_size": 5,
-        "mlaprolog_dp_size": 6,
-        "mlaprolog_tp_size": 7,
-        "fa_dp_size": 8,
-        "fa_tp_size": 9,
-        "mlaepilog_dp_size": 10,
-        "mlaepilog_tp_size": 11,
-        "moe_tp_size": 12,
-        "moe_ep_size": 13,
-        "lm_dp_size": 14,
-        "lm_tp_size": 15,
-        "pp_size": 16,
+        "o_proj_tp_size": 1,
         "dp_size": 1
-    },
-    "profiling_config": {
-        "prof_output_path": ".",
-        "prof_dump_enable": false,
-        "perf_cost_enable": false
-    },
-    "precision_diff": {
-        "diff_enable": false,
-        "fx_graph_dump": false,
-        "ge_graph_dump": false,
-        "dump_path": "."
     },
     "operator_optimizition_config": {
         "enable_kv_rmsnorm_rope_cache": false,
-        "prefill_dispatch_combine": false,
+        "prefill_moe_all_to_all": false,
         "enable_node_mlp": true,
         "moe_multi_stream_tune": false,
         "best_ep": false,
@@ -39,18 +15,13 @@
         "two_stage_comm": false,
         "use_chunked_prefill": false,
         "use_w8a8_dynamic_quant": false,
-        "use_copy_blocks_op": false,
-        "fused_experts_v2": false,
         "gmm_nz": true,
-        "moe_dispatch_combine": false,
+        "decode_moe_dispatch_combine": false,
         "use_omni_placement": false,
         "omni_placement_config_path": "../../tests/test_config/config_d.yaml",
-        "enable_fusion_spec": false,
-        "enable_alltoall": false,
         "enable_moe_expert_parallel": true,
         "use_a3_high_performance_cann": false,
         "use_super_kernel": false,
-        "prefill_enable_mla_alltoall": false,
         "use_mlaprolog": false,
         "opt_w2_scale_cast": false,
         "enable_round_pipeline_comm": false,
@@ -62,9 +33,6 @@
         "prefill_enable_mla_alltoall_local": true,
         "prefill_enable_pipeline_comm": true,
         "prefill_mla_multi_stream": false,
-        "enable_dense_local_tp": 1,
-        "decode_gear_list": [
-            16
-        ]
+        "enable_dense_local_tp": 1
     }
 }

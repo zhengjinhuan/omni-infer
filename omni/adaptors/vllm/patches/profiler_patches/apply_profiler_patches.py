@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import logging
 import yaml
+from .utils import safe_print, ip_str, trace_output_directory
 from .prof_wrapper import (torchnpu_prof_wrapper, 
     timer_prof_wrapper, viztracer_prof_wrapper, marker_prof_wrapper)
 import time
@@ -135,17 +136,16 @@ def monkey_patch_request_status():
         self._status = value
         self.waiting_pull_len += 1
         if value == RequestStatus.WAITING_FOR_REMOTE_KVS:
-            print(
+            safe_print(
+                trace_output_directory, 
                 f"<<<Action: Add need pullling sequence;|waiting_pull_len={self.waiting_pull_len} "
                 f"Timestamp:{time.time()}; "
                 f"RequestID:{self.request_id}; "
-                f"Role:{os.getenv('ROLE')}"
+                f"Role:{os.getenv('ROLE')}_{ip_str}"
             )
 
     Request.status = property(status_getter, status_setter)
-
     original_init = Request.__init__
-
     def new_init(self, *args, **kwargs):
         self.waiting_pull_len = 0
         original_init(self, *args, **kwargs)
@@ -154,18 +154,33 @@ def monkey_patch_request_status():
     Request.__init__ = new_init
     print("<<< Monkey patch request status is applied")
 
-# following monkey patch is for recoding the number of output tokens
-def monkey_patch_request_output_collector_init():
-    from vllm.sampling_params import RequestOutputKind
-    from vllm.v1.engine.output_processor import RequestOutputCollector
-    original_init = RequestOutputCollector.__init__
-    def new_init(
-        self, output_kind: RequestOutputKind
-    ) -> None:
-        original_init(self, output_kind)
-        self.token_number_dict = {}
-    RequestOutputCollector.__init__ = new_init
-    print("<<< Monkey patch monkey_patch_request_output_collector_init is applied")
+# following monkey patch is for marking the first token, second token and last token
+def monkey_patch_async_generator_io_logger():
+    from functools import wraps
+    from typing import AsyncGenerator
+    from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+    original_method = OpenAIServingChat.chat_completion_stream_generator
+    @wraps(original_method)
+    async def new_method(self, *args, **kwargs) -> AsyncGenerator:
+        yield_count = 0
+        request_id = args[2] # get request_id
+        async for item in original_method(self, *args, **kwargs):
+            yield_count += 1
+            if yield_count == 1:
+                # First chat_completion_stream_generator yield.
+                pass
+            elif yield_count == 2:
+                # Second chat_completion_stream_generator yield.
+                safe_print(trace_output_directory, f"<<<Action: First decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+            elif yield_count == 3:
+                # Third chat_completion_stream_generator yield.
+                safe_print(trace_output_directory, f"<<<Action: Second decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+            if item == "data: [DONE]\n\n":
+                safe_print(trace_output_directory, f"<<<Action: Finish decode pickle and start response; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+            yield item
+
+    OpenAIServingChat.chat_completion_stream_generator = new_method
+    print("<<< Monkey patch monkey_patch_async_generator_io_logger is applied")
 
 # following monkey patch is for passing raw request_id inside _preprocess_chat function
 def patch_chatcompletionrequest():
@@ -174,13 +189,14 @@ def patch_chatcompletionrequest():
     class PatchedChatCompletionRequest(OriginalChatCompletionRequest):
         raw_request_id: Optional[str] = None
     ChatCompletionRequest = PatchedChatCompletionRequest
+    print("<<< Monkey patch patch_chatcompletionrequest is applied")
 
 profiling_namelist = os.getenv("PROFILING_NAMELIST", None)
 if os.path.isfile(profiling_namelist):
     apply_patches(profiling_namelist)
     monkey_patch_request_status()
-    monkey_patch_request_output_collector_init()
     patch_chatcompletionrequest()
+    monkey_patch_async_generator_io_logger()
 else:
     logger.error(f"'{profiling_namelist}' does not exist.")
     raise FileNotFoundError(f"'{profiling_namelist}' does not exist.")

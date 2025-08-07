@@ -124,7 +124,6 @@
     run_vllm_server_prefill_cmd: |
       #!/bin/bash
       . ~/.bashrc
-      HCCL_BUFFSIZE=500
       tp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((tp++))
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')

@@ -3,16 +3,14 @@ from abc import abstractmethod
 from typing import Optional
 from vllm.model_executor.layers.quantization.base_config import (QuantizationConfig, 
                                                                  QuantizeMethodBase)
-from omni.models.common.layers.linear import (MergedColumnParallelFlashCommLinear,
-                                                          RowParallelFlashCommLinear)
 from vllm.model_executor.layers.activation import SiluAndMul
-
-from omni.adaptors.vllm.distributed.communication_op import tensor_model_parallel_reduce_scatter
 from vllm.distributed import (
     tensor_model_parallel_all_reduce,
-    tensor_model_parallel_all_gather
+    tensor_model_parallel_all_gather,
+    tensor_model_parallel_reduce_scatter
 )
 
+from omni.models.common.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
 
 class FusedMLPMethodBase(QuantizeMethodBase):
     """Base method for FusedMLP

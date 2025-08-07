@@ -1,22 +1,13 @@
 {
     "model_parallel_config": {
+        "dense_mlp_tp_size": 4,
+        "o_proj_tp_size": 1,
         "dp_size": 288,
         "redundancy_shared_expert_num": 32
     },
-    "profiling_config": {
-        "prof_output_path": ".",
-        "prof_dump_enable": false,
-        "perf_cost_enable": false
-    },
-    "precision_diff": {
-        "diff_enable": false,
-        "fx_graph_dump": false,
-        "ge_graph_dump": false,
-        "dump_path": "."
-    },
     "operator_optimizition_config": {
         "enable_kv_rmsnorm_rope_cache": true,
-        "prefill_dispatch_combine": false,
+        "prefill_moe_all_to_all": false,
         "enable_node_mlp": true,
         "moe_multi_stream_tune": false,
         "best_ep": false,
@@ -26,7 +17,7 @@
         "use_chunked_prefill": false,
         "use_w8a8_dynamic_quant": true,
         "gmm_nz": true,
-        "moe_dispatch_combine": true,
+        "decode_moe_dispatch_combine": true,
         "use_omni_placement": false,
         "omni_placement_config_path": ".",
         "enable_moe_expert_parallel": true,
@@ -36,8 +27,9 @@
         "opt_w2_scale_cast": true,
         "control_accept_rate": -1,
         "enable_mc2_v2": false,
-        "decode_gear_list": [
-            96
-        ]
+        "use_prefetch": true,
+        "expert_gate_up_prefetch": 50,
+        "expert_down_prefetch": 28,
+        "attn_prefetch": 96
     }
 }

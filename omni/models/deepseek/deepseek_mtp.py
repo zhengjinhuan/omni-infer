@@ -4,52 +4,39 @@
 from typing import Iterable, List, Optional, Tuple, Set
 
 import os
-import numpy as np
 import torch
 import torch.nn as nn
-from torch import Tensor
 from vllm.compilation.decorators import support_torch_compile
-from vllm.config import CacheConfig, QuantizationConfig, VllmConfig
+from vllm.config import VllmConfig
 from vllm.attention.backends.abstract import AttentionMetadata
 from vllm.distributed.communication_op import tensor_model_parallel_all_gather
-
-from vllm.model_executor.models.utils import (
-    PPMissingLayer,
-    is_pp_missing_parameter,
-    make_layers,
-    make_empty_intermediate_tensors_factory,
-)
+ 
+from vllm.model_executor.models.utils import is_pp_missing_parameter
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler
-if os.getenv("ASCEND_PLATFORM", "A3")=="A2":
-    from .deepseek_v3_a2 import DeepseekDecoderLayer
-else:
-    from .deepseek_v3 import DeepseekDecoderLayer
-
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
 
-
-
-from transformers import PretrainedConfig
+if os.getenv("ASCEND_PLATFORM", "A3")=="A2":
+    from .deepseek_v3_a2 import DeepseekDecoderLayer
+else:
+    from .deepseek_v3 import DeepseekDecoderLayer
 
 from omni.models.common.layers.layernorm import RMSNorm #zxp: not use
 from omni.models.common.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding
 )
-from omni.models.common.layers.fused_moe.layer import FusedMoE
-from omni.models.common.layers.logits_processor import _prune_hidden_states
-from omni.models.common.layers.logits_processor import LogitsProcessor
+from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
-from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 
 @support_torch_compile
-class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
+class DeepseekV3MTP(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "", layer_index: int = 61, ):
         super().__init__()
         self.config = vllm_config.model_config.hf_config
@@ -95,10 +82,11 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
             kv_caches: List[torch.Tensor],
             attn_metadata: AttentionMetadata,
             previous_hidden_states: torch.Tensor,
-            prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+            selected_indices: Optional[torch.Tensor] = None,
             intermediate_tensors: Optional[IntermediateTensors] = None,
             require_hidden_states: Optional[bool] = False,
-            inputs_embeds = None
+            inputs_embeds = None,
+            **kwargs
     ) -> torch.Tensor:
         tok_embeds = self.enorm(self.get_input_embeddings(input_ids))
         if len(tok_embeds.shape) > 2:
@@ -130,9 +118,9 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
         if attn_metadata is None:
-            logits = self.compute_lmhead(self.shared_head['head'], hidden_states[-1:, ...], None)
+            logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:
-            logits = self.compute_lmhead(self.shared_head['head'], hidden_states, prefill_padding_or_selected_indices)
+            logits = self.compute_lmhead(hidden_states, selected_indices)
 
         if require_hidden_states:
             return logits, hidden_states
@@ -141,19 +129,16 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
 
     def compute_lmhead(
             self,
-            lm_head: VocabParallelEmbedding,
             hidden_states: torch.Tensor,
-            prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+            selected_indices: Optional[torch.Tensor] = None,
             embedding_bias: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
-        if prefill_padding_or_selected_indices is not None:
-            hidden_states = _prune_hidden_states(hidden_states, prefill_padding_or_selected_indices)
-
+        if model_extra_config.parall_config.dp_size <= 1 and selected_indices is not None:
+            hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+            if hidden_states.shape[0] != selected_indices.shape[0]:
+                hidden_states = hidden_states.index_select(0, selected_indices)
         # Get the logits for the next tokens.
-        if model_extra_config.parall_config.dp_size > 1:
-            logits = self.logits_processor._get_logits_decode(hidden_states, lm_head, embedding_bias)
-        else:
-            logits = self.logits_processor._get_logits(hidden_states, lm_head, embedding_bias)
+        logits = self.shared_head["head"](hidden_states, embedding_bias)
         return logits
 
     @property
@@ -284,8 +269,8 @@ class DeepseekV3MTP(nn.Module, GraphCompileConfiguration):
 
 @support_torch_compile
 class DeepseekV3MTPDuo(DeepseekV3MTP):
-    def __init__(self, vm_config: VllmConfig, prefix: str = "", layer_index: int = 62):
-        super().__init__(vllm_config=vm_config,prefix=prefix,layer_index=layer_index)
+    def __init__(self, vllm_config: VllmConfig, prefix: str = "", layer_index: int = 62):
+        super().__init__(vllm_config=vllm_config, prefix=prefix, layer_index=layer_index)
 
     def load_weights(self, weights: Iterable[Tuple[str,
                                                    torch.Tensor]], layer_idx: int = 62) -> Set[str]:
@@ -293,8 +278,8 @@ class DeepseekV3MTPDuo(DeepseekV3MTP):
 
 @support_torch_compile
 class DeepseekV3MTPTres(DeepseekV3MTP):
-    def __init__(self, vm_config: VllmConfig, prefix: str = "", layer_index: int = 63):
-        super().__init__(vllm_config=vm_config, prefix=prefix, layer_index=layer_index)
+    def __init__(self, vllm_config: VllmConfig, prefix: str = "", layer_index: int = 63):
+        super().__init__(vllm_config=vllm_config, prefix=prefix, layer_index=layer_index)
 
     def load_weights(self, weights: Iterable[Tuple[str,
                                                    torch.Tensor]], layer_idx: int = 63) -> Set[str]:
