@@ -1579,7 +1579,7 @@ class AscendDeepseekAttention_MLA(nn.Module):
                 prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
                 prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
 
-                if os.environ["ROLE"] == "decode":
+                if not model_extra_config.operator_opt_config.pd_seperate_prefill:
                     self.kv_b_proj.weight = torch.nn.Parameter(torch.cat((self.W_UK.permute(2,0,1), self.W_UV.transpose(0,1)), dim=-1) \
                                                                     .view(self.kv_lora_rank,-1).T, requires_grad=False)
                     kv = self.kv_b_proj.forward(prefill_kv_a)[0]
