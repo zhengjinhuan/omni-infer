@@ -33,6 +33,7 @@ from transformers import Qwen2Config
 from vllm.forward_context import get_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
+from vllm.compilation.decorators import support_torch_compile
 from vllm.distributed import get_pp_group, get_tp_group, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
@@ -169,6 +170,7 @@ class Qwen2DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.layer_name = f"{prefix}.self_attn.attn"
         # Requires transformers > 4.32.0
         rope_theta = getattr(config, "rope_theta", 1000000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -478,7 +480,7 @@ class Qwen2Model(nn.Module):
             loaded_params.add(name)
         return loaded_params
 
-
+@support_torch_compile
 class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     packed_modules_mapping = {
         "qkv_proj": [
@@ -564,3 +566,11 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
+
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+        return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
