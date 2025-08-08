@@ -23,8 +23,8 @@
     # Global Configuration
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8-fusion"
-    MODEL_LEN_MAX_PREFILL: "32000"
-    MODEL_LEN_MAX_DECODE: "16384"
+    MODEL_LEN_MAX_PREFILL: "65600"
+    MODEL_LEN_MAX_DECODE: "65600"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
     HTTP_PROXY: ""  # Set to your HTTP proxy if needed to download nginx, like "http://your.proxy:port"
@@ -170,16 +170,18 @@
       #!/bin/bash
 
       . ~/.bashrc
+      source /usr/local/Ascend/ascend-toolkit/latest/bin/setenv.bash
       HCCL_BUFFSIZE=500
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
-      GPU_UTIL=0.92
+      EXTRA_ARGS='--max-num-batched-tokens 65600 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
+      GPU_UTIL=0.85
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
+      ADDITIONAL_CONFIG='{"enable_omni_attn": true, "multi_rank_pull_kv": true}'
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
@@ -199,6 +201,7 @@
       fi
 
       # install omni_placement
+      export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
       pip install pybind11
       pip uninstall omni_placement -y
       cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
@@ -228,6 +231,7 @@
         --kv-parallel-size ${KV_PARALLEL_SIZE} \
         --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
+        --additional-config "$ADDITIONAL_CONFIG" \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
@@ -238,6 +242,7 @@
       #!/bin/bash
 
       . ~/.bashrc
+      source /usr/local/Ascend/ascend-toolkit/latest/bin/setenv.bash
       HCCL_BUFFSIZE=1000
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
@@ -257,14 +262,15 @@
           {% endfor %}
       )
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 5'
       GPU_UTIL=0.92
-      ADDITIONAL_CONFIG='{"enable_graph_mode": true, "use_cached_npu_graph": true}'
+      ADDITIONAL_CONFIG='{"enable_graph_mode": true, "use_cached_npu_graph": true, "enable_omni_attn": true, "multi_rank_pull_kv": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
       # install omni_placement
+      export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
       pip install pybind11
       pip uninstall omni_placement -y
       cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
@@ -341,7 +347,7 @@
       bash build.sh
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" --log-file /dev/shm/trace/logs/nginx_error.log --log-level notice --core-num 4 --start-core-index 16
+      bash global_proxy.sh --listen-port "$PROXY_NODE_PORT" --prefill-servers-list "$prefill_result" --decode-servers-list "$decode_result" --log-file /dev/shm/trace/logs/nginx_error.log --log-level notice --core-num 4 --start-core-index 16 --prefill-lb-sdk "least_total_load" --decode-lb-sdk "weighted_least_active"
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -437,8 +443,8 @@
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log && pip install blobfile'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log && pip install blobfile'"
 
   tasks:
     - name: generate container name.

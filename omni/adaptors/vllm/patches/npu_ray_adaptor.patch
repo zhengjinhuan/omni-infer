@@ -22,3 +22,4 @@ index 37cc07bfb..59134c9e3 100644
 +                    torch.npu.set_device(self.worker.device)
 
                  self.compiled_dag_cuda_device_set = True
+
