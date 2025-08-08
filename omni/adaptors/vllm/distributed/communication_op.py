@@ -128,7 +128,7 @@ def reduce_scatter_pipeline(input_: torch.Tensor, idx: int, which_half: int, dty
             with tng.scope.npu_stream_switch('67'):
                 stage1 = stage1.to(torch.bfloat16)
         else:
-            tage1 = stage1.to(torch.bfloat16)
+            stage1 = stage1.to(torch.bfloat16)
 
     stage2_local_rs = get_local_group_from_list(idx).reduce_scatter(stage2)
     if model_extra_config.operator_opt_config.moe_multi_stream_tune:
