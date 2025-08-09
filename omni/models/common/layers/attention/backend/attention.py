@@ -649,16 +649,17 @@ class AscendAttentionBackendImpl(AttentionImpl):
             attn_output = None
             if self.enable_graph_mode:
                 attn_output, _ = tng.ops.npu_fused_infer_attention_score(
-                    query,
+                    torch.transpose(query.view(num_batch, -1, self.num_heads, self.head_size), 1, 2),
                     self.key_cache,
                     self.value_cache,
                     num_heads=self.num_heads,
                     num_key_value_heads=self.num_kv_heads,
-                    input_layout="BSH",
+                    input_layout="BNSD",
                     scale=self.scale,
                     actual_seq_lengths_kv=attn_metadata.seq_lens,
                     block_table=block_tables,
                     block_size=block_size,
+                    inner_precise=1
                 )
             else:
                 attn_output, _ = torch_npu.npu_fused_infer_attention_score(
