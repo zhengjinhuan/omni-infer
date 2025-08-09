@@ -250,7 +250,7 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
             scheme = self.get_scheme(layer=layer, layer_name=prefix)
             layer.scheme = scheme
             return CompressedTensorsLinearMethod(self)
-        elif isinstance(layer, Attention) and \
+        elif isinstance(layer, Attention) and hasattr(self, 'quant_description') and\
             'fa_quant_type' in self.quant_description.keys() and \
             self.quant_description['fa_quant_type'] is not None:
             return CompressedTensorsKVCacheMethod(self)
