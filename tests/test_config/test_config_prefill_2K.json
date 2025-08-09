@@ -53,7 +53,6 @@
         "prefill_enable_mla_alltoall": false,
         "use_mlaprolog": false,
         "use_faquant": false,
-        "use_dequant_swiglu_quant": true,
         "opt_w2_scale_cast": false,
         "control_accept_rate": -1,
         "decode_gear_list": [
