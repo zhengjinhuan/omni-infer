@@ -346,7 +346,11 @@ class DeepseekMoE(nn.Module):
                                          device=current_platform.device_type)
             self.w13_prefetch_size = 70 * 1024 * 1024
             self.w2_prefetch_size = 0 if self.ep_size <= 64 else 14 * 2 * 1024 * 1024
-
+        
+        # fix bug in w4a8 gmm nz
+        self.tuning_config = None  
+        if model_extra_config.operator_opt_config.gmm_nz:
+            self.tuning_config = model_extra_config.operator_opt_config.decode_gear_list[:1]
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         if self.redundancy_shared_expert_num > 0:
@@ -504,8 +508,7 @@ class DeepseekMoE(nn.Module):
                                                  activation_input=None, activation_quant_scale=None,
                                                  activation_quant_offset=None, split_item=3, group_type=0,
                                                  group_list_type=1, act_type=0,
-                                                 tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
-                                                               0:], output_dtype=torch.bfloat16)[0]
+                                                 tuning_config=self.tuning_config, output_dtype=torch.bfloat16)[0]
 
                     fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1,
                                                                                                     w1_scale.shape[
@@ -527,8 +530,7 @@ class DeepseekMoE(nn.Module):
                                                                          output_dtype=act_dtype,
                                                                          group_type=0,
                                                                          group_list_type=1,
-                                                                         tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
-                                                                                       0:])[0]
+                                                                         tuning_config=self.tuning_config)[0]
                 else:
                     raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.num_bits}")
 
