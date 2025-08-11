@@ -23,8 +23,8 @@
     # Global Configuration
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8-fusion"
-    MODEL_LEN_MAX_PREFILL: "33008"
-    MODEL_LEN_MAX_DECODE: "16384"
+    MODEL_LEN_MAX_PREFILL: "65600"
+    MODEL_LEN_MAX_DECODE: "65600"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
     HTTP_PROXY: ""  # Set to your HTTP proxy if needed to download nginx, like "http://your.proxy:port"
@@ -37,8 +37,8 @@
     SCRIPTS_PATH: "/tmp/scripts_path"
 
     #Configuration for lb_sdk in global proxy
-    PREFILL_LB_SDK: "pd_score_balance"
-    DECODE_LB_SDK: "pd_score_balance"
+    PREFILL_LB_SDK: "least_total_load"
+    DECODE_LB_SDK: "weight_least_active"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -180,16 +180,13 @@
       export HCCL_EXEC_TIMEOUT=1800
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
-      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill_2K.json"
-      EXTRA_ARGS='--max-num-batched-tokens 33008 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32'
+      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill_50K.json"
+      EXTRA_ARGS='--max-num-batched-tokens 65600 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
       GPU_UTIL=0.85
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       ADDITIONAL_CONFIG='{"enable_omni_attn": true, "multi_rank_pull_kv": true}'
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-      unset https_proxy
-      unset http_proxy
-      unset proxy
 
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
         export MASTER_NODE_IP=$HOST_IP
@@ -268,16 +265,13 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode_2K.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 22'
+      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode_50K.json"
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 5'
       GPU_UTIL=0.92
       ADDITIONAL_CONFIG='{"enable_graph_mode": true, "use_cached_npu_graph": true, "enable_omni_attn": true, "multi_rank_pull_kv": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-      unset https_proxy
-      unset http_proxy
-      unset proxy
 
       # install omni_placement
       export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
@@ -286,7 +280,6 @@
       cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
-      python ${CODE_PATH}/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
@@ -362,7 +355,7 @@
         --listen-port "$PROXY_NODE_PORT" \
         --prefill-servers-list "$prefill_result" \
         --decode-servers-list "$decode_result" \
-        --log-file /dev/shm/trace/logs/nginx_error.log \
+        --log-file ${LOG_PATH}/nginx_error.log \
         --log-level notice \
         --core-num 4 \
         --start-core-index 16 \

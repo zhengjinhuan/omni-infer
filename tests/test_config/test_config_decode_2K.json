@@ -51,9 +51,8 @@
         "use_a3_high_performance_cann": true,
         "use_super_kernel": true,
         "prefill_enable_mla_alltoall": false,
-        "use_mlaprolog": true,
+        "use_mlaprolog": false,
         "use_faquant": false,
-        "use_dequant_swiglu_quant": true,
         "opt_w2_scale_cast": true,
         "quantization_param_path": "",
         "decode_gear_list": [
