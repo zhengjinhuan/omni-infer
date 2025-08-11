@@ -326,7 +326,7 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     }
 
     ngx_uint_t candidate[n];
-    chosen = candidate[rand() % candidate_count];
+    ngx_uint_t candidate_count = 0;
     for (i = 0; i < n; i++) {
         if (wla_shm->peers[i].active_requests == min_active) {
             candidate[candidate_count++] = i;
