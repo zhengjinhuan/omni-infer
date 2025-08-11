@@ -238,7 +238,7 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
         if self._is_dynamic_token_w8a8(weight_quant, input_quant, weight_num_bits):
             return (AscendCompressedTensorsW8A8Int8MoEMethod(), weight_num_bits)
         elif self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
-            return (AscendCompressedTensorsW4A8Int8MoEMethod(), weight_num_bits)
+            return (AscendCompressedTensorsW4A8Int8MoEMethod(self), weight_num_bits)
         else:
             raise RuntimeError(
                 f"Unsupported FusedMoe scheme: {weight_quant}, {input_quant}")
