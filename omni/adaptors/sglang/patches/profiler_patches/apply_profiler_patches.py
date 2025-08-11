@@ -226,11 +226,12 @@ def monkey_patch_async_wait_one_response_logger():
 
 
 profiling_namelist = os.getenv("PROFILING_NAMELIST", None)
-if os.path.isfile(profiling_namelist):
-    apply_patches(profiling_namelist)
-    monkey_patch_async_wait_one_response_logger()
-    monkey_patch_async_handle_request_logger()
-    monkey_patch_prefill_pop_bootstrapped_logger()
-else:
-    logger.error(f"'{profiling_namelist}' does not exist.")
-    raise FileNotFoundError(f"'{profiling_namelist}' does not exist.")
+if profiling_namelist is not None:
+    if os.path.isfile(profiling_namelist):
+        apply_patches(profiling_namelist)
+        monkey_patch_async_wait_one_response_logger()
+        monkey_patch_async_handle_request_logger()
+        monkey_patch_prefill_pop_bootstrapped_logger()
+    else:
+        logger.error(f"'{profiling_namelist}' does not exist.")
+        raise FileNotFoundError(f"'{profiling_namelist}' does not exist.")
