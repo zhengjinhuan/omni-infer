@@ -33,7 +33,6 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
 
     def __init__(self):
         super().__init__(None)
-        self.initialized = False
         self.warm_up = True
 
     def apply(
@@ -43,29 +42,17 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
             topk_weights: torch.Tensor,
             topk_ids: torch.Tensor,
             pertoken_scale: torch.Tensor,
-            attn_metadata: AttentionMetadata
-    ) -> torch.Tensor:
-
-        return self.forward_npu(layer=layer,
-                                x=x,
-                                topk_weights=topk_weights,
-                                topk_ids=topk_ids,
-                                attn_metadata=attn_metadata
-                                )
-
-    def forward_npu(
-            self,
-            layer: torch.nn.Module,
-            x: torch.Tensor,
-            topk_weights: torch.Tensor,
-            topk_ids: torch.Tensor,
-            attn_metadata: AttentionMetadata
+            attn_metadata: AttentionMetadata,
+            comm_group: Optional[GroupCoordinator]
     ) -> torch.Tensor:
         is_prefill = attn_metadata is None or attn_metadata.prefill is not None
-        if is_prefill and model_extra_config.operator_opt_config.enable_pd_separated:
-            out = self.moe_infer_fusion(layer, x, topk_ids, topk_weights, layer.w13_weight, layer.w2_weight,
-                                        is_prefill)
-
+        out = self.moe_infer_fusion(layer, 
+                                     x, 
+                                     topk_ids, 
+                                     topk_weights, 
+                                     layer.w13_weight, 
+                                     layer.w2_weight,
+                                     is_prefill)
         if self.warm_up:
             self.warm_up = False
         return out
@@ -254,7 +241,7 @@ class FusedMoE(torch.nn.Module):
             raise ValueError("Only softmax scoring function is supported for "
                              "non-grouped topk.")
 
-        if model_extra_config.operator_opt_config.moe_dispatch_combine:
+        if model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             # Adapt the dispatch combine operator
             self.ep_size = get_ep_group().world_size
             self.global_rank = get_world_group().rank_in_group

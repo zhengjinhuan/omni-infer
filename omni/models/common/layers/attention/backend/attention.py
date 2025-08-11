@@ -31,13 +31,13 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionLayer, AttentionType)
 from vllm.attention.backends.utils import CommonAttentionState
 from vllm.forward_context import ForwardContext, get_forward_context
-from vllm.utils import direct_register_custom_op
+from vllm.utils import (direct_register_custom_op, supports_dynamo)
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.block_table import BlockTable
 from vllm.platforms import current_platform
-from vllm.config import get_current_vllm_config
+from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 
@@ -382,11 +382,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.key_cache = None
         self.value_cache = None
 
-        self.enable_graph_mode = False
-        additional_config = get_current_vllm_config().additional_config
-        if additional_config:
-            self.enable_graph_mode = additional_config.get(
-                "enable_graph_mode", False)
+        cur_vllm_config = get_current_vllm_config()
+        self.enable_graph_mode = (cur_vllm_config.npu_compilation_config.level >  \
+                                  CompilationLevel.NO_COMPILATION and supports_dynamo())
 
         if AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE is None:
             AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE = ~torch.tril(

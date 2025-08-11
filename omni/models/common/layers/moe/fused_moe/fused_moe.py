@@ -649,7 +649,7 @@ def moe_infer_fusion(
     )
     group_list = tokens_per_local_expert.to(torch.int64)
     if model_extra_config.operator_opt_config.use_omni_placement:
-        layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
+        layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
         
     hidden_states_ordered_by_experts = gmm_expert(hidden_states_sorted_by_experts, tokens_per_local_expert.to(torch.int64), w1, w2, w1_scale, w2_scale, gathered_pertoken_scale, None)
 
@@ -731,7 +731,7 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask,
+            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
         })
 
         if model_extra_config.operator_opt_config.enable_mc2_v2:
@@ -743,7 +743,7 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
         group_list = expert_token_nums.to(torch.int64)
 
         if model_extra_config.operator_opt_config.use_omni_placement and is_route_expert:
-            layer.planner.record_activation(layer.moe_layer_idx, group_list, is_prefill)
+            layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
 
         if shared_expert_rank_num > 0 and global_rank // experts_tp_size < shared_expert_rank_num:
             x = {"x_int8": expand_x, "pertoken_scale": dynamic_scale}
@@ -776,7 +776,7 @@ def fused_experts_w8a8_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask,
+            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
         }
         kwargs.update(stage3_kwargs)
 
