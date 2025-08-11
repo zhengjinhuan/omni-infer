@@ -20,6 +20,7 @@ from vllm.model_executor.layers.rejection_sampler import RejectionSampler as Rej
 from vllm.v1.sample.rejection_sampler import RejectionSampler as RejectionSamplerV1
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler as TopKTopPSampler
 from vllm.v1.outputs import LogprobsTensors
+from vllm.v1.sample.sampler import Sampler as SamplerV1
 from vllm.v1.outputs import SamplerOutput as SamplerOutputV1
 
 from vllm.sampling_params import SamplingType
@@ -651,10 +652,10 @@ def apply_top_k_top_p(
     """
     if p is None:
         if k is None:
-            return logits
+            return logits, None
 
         # Avoid sorting vocab for top-k only case.
-        return apply_top_k_only(logits, k)
+        return apply_top_k_only(logits, k), None
 
     logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
 
@@ -676,8 +677,7 @@ def apply_top_k_top_p(
         logits_sort.masked_fill_(top_p_mask, -float("inf"))
 
     # Re-sort the probabilities.
-    logits = logits_sort.scatter(dim=-1, index=logits_idx, src=logits_sort)
-    return logits
+    return logits_sort, logits_idx
 
 
 def apply_top_k_only(
@@ -707,6 +707,7 @@ def apply_top_k_only(
 
 def random_sample(
     probs: torch.Tensor,
+    idx: Optional[torch.Tensor],
     generators: dict[int, torch.Generator],
     stream
 ) -> torch.Tensor:
@@ -729,9 +730,12 @@ def random_sample(
             for i, generator in generators.items():
                 q[i].exponential_(generator=generator)
     torch.npu.default_stream().wait_stream(stream)
-    return probs.div_(q).argmax(dim=-1).view(-1)
-
-class TopKTopPSamplerNPU(TopKTopPSampler):
+    res = probs.div_(q).argmax(dim=-1).view(-1)
+    if idx == None:
+        return res
+    else:
+        return idx[torch.arange(res.shape[0]), res]
+class AscendTopKTopPSamplerV1(TopKTopPSampler):
     """
     Module that performs optional top-k and top-p filtering followed by
     weighted random sampling of logits.
@@ -754,9 +758,14 @@ class TopKTopPSamplerNPU(TopKTopPSampler):
 
         The logits tensor may be updated in-place.
         """
-        logits = apply_top_k_top_p(logits, k, p)
+        logits, idx = apply_top_k_top_p(logits, k, p)
         probs = logits.softmax(dim=-1, dtype=torch.float32)
-        return random_sample(probs, generators, self.dsa_stream)
+        return random_sample(probs, idx, generators, self.dsa_stream)
+
+class AscendSamplerV1(SamplerV1):
+    def __init__(self):
+        super().__init__()
+        self.topk_topp_sampler = AscendTopKTopPSamplerV1()
 
 class SimpleSampler(RejectionSamplerV1):
  
@@ -766,7 +775,7 @@ class SimpleSampler(RejectionSamplerV1):
         self.previous_repetition_penalties = [] 
         self.previous_presence_penalties = []
         self.main_sampler = main_sampler
-        self.main_sampler.topk_topp_sampler = TopKTopPSamplerNPU()
+        self.main_sampler.topk_topp_sampler = AscendTopKTopPSamplerV1()
         self.minus_one = None
 
     def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
