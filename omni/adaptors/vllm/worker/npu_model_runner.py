@@ -46,7 +46,7 @@ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
-from omni.models.common.layers.sampler import SimpleSampler
+from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
@@ -135,7 +135,8 @@ class NPUModelRunner(GPUModelRunner):
         self.max_num_reqs = self.scheduler_config.max_num_seqs
         if self.use_spec_decode:
             self.rejection_sampler = SimpleSampler(self.sampler)
-
+        else:
+            self.sampler = AscendSamplerV1()
         self._init_graph_options()
 
         self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,

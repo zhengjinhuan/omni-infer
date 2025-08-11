@@ -245,15 +245,10 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
 
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
-        from vllm.attention.layer import Attention
         if isinstance(layer, LinearBase):
             scheme = self.get_scheme(layer=layer, layer_name=prefix)
             layer.scheme = scheme
             return CompressedTensorsLinearMethod(self)
-        elif isinstance(layer, Attention) and \
-            'fa_quant_type' in self.quant_description.keys() and \
-            self.quant_description['fa_quant_type'] is not None:
-            return CompressedTensorsKVCacheMethod(self)
         elif isinstance(layer, FusedMoE):
             layer.num_bits = 0
             moe_method, weight_num_bits = self.get_moe_method(prefix)

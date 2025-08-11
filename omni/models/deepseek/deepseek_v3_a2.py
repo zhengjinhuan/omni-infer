@@ -38,6 +38,7 @@ from vllm.distributed import (divide,
                               get_ep_group,
                               get_dp_group,
                               get_tensor_model_parallel_world_size,
+                              get_tensor_model_parallel_rank,
                               tensor_model_parallel_all_gather,
                               get_world_group)
 from vllm.model_executor.layers.linear import (WEIGHT_LOADER_V2_SUPPORTED,
@@ -142,9 +143,7 @@ class DeepSeekMergedColumnParallelLinear(LinearBase):
             input_size=self.input_size,
             output_size=self.output_size,
             params_dtype=self.params_dtype,
-            weight_loader=(
-                self.weight_loader_v2 if self.quant_method.__class__.__name__
-                                         in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader))
+            weight_loader=self.weight_loader)
         if bias:
             self.bias = Parameter(
                 torch.empty(self.output_size_per_partition,
@@ -348,9 +347,7 @@ class DeepSeekRowParallelLinear(LinearBase):
             input_size=self.input_size,
             output_size=self.output_size,
             params_dtype=self.params_dtype,
-            weight_loader=(
-                self.weight_loader_v2 if self.quant_method.__class__.__name__
-                                         in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader))
+            weight_loader=self.weight_loader)
         if not reduce_results and (bias and not skip_bias_add):
             raise ValueError("When not reduce the results, adding bias to the "
                              "results can lead to incorrect results")
@@ -1158,6 +1155,8 @@ class AscendDeepseekAttention_MLA(nn.Module):
             self.o_proj = RowParallelLinearCross(self.num_heads * self.v_head_dim,
                                                 self.hidden_size,
                                                 bias=False,
+                                                tp_size=get_tensor_model_parallel_world_size() // get_npu_device_count(),
+                                                tp_rank=get_tensor_model_parallel_rank() // get_npu_device_count(),
                                                 quant_config=quant_config,
                                                 prefix=f"{prefix}.o_proj")
         else:
@@ -1189,23 +1188,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
-            # MLA Args
-            q_lora_rank=self.q_lora_rank,
-            kv_lora_rank=self.kv_lora_rank,
-            qk_nope_head_dim=self.qk_nope_head_dim,
-            qk_rope_head_dim=self.qk_rope_head_dim,
-            qk_head_dim=self.qk_head_dim,
-            v_head_dim=self.v_head_dim,
-            rotary_emb=self.rotary_emb,
-            q_proj=self.q_proj if self.q_lora_rank is None else self.q_b_proj,
-            kv_a_proj_with_mqa=self.kv_a_proj_with_mqa if hasattr(self, 'kv_a_proj_with_mqa') else None,
-            kv_a_layernorm=self.kv_a_layernorm,
-            kv_b_proj=self.kv_b_proj,
-            o_proj=self.o_proj,
-            qkv_a_proj=self.qkv_a_proj if hasattr(self, 'qkv_a_proj') else None,
-            q_a_layernorm=self.q_a_layernorm if hasattr(self, 'q_a_layernorm') else None,
-            q_b_proj=self.q_b_proj if hasattr(self, 'q_b_proj') else None,
-            q_a_proj=self.q_a_proj if hasattr(self, 'q_a_proj') else None
         )
 
         kv_b_proj_weight = self.kv_b_proj.weight.T
