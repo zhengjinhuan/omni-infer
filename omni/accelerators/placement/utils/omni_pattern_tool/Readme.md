@@ -140,7 +140,7 @@
   - 每行以 `[dump activation]` 开头，包含以下字段：
     - **模式**：`prefill`（预填充）或 `decode`（解码）。
     - **步骤号**（`step`）：训练或推理的步骤编号。
-    - **rank ID**（`rank`）：数据收集的 rank 编号（0 到 `num_ranks_of_collecting_data-1`）。
+    - **rank ID**（`rank`）：数据收集的 rank 编号（0 到 `num_ranks_of_collecting_data-1`）。在版本 0.3.0 中，应设置为 1。
     - **层 ID**（`layer`）：MoE 层编号（0 到 `num_layers-1`）。
     - **专家数量**（`expert_count`）：当前 rank 的专家数据数量。
     - **专家激活数据**：制表符（`\t`）分隔的整数，表示专家激活计数。
@@ -188,7 +188,7 @@
 | `--placement_pattern_analysis_dir`| 负载分析图像及 CSV 输出目录                      | `./placement_pattern_analysis`          | 存储负载分布热图、柱状图和分析 CSV 文件。                            |
 | `--output_csv`                    | 输出 CSV 文件名                                  | 空（自动生成时间戳命名）                | 若为空，生成 `topk_ids_count_<timestamp>_<collecting_modes>_step<start>to<end>.csv`。 |
 | `--num_layers`                    | 模型层数                                         | `58`                                    | MoE 模型的层数，需与输入数据匹配。                                   |
-| `--num_ranks_of_collecting_data`  | 数据收集的 rank 数                               | `32`                                    | 输入数据对应的 rank 数量，需为正整数。                               |
+| `--num_ranks_of_collecting_data`  | 数据收集的 rank 数                               | `32`                                    | 输入数据对应的 rank 数量，需为正整数。在版本 0.3.0 中，应设置为 1。                               |
 | `--num_positions_of_routed_experts`| 路由专家位置数                                   | `256`                                   | 每层的专家总数，需能被 `num_ranks_of_collecting_data` 整除。          |
 | `--num_ranks_target_pattern`      | 目标放置模式的 rank 数                           | `256`                                   | 放置模式的目标 rank 数量，需为正整数。                               |
 | `--num_redundant_layers` | 指定优化分配的层数列表 | `58` | 在 redundant 模式下，指定哪些层被视为高负载层（high_load_layers），这些层将允许专家多次部署（最多 1 + expert_redundant_limit 次），通过 allocate_expert_deployments_improved 和 distribute_experts_to_ranks 分配，budget_limit 设为 num_ranks_target_pattern；非高负载层同样使用优化分配，但 budget_limit=0，限制为每个专家部署一次。在 rearrange 模式下，指定哪些层为高负载层，使用 allocate_expert_deployments_improved 和 distribute_experts_to_ranks 进行优化分配（每个专家部署一次）；非高负载层使用 distribute_experts_sequentially 进行顺序分配。支持多个值，空格分隔。 |

@@ -31,8 +31,8 @@ PLACEMENT_PATTERN_ANALYSIS_DIR="${PLACEMENT_PATTERN_ANALYSIS_DIR:-./placement_pa
 OUTPUT_CSV=""
 # NUM_LAYERS: Number of layers. Defaults to 58.
 NUM_LAYERS=58
-# NUM_RANKS_OF_COLLECTING_DATA: Number of ranks for data collection. Defaults to 32.
-NUM_RANKS_OF_COLLECTING_DATA=32
+# NUM_RANKS_OF_COLLECTING_DATA: Number of ranks for data collection. Defaults to 32. In 0.3.0 version, it is set to 1.
+NUM_RANKS_OF_COLLECTING_DATA=1
 # NUM_POSITIONS_OF_ROUTED_EXPERTS: Number of positions for routed experts. Defaults to 256.
 NUM_POSITIONS_OF_ROUTED_EXPERTS=256
 # NUM_RANKS_TARGET_PATTERN: Number of ranks for the target pattern. Defaults to 32.
