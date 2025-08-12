@@ -347,6 +347,12 @@ static ngx_int_t ngx_http_pd_score_body_filter(ngx_http_request_t *r,
                     num_start++;
                 }
                 total_tokens = val;
+            } else {
+                if (pdata->first_chunk) {
+                    total_tokens = pdata->decode_token_count + 1;
+                } else {
+                    total_tokens = pdata->last_total_tokens + 1;
+                }
             }
         }
     }
@@ -425,7 +431,7 @@ ngx_http_pd_score_prefill_strategy(ngx_http_request_t *r,
     pdata->rrp = rrp;
     pdata->chosen = chosen;
     pdata->my_time_cost = 0;
-    pdata->decode_token_count = 0;
+    pdata->decode_token_count = (ngx_atomic_t)r->request_length / 4;
     pdata->first_chunk = 1;
     pdata->request_length = (ngx_uint_t)r->request_length;
     pdata->last_total_tokens = 0;
