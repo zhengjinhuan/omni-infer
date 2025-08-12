@@ -62,7 +62,7 @@ class RotaryEmbedding(torch.nn.Module):
         sin = torch.sin(emb).to(dtype=torch.get_default_dtype())
 
         return cos, sin
-    
+
     @staticmethod
     def compute_inv_freq(base: Union[int, float], rotary_dim: int) -> torch.Tensor:
         """Compute the inverse frequency."""

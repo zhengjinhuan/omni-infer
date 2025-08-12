@@ -27,7 +27,9 @@ from vllm.distributed import (
     split_tensor_along_last_dim,
     get_tensor_model_parallel_rank,
     tensor_model_parallel_all_reduce,
-    tensor_model_parallel_all_gather
+    tensor_model_parallel_all_gather,
+    tensor_model_parallel_reduce_scatter,
+    get_tp_group
 )
 
 from omni.adaptors.vllm.distributed.communication_op import mla_tensor_model_parallel_reduce_scatter
@@ -899,6 +901,12 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
               module_name: Optional[str] = "",
               x_transform: Optional[str] = None,
               is_prefill: Optional[bool] = True) -> torch.Tensor:
+        
+        if x_transform == "AG":
+            x = get_tp_group().all_gather(x, dim=0)
+        elif x_transform == "A2A":
+            x = get_tp_group().all_to_all(x)
+
         if bias is not None:
             # return F.linear(x, layer.weight, bias)
             return torch.addmm(bias, x, layer.weight)
@@ -1011,6 +1019,8 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         if self.tp_size > 1:
             if reduce_type == "AR":
                 output = tensor_model_parallel_all_reduce(output_parallel)
+            elif reduce_type == "RS":
+                output = tensor_model_parallel_reduce_scatter(output_parallel)
             else:
                 output = output_parallel
         else:

@@ -5,7 +5,7 @@ import torch
 import torchair as tng
 from typing import Optional
 from vllm.distributed import get_tp_group
-    
+
 from omni.adaptors.vllm.distributed.parallel_state import (
     get_world_group_from_list,
     get_local_group_from_list,

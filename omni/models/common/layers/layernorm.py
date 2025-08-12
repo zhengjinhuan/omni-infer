@@ -6,7 +6,9 @@ import torch
 import torch_npu
 from typing import Optional, Union, Any
 from vllm.model_executor.layers.layernorm import RMSNorm as RMSNormGPU
+from vllm.distributed import get_tp_group
 from vllm.distributed.parallel_state import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
+
 from omni.models.common.config.model_config import model_extra_config
 
 
@@ -51,8 +53,8 @@ class RMSNormFlashComm(RMSNorm):
     ) -> Union[tuple[dict[str, Any], Any], Any]:
         if residual is not None:
             x, _, residual = torch_npu.npu_add_rms_norm(x, residual, self.weight, self.variance_epsilon)
-            # if y_transform == "AG":
-            #     x = module_parallel_x_all_gather(x, self.module_name, dim=0)
+            if y_transform == "AG":
+                x = get_tp_group().all_gather(x, dim=0)
             return x, residual
         else:
             return torch_npu.npu_rms_norm(
@@ -69,8 +71,8 @@ class RMSNormFlashComm(RMSNorm):
     ) -> Union[tuple[dict[str, Any], Any], Any]:
         if residual is not None:
             x, _, residual = torch_npu.npu_add_rms_norm(x, residual, self.weight, self.variance_epsilon)
-            # if y_transform == "AG":
-            #     x = module_parallel_x_all_gather(x, self.module_name, dim=0)
+            if y_transform == "AG":
+                x = get_tp_group().all_gather(x, dim=0)
             return x, residual
         else:
             residual = x
