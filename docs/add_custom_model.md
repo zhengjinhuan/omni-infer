@@ -298,91 +298,68 @@ class SimpleSampler(RejectionSamplerV1)
 ```
 ## 4. 模型量化
 当前支持加载A8W8的量化权重，量化后的权重`config.json`需要包含`quantization_config`字段，才能被omniinfer正常加载。
-下面的类图以compressed_tensors为例描述了omniinfer当前的量化框架。
-```mermaid
-classDiagram
-    class AscendQuantizer {
-        +get_linear_method()
-        +get_moe_method()
-        +get_attention_method()
-        +get_linear_quant_type()
-        +get_quantizer()
+权重量化可以参考[omni_infer_installation_guide中的权重转换章节](omni_infer_installation_guide.md#权重转换)，生成的权重的config.json中的`quantization_config`应如下所示：
+```json
+"quantization_config" {
+  "config_groups": {
+    "group_0": {
+      "input_activations": {
+        "actorder": null,
+        "block_structure": null,
+        "dynamic": true,
+        "group_size": null,
+        "num_bits": 8,
+        "observer": "memoryless",
+        "observer_kwargs": {},
+        "strategy": "token",
+        "symmetric": true,
+        "type": "int"
+      },
+      "output_activations": null,
+      "targets": [
+        "Linear"
+      ],
+      "weights": {
+        "actorder": null,
+        "block_structure": null,
+        "dynamic": true,
+        "group_size": null,
+        "num_bits": {
+          "self_attn.kv_a_proj_with_mqa": 8,
+          "self_attn.q_a_proj": 8,
+          "self_attn.q_b_proj": 8,
+          "self_attn.o_proj": 8,
+          "mlp.down_proj": 8,
+          "mlp.gate_up_proj": 8,
+          "mlp.shared_experts": 8,
+          "mlp.experts": 8
+        },
+        "observer": "minmax",
+        "observer_kwargs": {},
+        "strategy": "channel",
+        "symmetric": true,
+        "type": int
+      }
     }
-
-    class CompressedTensorsQuantizer {
-        +get_linear_method() AscendCompressedTensorsW8A8Int8LinearMethod
-        +get_moe_method() AscendCompressedTensorsW8A8Int8MoEMethod
-    }
-
-    class AscendQuantConfig {
-        +__init__()
-        +get_quant_method() QuantizeMethodBase
-    }
-
-    class AscendLinearMethod {
-        +AscendQuantizer quantizer
-        +__init__()
-        +create_weights()
-        +apply(layer, x, bias, inner_gather)
-    }
-
-    class AscendKVCacheMethod {
-        +AscendQuantizer quantizer
-        +__init__()
-        +create_weights()
-        +apply()
-    }
-
-    class AscendFusedMoEMethod {
-        +AscendQuantizer quantizer
-        +__init__()
-        +create_weights()
-        +apply()
-    }
-
-    class AscendCompressedTensorsW8A8Int8LinearMethod {
-        +get_weight()
-        +get_pertensor_param()
-        +get_perchannel_param()
-        +apply()
-    }
-    class AscendCompressedTensorsW8A8Int8MoEMethod {
-        +get_weight()
-        +get_dynamic_quant_param()
-        +apply()
-    }
-
-    AscendQuantizer <|-- CompressedTensorsQuantizer
-    AscendLinearMethod <.. AscendQuantConfig
-    AscendKVCacheMethod <.. AscendQuantConfig
-    AscendFusedMoEMethod <.. AscendQuantConfig
-    AscendLinearMethod-->AscendQuantizer
-    AscendFusedMoEMethod-->AscendQuantizer
-    AscendKVCacheMethod-->AscendQuantizer
-    CompressedTensorsQuantizer..>AscendCompressedTensorsW8A8Int8LinearMethod
-    CompressedTensorsQuantizer..>AscendCompressedTensorsW8A8Int8MoEMethod
+  },
+  "format": "int-quantized",
+  "global_compression_ratio": 1.5943962512751308,
+  "ignore": [
+  ],
+  "kv_cache_scheme": null,
+  "quant_method": "compressed-tensors",
+  "quantization_status": "compressed"
+}
 ```
 新增量化方法的步骤:
-- 参考已有的CompressedTensorsQuantizer，在`omni/quantization/quatizer.py`中新增quantizer
+- 参考已有的CompressedTensorsQuantizer，在`omni/adaptors/vllm/utils.py`中新增支持的量化方法。
 ```python
-  class CompressedTensorsQuantizer(AscendQuantizer):
-      @staticmethod
-      def get_linear_method():
-          return AscendCompressedTensorsW8A8Int8LinearMethod()
-  
-      @staticmethod
-      def get_moe_method():
-          return AscendCompressedTensorsW8A8Int8MoEMethod()
-
-  SUPPORT_ASCEND_QUANTIZER_MATHOD = [
-      "compressed-tensors",
-      ]
-
-  SUPPORT_ASCEND_QUANTIZERS = {
-      "compressed-tensors": CompressedTensorsQuantizer,
-  }
+ASCEND_COMPRESSED_TENSORS = "ascend_compressed_tensors"
+`SUPPORTED_QUANTIZATION_METHODS` = [ASCEND_COMPRESSED_TENSORS]
 ```
-- 新增对应的量化实现
+- 在`omni/quantization/__init__.py`中新增引入，如`from omni.quantization.compressed_tensors import compressed_tensors`
+- 在`omni/quantization/`目录中新增对应量化方法的适配。
+- 如果是基于compressed_tensors新增不同的量化类型，如w4a8, 基于已有的compressed_tensors实现扩展。
 ## 5. 模型并行
 当前omniinfer支持常见的并行策略，如TP/EP/DP/PP等。
 推理框架中如vllm针对PP/TP/DP/EP分别提供了命令行参数及环境变量，如下所示：
