@@ -36,16 +36,19 @@
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
 
-    #Configuration for lb_sdk in global proxy
-    PREFILL_LB_SDK: "pd_score_balance"
-    DECODE_LB_SDK: "pd_score_balance"
-
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
 
   vars:
     # Configure the storage path of the ranktable file.
     ranktable_save_path: "/tmp/ranktable_save_path"
+
+    #Configuration for lb_sdk in global proxy
+    prefill_lb_sdk: "pd_score_balance"
+    decode_lb_sdk: "pd_score_balance"
+    prefill_max_num_seqs: 16
+    decode_max_num_seqs: 32
+
     docker_run_cmd: |
       docker run -it --shm-size=500g \
         -e CODE_PATH=$CODE_PATH \
@@ -179,7 +182,7 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching'
+      EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs {{ prefill_max_num_seqs }} --no-enable-prefix-caching'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -260,7 +263,7 @@
           {% endfor %}
       )
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs {{ decode_max_num_seqs }} --no-enable-prefix-caching'
       GPU_UTIL=0.92
       ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}}'
       VLLM_ENABLE_MC2=1
@@ -352,8 +355,10 @@
         --log-level notice \
         --core-num 4 \
         --start-core-index 16 \
-        --prefill-lb-sdk ${PREFILL_LB_SDK} \
-        --decode-lb-sdk ${DECODE_LB_SDK}
+        --prefill-lb-sdk {{ prefill_lb_sdk }} \
+        --decode-lb-sdk {{ decode_lb_sdk }} \
+        --prefill-max-num-seqs {{ prefill_max_num_seqs }} \
+        --decode-max-num-seqs {{ decode_max_num_seqs }}
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -446,8 +451,6 @@
       {{ docker_exec_cmd }}
       -e http_proxy=$HTTP_PROXY
       -e https_proxy=$HTTP_PROXY
-      -e PREFILL_LB_SDK=$PREFILL_LB_SDK
-      -e DECODE_LB_SDK=$DECODE_LB_SDK
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
