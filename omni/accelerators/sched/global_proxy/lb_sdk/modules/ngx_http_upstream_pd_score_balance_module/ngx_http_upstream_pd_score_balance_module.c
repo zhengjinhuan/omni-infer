@@ -10,7 +10,6 @@
 #include <float.h>
 
 #define MAX_TOTAL_ACTIVE_REQS 8192
-#define MAX_PREDICT_REQS 4
 #define MAX_PEER_COUNT 512
 #define MAX_P 32
 #define MAX_D 512
@@ -69,6 +68,7 @@ static ngx_shm_zone_t *ngx_http_pd_score_shm_zone = NULL;
 static ngx_http_pd_score_shm_block_t *pd_shm = NULL;
 static ngx_uint_t ngx_http_pd_score_shm_size = 0;
 static ngx_uint_t ngx_http_pd_score_req_lim_D = 0;
+static ngx_uint_t max_predict_reqs = 4;
 static ngx_http_output_body_filter_pt ngx_http_next_body_filter = NULL;
 
 static void *ngx_http_pd_score_create_main_conf(ngx_conf_t *cf);
@@ -248,6 +248,11 @@ static ngx_int_t ngx_http_pd_score_postconfig(ngx_conf_t *cf) {
             uscfp[i], ngx_http_upstream_pd_score_balance_module);
         if (conf->mode != PD_MODE_NONE) {
             uscfp[i]->peer.init = ngx_http_pd_score_upstream_init;
+        }
+        if (conf->mode == PD_MODE_PREFILL) {
+            max_predict_reqs = 2 * uscfp[i]->servers->nelts;
+            ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+                          "[PDScoreBalance] max request preallocated set to %ui", max_predict_reqs);
         }
         if (conf->mode == PD_MODE_DECODE) {
             ngx_http_pd_score_req_lim_D = conf->n_req_limit;
@@ -468,10 +473,10 @@ ngx_http_pd_score_decode_strategy(ngx_http_request_t *r,
 
     ngx_shmtx_lock(&shpool->mutex);
 
-    ngx_uint_t filtered_req_lengths[MAX_PREDICT_REQS + 1];
+    ngx_uint_t filtered_req_lengths[max_predict_reqs + 1];
 
-    ngx_uint_t filtered_count = pd_shm->total_active_request_count < MAX_PREDICT_REQS ?
-                                pd_shm->total_active_request_count : MAX_PREDICT_REQS;
+    ngx_uint_t filtered_count = pd_shm->total_active_request_count < max_predict_reqs ?
+                                pd_shm->total_active_request_count : max_predict_reqs;
     ngx_uint_t j = 0;
     for (j = 0; j < filtered_count; j++) {
         filtered_req_lengths[j] = pd_shm->running_requests_P[j].request_length;
