@@ -56,7 +56,7 @@
         "opt_w2_scale_cast": true,
         "quantization_param_path": "",
         "decode_gear_list": [
-            22
+            30
         ]
     }
 }
