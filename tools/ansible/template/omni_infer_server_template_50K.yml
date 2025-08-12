@@ -38,7 +38,7 @@
 
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "least_total_load"
-    DECODE_LB_SDK: "weight_least_active"
+    DECODE_LB_SDK: "weighted_least_active"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
