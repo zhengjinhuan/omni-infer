@@ -6,19 +6,18 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
---- a/vllm/v1/core/sched/scheduler.py	(revision b98b091d1c482e64223c1247f26bbdb9b3c2ad70)
-+++ b/vllm/v1/core/sched/scheduler.py	(date 1754913586879)
-@@ -779,6 +779,9 @@
-                     del new_token_ids[num_new:]  # Trim new tokens if needed.
-                     break
+--- a/vllm/v1/core/sched/scheduler.py	(revision edb1279bb033e3dff7b7c42fe2a29d6e43a4675a)
++++ b/vllm/v1/core/sched/scheduler.py	(date 1755004149303)
+@@ -806,6 +806,8 @@
+                         kv_transfer_params = self._free_request(request)
+                         del new_token_ids[num_new:]  # Trim new tokens if needed.
+                         break
++                # KVTransfer: if loading kv failed, abort the request
++                self._abort_loading_kv_failure_reqs(model_runner_output)
  
-+            # KVTransfer: if loading kv failed, abort the request
-+            self._abort_loading_kv_failure_reqs(model_runner_output)
-+
-             # Extract sample logprobs if needed.
-             if request.sampling_params.logprobs is not None and logprobs:
-                 # NOTE: once we support N tokens per step (spec decode),
-@@ -1029,3 +1032,18 @@
+                 # Extract sample logprobs if needed.
+                 if request.sampling_params.logprobs is not None and logprobs:
+@@ -1056,3 +1058,18 @@
              logger.debug("Finished sending KV transfer for request %s", req_id)
              if req_id in self.requests:
                  self._free_blocks(self.requests[req_id])
@@ -43,8 +42,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
---- a/vllm/v1/outputs.py	(revision b98b091d1c482e64223c1247f26bbdb9b3c2ad70)
-+++ b/vllm/v1/outputs.py	(date 1754904648165)
+--- a/vllm/v1/outputs.py	(revision edb1279bb033e3dff7b7c42fe2a29d6e43a4675a)
++++ b/vllm/v1/outputs.py	(date 1755004001228)
 @@ -103,6 +103,7 @@
      # [req_ids]
      finished_sending: Optional[set[str]] = None
@@ -66,8 +65,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/base.py b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
---- a/vllm/distributed/kv_transfer/kv_connector/v1/base.py	(revision b98b091d1c482e64223c1247f26bbdb9b3c2ad70)
-+++ b/vllm/distributed/kv_transfer/kv_connector/v1/base.py	(date 1754904648170)
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/base.py	(revision edb1279bb033e3dff7b7c42fe2a29d6e43a4675a)
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/base.py	(date 1755004001233)
 @@ -190,6 +190,12 @@
          """
          return None, None
