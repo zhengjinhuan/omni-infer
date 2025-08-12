@@ -416,8 +416,8 @@ void gen_prefill_json_str_jsmn(
     return;
 }
 
-ngx_int_t omni_proxy_prepare_prefill_subrequest(
-    ngx_http_request_t *r, ngx_http_request_t *sr, omni_req_context_t *ctx)
+ngx_int_t omni_proxy_save_origin_body(
+    ngx_http_request_t *r, omni_req_context_t *ctx)
 {
     ngx_chain_t *cl;
     size_t len = 0;
@@ -463,8 +463,22 @@ ngx_int_t omni_proxy_prepare_prefill_subrequest(
     ctx->origin_body_data = body_data; // record body data for decode request
     ctx->origin_body_data_size = len;
 
+    return NGX_DONE;
+}
+
+ngx_int_t omni_proxy_prepare_prefill_subrequest(
+    ngx_http_request_t *r, ngx_http_request_t *sr, omni_req_context_t *ctx)
+{
+    ngx_chain_t *cl;
+    size_t len = ctx->origin_body_data_size;
+    u_char *body_data = ctx->origin_body_data;
+    u_char *p;
+    char *modified_json_str = NULL;
+    ngx_buf_t *b;
+
     // Copy main request's buffer chain to a temporary contiguous block
-    p = body_data;
+    p = ctx->origin_body_data;
+    len = ctx->origin_body_data_size;
     for (cl = r->request_body->bufs; cl != NULL; cl = cl->next)
     {
         ngx_buf_t *buf = cl->buf;
