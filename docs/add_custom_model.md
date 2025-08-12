@@ -484,19 +484,14 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
     "operator_optimizition_config": {
         "enable_kv_rmsnorm_rope_cache": true,   # 是否开启rmsnorm和rope融合，默认开启
         "prefill_moe_all_to_all": true,         # P的moe层是否使用all to all，默认开启。设置为false时，使用allgather+scatter
-        "enable_node_mlp": false,               # 是否开启MLP TP，和dense_mlp_tp_size配合使用，默认开启
         "moe_multi_stream_tune": false,         # 是否开启多流，只能图模式使用，单算子会报错, 开启提升3ms性能
         "best_ep": false,                       # 是否开启强制负载均衡，测试精度时必须关闭
-        "enable_pd_separated": false,           # 是否开启PD分离，默认开启
         "merge_qkv": false,                     # merge_qkv当前未使能，为false
         "two_stage_comm": false,                # 卡内卡间多级通信，A2使用，为false
-        "use_w8a8_dynamic_quant": true,         # 是否使用w8a8动态量化，默认开启
         "gmm_nz": false,                        # 是否开启gmm_nz，测试性能时使用，P开启，D关闭
         "decode_moe_dispatch_combine": true,    # D的moe层是否使用dispatch+combine算子，默认开启。设置为false时，使用all to all
         "use_omni_placement": false,            # 是否使用omni placement
         "omni_placement_config_path": null,     # omni placement配置文件
-        "enable_moe_expert_parallel": true,     # Moe层是否使用专家并行，默认开启
-        "use_a3_high_performance_cann": true,   # 是否使用A3的高性能CANN包，根据实际CANN包设置，默认为True
         "use_super_kernel": false,              # 是否使用super kernel融合算子，仅图模式可用，开启提升2ms性能
         "use_mlaprolog": false,                 # 暂未使能，默认关闭
         "opt_w2_scale_cast": false,             # 是否将w2_scale权重转换为float32，默认false
@@ -507,7 +502,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
         "enable_pipeline_comm": false,          # d节点使用，moe部分通信pipline，decode为2机时打开，a2相关
         "pd_seperate_prefill": false,           # pd分离版本下prefill节点打开，a2相关
         "prefill_enable_long_seq": false,       # prefill使能长序列，64k以上打开，默认关闭，a2相关
-        "enable_prefetch": false,               # d节点使用，权重和kv_cache prefetch开关，a2相关
         "prefill_moe_multi_stream": true,       # p节点使用，moe部分是否开启多流，a2相关
         "prefill_enable_mla_alltoall_local": true, # p节点使用，mla部分是否开启all2all，a2相关
         "prefill_enable_pipeline_comm": true,   # p节点使用，moe部分是否开启通信pipline，a2相关

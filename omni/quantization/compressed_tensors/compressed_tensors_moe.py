@@ -126,10 +126,10 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.is_moe_layer(layer.moe_layer_idx):
             max_num_deployed_expert_per_rank = layer.planner.get_max_num_deployed_expert_per_rank()
 
-        if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
+        if get_ep_group().world_size > 1:
             is_prefill = attn_metadata is None or attn_metadata.prefill is not None
             if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
-                if is_prefill and model_extra_config.operator_opt_config.enable_pd_separated:
+                if is_prefill:
                     out = moe_infer_fusion(
                         layer,
                         x,

@@ -689,7 +689,7 @@ class DeepseekMoE(nn.Module):
             if LARGE_BATCH or MEDIUM_BATCH:
                 shared_output, _ = self.shared_experts(hidden_states_int8, residual=None, attn_metadata=attn_metadata,
                                                     pertoken_scale=pertoken_scale)
-                if model_extra_config.operator_opt_config.enable_prefetch:
+                if model_extra_config.operator_opt_config.use_prefetch:
                     torch_npu.npu_prefetch(self.experts.w13_weight, shared_output, MAX_PREFETCH_SIZE)
         
         with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
@@ -722,7 +722,7 @@ class DeepseekMoE(nn.Module):
                 hidden_states_int8 = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
                 shared_output, _ = self.shared_experts(hidden_states_int8, residual=None, attn_metadata=attn_metadata,
                                                     pertoken_scale=pertoken_scale)
-                if model_extra_config.operator_opt_config.enable_prefetch:
+                if model_extra_config.operator_opt_config.use_prefetch:
                     torch_npu.npu_prefetch(self.experts.w13_weight, input_ag, MAX_PREFETCH_SIZE)
 
 
@@ -2018,7 +2018,7 @@ class DeepseekV3Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        if model_extra_config.operator_opt_config.enable_prefetch and not self.is_init:
+        if model_extra_config.operator_opt_config.use_prefetch and not self.is_init:
             prefetch_start_layer = self.start_layer if self.start_layer > self.first_k_dense_replace else self.first_k_dense_replace
             prefetch_end_layer = self.end_layer if self.end_layer < self.num_hidden_layers - 1 else self.num_hidden_layers - 1
             for layer_id in range(prefetch_start_layer, prefetch_end_layer):
@@ -2030,7 +2030,7 @@ class DeepseekV3Model(nn.Module):
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             layer_id = i - self.first_k_dense_replace
-            if model_extra_config.operator_opt_config.enable_prefetch and i < self.end_layer - 1 and kv_caches is not None:
+            if model_extra_config.operator_opt_config.use_prefetch and i < self.end_layer - 1 and kv_caches is not None:
                 kv_prefetch = kv_caches[i + 1 - self.start_layer]
             else:
                 kv_prefetch = None

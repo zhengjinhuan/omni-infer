@@ -578,7 +578,7 @@ class DeepseekMLA(nn.Module):
                     q_pe = q_pe.view(bsz, self.num_local_heads, -1)
 
             bsz, _, q_dim = q_nope.size()
-            input_layout = "TND_NTD" if model_extra_config.operator_opt_config.use_a3_high_performance_cann else "TND"
+            input_layout = "TND_NTD"
             if self.enable_graph_mode:
                 attn_output, _ = tng.ops.npu_fused_infer_attention_score(
                         q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
@@ -605,11 +605,8 @@ class DeepseekMLA(nn.Module):
                         )
 
             # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-            if model_extra_config.operator_opt_config.use_a3_high_performance_cann:
-                attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
-            else:
-                attn_output = attn_output.squeeze(1).transpose(0, 1)
-            # attn_output = pp_matmul(attn_output, self.W_UV, mm_type=4)
+            attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+
             attn_output = (
                 torch.matmul(attn_output, self.W_UV)
                 .transpose(1, 0)

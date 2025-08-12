@@ -6,7 +6,7 @@ import os
 import torch, torch_npu
 import torchair as tng
 import torch.distributed as dist
-from vllm.distributed import get_world_group, get_pp_group, get_ep_group
+from vllm.distributed import get_world_group, get_pp_group, get_ep_group, get_tp_group
 from vllm.attention import AttentionMetadata
 from vllm.platforms import current_platform
 from vllm.forward_context import get_forward_context
@@ -188,9 +188,9 @@ class FusedMoE(torch.nn.Module):
         self.planner = kwargs.get("planner", None)
         self.moe_layer_idx = kwargs.get("moe_layer_idx", None)
         self.expert_mapping = kwargs.get("expert_mapping", None)
-        
-        if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
-            ep_size = get_ep_group().world_size - model_extra_config.parall_config.redundancy_shared_expert_num
+        ep_size = get_ep_group().world_size
+        if ep_size > 1:
+            ep_size = ep_size - model_extra_config.parall_config.redundancy_shared_expert_num
             num_experts = int(num_experts / ep_size)
             tp_size = 1
 
@@ -397,7 +397,7 @@ class FusedMoE(torch.nn.Module):
                       loaded_weight: torch.Tensor, weight_name: str,
                       shard_id: str, expert_id: int) -> None:
 
-        if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
+        if get_ep_group().world_size > 1:
             ep_rank = get_ep_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num
             # ENABLE_OMNI_PLANNER
             if model_extra_config.operator_opt_config.use_omni_placement:
@@ -415,7 +415,7 @@ class FusedMoE(torch.nn.Module):
             tp_rank = 0
             expert_id -= ep_rank * self.num_experts
         else:
-            tp_rank = get_ep_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num
+            tp_rank = get_tp_group().rank_in_group
         # compressed-tensors checkpoints with packed weights are stored flipped
         loaded_weight = loaded_weight.t().contiguous() if (
             self.quant_method.__class__.__name__

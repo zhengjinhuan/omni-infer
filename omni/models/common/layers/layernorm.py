@@ -19,7 +19,7 @@ class RMSNorm(RMSNormGPU):
     ) -> Union[tuple[dict[str, Any], Any], Any]:
         if residual is not None:
             x, _, residual = torch_npu.npu_add_rms_norm(x, residual, self.weight, self.variance_epsilon)
-            if model_extra_config.operator_opt_config.use_w8a8_dynamic_quant and quant_symbol:
+            if quant_symbol:
                 x_int8, pertoken_scale = torch_npu.npu_dynamic_quant(x)
                 x = {"x_int8": x_int8, "pertoken_scale": pertoken_scale}
             return x, residual

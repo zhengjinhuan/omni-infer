@@ -220,7 +220,7 @@ class DeepseekMoE(nn.Module):
             (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
             intermediate_size = config.moe_intermediate_size * config.n_shared_experts
             # omni placement for redundancy shared experts
-            if self.redundancy_shared_expert_num > 0 and OmniPlanner is not None:
+            if self.redundancy_shared_expert_num > 0 and model_extra_config.operator_opt_config.use_omni_placement:
                 # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
                 self.planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
                                            rank=self.global_rank, world_size=self.ep_size,
