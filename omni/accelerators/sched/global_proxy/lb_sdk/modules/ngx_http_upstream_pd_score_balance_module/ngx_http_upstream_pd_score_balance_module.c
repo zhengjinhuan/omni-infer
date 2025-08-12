@@ -26,7 +26,7 @@ typedef struct {
 
 typedef struct {
     pd_score_mode_e mode;
-    ngx_uint_t n_req_limit;
+    ngx_uint_t max_num_seqs;
 } ngx_http_pd_score_srv_conf_t;
 
 typedef struct {
@@ -67,7 +67,8 @@ typedef struct {
 static ngx_shm_zone_t *ngx_http_pd_score_shm_zone = NULL;
 static ngx_http_pd_score_shm_block_t *pd_shm = NULL;
 static ngx_uint_t ngx_http_pd_score_shm_size = 0;
-static ngx_uint_t ngx_http_pd_score_req_lim_D = 0;
+static ngx_uint_t ngx_http_pd_score_max_num_seqs_P = 0;
+static ngx_uint_t ngx_http_pd_score_max_num_seqs_D = 0;
 static ngx_uint_t max_predict_reqs = 4;
 static ngx_http_output_body_filter_pt ngx_http_next_body_filter = NULL;
 
@@ -98,10 +99,10 @@ static ngx_command_t ngx_http_upstream_pd_score_commands[] = {
       ngx_http_pd_score_set_mode, NGX_HTTP_SRV_CONF_OFFSET,
       offsetof(ngx_http_pd_score_srv_conf_t, mode), NULL },
 
-    { ngx_string("pd_score_balance_decode_req_limit"),
+    { ngx_string("pd_score_balance_max_num_seqs"),
       NGX_HTTP_UPS_CONF | NGX_CONF_TAKE1,
       ngx_conf_set_num_slot, NGX_HTTP_SRV_CONF_OFFSET,
-      offsetof(ngx_http_pd_score_srv_conf_t, n_req_limit),
+      offsetof(ngx_http_pd_score_srv_conf_t, max_num_seqs),
       NULL },
 
     ngx_null_command
@@ -165,7 +166,7 @@ static void *ngx_http_pd_score_create_srv_conf(ngx_conf_t *cf) {
         return NULL;
     }
     conf->mode = PD_MODE_NONE;
-    conf->n_req_limit = NGX_CONF_UNSET_UINT;
+    conf->max_num_seqs = NGX_CONF_UNSET_UINT;
     return conf;
 }
 
@@ -254,13 +255,22 @@ static ngx_int_t ngx_http_pd_score_postconfig(ngx_conf_t *cf) {
             ngx_log_error(NGX_LOG_WARN, cf->log, 0,
                           "[PDScoreBalance] max request preallocated set to %ui", max_predict_reqs);
         }
-        if (conf->mode == PD_MODE_DECODE) {
-            ngx_http_pd_score_req_lim_D = conf->n_req_limit;
+        if (conf->mode == PD_MODE_PREFILL) {
+            ngx_http_pd_score_max_num_seqs_P = conf->max_num_seqs;
+            if (ngx_http_pd_score_max_num_seqs_P == NGX_CONF_UNSET_UINT) {
+                ngx_http_pd_score_max_num_seqs_P = 16;
+            }
             ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-                          "[PDScoreBalance] request limit set to %ui", ngx_http_pd_score_req_lim_D);
+                          "[PDScoreBalance] upstream[%ui] mode: Prefill, max num seqs: %ui", i, ngx_http_pd_score_max_num_seqs_P);
         }
-        ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-                      "[PDScoreBalance] upstream[%ui] mode=%d", i, conf->mode);
+        if (conf->mode == PD_MODE_DECODE) {
+            ngx_http_pd_score_max_num_seqs_D = conf->max_num_seqs;
+            if (ngx_http_pd_score_max_num_seqs_D == NGX_CONF_UNSET_UINT) {
+                ngx_http_pd_score_max_num_seqs_D = 32;
+            }
+            ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+                          "[PDScoreBalance] upstream[%ui] mode: Decode, max num seqs: %ui", i, ngx_http_pd_score_max_num_seqs_D);
+        }
     }
     return NGX_OK;
 }
@@ -502,7 +512,7 @@ ngx_http_pd_score_decode_strategy(ngx_http_request_t *r,
         ngx_uint_t min_peer = NGX_CONF_UNSET_UINT;
         ngx_uint_t min_peer_bak = NGX_CONF_UNSET_UINT;
         for (ngx_uint_t j = 0; j < n; j++) {
-            if (peer_loads[j] < min_load && pd_shm->peers_D[j].active_requests <= ngx_http_pd_score_req_lim_D) {
+            if (peer_loads[j] < min_load && pd_shm->peers_D[j].active_requests < ngx_http_pd_score_max_num_seqs_D) {
                 min_load = peer_loads[j];
                 min_peer = j;
             }
