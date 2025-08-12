@@ -290,8 +290,68 @@ typedef struct omni_worker_local_state_s
     omni_req_group_t groups[PHASE_MAX];
 } omni_worker_local_state_t;
 
+static inline void omni_register_worker(omni_global_state_t *gs, ngx_shmtx_t *g_shmtx)
+{
+    // need to protect by g_shmtx
+    ngx_shmtx_lock(g_shmtx);
+
+    for (size_t i = 0; i < MAX_WORKERS; ++i)
+    {
+        if (gs->workers[i] == 0)
+        {
+            gs->workers[i] = ngx_pid;
+            gs->num_workers;
+            ngx_shmtx_unlock(g_shmtx);
+            return;
+        }
+    }
+    ngx_shmtx_unlock(g_shmtx);
+
+    assert(!"No space left for new worker");
+}
+
+// The first work is the master and will do the global schduling
+static inline int omni_is_master_worker(omni_global_state_t *gs)
+{
+    return gs->workers[0] == ngx_pid;
+}
+
+typedef struct
+{
+    struct sockaddr *sockaddr;
+    socklen_t socklen;
+    ngx_int_t port; /* port number */
+    ngx_str_t text; /* textual host:port (nul-terminated) */
+    ngx_str_t index;
+} ngx_omni_backend_t;
+
+typedef struct
+{
+    ngx_str_t name;        /* upstream name */
+    ngx_array_t *backends; /* array of ngx_omni_backend_t (allocated in main conf pool) */
+} ngx_omni_upstream_entry_t;
+
+/* module main conf: holds parsed upstreams (mapping name -> backends) */
+typedef struct
+{
+    ngx_array_t *entries;                     /* array of ngx_omni_upstream_entry_t */
+    ngx_http_upstream_srv_conf_t **upstreams; // reference to upstreams array from ngx_http_upstream_main_conf_t
+                                              /* reference to upstreams array from ngx_http_upstream_main_conf_t */
+} ngx_http_omni_main_conf_t;
+
+/* location conf: stores the upstream name and rr index */
+typedef struct
+{
+    ngx_str_t upstream_name;
+    ngx_uint_t rr_index;
+    ngx_http_upstream_srv_conf_t *upstream;
+} ngx_http_omni_loc_conf_t;
+
 typedef struct omni_req_context_s
 {
+    ngx_array_t *backends;
+    ngx_http_upstream_conf_t upstream;
+
     omni_req_t *req;
     u_char *origin_body_data;
     ngx_uint_t origin_body_data_size;
@@ -300,3 +360,18 @@ typedef struct omni_req_context_s
     u_char *prefill_response_body;
     ngx_uint_t prefill_response_body_size;
 } omni_req_context_t;
+
+// /* per-request ctx */
+// typedef struct
+// {
+//     ngx_chain_t *prefill_chain; /* prefill body copied into main request pool */
+//     size_t prefill_len;
+//     ngx_array_t *backends; /* reference to array of ngx_omni_backend_t (from main conf) */
+//     ngx_http_upstream_conf_t upstream;
+//     u_char *origin_body_data;
+//     ngx_uint_t origin_body_data_size;
+//     void *origin_body_tokens;
+//     int origin_body_tokens_size;
+//     u_char *prefill_response_body;
+//     ngx_uint_t prefill_response_body_size;
+// } ngx_http_omni_ctx_t;

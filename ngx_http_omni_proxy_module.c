@@ -5,10 +5,8 @@ ngx_module_t ngx_http_omni_proxy_module;
 
 #define TIMER_INTERVAL 2
 
-static const char *prefill_uri = "/prefill_sub";
-static const size_t prefill_uri_len = sizeof("/prefill_sub") - 1;
-static char *decode_uri = "/decode_sub";
-static size_t decode_uri_len = sizeof("/decode_sub") - 1;
+static const char *PREFILL_URI = "/prefill_sub";
+static const size_t PREFILL_URI_LEN = sizeof("/prefill_sub") - 1;
 
 static omni_global_state_t *g_state;          // In share memory
 static omni_worker_local_state_t local_state; // In local process memory space
@@ -90,16 +88,12 @@ static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 static void omni_proxy_req_body_handler(ngx_http_request_t *r)
 {
     omni_req_t *req = omni_get_req(r);
+    omni_req_context_t *ctx = omni_get_req_ctx(r);
     req->metrics.time_contents_received = ngx_current_msec;
 
-    ngx_chain_t *chain = r->request_body->bufs;
+    omni_proxy_save_origin_body(r, ctx);
 
-    while (chain)
-    {
-        ngx_buf_t *b = chain->buf;
-        req->metrics.prompt_num_tokens += ngx_buf_size(b);
-        chain = chain->next;
-    }
+    req->metrics.prompt_num_tokens = ctx->origin_body_tokens_size;
 
     omni_phase_transition_local(PHASE_PREFILL_WAITING_SCHEDULE, req);
     req->metrics.time_enter_wait_prefill = ngx_current_msec;
@@ -127,6 +121,48 @@ static void omni_proxy_main_req_cleanup(void *data)
     omni_free_req(req);
 }
 
+/* find entry in main conf by name */
+static ngx_omni_upstream_entry_t *
+ngx_http_omni_find_entry(ngx_http_omni_main_conf_t *mcf, ngx_str_t *name)
+{
+    if (mcf == NULL || mcf->entries == NULL)
+    {
+        return NULL;
+    }
+
+    ngx_uint_t i;
+    ngx_omni_upstream_entry_t *entries = mcf->entries->elts;
+    for (i = 0; i < mcf->entries->nelts; i++)
+    {
+        if (entries[i].name.len == name->len && ngx_strncmp(entries[i].name.data, name->data, name->len) == 0)
+        {
+            return &entries[i];
+        }
+    }
+    return NULL;
+}
+
+static ngx_omni_backend_t *
+ngx_http_omni_choose_backend(ngx_http_request_t *r)
+{
+    ngx_http_omni_loc_conf_t *olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
+    omni_req_context_t *ctx = omni_get_req_ctx(r);
+    if (ctx == NULL || ctx->backends == NULL)
+    {
+        return NULL;
+    }
+    ngx_array_t *arr = ctx->backends;
+    if (arr->nelts == 0)
+    {
+        return NULL;
+    }
+    ngx_uint_t idx = 0;
+    idx = olcf->rr_index++ % arr->nelts;
+
+    ngx_omni_backend_t *b = arr->elts;
+    return &b[idx];
+}
+
 static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
 {
     if (r->parent != NULL)
@@ -140,6 +176,39 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
         ngx_http_finalize_request(r, NGX_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
+
+    ngx_http_omni_loc_conf_t *olcf;
+    ngx_http_omni_main_conf_t *mcf;
+    ngx_omni_upstream_entry_t *entry;
+
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: enter main request handler");
+
+    olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
+    if (olcf == NULL || olcf->upstream_name.len == 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: no upstream_name in loc conf");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    /* find parsed upstream entry from main conf */
+    mcf = ngx_http_get_module_main_conf(r, ngx_http_omni_proxy_module);
+    if (mcf == NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: main conf missing");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    entry = ngx_http_omni_find_entry(mcf, &olcf->upstream_name);
+    if (entry == NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: upstream \"%V\" not found in configuration", &olcf->upstream_name);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    omni_req_context_t *ctx = omni_get_req_ctx(r);
+
+    ctx->backends = entry->backends;
+
     req->metrics.time_received = ngx_current_msec;
 
     ngx_http_cleanup_t *cleanup = ngx_http_cleanup_add(r, 0);
@@ -280,14 +349,34 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
 static ngx_int_t ngx_http_prefill_wakeup(omni_req_t *req)
 {
     ngx_http_request_t *r = req->data;
-    size_t len = prefill_uri_len + r->uri.len;
-    u_char *uri = ngx_pcalloc(r->pool, len);
-    ngx_memcpy(uri, prefill_uri, prefill_uri_len);
-    ngx_memcpy(uri + prefill_uri_len, r->uri.data, r->uri.len);
 
-    ngx_str_t sub_uri = (ngx_str_t){prefill_uri_len + r->uri.len, uri};
+    size_t prelen = PREFILL_URI_LEN + r->uri.len;
+    if (r->args.len)
+    {
+        prelen += 1 + r->args.len;
+    }
+    u_char *prefill_uri = ngx_pnalloc(r->pool, prelen + 1);
+    if (prefill_uri == NULL)
+    {
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    u_char *p = prefill_uri;
+    p = ngx_cpymem(p, PREFILL_URI, PREFILL_URI_LEN);
+    p = ngx_cpymem(p, r->uri.data, r->uri.len);
+    if (r->args.len)
+    {
+        *p++ = '?';
+        p = ngx_cpymem(p, r->args.data, r->args.len);
+    }
+    *p = '\0';
+
+    ngx_str_t sub_uri;
+    sub_uri.len = ngx_strlen(prefill_uri);
+    sub_uri.data = prefill_uri;
+
     ngx_http_post_subrequest_t *psr = ngx_pcalloc(r->pool, sizeof(ngx_http_post_subrequest_t));
-
     psr->handler = ngx_http_prefill_post_subrequest;
     psr->data = req;
 
@@ -307,7 +396,7 @@ static ngx_int_t ngx_http_prefill_wakeup(omni_req_t *req)
     omni_req_context_t *ctx = omni_get_req_ctx(r);
     ngx_http_set_ctx(sr, ctx, ngx_http_omni_proxy_module);
 
-    omni_proxy_prepare_prefill_subrequest(r, sr, omni_get_req_ctx(req->data));
+    omni_proxy_prepare_prefill_subrequest(r, sr, ctx);
 
     omni_phase_transition_local(PHASE_PREFILLING, req);
 
@@ -381,29 +470,27 @@ static ngx_int_t omni_proxy_upstream_init(ngx_http_request_t *r, ngx_http_upstre
     return NGX_OK;
 }
 
-static ngx_int_t omni_proxy_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
+static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf)
 {
     ngx_chain_t *cl;
 
     omni_req_t *req = omni_get_req(r);
 
     // Update request level statistics
-    if (r->main == r && req->phase == PHASE_DECODING)
-    {
-        if (req->metrics.time_last_reponse)
-        {
-            req->metrics.tpot =
-                ((req->metrics.tpot * req->metrics.decoded_tokens) +
-                 ngx_current_msec - req->metrics.time_last_reponse) /
-                ++req->metrics.decoded_tokens;
-        }
-        else
-        {
-            req->metrics.time_first_token = req->metrics.tpot = ngx_current_msec - req->metrics.time_to_decode;
-        }
 
-        req->metrics.time_last_reponse = ngx_current_msec;
+    if (req->metrics.time_last_reponse)
+    {
+        req->metrics.tpot =
+            ((req->metrics.tpot * req->metrics.decoded_tokens) +
+             ngx_current_msec - req->metrics.time_last_reponse) /
+            ++req->metrics.decoded_tokens;
     }
+    else
+    {
+        req->metrics.time_first_token = req->metrics.tpot = ngx_current_msec - req->metrics.time_to_decode;
+    }
+
+    req->metrics.time_last_reponse = ngx_current_msec;
 
     omni_upstream_decode_t *us = &g_state->decode_states[req->upstream_endpoint_idx];
     // Update batch level statistics
@@ -440,98 +527,353 @@ static ngx_int_t omni_proxy_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         batch->num_requests++;
         batch->num_tokens += req->metrics.prompt_num_tokens + req->metrics.decoded_tokens;
     }
-
-    return local_state.ngx_http_next_body_filter(r, in);
 }
 
-ngx_int_t ngx_http_omni_proxy_redirect(ngx_http_request_t *r,
-                                       ngx_str_t *uri, ngx_str_t *args)
+static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r);
+static ngx_int_t ngx_http_omni_reinit_request(ngx_http_request_t *r);
+static ngx_int_t ngx_http_omni_process_status_line(ngx_http_request_t *r);
+static ngx_int_t ngx_http_omni_process_header(ngx_http_request_t *r);
+static ngx_int_t ngx_http_omni_input_filter_init(void *data);
+static ngx_int_t ngx_http_omni_input_filter(void *data, ssize_t bytes);
+static void ngx_http_omni_finalize_request(ngx_http_request_t *r, ngx_int_t rc);
+
+static ngx_int_t
+ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
 {
-    ngx_http_core_srv_conf_t *cscf;
+    omni_req_info_t *ctx = ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 
-    r->uri_changes--;
+    ngx_http_omni_loc_conf_t *olcf;
+    ngx_http_omni_main_conf_t *mcf;
 
-    if (r->uri_changes == 0)
+    if (ngx_http_upstream_create(r) != NGX_OK)
     {
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "rewrite or internal redirection cycle "
-                      "while internally redirecting to \"%V\"",
-                      uri);
-
-        r->main->count++;
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-        return NGX_DONE;
+        return NGX_ERROR;
+    }
+    olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
+    if (olcf->upstream == NULL)
+    {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    r->uri = *uri;
+    ngx_http_upstream_t *u = r->upstream;
 
-    if (args)
+    u->conf = olcf->upstream->srv_conf[ngx_http_upstream_module.ctx_index];
+    u->conf->buffer_size = 8192;
+
+    u->create_request = ngx_http_omni_create_request;
+    u->reinit_request = ngx_http_omni_reinit_request;
+    u->process_header = ngx_http_omni_process_status_line;
+    u->input_filter_init = ngx_http_omni_input_filter_init;
+    u->input_filter = ngx_http_omni_input_filter;
+    u->input_filter_ctx = r;
+    u->finalize_request = ngx_http_omni_finalize_request;
+
+    u->output.tag = (ngx_buf_tag_t)&ngx_http_omni_proxy_module;
+
+    ngx_omni_backend_t *b = ngx_http_omni_choose_backend(r);
+    if (b == NULL)
     {
-        r->args = *args;
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: no backend available");
+        return NGX_ERROR;
+    }
+
+    u->resolved = ngx_pcalloc(r->pool, sizeof(ngx_http_upstream_resolved_t));
+    if (u->resolved == NULL)
+    {
+        return NGX_ERROR;
+    }
+
+    struct sockaddr *sa = ngx_pcalloc(r->pool, b->socklen);
+    if (sa == NULL)
+    {
+        return NGX_ERROR;
+    }
+    ngx_memcpy(sa, b->sockaddr, b->socklen);
+
+    u->resolved->sockaddr = sa;
+    u->resolved->port = b->port;
+    u->resolved->socklen = b->socklen;
+    u->resolved->naddrs = 1;
+
+    u->resolved->host.len = b->text.len;
+    u->resolved->host.data = ngx_pnalloc(r->pool, b->text.len + 1);
+    if (u->resolved->host.data == NULL)
+    {
+        return NGX_ERROR;
+    }
+    ngx_memcpy(u->resolved->host.data, b->text.data, b->text.len);
+    u->resolved->host.data[b->text.len] = '\0';
+
+    ngx_http_upstream_init(r);
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_omni_create_request(ngx_http_request_t *r)
+{
+    ngx_chain_t *cl, *body_chain, *out, **ll;
+    ngx_buf_t *hdr;
+    size_t body_len = 0;
+    ngx_str_t host;
+    omni_req_context_t *ctx = ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
+
+    omni_proxy_prepare_decode_request_body(r, ctx);
+
+    body_chain = r->request_body->bufs;
+
+    for (cl = body_chain; cl; cl = cl->next)
+    {
+        body_len += ngx_buf_size(cl->buf);
+    }
+
+    if (r->headers_in.host && r->headers_in.host->value.len)
+    {
+        host = r->headers_in.host->value;
     }
     else
     {
-        ngx_str_null(&r->args);
+        host = r->headers_in.server;
     }
 
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "internal redirect: \"%V?%V\"", uri, &r->args);
+    hdr = ngx_create_temp_buf(r->pool,
+                              128 + r->uri.len + host.len);
+    if (hdr == NULL)
+    {
+        return NGX_ERROR;
+    }
 
-    ngx_http_set_exten(r);
-    omni_req_context_t *ctx = ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
+    hdr->last = ngx_snprintf(hdr->last,
+                             hdr->end - hdr->last,
+                             "POST %V HTTP/1.1\r\n"
+                             "Host: %V\r\n"
+                             //  "Connection: keep-alive\r\n"
+                             "Content-Type: application/json\r\n"
+                             "Content-Length: %O\r\n"
+                             "\r\n",
+                             &r->uri,
+                             &host,
+                             (off_t)body_len);
 
-    ngx_memzero(r->ctx, sizeof(void *) * ngx_http_max_module);
-    ngx_http_set_ctx(r, ctx, ngx_http_omni_proxy_module);
+    cl = ngx_alloc_chain_link(r->pool);
+    if (cl == NULL)
+    {
+        return NGX_ERROR;
+    }
+    cl->buf = hdr;
+    cl->next = body_chain;
 
-    cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
-    r->loc_conf = cscf->ctx->loc_conf;
+    r->upstream->request_bufs = cl;
 
-    ngx_http_update_location_config(r);
+    ngx_http_upstream_t *u = r->upstream;
 
-#if (NGX_HTTP_CACHE)
-    r->cache = NULL;
-#endif
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "ngx_http_omni_create_request: [Line %d]", __LINE__);
 
-    r->internal = 1;
-    r->valid_unparsed_uri = 0;
-    r->add_uri_to_alias = 0;
-    r->main->count++;
+    return NGX_OK;
+}
 
-    ngx_http_handler(r);
+static ngx_int_t
+ngx_http_omni_reinit_request(ngx_http_request_t *r)
+{
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "ngx_http_omni_reinit_request(ngx_http_request_t *r): [Line %d]", __LINE__);
+    return NGX_OK;
+}
 
-    return NGX_DONE;
+static ngx_int_t
+ngx_http_omni_process_status_line(ngx_http_request_t *r)
+{
+    ngx_int_t rc;
+    ngx_http_upstream_t *u = r->upstream;
+    ngx_http_status_t st;
+    ngx_memzero(&st, sizeof(st));
+
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "ngx_http_omni_process_status_line(ngx_http_request_t *r): [Line %d]", __LINE__);
+
+    rc = ngx_http_parse_status_line(r, &u->buffer, &st);
+
+    if (rc == NGX_AGAIN)
+    {
+        return NGX_AGAIN;
+    }
+
+    if (rc == NGX_ERROR)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: invalid status line from upstream");
+        return NGX_HTTP_UPSTREAM_INVALID_HEADER;
+    }
+
+    u->headers_in.status_n = st.code;
+
+    u->headers_in.status_line.len = st.end - st.start;
+    u->headers_in.status_line.data = ngx_pnalloc(r->pool, u->headers_in.status_line.len);
+    if (u->headers_in.status_line.data == NULL)
+    {
+        return NGX_ERROR;
+    }
+    ngx_memcpy(u->headers_in.status_line.data, st.start, u->headers_in.status_line.len);
+
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "ngx_http_omni_process_status_line(ngx_http_request_t *r): [Line %d]", __LINE__);
+
+    return ngx_http_omni_process_header(r);
+}
+static ngx_int_t
+ngx_http_omni_process_header(ngx_http_request_t *r)
+{
+    ngx_int_t rc;
+    ngx_http_upstream_t *u;
+    ngx_table_elt_t *h;
+
+    u = r->upstream;
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                  "omni_process_header: start parsing headers from upstream");
+
+    for (;;)
+    {
+        rc = ngx_http_parse_header_line(r, &u->buffer, 1);
+
+        if (rc == NGX_OK)
+        {
+            h = ngx_list_push(&r->headers_out.headers);
+            if (h == NULL)
+            {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            h->key.len = r->header_name_end - r->header_name_start;
+            h->key.data = ngx_pnalloc(r->pool, h->key.len);
+            if (h->key.data == NULL)
+            {
+                return NGX_ERROR;
+            }
+            ngx_memcpy(h->key.data, r->header_name_start, h->key.len);
+
+            h->value.len = r->header_end - r->header_start;
+            h->value.data = ngx_pnalloc(r->pool, h->value.len);
+            if (h->value.data == NULL)
+            {
+                return NGX_ERROR;
+            }
+            ngx_memcpy(h->value.data, r->header_start, h->value.len);
+
+            h->lowcase_key = ngx_pnalloc(r->pool, h->key.len);
+            if (h->lowcase_key == NULL)
+            {
+                return NGX_ERROR;
+            }
+            ngx_strlow(h->lowcase_key, h->key.data, h->key.len);
+
+            h->hash = ngx_hash_key_lc(h->lowcase_key, h->key.len);
+
+            continue;
+        }
+
+        if (rc == NGX_HTTP_PARSE_HEADER_DONE)
+        {
+            // Mark as processed to avoid forward to filter below
+            u->buffer.last = u->buffer.pos;
+
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                          "omni_process_header: finished parsing header");
+
+            return NGX_OK;
+        }
+
+        if (rc == NGX_AGAIN)
+        {
+            return NGX_AGAIN;
+        }
+
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "omni_process_header: invalid header from upstream");
+        return NGX_HTTP_UPSTREAM_INVALID_HEADER;
+    }
+}
+
+static ngx_int_t
+ngx_http_omni_input_filter_init(void *data)
+{
+    return NGX_OK;
+}
+
+/* input_filter: forward upstream body to client immediately (copy into r->pool, set flush) */
+static ngx_int_t
+ngx_http_omni_input_filter(void *data, ssize_t bytes)
+{
+    ngx_http_request_t *r = data;
+    ngx_http_upstream_t *u = r->upstream;
+
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+                  "ngx_http_omni_input_filter: [Line %d, len:%d, bytes:%d]", __LINE__, u->buffer.last - u->buffer.pos, bytes);
+
+    // This is wrong, but it works and send response to client with extra gargbage, find a way to fix it.
+    u->buffer.last = u->buffer.pos + bytes;
+    /* if u->buffer contains data, copy it and forward */
+    if (u->buffer.pos != NULL && u->buffer.pos < u->buffer.last)
+    {
+        size_t len = u->buffer.last - u->buffer.pos;
+        ngx_buf_t *b = ngx_create_temp_buf(r->pool, len);
+        if (b == NULL)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "ngx_http_omni_input_filter: [Line %d]", __LINE__);
+            return NGX_ERROR;
+        }
+        ngx_memcpy(b->pos, u->buffer.pos, len);
+        b->last = b->pos + len;
+        b->memory = 1;
+        b->flush = 1;
+
+        ngx_chain_t *cl = ngx_alloc_chain_link(r->pool);
+        if (cl == NULL)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "ngx_http_omni_input_filter: [Line %d]", __LINE__);
+            return NGX_ERROR;
+        }
+        cl->buf = b;
+        cl->next = NULL;
+
+        ngx_int_t rc = ngx_http_output_filter(r, cl);
+        if (rc == NGX_ERROR)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "ngx_http_omni_input_filter: [Line %d]", __LINE__);
+            return NGX_ERROR;
+        }
+    }
+
+    omni_proxy_update_decode_stats(r, &u->buffer);
+
+    return NGX_OK;
+}
+
+static void
+ngx_http_omni_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
+{
+    // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy finalize request rc=%d", (int)rc);
 }
 
 static ngx_int_t ngx_http_decode_wakeup(omni_req_t *req)
 {
     ngx_http_request_t *r = req->data;
-    size_t len = decode_uri_len + r->uri.len;
-    u_char *uri = ngx_pcalloc(r->pool, len);
-    ngx_memcpy(uri, decode_uri, prefill_uri_len);
-    ngx_memcpy(uri + decode_uri_len, r->uri.data, r->uri.len);
-    ngx_str_t decode_uri = (ngx_str_t){len, uri};
+    ngx_int_t rc = ngx_http_omni_start_decode_upstream(r);
 
-    r->count--;
-
-    omni_proxy_prepare_decode_request_body(r, omni_get_req_ctx(req->data));
-
-    omni_phase_transition_local(PHASE_DECODING, req);
+    omni_phase_transition_all(PHASE_DECODING, req);
     req->metrics.time_to_decode = ngx_current_msec;
 
-    r->count = 0;
-    r->headers_out.status = NGX_HTTP_OK;
-    r->headers_out.content_length_n = -1;
-    r->headers_out.content_length = NULL;
-    r->header_only = 0;
+    if (rc == NGX_OK)
+    {
+        /* ngx_http_upstream_init will drive request; return NGX_OK from post_subrequest */
+        return NGX_OK;
+    }
 
-    ngx_http_clear_last_modified(r);
-    ngx_http_clear_accept_ranges(r);
-    ngx_http_clear_content_length(r);
-
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Decode-%d] Submited to: %d",
-                  req->slot_index, req->upstream_endpoint_idx);
-
-    return ngx_http_omni_proxy_redirect(r, &decode_uri, NULL);
+    ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+    return NGX_OK;
 }
 
 typedef ngx_int_t (*omni_run_handle_t)(omni_req_t *);
@@ -769,8 +1111,171 @@ ngx_int_t omni_proxy_init_global_state(ngx_conf_t *cf)
     return NGX_OK;
 }
 
+/* -------------------- main conf create/init -------------------- */
+
+static void *
+ngx_http_omni_create_main_conf(ngx_conf_t *cf)
+{
+    ngx_http_omni_main_conf_t *mcf;
+
+    mcf = ngx_pcalloc(cf->pool, sizeof(ngx_http_omni_main_conf_t));
+    if (mcf == NULL)
+    {
+        return NULL;
+    }
+
+    mcf->entries = NULL;
+    mcf->upstreams = NULL;
+
+    return mcf;
+}
+
+static char *
+ngx_http_omni_init_main_conf(ngx_conf_t *cf, void *conf)
+{
+    return NGX_CONF_OK;
+}
+
+/* -------------------- loc conf create/merge -------------------- */
+
+static void *
+ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
+{
+    ngx_http_omni_loc_conf_t *conf;
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_omni_loc_conf_t));
+    if (conf == NULL)
+    {
+        return NULL;
+    }
+
+    conf->upstream_name.len = 0;
+    conf->upstream_name.data = NULL;
+    conf->rr_index = 0;
+
+    return conf;
+}
+
+static char *
+ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+{
+    ngx_http_omni_loc_conf_t *prev = parent;
+    ngx_http_omni_loc_conf_t *conf = child;
+
+    if (conf->upstream_name.data == NULL)
+    {
+        conf->upstream_name = prev->upstream_name;
+    }
+
+    return NGX_CONF_OK;
+}
+
 #define PREFILL_ENDPOINTS "prefill_endpoints"
 #define DECODE_ENDPOINTS "decode_endpoints"
+
+static ngx_int_t
+ngx_http_omni_init_upstreams(ngx_conf_t *cf)
+{
+    ngx_url_t u;
+    ngx_http_omni_main_conf_t *mcf;
+    ngx_http_upstream_main_conf_t *umcf;
+    ngx_uint_t i;
+
+    mcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_omni_proxy_module);
+    if (mcf == NULL)
+    {
+        return NGX_ERROR;
+    }
+
+    mcf->entries = ngx_array_create(cf->pool, 4, sizeof(ngx_omni_upstream_entry_t));
+    if (mcf->entries == NULL)
+    {
+        return NGX_ERROR;
+    }
+
+    umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
+    if (umcf == NULL)
+    {
+        return NGX_OK;
+    }
+
+    ngx_array_t *upstreams = &umcf->upstreams;
+    ngx_uint_t nupstreams = upstreams->nelts;
+    ngx_http_upstream_srv_conf_t **uscfp = upstreams->elts;
+
+    for (i = 0; i < nupstreams; i++)
+    {
+        ngx_http_upstream_srv_conf_t *uscf = uscfp[i];
+
+        /* create an entry for this upstream name */
+        ngx_omni_upstream_entry_t *entry = ngx_array_push(mcf->entries);
+        if (entry == NULL)
+        {
+            return NGX_ERROR;
+        }
+        ngx_memzero(entry, sizeof(ngx_omni_upstream_entry_t));
+
+        entry->name.len = uscf->host.len;
+        entry->name.data = ngx_pnalloc(cf->pool, uscf->host.len + 1);
+        if (entry->name.data == NULL)
+        {
+            return NGX_ERROR;
+        }
+        ngx_memcpy(entry->name.data, uscf->host.data, uscf->host.len);
+        entry->name.data[uscf->host.len] = '\0';
+
+        entry->backends = ngx_array_create(cf->pool, 4, sizeof(ngx_omni_backend_t));
+        if (entry->backends == NULL)
+        {
+            return NGX_ERROR;
+        }
+
+        if (uscf->peer.data == NULL)
+        {
+            continue;
+        }
+
+        ngx_http_upstream_rr_peers_t *peers = uscf->peer.data;
+
+        for (; peers; peers = peers->next)
+        {
+            ngx_uint_t j;
+            ngx_http_upstream_rr_peer_t *peer = peers->peer;
+            for (j = 0; j < peers->number; j++)
+            {
+                ngx_omni_backend_t *b = ngx_array_push(entry->backends);
+                if (b == NULL)
+                {
+                    return NGX_ERROR;
+                }
+                ngx_memzero(b, sizeof(ngx_omni_backend_t));
+
+                struct sockaddr *sa = ngx_pcalloc(cf->pool, peer[j].socklen);
+                if (sa == NULL)
+                {
+                    return NGX_ERROR;
+                }
+                ngx_memcpy(sa, peer[j].sockaddr, peer[j].socklen);
+                b->sockaddr = sa;
+                b->socklen = peer[j].socklen;
+
+                struct sockaddr_in *sin = (struct sockaddr_in *)peer->sockaddr;
+                b->port = ntohs(sin->sin_port);
+
+                b->text.len = peer[j].name.len;
+                b->text.data = ngx_pnalloc(cf->pool, b->text.len + 1);
+                if (b->text.data == NULL)
+                {
+                    return NGX_ERROR;
+                }
+                ngx_memcpy(b->text.data, peer[j].name.data, b->text.len);
+                b->text.data[b->text.len] = '\0';
+            }
+        }
+    }
+
+    return NGX_OK;
+}
 
 static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
 {
@@ -795,6 +1300,10 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
+    ngx_memzero(&local_state, sizeof(omni_worker_local_state_t));
+
+    // local_state.ngx_http_next_body_filter = ngx_http_top_body_filter;
+    // ngx_http_top_body_filter = omni_proxy_body_filter;
     ngx_http_upstream_main_conf_t *upcf;
     ngx_http_upstream_srv_conf_t **uscfp;
 
@@ -823,7 +1332,7 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
         }
     }
 
-    return NGX_OK;
+    return ngx_http_omni_init_upstreams(cf);
 }
 
 static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
@@ -856,28 +1365,60 @@ static char *omni_proxy_init_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
     ngx_http_core_loc_conf_t *clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = omni_proxy_handler;
 
+    ngx_http_omni_loc_conf_t *olcf = conf;
+    ngx_str_t *value;
+    ngx_url_t u;
+
+    value = cf->args->elts;
+
+    if (value[1].len == 0)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "omni_proxy requires upstream name");
+        return NGX_CONF_ERROR;
+    }
+
+    olcf->upstream_name.len = value[1].len;
+    olcf->upstream_name.data = ngx_pstrdup(cf->pool, &value[1]);
+    if (olcf->upstream_name.data == NULL)
+    {
+        return NGX_CONF_ERROR;
+    }
+
+    ngx_memzero(&u, sizeof(ngx_url_t));
+    u.url = value[1];
+    u.no_resolve = 1;
+
+    olcf->upstream = ngx_http_upstream_add(cf, &u, 0);
+    if (olcf->upstream == NULL)
+    {
+        return NGX_CONF_ERROR;
+    }
+
     return NGX_CONF_OK;
 }
 
 static ngx_command_t omni_proxy_commands[] = {
-    {ngx_string("omni_proxy"),
-     NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS,
-     omni_proxy_init_conf,
-     NGX_HTTP_LOC_CONF_OFFSET,
-     0,
-     NULL},
+    {
+        ngx_string("omni_proxy"),
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        omni_proxy_init_conf,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        0,
+        NULL,
+    },
     ngx_null_command};
+
 static ngx_http_module_t omni_proxy_module_ctx = {
-    NULL,                   // preconfiguration
-    omni_proxy_post_config, // postconfiguration
-    NULL,                   // create main configuration
-    NULL,                   // init main configuration
+    NULL,                           // preconfiguration
+    omni_proxy_post_config,         // postconfiguration
+    ngx_http_omni_create_main_conf, /* create main configuration */
+    ngx_http_omni_init_main_conf,   /* init main configuration */
 
-    NULL, // create server configuration
-    NULL, // merge server configuration
+    NULL, /* create server configuration */
+    NULL, /* merge server configuration */
 
-    NULL, // create location configuration
-    NULL  // merge location configuration
+    ngx_http_omni_create_loc_conf, /* create location configuration */
+    ngx_http_omni_merge_loc_conf   /* merge location configuration */
 };
 
 ngx_module_t ngx_http_omni_proxy_module = {
