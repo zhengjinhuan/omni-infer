@@ -21,40 +21,35 @@ import copy
 import gc
 import os
 import time
-from typing import TYPE_CHECKING, Dict, Optional, Union, Any
+from typing import TYPE_CHECKING, Dict, Optional, Union, Any, List
 from contextlib import nullcontext, contextmanager
 
 import numpy as np
 import torch
 import torch.distributed as dist
 from vllm.config import CompilationLevel, VllmConfig
-from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group
 from vllm import forward_context
 from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
 from vllm.sequence import IntermediateTensors
-from vllm.utils import (DeviceMemoryProfiler,
+from vllm.utils import (DeviceMemoryProfiler, is_pin_memory_available,
                         LayerBlockType, LazyLoader, cdiv)
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
                                         KVCacheConfig, KVCacheSpec)
 from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.utils import bind_kv_cache
 from vllm.v1.worker.gpu_input_batch import InputBatch
-
-from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
-from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
-from omni.models.common.layers.sampler import SimpleSampler
-from omni.adaptors.vllm.platform import NPUPlatform
-from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
-from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
-from vllm.distributed.parallel_state import get_dp_group
-from vllm.distributed.kv_transfer import (get_kv_transfer_group,
-                                          has_kv_transfer_group)
+from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
-from vllm.utils import is_pin_memory_available
+from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
+from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
+from omni.adaptors.vllm.platform import NPUPlatform
+from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
+from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
 
 MTP_METHOD_NAME = "deepseek_mtp"
 
@@ -108,14 +103,24 @@ class GraphCompileConfiguration:
         torch._dynamo.mark_static(args[0])
         torch._dynamo.mark_static(args[1])
 
-def mark_static_for_graph_common(input_ids, positions, kv_caches):
+def mark_static_for_graph_default(
+        input_ids,
+        positions: Optional[torch.Tensor] = None,
+        kv_caches: Optional[List[torch.Tensor]] = None,
+        hidden_states: Optional[torch.Tensor] = None
+    ):
     torch._dynamo.mark_static(input_ids)
-    torch._dynamo.mark_static(positions)
+    if positions is not None:
+        torch._dynamo.mark_static(positions)
 
-    for kv_cache in kv_caches:
-        if kv_cache is not None:
-            torch._dynamo.mark_static(kv_cache[0]) # k_cache
-            torch._dynamo.mark_static(kv_cache[1]) # v_cache
+    if kv_caches is not None:
+        for kv_cache in kv_caches:
+            if kv_cache is not None:
+                torch._dynamo.mark_static(kv_cache[0]) # k_cache
+                torch._dynamo.mark_static(kv_cache[1]) # v_cache
+
+    if hidden_states is not None:
+        torch._dynamo.mark_static(hidden_states)
 
 class NPUModelRunner(GPUModelRunner):
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
@@ -130,7 +135,8 @@ class NPUModelRunner(GPUModelRunner):
         self.max_num_reqs = self.scheduler_config.max_num_seqs
         if self.use_spec_decode:
             self.rejection_sampler = SimpleSampler(self.sampler)
-
+        else:
+            self.sampler = AscendSamplerV1()
         self._init_graph_options()
 
         self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,
@@ -170,6 +176,8 @@ class NPUModelRunner(GPUModelRunner):
         self.attn_mask_builder = AttentionMaskBuilder.initialize_from_len(
             self.attn_mask_len, self.dtype)
 
+        self.model_mark_static = False
+        self.dummy_model_mark_static = False
         self.drafter_mark_static = False
         self.dummy_drafter_mark_static = False
 
@@ -451,10 +459,12 @@ class NPUModelRunner(GPUModelRunner):
             if self.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly:
                 start_debug = time.time()
                 logger.debug("Start running compiled model.")
-                if isinstance(self.model, GraphCompileConfiguration):
-                    self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
-                else:
-                    mark_static_for_graph_common(input_ids, positions, self.kv_caches)
+                if not self.model_mark_static:
+                    if isinstance(self.model, GraphCompileConfiguration):
+                        self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
+                    else:
+                        mark_static_for_graph_default(input_ids, positions, self.kv_caches)
+                    self.model_mark_static = True
                 start_os_env = time.time()
                 if os.environ.get('PROFILING_FORWARD', "0") == '1':
                     forward_results = run_model_with_profiling(self.model, input_ids, positions, intermediate_tensors,
@@ -696,11 +706,13 @@ class NPUModelRunner(GPUModelRunner):
 
         with set_forward_context(attn_metadata, self.vllm_config):
             for layer_idx in range(num_layers):
+                drafter = self.drafter_list[layer_idx]
                 # first time for graph mode need call mark_static
                 if use_graph_mode and not self.drafter_mark_static:
-                    torch._dynamo.mark_static(mtp_input_tokens)
-                    torch._dynamo.mark_static(raw_hidden_states)
-                drafter = self.drafter_list[layer_idx]
+                    if isinstance(drafter, GraphCompileConfiguration):
+                        drafter.mark_static_for_graph(mtp_input_tokens, raw_hidden_states)
+                    else:
+                        mark_static_for_graph_default(mtp_input_tokens, hidden_states=raw_hidden_states)
                 drafter_kwargs = dict(
                     input_ids=mtp_input_tokens.to(torch.long),
                     positions=positions,
@@ -726,7 +738,7 @@ class NPUModelRunner(GPUModelRunner):
                     update_tokens(mtp_input_tokens, mtp_forward_tokens)
                     raw_hidden_states = mtp_hidden_states
 
-            if use_graph_mode:
+            if use_graph_mode and not self.drafter_mark_static:
                 self.drafter_mark_static = True
 
         return torch.stack(mtp_forward_token_list, dim=1)
@@ -752,14 +764,16 @@ class NPUModelRunner(GPUModelRunner):
         positions = self.mrope_positions[:, :num_tokens] if self.uses_mrope else self.positions[:num_tokens]
         raw_hidden_states = None
 
-        def run_spec_decode(hidden_states, attn_metadata, kv_caches, drafter_list, mark_static=False):
+        def run_dummy_spec_decode(hidden_states, attn_metadata, kv_caches, drafter_list, mark_static=False):
             if self.use_spec_decode and self.speculative_config.method == MTP_METHOD_NAME:
-                if mark_static and not self.dummy_drafter_mark_static:
-                    torch._dynamo.mark_static(input_ids)
-                    torch._dynamo.mark_static(hidden_states)
-                    self.dummy_drafter_mark_static = True
                 for layer_idx in range(self.speculative_config.num_speculative_tokens):
-                    drafter_list[layer_idx](
+                    drafter = drafter_list[layer_idx]
+                    if mark_static and not self.dummy_drafter_mark_static:
+                        if isinstance(drafter, GraphCompileConfiguration):
+                            drafter.mark_static_for_graph(input_ids, hidden_states)
+                        else:
+                            mark_static_for_graph_default(input_ids, hidden_states=hidden_states)
+                    drafter(
                         input_ids=input_ids,
                         positions=positions,
                         kv_caches=kv_caches,
@@ -770,6 +784,8 @@ class NPUModelRunner(GPUModelRunner):
                         inputs_embeds=None,
                         require_hidden_states=True,
                     )
+                if mark_static and not self.dummy_drafter_mark_static:
+                    self.dummy_drafter_mark_static = True
 
         # No kv_caches: profile run
         if not self.kv_caches:
@@ -784,7 +800,7 @@ class NPUModelRunner(GPUModelRunner):
                     raw_hidden_states, hidden_states = forward_results
                 else:
                     hidden_states = forward_results
-                run_spec_decode(raw_hidden_states, None, None, self.drafter_list)
+                run_dummy_spec_decode(raw_hidden_states, None, None, self.drafter_list)
             return hidden_states
 
         # With kv_caches: dummy run for graph capture/placement
@@ -820,10 +836,12 @@ class NPUModelRunner(GPUModelRunner):
             use_compile = self.enable_torchair_graph_mode and (is_pd_seperate_d or is_not_pd_seperate_and_capture_model)
             if use_compile:
                 logger.debug("Start running dummy compiled model.")
-                if isinstance(self.model, GraphCompileConfiguration):
-                    self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
-                else:
-                    mark_static_for_graph_common(input_ids, positions, self.kv_caches)
+                if not self.dummy_model_mark_static:
+                    if isinstance(self.model, GraphCompileConfiguration):
+                        self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
+                    else:
+                        mark_static_for_graph_default(input_ids, positions, self.kv_caches)
+                    self.dummy_model_mark_static = True
             else:
                 logger.debug("Start running dummy eager model.")
             forward_results = self.model(
@@ -837,11 +855,12 @@ class NPUModelRunner(GPUModelRunner):
                 raw_hidden_states, hidden_states = forward_results
             else:
                 hidden_states = forward_results
-            run_spec_decode(
-                raw_hidden_states, attn_metadata,
-                self.kv_caches[-self.speculative_config.num_speculative_tokens:] if self.kv_caches else None,
-                self.drafter_list, mark_static=use_compile
-            )
+            if self.use_spec_decode:
+                run_dummy_spec_decode(
+                    raw_hidden_states, attn_metadata,
+                    self.kv_caches[-self.speculative_config.num_speculative_tokens:] if self.kv_caches else None,
+                    self.drafter_list, mark_static=use_compile
+                )
         return hidden_states
 
     def profile_run(self) -> None:

@@ -5,6 +5,7 @@ import torch
 from torch import nn
 import torch_npu
 import torchair as tng
+import torch.distributed as dist
 from transformers import PretrainedConfig
 from vllm.attention.backends.abstract import (
     AttentionMetadata,
@@ -20,6 +21,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.distributed.communication_op import tensor_model_parallel_all_gather
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_world_size,
+    get_tp_group
 )
 from vllm.platforms import current_platform
 
@@ -29,11 +31,13 @@ from omni.models.common.layers.linear import (
     MergedReplicatedLinear,
     RowParallelLinearWithReduceScatter,
     DP2TPRowParallelLinear,
+    Tp2DpAndTpRowParallelLinear,
 )
 from omni.models.common.layers.layernorm import RMSNorm
 from omni.adaptors.vllm.distributed.communication_op import mla_tensor_model_parallel_all_gather
 from omni.adaptors.vllm.distributed.parallel_state import (
     get_o_proj_tp_group,
+    get_o_proj_dp_group,
     GroupCoordinator
 )
 from omni.models.common.config.model_config import model_extra_config
@@ -141,11 +145,20 @@ class DeepseekMLA(nn.Module):
             prefix=f"{prefix}.kv_b_proj")
         # O projection.
         if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
-            self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
-                                           hidden_size,
-                                           bias=False,
-                                           quant_config=quant_config,
-                                           prefix=f"{prefix}.o_proj")
+            if model_extra_config.parall_config.o_proj_tp_size > 1:
+                self.o_proj = Tp2DpAndTpRowParallelLinear(self.num_heads * self.v_head_dim,
+                                                          hidden_size,
+                                                          tp_size=get_o_proj_tp_group().world_size,
+                                                          tp_rank= get_o_proj_tp_group().rank_in_group,
+                                                          bias=False,
+                                                          quant_config=quant_config,
+                                                          prefix=f"{prefix}.o_proj")
+            else:
+                self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
+                                               hidden_size,
+                                               bias=False,
+                                               quant_config=quant_config,
+                                               prefix=f"{prefix}.o_proj")
         elif model_extra_config.parall_config.o_proj_tp_size > 1:
             self.o_proj = DP2TPRowParallelLinear(self.num_heads * self.v_head_dim,
                                                  hidden_size,
@@ -307,7 +320,10 @@ class DeepseekMLA(nn.Module):
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim],  dim=-1)
         # k_pe:BNS,64 kv_a:BNS, 512, kv_states:bnsd, cos,sin:bnsd, kv cache:bsnd
         q_pe = q_pe.unsqueeze(2)
-        cos, sin = self.rotary_emb.get_cos_sin(positions)
+        if attn_metadata is None or model_extra_config.operator_opt_config.enable_prefill_micro_batch:
+            cos, sin = self.rotary_emb.get_cos_sin(positions)
+        else:
+            cos, sin = attn_metadata.prefill.cos, attn_metadata.prefill.sin
         q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin) # BNSD
         q_pe = q_pe.squeeze(2) #BSH
         q[..., self.qk_nope_head_dim:] = q_pe
@@ -339,9 +355,13 @@ class DeepseekMLA(nn.Module):
             k_pe = k_pe.unsqueeze(2)
             k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
             k_pe = k_pe.squeeze(2)
+
+        is_attn_output_reshape = model_extra_config.operator_opt_config.prefill_enable_mla_alltoall and attn_metadata is None
+        o_proj_tp_size = get_o_proj_dp_group().world_size \
+            if model_extra_config.parall_config.o_proj_tp_size > 1 else get_tensor_model_parallel_world_size()
         attn_output = torch.empty(
-            q.shape[0],
-            self.num_local_heads,
+            q.shape[0] // o_proj_tp_size if is_attn_output_reshape else q.shape[0],
+            self.num_local_heads * o_proj_tp_size if is_attn_output_reshape else self.num_local_heads,
             self.v_head_dim,
             device=q_nope.device,
             dtype=q_nope.dtype)
@@ -402,11 +422,41 @@ class DeepseekMLA(nn.Module):
         else:
             attn_output.fill_(0)
 
-        attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
-        if model_extra_config.parall_config.o_proj_tp_size > 1:
-            output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_local_heads, self.v_head_dim)
+        # if only set prefill_enable_mla_alltoall means prefill o_proj tp to dp
+        # if also set o_proj_tp_size means prefill o_proj tp to dp + tp
+        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
+            if attn_metadata is not None:
+                if model_extra_config.parall_config.o_proj_tp_size > 1:
+                    attn_output = attn_output.view(get_o_proj_dp_group().world_size, -1, self.num_local_heads, self.v_head_dim)
+                attn_output = attn_output.reshape(-1)
+                all_to_all_attn_output = torch.empty(
+                    [q.shape[0] * self.num_local_heads * self.v_head_dim],
+                    dtype=attn_output.dtype,
+                    device=current_platform.device_type
+                )
+                device_group = get_o_proj_dp_group().device_group \
+                    if model_extra_config.parall_config.o_proj_tp_size > 1 else get_tp_group().device_group
+                dist.all_to_all_single(all_to_all_attn_output, attn_output, group=device_group)
+                if model_extra_config.parall_config.o_proj_tp_size > 1:
+                    attn_output = all_to_all_attn_output.view(
+                        get_tensor_model_parallel_world_size() // get_o_proj_dp_group().world_size,
+                        q.shape[0] // get_tensor_model_parallel_world_size() * get_o_proj_dp_group().world_size,
+                        self.num_local_heads * self.v_head_dim
+                    ).transpose(0, 1).contiguous()
+                else:
+                    attn_output = all_to_all_attn_output.view(
+                        get_tensor_model_parallel_world_size(),
+                        q.shape[0] // get_tensor_model_parallel_world_size(),
+                        self.num_local_heads * self.v_head_dim
+                    ).transpose(0, 1).contiguous()
+            output, _ = self.o_proj.forward(
+                attn_output.reshape(-1, o_proj_tp_size * self.num_local_heads * self.v_head_dim))
         else:
-            output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
+            attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
+            if model_extra_config.parall_config.o_proj_tp_size > 1:
+                output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_local_heads, self.v_head_dim)
+            else:
+                output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
         return output
 
     def _forward_decode(

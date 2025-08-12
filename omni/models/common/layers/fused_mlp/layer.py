@@ -4,6 +4,8 @@ from typing import Optional
 from vllm.model_executor.layers.quantization.base_config import (QuantizationConfig, 
                                                                  QuantizeMethodBase)
 from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.distributed import (get_tensor_model_parallel_world_size, 
+                              get_tensor_model_parallel_rank)
 from vllm.distributed import (
     tensor_model_parallel_all_reduce,
     tensor_model_parallel_all_gather,
@@ -75,9 +77,13 @@ class FusedMLP(torch.nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
         self.gate_up_proj = MergedColumnParallelFlashCommLinear(
             hidden_size,
             [intermediate_size] * 2,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.gate_up_proj",
@@ -85,6 +91,8 @@ class FusedMLP(torch.nn.Module):
         self.down_proj = RowParallelFlashCommLinear(
             intermediate_size,
             hidden_size,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.down_proj",

@@ -38,6 +38,7 @@ from vllm.distributed import (divide,
                               get_ep_group,
                               get_dp_group,
                               get_tensor_model_parallel_world_size,
+                              get_tensor_model_parallel_rank,
                               tensor_model_parallel_all_gather,
                               get_world_group)
 from vllm.model_executor.layers.linear import (WEIGHT_LOADER_V2_SUPPORTED,
@@ -90,12 +91,11 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
-from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 
 
 """MLP 模块激活拆分长度，按64G显存拆分，需要根据序列长度以及性能确认最佳拆分长度"""
 SEQ_SPLIT_LENGTH = 4096
-SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_dispatch_combine else 256
+SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_moe_all_to_all else 256
 KVCACHE_NZ_DIM = 16
 """stream name"""
 STREAM_TOPK_COMPUTE = 'topk_compute'
@@ -143,9 +143,7 @@ class DeepSeekMergedColumnParallelLinear(LinearBase):
             input_size=self.input_size,
             output_size=self.output_size,
             params_dtype=self.params_dtype,
-            weight_loader=(
-                self.weight_loader_v2 if self.quant_method.__class__.__name__
-                                         in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader))
+            weight_loader=self.weight_loader)
         if bias:
             self.bias = Parameter(
                 torch.empty(self.output_size_per_partition,
@@ -349,9 +347,7 @@ class DeepSeekRowParallelLinear(LinearBase):
             input_size=self.input_size,
             output_size=self.output_size,
             params_dtype=self.params_dtype,
-            weight_loader=(
-                self.weight_loader_v2 if self.quant_method.__class__.__name__
-                                         in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader))
+            weight_loader=self.weight_loader)
         if not reduce_results and (bias and not skip_bias_add):
             raise ValueError("When not reduce the results, adding bias to the "
                              "results can lead to incorrect results")
@@ -966,7 +962,7 @@ class DeepseekMoE(nn.Module):
                                                                 .repeat(1, self.experts.top_k)
                         topk_ids = actual_batch_mask * topk_ids + (1 - actual_batch_mask) * self.n_total_experts
                     
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         pertoken_scale = tng.scope.npu_wait_tensor(pertoken_scale, pertoken_scale)
                         topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
 
@@ -976,12 +972,12 @@ class DeepseekMoE(nn.Module):
                         shared_output, _ = self.shared_experts(hidden_states, None, attn_metadata)
 
                 with tng.scope.npu_stream_switch('23'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         topk_cat = tng.scope.npu_wait_tensor(topk_cat, topk_cat)
                         topk_all = all_gather_two_stage(topk_cat, idx=1, dim=0, reverse=True)
 
                 with tng.scope.npu_stream_switch('22'):
-                    if not model_extra_config.operator_opt_config.moe_dispatch_combine:
+                    if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
                         topk_all = tng.scope.npu_wait_tensor(topk_all, topk_all)
                         if model_extra_config.operator_opt_config.enable_round_pipeline_comm:
                             pass
@@ -1159,6 +1155,8 @@ class AscendDeepseekAttention_MLA(nn.Module):
             self.o_proj = RowParallelLinearCross(self.num_heads * self.v_head_dim,
                                                 self.hidden_size,
                                                 bias=False,
+                                                tp_size=get_tensor_model_parallel_world_size() // get_npu_device_count(),
+                                                tp_rank=get_tensor_model_parallel_rank() // get_npu_device_count(),
                                                 quant_config=quant_config,
                                                 prefix=f"{prefix}.o_proj")
         else:
@@ -1190,23 +1188,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
-            # MLA Args
-            q_lora_rank=self.q_lora_rank,
-            kv_lora_rank=self.kv_lora_rank,
-            qk_nope_head_dim=self.qk_nope_head_dim,
-            qk_rope_head_dim=self.qk_rope_head_dim,
-            qk_head_dim=self.qk_head_dim,
-            v_head_dim=self.v_head_dim,
-            rotary_emb=self.rotary_emb,
-            q_proj=self.q_proj if self.q_lora_rank is None else self.q_b_proj,
-            kv_a_proj_with_mqa=self.kv_a_proj_with_mqa if hasattr(self, 'kv_a_proj_with_mqa') else None,
-            kv_a_layernorm=self.kv_a_layernorm,
-            kv_b_proj=self.kv_b_proj,
-            o_proj=self.o_proj,
-            qkv_a_proj=self.qkv_a_proj if hasattr(self, 'qkv_a_proj') else None,
-            q_a_layernorm=self.q_a_layernorm if hasattr(self, 'q_a_layernorm') else None,
-            q_b_proj=self.q_b_proj if hasattr(self, 'q_b_proj') else None,
-            q_a_proj=self.q_a_proj if hasattr(self, 'q_a_proj') else None
         )
 
         kv_b_proj_weight = self.kv_b_proj.weight.T
@@ -1632,7 +1613,6 @@ class AscendDeepseekAttention_MLA(nn.Module):
         else:
             attn_output.fill_(0)
 
-        
         attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
         output = self.o_proj.forward(attn_output)[0]
 
@@ -1909,7 +1889,7 @@ class DeepseekDecoderLayer(nn.Module):
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
-        if (model_extra_config.operator_opt_config.prefill_dispatch_combine or model_extra_config.parall_config.dp_size > 1) and is_prefill:
+        if (model_extra_config.operator_opt_config.prefill_moe_all_to_all or model_extra_config.parall_config.dp_size > 1) and is_prefill:
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device="npu")
             local_length = hidden_states.shape[0]
             dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
@@ -2074,7 +2054,7 @@ class DeepseekV3Model(nn.Module):
 
 
 @support_torch_compile
-class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
+class DeepseekV3ForCausalLM(nn.Module):
     
     packed_modules_mapping = {
         "gate_up_proj": ["gate_proj", "up_proj"],
@@ -2098,7 +2078,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             self.model.make_empty_intermediate_tensors)
 
         self.return_hidden_states = True
-        self.input_marked = False
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -2262,17 +2241,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
-
-    def mark_static_for_graph(self, input_ids, positions, attn_metadata, kv_caches):
-        if not self.input_marked:
-            torch._dynamo.mark_static(input_ids)
-            torch._dynamo.mark_static(positions)
-            for i in range(len(kv_caches)):
-                if kv_caches[i][0] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][0])
-                if kv_caches[i][1] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][1])
-            self.input_marked = True
 
     def should_use_eager_mode(self, *args, **kwargs):
         attn_metadata = kwargs.get('attn_metadata', None)
