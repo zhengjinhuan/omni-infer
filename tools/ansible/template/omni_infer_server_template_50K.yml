@@ -38,7 +38,7 @@
 
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "least_total_load"
-    DECODE_LB_SDK: "weight_least_active"
+    DECODE_LB_SDK: "weighted_least_active"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -280,6 +280,7 @@
       cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel > ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
+      python ${CODE_PATH}/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
