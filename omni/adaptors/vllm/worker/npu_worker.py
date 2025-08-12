@@ -33,7 +33,7 @@ from vllm.distributed import (ensure_model_parallel_initialized,
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import logger
 from vllm.model_executor import set_random_seed
-from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
+from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, GiB_bytes
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
                                         KVCacheSpec)
@@ -53,6 +53,7 @@ import vllm.envs as envs
 import os
 import ray
 from omni.models.common.config.model_config import model_extra_config
+from omni.adaptors.vllm.camem import CaMemAllocator
 
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
@@ -121,10 +122,29 @@ class NPUWorker(WorkerBase):
         self._init_graph_options()
 
     def sleep(self, level: int = 1) -> None:
-        logger.error("Sleep mode is only supported on v0")
+        if not NPUPlatform.is_sleep_mode_available():
+            raise ValueError(
+                "Sleep mode is not enabled. Please compile vllm-ascend with COMPILE_CUSTOM_KERNELS=1."
+            )
+        free_bytes_before_sleep = NPUPlatform.mem_get_info()[0]
+        allocator = CaMemAllocator.get_instance()
+        allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
+        free_bytes_after_sleep, total = NPUPlatform.mem_get_info()
+        freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
+        used_bytes = total - free_bytes_after_sleep
+        assert freed_bytes >= 0, "Memory usage increased after sleeping."
+        logger.info(
+            "Sleep mode freed %.2f GiB memory, "
+            "%.2f GiB memory is still in use.", freed_bytes / GiB_bytes,
+                                                used_bytes / GiB_bytes)
 
     def wake_up(self, tags: Optional[list[str]] = None) -> None:
-        logger.error("Sleep mode is only supported on v0")
+        if not NPUPlatform.is_sleep_mode_available():
+            raise ValueError(
+                "Sleep mode is not enabled. Please compile vllm-ascend with COMPILE_CUSTOM_KERNELS=1."
+            )
+        allocator = CaMemAllocator.get_instance()
+        allocator.wake_up(tags=tags)
 
     def init_device(self):
         if self.device_config.device.type == current_platform.device_type:
@@ -251,7 +271,17 @@ class NPUWorker(WorkerBase):
         return output if self.rank == 0 else None
 
     def load_model(self) -> None:
-        self.model_runner.load_model()
+        if NPUPlatform.is_sleep_mode_available():
+            allocator = CaMemAllocator.get_instance()
+            assert allocator.get_current_usage() == 0, (
+                "Sleep mode can only be "
+                "used for one instance per process.")
+            context = allocator.use_memory_pool(tag="weights")
+        else:
+            from contextlib import nullcontext
+            context = nullcontext()
+        with context:
+            self.model_runner.load_model()
 
     def compile_or_warm_up_model(self) -> None:
         if self.enable_torchair_graph_mode:
@@ -268,12 +298,19 @@ class NPUWorker(WorkerBase):
 
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Allocate NPU KV cache with the specified kv_cache_config."""
-        self.model_runner.initialize_kv_cache(kv_cache_config)
+        if NPUPlatform.is_sleep_mode_available():
+            allocator = CaMemAllocator.get_instance()
+            context = allocator.use_memory_pool(tag="kv_cache")
+        else:
+            from contextlib import nullcontext
+            context = nullcontext()
+        with context:
+            self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def initialize_cache(self, kv_cache_configs: List[KVCacheConfig]) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
         kv_cache_config = kv_cache_configs[self.rank]
-        self.model_runner.initialize_kv_cache(kv_cache_config)
+        self.initialize_from_config(kv_cache_config)
 
     def profile(self, is_start: bool = True):
         if self.profiler is None:

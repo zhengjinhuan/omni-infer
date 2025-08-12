@@ -1,0 +1,57 @@
+From 078e72c1efa53170c3a89c3ee05512c47874f06a Mon Sep 17 00:00:00 2001
+From: lantian7 <liuchun22@huawei.com>
+Date: Tue, 12 Aug 2025 10:09:17 +0800
+Subject: [PATCH] 2
+
+---
+ vllm/v1/engine/core.py | 27 +++++++++++++++------------
+ 1 file changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 740ba60fe..d9d47c330 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -690,6 +690,8 @@ class DPEngineCoreProc(EngineCoreProc):
+         super().__init__(vllm_config, on_head_node, input_address,
+                          executor_class, log_stats, dp_rank)
+ 
++        self.engines_running = True  # initialized with True, a workaround for manual api-server scaleout
++
+     def _init_data_parallel(self, vllm_config: VllmConfig):
+ 
+         # Configure GPUs and stateless process group for data parallel.
+@@ -776,18 +778,19 @@ class DPEngineCoreProc(EngineCoreProc):
+                 # dummy forward pass.
+                 self.execute_dummy_batch()
+ 
+-            # 3) All-reduce operation to determine global unfinished reqs.
+-            self.engines_running = self._has_global_unfinished_reqs(
+-                local_unfinished_reqs)
+-
+-            if not self.engines_running:
+-                if self.dp_rank == 0:
+-                    # Notify client that we are pausing the loop.
+-                    logger.debug("Wave %d finished, pausing engine loop.",
+-                                 self.current_wave)
+-                    self.output_queue.put_nowait(
+-                        EngineCoreOutputs(wave_complete=self.current_wave))
+-                self.current_wave += 1
++            ### disable all-reduce operation, a workaround for manual api-server scale-out
++            # # 3) All-reduce operation to determine global unfinished reqs.
++            # self.engines_running = self._has_global_unfinished_reqs(
++            #     local_unfinished_reqs)
++            #
++            # if not self.engines_running:
++            #     if self.dp_rank == 0:
++            #         # Notify client that we are pausing the loop.
++            #         logger.debug("Wave %d finished, pausing engine loop.",
++            #                      self.current_wave)
++            #         self.output_queue.put_nowait(
++            #             EngineCoreOutputs(wave_complete=self.current_wave))
++            #     self.current_wave += 1
+ 
+     def _has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
+ 
+-- 
+2.50.1.windows.1
+

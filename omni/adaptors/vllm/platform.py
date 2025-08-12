@@ -52,6 +52,7 @@ import torch
 import vllm
 import vllm.distributed
 from torch.distributed import ProcessGroup
+from omni.adaptors.vllm import envs as envs_ascend
 
 origin_pg_init = ProcessGroup.__init__
 origin_destroy_model_parallel = None
@@ -277,12 +278,16 @@ class NPUPlatform(Platform):
         update_utils_custom_op()
         super().__init__()
 
-    def is_sleep_mode_available(self) -> bool:
+    @classmethod
+    def is_sleep_mode_available(cls) -> bool:
         """Check if sleep mode is available for NPU.
 
         Returns:
             bool: Always True for NPU.
         """
+        if not envs_ascend.VLLM_ENABLE_SLEEP_MODE:
+            return False
+
         return True
 
     @classmethod

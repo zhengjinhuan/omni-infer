@@ -27,6 +27,8 @@ from typing import Any, Callable, Dict
 # begin-env-vars-definition
 
 env_variables: Dict[str, Callable[[], Any]] = {
+    "VLLM_ENABLE_SLEEP_MODE":
+    lambda: bool(int(os.getenv("VLLM_ENABLE_SLEEP_MODE", '0'))),
     "VLLM_ENABLE_MC2":
     lambda: bool(int(os.getenv("VLLM_ENABLE_MC2", '0'))),
     "USING_LCCL_COM":
