@@ -356,6 +356,7 @@
         --log-level notice \
         --start-core-index $GLOBAL_PROXY_START_CORE_INDEX \
         --core-num $GLOBAL_PROXY_CORE_NUM \
+        --overwrite-request-id \
         &
 
     kill_python_processes_cmd: |

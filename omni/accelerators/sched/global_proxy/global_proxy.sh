@@ -423,22 +423,28 @@ ${upstream_servers}
 
 function nginx_set_location_openai_compatible() {
     local nginx_conf_file="$1"
+    local overwrite_request_id="$2"
+    
+    local set_request_id_directive="on"
+    if [ "$overwrite_request_id" = true ]; then
+        set_request_id_directive="force"
+    fi
 
     local location_block="
         # match all API of v1
         location /v1 {
             proxy_pass http://prefill_servers;
             proxy_http_version 1.1;
-            proxy_set_header Connection "Keep-Alive";
+            proxy_set_header Connection \"Keep-Alive\";
         }
 
         # match /v1/completions and /v1/chat/completions
         location ~ ^/v1(/chat)?/completions$ {
-            set_request_id on;
+            set_request_id $set_request_id_directive;
             prefill /prefill_internal;
             proxy_pass http://decode_servers;
             proxy_http_version 1.1;
-            proxy_set_header Connection "Keep-Alive";
+            proxy_set_header Connection \"Keep-Alive\";
         }
 
         # match /prefill_internal for internal prefill subrequest
@@ -447,7 +453,7 @@ function nginx_set_location_openai_compatible() {
             rewrite /prefill_internal/(.*) /\$1 break;
             proxy_pass http://prefill_servers;
             proxy_http_version 1.1;
-            proxy_set_header Connection "Keep-Alive";
+            proxy_set_header Connection \"Keep-Alive\";
         }"
     awk -v block="$location_block" '
     BEGIN { in_server=0; brace_depth=0; inserted=0 }
@@ -548,6 +554,7 @@ function nginx_configuration() {
     local log_level="$8"
     local prefill_lb_sdk="$9"
     local decode_lb_sdk="${10}"
+    local overwrite_request_id="${11}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
@@ -561,7 +568,7 @@ function nginx_configuration() {
     nginx_set_reuseport $nginx_conf_file
     nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers" true "$decode_lb_sdk"
     nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false "$prefill_lb_sdk"
-    nginx_set_location_openai_compatible $nginx_conf_file
+    nginx_set_location_openai_compatible $nginx_conf_file "$overwrite_request_id"
     nginx_set_load_modules $nginx_conf_file $prefill_lb_sdk $decode_lb_sdk
 }
 
@@ -611,6 +618,7 @@ log_file=""
 log_level=""
 prefill_lb_sdk="pd_score_balance"
 decode_lb_sdk="pd_score_balance"
+overwrite_request_id=false
 
 print_help() {
     echo "Usage:"
@@ -628,6 +636,7 @@ print_help() {
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
     echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"pd_score_balance\""
     echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"pd_score_balance\""
+    echo "  --overwrite-request-id                     Force overwrite existing request IDs (default: off)"
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
@@ -701,6 +710,10 @@ while [[ $# -gt 0 ]]; do
             log_level="$2"
             shift 2
             ;;
+        --overwrite-request-id)
+            overwrite_request_id=true
+            shift 1
+            ;;
         --dry-run|-d)
             dry_run=true
             shift 1
@@ -739,7 +752,7 @@ if ! [[ "$listen_port" =~ ^[0-9]+$ ]] || [[ "$listen_port" -lt 1024 || "$listen_
 fi
 
 function do_start() {
-    nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk"
+    nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$overwrite_request_id"
     if [ "$dry_run" = true ]; then
         echo "Dry run complete. Configuration generated at $nginx_conf_file."
         exit 0
