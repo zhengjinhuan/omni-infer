@@ -3,16 +3,24 @@
 
 import functools
 import os
+import torch
 import torch_npu
-import yaml
 from datetime import datetime
 import inspect
+import time
 import logging
+import uuid
+from vllm.v1.engine import EngineCoreOutputs
+
+def execute_operation(operation_str, param_dict):
+    if operation_str:
+        try:
+            exec(operation_str, param_dict)
+        except Exception as e:
+            logging.error(f"Error executing exit code: {e}")
 
 # Helper to wrap methods with tracing
 def torchnpu_prof_wrapper(original_method, params):
-    import torch
-    import torch_npu
     save_path           = params.get('save_path', 'profiling_output/')
     profiler_level      = params.get('profiler_level', 'Level0')
     export_type         = params.get('export_type', 'Text')
@@ -82,38 +90,66 @@ def torchnpu_prof_wrapper(original_method, params):
             skip_first=sched["skip_first"]),
         "on_trace_ready":torch_npu.profiler.tensorboard_trace_handler(save_path)
     }
+    operation = params.get("operation", None)
+
     if inspect.iscoroutinefunction(original_method):
         logging.info(f"<<<INFO: {original_method.__qualname__} is async function, use async wrapper")
         @functools.wraps(original_method)
         async def async_wrapper(self, *args, **kwargs):
+            entry_args = args
+            entry_kwargs = kwargs
             with torch_npu.profiler.profile(**profiler_config) as prof:
                 result = await original_method(self, *args, **kwargs)
                 torch.npu.synchronize()
                 prof.step()
+            param_dict = {"args": entry_args, "kwargs": entry_kwargs, "result":result}
+            execute_operation(operation, param_dict)
             return result
         return async_wrapper
     else:
         logging.info(f"<<<INFO: {original_method.__qualname__} is sync function, use sync wrapper")
         @functools.wraps(original_method)
         def wrapper(self, *args, **kwargs):
+            entry_args = args
+            entry_kwargs = kwargs
             with torch_npu.profiler.profile(**profiler_config) as prof:
                 result = original_method(self, *args, **kwargs)
                 torch.npu.synchronize()
                 prof.step()
+            param_dict = {"args": entry_args, "kwargs": entry_kwargs, "result":result}
+            execute_operation(operation, param_dict)
             return result
         return wrapper
 
 
 def timer_prof_wrapper(original_method, params):
+    entry_operation = params.get("entry_operation", None)
+    exit_operation = params.get("exit_operation", None)
+    entry_message = params.get("entry_message", None)
+    exit_message = params.get("exit_message", None)
     if inspect.iscoroutinefunction(original_method):
         logging.info(f"<<<INFO: {original_method.__qualname__} is async function, use async wrapper")
         @functools.wraps(original_method)
         async def async_wrapper(self, *args, **kwargs):
-            import time
-            import logging
+            entry_args = args
+            entry_kwargs = kwargs
+            param_dict = {"self": self, "args": entry_args, "kwargs": entry_kwargs}
+            execute_operation(entry_operation, param_dict)
+
             st = time.time()
             result = await original_method(self, *args, **kwargs)
-            duration = time.time() - st
+            et = time.time()
+            duration = et - st
+
+            param_dict["result"]=result
+            param_dict["start_time"]=st
+            param_dict["end_time"]=et
+            execute_operation(exit_operation, param_dict)
+            
+            if entry_message:
+                logging.info(f"<<<{entry_message}, timestamp:{st}")
+            if exit_message:
+                logging.info(f"<<<{exit_message}, timestamp:{et}")
             logging.info(f"<<<Duration of {original_method.__qualname__} is {duration*1000} ms.")
             return result
         return async_wrapper
@@ -121,32 +157,79 @@ def timer_prof_wrapper(original_method, params):
         logging.info(f"<<<INFO: {original_method.__qualname__} is sync function, use sync wrapper")
         @functools.wraps(original_method)
         def wrapper(self, *args, **kwargs):
-            import time
-            import logging
+            entry_args = args
+            entry_kwargs = kwargs
+            param_dict = {"self": self, "args": entry_args, "kwargs": entry_kwargs}
+            execute_operation(entry_operation, param_dict)
+
             st = time.time()
             result = original_method(self, *args, **kwargs)
-            duration = time.time() - st
+            et = time.time()
+            duration = et - st
+
+            param_dict["result"]=result
+            param_dict["start_time"]=st
+            param_dict["end_time"]=et
+            execute_operation(exit_operation, param_dict)
+            
+            if entry_message:
+                logging.info(f"<<<{entry_message}, timestamp:{st}")
+            if exit_message:
+                logging.info(f"<<<{exit_message}, timestamp:{et}")
             logging.info(f"<<<Duration of {original_method.__qualname__} is {duration*1000} ms.")
             return result
         return wrapper
 
+def marker_prof_wrapper(original_method, params):
+    entry_operation = params.get("entry_operation", None)
+    exit_operation = params.get("exit_operation", None)
+    if inspect.iscoroutinefunction(original_method):
+        logging.info(f"<<<INFO: {original_method.__qualname__} is async function, use async wrapper")
+        @functools.wraps(original_method)
+        async def async_wrapper(self, *args, **kwargs):
+            entry_args = args
+            entry_kwargs = kwargs
+            param_dict = {"self": self, "args": entry_args, "kwargs": entry_kwargs}
+            execute_operation(entry_operation, param_dict)
+
+            result = await original_method(self, *args, **kwargs)
+
+            param_dict["result"]=result
+            execute_operation(exit_operation, param_dict)
+            return result
+        return async_wrapper
+    else:
+        logging.info(f"<<<INFO: {original_method.__qualname__} is sync function, use sync wrapper")
+        @functools.wraps(original_method)
+        def wrapper(self, *args, **kwargs):
+            entry_args = args
+            entry_kwargs = kwargs
+            param_dict = {"self": self, "args": entry_args, "kwargs": entry_kwargs}
+            execute_operation(entry_operation, param_dict)
+            result = original_method(self, *args, **kwargs)
+            param_dict["result"]=result
+            execute_operation(exit_operation, param_dict)
+            
+            return result
+        return wrapper
 
 def viztracer_prof_wrapper(original_method, params):
-    # viztracer --combine ./viztracer_output/*.json --output_file ./viztracer_output/combined.json
     from viztracer import VizTracer
-    import time
-    import uuid
+    # viztracer --combine ./viztracer_output/*.json --output_file ./viztracer_output/combined.json
     save_dir         = params.get("save_dir", "./viztracer_output")
     max_stack_depth  = params.get("max_stack_depth", -1)
     tracer_entries   = params.get("tracer_entries", 500000)
     output_format    = params.get("output_format", "json")
     log_async        = params.get("log_async", True)
     pid_suffix       = params.get("pid_suffix", True)
+    operation = params.get("operation", None)
 
     if inspect.iscoroutinefunction(original_method):
         logging.info(f"<<<INFO: {original_method.__qualname__} is async function, use async wrapper")
         @functools.wraps(original_method)
         async def async_wrapper(self, *args, **kwargs):
+            entry_args = args
+            entry_kwargs = kwargs
             tracer = VizTracer(
                 output_file=os.path.join(save_dir,  f"trace_{time.time()}_{uuid.uuid4().hex[:8]}.json"), 
                 tracer_entries=tracer_entries,
@@ -160,12 +243,16 @@ def viztracer_prof_wrapper(original_method, params):
             finally:
                 tracer.stop()
                 tracer.save()
+            param_dict = {"args": entry_args, "kwargs": entry_kwargs, "result":result}
+            execute_operation(operation, param_dict)
             return result
         return async_wrapper
     else:
         logging.info(f"<<<INFO: {original_method.__qualname__} is sync function, use sync wrapper")
         @functools.wraps(original_method)
         def wrapper(self, *args, **kwargs):
+            entry_args = args
+            entry_kwargs = kwargs
             tracer = VizTracer(
                 output_file=os.path.join(save_dir,  f"trace_{time.time()}_{uuid.uuid4().hex[:8]}.json"), 
                 tracer_entries=tracer_entries,
@@ -179,5 +266,7 @@ def viztracer_prof_wrapper(original_method, params):
             finally:
                 tracer.stop()
                 tracer.save()
+            param_dict = {"args": entry_args, "kwargs": entry_kwargs, "result":result}
+            execute_operation(operation, param_dict)
             return result
         return wrapper
