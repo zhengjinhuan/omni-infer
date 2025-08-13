@@ -1,27 +1,25 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-import contextlib
 import json
-from collections.abc import Iterator
-import math
-import threading
-from typing import TYPE_CHECKING, Any, Optional
-import zmq
 import os
-import time
 import pickle
+import threading
+import time
+from typing import TYPE_CHECKING, Any, Optional
 
-from vllm.envs import VLLM_RPC_TIMEOUT
+import zmq
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
 from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+from vllm.envs import VLLM_RPC_TIMEOUT
 from vllm.logger import init_logger
-
-from typing import TYPE_CHECKING, Any, Optional
-from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+from vllm.v1.core.sched.output import SchedulerOutput
+
+from omni.accelerators.pd.utils import get_config_from_dict_or_env
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig, KVTransferConfig
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -45,10 +43,6 @@ GET_META_MSG = b"get_meta_msg"
 
 logger = init_logger(__name__)
 
-# Introduce the environment variable VLLM_LLMDATADIST_ZMQ_PORT to resolve ZMQ connection conflicts during
-# multi-P deployments on the same machine.
-# This variable should not be set separately unless specifically required for this scenario.
-VLLM_LLMDATADIST_ZMQ_PORT = int(os.environ.get("VLLM_LLMDATADIST_ZMQ_PORT", "5568"))
 thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
@@ -88,11 +82,19 @@ class LLMDataDistConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: VllmConfig, role: KVConnectorRole):
         if vllm_config.kv_transfer_config is None:
             raise RuntimeError("vllm_config.kv_transfer_config cannot be None")
+
+        if vllm_config.model_config.is_deepseek_mla:
+            vllm_config.kv_transfer_config.kv_parallel_size = 1
+            logger.info("Set kv_parallel_size to 1 when use deepseek mla model.")
+
         self.datadist_config = LLMDataDistConfig(vllm_config, ignore_load_rank=True)
         self.cluster_id = self.datadist_config.cluster_id_start
-        self.local_info = self.datadist_config.local_info
-        self.host_ip = self.local_info.server.server_ip
-        self.host_port = VLLM_LLMDATADIST_ZMQ_PORT
+        self.host_ip = self.datadist_config.local_group.host_ip
+        # Introduce the environment variable VLLM_LLMDATADIST_ZMQ_PORT to resolve ZMQ connection conflicts during
+        # multi-P deployments on the same machine.
+        # This variable should not be set separately unless specifically required for this scenario.
+        self.host_port = get_config_from_dict_or_env(vllm_config.kv_transfer_config, "kv_port",
+                                                     "VLLM_LLMDATADIST_ZMQ_PORT", "5568", int)
         self.is_prefill = vllm_config.kv_transfer_config.kv_role == "kv_producer"
 
         if role == KVConnectorRole.SCHEDULER:
@@ -240,6 +242,7 @@ class PrefillConnectorWorker:
             self.ctx = zmq.Context()
             self.input_socket = self.ctx.socket(zmq.constants.PULL)
             self.input_socket.bind(f"tcp://{self.host_ip}:{self.host_port}")
+            logger.info(f"ConnectWorker bind tcp://{self.host_ip}:{self.host_port}")
             self._transfer_lock = threading.Lock()
             self.receive_req_list = []
             thread_name = "prefill_connector_get_pulled_kv_req_list"
@@ -411,6 +414,10 @@ class DecodeConnectorWorker:
             self.multi_rank_pull_kv = False
         if self.multi_rank_pull_kv:
             self.multi_thread_pull_kv = True
+        if vllm_config.parallel_config.tensor_parallel_size > 1 and \
+            (self.multi_rank_pull_kv or self.multi_thread_pull_kv):
+            raise ValueError("multi_rank_pull_kv and multi_thread_pull_kv are not supported when tp > 1.")
+
         from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
         if ENABLED:
             manager_cls = OmniBiGroupDataDistManager
@@ -425,25 +432,6 @@ class DecodeConnectorWorker:
         self._pull_kv_lock = threading.Lock()
         self.queues = {} # cluster_id -> queue.Queue
         self.threads = {} # cluster_id -> threading.Thread
-        if not self.multi_rank_pull_kv:
-            if self.multi_thread_pull_kv:
-                num_threads = int(os.environ.get("PREFILL_POD_NUM", "1"))
-                for pod_idx in range(num_threads):
-                    cluster_id = 16 * pod_idx  # Use 16 as the base for cluster_id
-                    with self._pull_kv_lock:
-                        q = queue.Queue()
-                        self.queues[cluster_id] = q
-                        thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
-                        t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
-                        t.start()
-                        self.threads[cluster_id] = t  # Store the thread for this cluster_id
-                        logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
-
-                        # Write thread name and native_id to file
-                        dump_thread_to_file(t, thread_name, thread_dump_path)
-            else:
-                max_concurrents = 1
-                self.executor = ThreadPoolExecutor(max_workers=max_concurrents)
 
         self._transfer_lock = threading.Lock()
 
@@ -497,11 +485,13 @@ class DecodeConnectorWorker:
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.datadist_manager.register_memory(kv_caches)
+        self.registed_link_infos, _ = self.datadist_manager.register_link()
+        # put multi-thread_pull_kv and multi_rank_pull_kv related registed_link_infos into queues
         if self.multi_rank_pull_kv:
-            self.registed_link_infos, _ = self.datadist_manager.register_link()
+            # In multi_rank_pull_kv mode, we create a thread for each P rank's cluster_id
             logger.info(f" ***** registed_link_infos: {self.registed_link_infos}")
             for remote_cluster_id, cluster_ids_dict in self.registed_link_infos.items():
-                cluster_ids = cluster_ids_dict[self.cluster_id + self.datadist_manager.local_rank]
+                cluster_ids = cluster_ids_dict[self.datadist_manager.data_dist_config.cluster_id]
                 for idx_count, cluster_id in enumerate(cluster_ids):
                     with self._pull_kv_lock:
                         if cluster_id in self.queues:
@@ -514,8 +504,26 @@ class DecodeConnectorWorker:
                         self.threads[cluster_id] = t
                         logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
                         dump_thread_to_file(t, thread_name, thread_dump_path)
+        elif self.multi_thread_pull_kv:
+            # In multi_thread_pull_kv mode, we create a thread for each cluster_id
+            logger.info(f" ***** registed_link_infos: {self.registed_link_infos}")
+            for cluster_id in self.registed_link_infos:
+                with self._pull_kv_lock:
+                    q = queue.Queue()
+                    self.queues[cluster_id] = q
+                    thread_name = f"thread_pull_kv_dp_rank_{self.dp_rank}_cluster_id_{cluster_id}"
+                    t = threading.Thread(target=self.worker, args=(cluster_id,), daemon=True, name=thread_name)
+                    t.start()
+                    self.threads[cluster_id] = t  # Store the thread for this cluster_id
+                    logger.debug(f" ***** Created a new thread for pulling kv from cluster {cluster_id}.")
+
+                    # Write thread name and native_id to file
+                    dump_thread_to_file(t, thread_name, thread_dump_path)
         else:
-            self.datadist_manager.register_link()
+            # In single thread pull kv mode, we use a single thread to pull kv
+            logger.info(" ***** Using single thread to pull kv.")
+            max_concurrents = 1
+            self.executor = ThreadPoolExecutor(max_workers=max_concurrents)
 
     # Now go asynchronous pull_kv
     def start_load_kv(self, metadata: DatadistConnectorMetadata):
@@ -579,7 +587,8 @@ class DecodeConnectorWorker:
             if self.multi_rank_pull_kv:
                 # If multi_rank_pull_kv is enabled, each DP rank will pull kv from multiple P ranks
                 # and the cluster_ids are obtained from registed_link_infos
-                cluster_ids = self.registed_link_infos[meta.remote_cluster_id][self.cluster_id + self.datadist_manager.local_rank]
+                cluster_ids = self.registed_link_infos[meta.remote_cluster_id][
+                    self.datadist_manager.data_dist_config.cluster_id]
                 # If the local_block_ids is a flat list of int, we can directly use it
                 # As multi_rank_pull_kv is designed to pull kv from two P ranks,
                 # we split the local_block_ids and remote_block_ids into two parts
@@ -629,18 +638,18 @@ class DecodeConnectorWorker:
                     'remote_block_ids': meta.remote_block_ids,
                     'remote_host_ip': meta.remote_host,
                 }
-                
+
                 self.queues[cluster_id].put(task)
             else:
                 # Use ThreadPoolExecutor to handle the task
                 future = self.executor.submit(
-                                self._read_blocks,
-                                local_block_ids=meta.local_block_ids,
-                                remote_block_ids=meta.remote_block_ids,
-                                dst_cluster_id=meta.remote_cluster_id, 
-                                request_id=req_id,
-                                remote_host_ip=meta.remote_host,
-                            )
+                    self._read_blocks,
+                    local_block_ids=meta.local_block_ids,
+                    remote_block_ids=meta.remote_block_ids,
+                    dst_cluster_id=meta.remote_cluster_id,
+                    request_id=req_id,
+                    remote_host_ip=meta.remote_host,
+                )
                 futures.append(future)
 
         if not self.multi_thread_pull_kv:
@@ -657,7 +666,11 @@ class DecodeConnectorWorker:
     ):
         start = time.time()
         self.datadist_manager.pull_kv(remote_block_ids, local_block_ids, dst_cluster_id)
-        self._send_pulled_kv_req_list(remote_host_ip, [request_id])
+        if get_tensor_model_parallel_world_size() > 1:
+            torch.distributed.barrier(group=get_tp_group().cpu_group)
+
+        if get_tensor_model_parallel_rank() == 0:
+            self._send_pulled_kv_req_list(remote_host_ip, [request_id])
         with self._transfer_lock:
             self._recving_transfers.append(request_id)
         cost = time.time() - start
