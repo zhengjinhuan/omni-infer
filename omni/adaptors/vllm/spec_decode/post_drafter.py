@@ -9,15 +9,11 @@ from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import get_model
 from vllm.v1.spec_decode.eagle import EagleProposer
-from vllm.sequence import VLLM_INVALID_TOKEN_ID
 
 from omni.models.common.layers.sampler import SimpleSampler
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
 logger = init_logger(__name__)
-
-PADDING_SLOT_ID = -1
-
 
 class PostDrafter(EagleProposer):
     def __init__(
@@ -39,8 +35,8 @@ class PostDrafter(EagleProposer):
         self.positions = None
         self.hidden_states = None
         self.arange = None
-        if self.method not in ('deepseek_mtp', 'eagle'):
-            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle'), while get {self.method}.")
+        if self.method not in ('deepseek_mtp',):
+            raise ValueError(f"Speculative method should be one of ('deepseek_mtp',), while get {self.method}.")
     
     def load_model(self, target_model: nn.Module) -> None:
         draft_model_config = \
@@ -48,23 +44,8 @@ class PostDrafter(EagleProposer):
         target_attn_layer_names = set(
             get_layers_from_vllm_config(self.vllm_config, Attention).keys())
 
-
-        if self.method == 'deepseek_mtp':
-            original_arch = draft_model_config.hf_config.architectures
-            architecture_list = ["DeepSeekMTPModel", "DeepSeekMTPModelDuo", "DeepSeekMTPModelTres"]
-            for mtp_layer_idx in range(draft_model_config.hf_config.num_nextn_predict_layers):
-                if self.speculative_config.num_speculative_tokens > mtp_layer_idx:
-                    draft_model_config.hf_config.architectures[0] = architecture_list[mtp_layer_idx]
-                    drafter = get_model(vllm_config=self.vllm_config, model_config=draft_model_config)
-                    drafter.embed_tokens = target_model.model.embed_tokens
-                    drafter.shared_head['head'] = target_model.lm_head
-                    self.drafter_list.append(drafter)
-                else:
-                    break
-            draft_model_config.hf_config.architectures = original_arch
-        elif self.method == 'eagle':
-            pass
-
+        self.model = get_model(vllm_config=self.vllm_config, model_config=draft_model_config)
+        self.model.set_share_weight(target_model)
 
         draft_attn_layer_names = (
             get_layers_from_vllm_config(self.vllm_config, Attention).keys() -
@@ -112,19 +93,17 @@ class PostDrafter(EagleProposer):
                 chunk_next_tokens_list: Optional[List[torch.Tensor]] = None, # for chunk prefill with multi mtp
                 chunk_next_indices: Optional[torch.Tensor] = None, # for chunk prefill with multi mtp
     ):
-        input_ids = self.input_ids[:num_tokens]
+        input_ids = self.input_ids[:num_tokens].clone()
         if kv_caches is None:
             with set_forward_context(None, self.vllm_config, num_tokens = num_tokens):
                 for layer_idx in range(self.speculative_config.num_speculative_tokens):
-                    self.drafter_list[layer_idx](
+                    self.model(
                         input_ids=input_ids,
                         positions=positions,
                         kv_caches=None,
                         attn_metadata=None,
                         previous_hidden_states=previous_hidden_states,
-                        intermediate_tensors=None,
-                        inputs_embeds=None,
-                        require_hidden_states=True,
+                        mtp_layer_idx=layer_idx,
                     )
                 return None
         else:
@@ -139,19 +118,17 @@ class PostDrafter(EagleProposer):
                     torch._dynamo.mark_static(input_ids)
                     torch._dynamo.mark_static(previous_hidden_states)
                     self.mark_static = True
-            with set_forward_context(None, self.vllm_config, num_tokens = num_tokens):
+            with set_forward_context(None, self.vllm_config, num_tokens=num_tokens):
                 is_dummy = (last_accepted_index is None) or (sample_indices is None)
                 for layer_idx in range(self.speculative_config.num_speculative_tokens):
-                    drafter_logits, previous_hidden_states = self.drafter_list[layer_idx](
+                    drafter_logits, previous_hidden_states = self.model(
                         input_ids=input_ids,
                         positions=positions,
-                        kv_caches=kv_caches[-self.speculative_config.num_speculative_tokens + layer_idx:] if kv_caches else None,
+                        kv_caches=kv_caches,
                         attn_metadata=attn_metadata,
                         previous_hidden_states=previous_hidden_states,
-                        intermediate_tensors=None,
                         selected_indices=None if attn_state == AscendAttentionState.DecodeOnly else sample_indices,
-                        inputs_embeds=None,
-                        require_hidden_states=True,
+                        mtp_layer_idx=layer_idx,
                     )
                     if not is_dummy:
                         draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
