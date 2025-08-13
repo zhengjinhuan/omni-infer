@@ -120,7 +120,7 @@ def check_garble_code(text: str):
     if '\ufffd' in text:
         return True
 
-    valid_pattren = re.complie(r'\u4e00-\u9fff_a-zA-Z0-9，。,./;:\'\"(){}[\]<>?！@#$%^&*+-= \t\n')
+    valid_pattren = re.compile(r'[\u4e00-\u9fff_a-zA-Z0-9，。,./;:\'\"(){}[\\\]<>?！@#$%^&*+-= \t\n]')
     valid_chars = valid_pattren.findall(text)
     total_length = len(text)
     if total_length == 0:
@@ -157,7 +157,7 @@ def _call(url, body):
                     if finish_reason in ["length", "stop"]:
                         break
                     temp = json.loads(temp)
-                    delta = temp["choices"][0]["delta"]
+                    delta = temp["choices"][0]["message"]
                     if "content" in delta.keys() and delta["content"] != None:
                         model_answer += delta["content"]
                     elif "reasoning_content" in delta.keys():
@@ -281,7 +281,7 @@ def wait_for_model_api(host, port, model_name, timeout=120, wait_interval=10):
                 api_url,
                 headers=headers,
                 json=json.dumps(payload),
-                timeout=60
+                timeout=120
             )
             # Check response status code
             if response.status_code == 200:
@@ -448,7 +448,7 @@ def prepare_args():
                         help="Ansible inventory file path (default: omni_infer_inventory_used_for_1P1D.yml)")
     parser.add_argument("--playbook-path", type=str, default="omni_infer_server_used_for_1P1D.yml",
                         help="Ansible playbook file path (default: omni_infer_server_used_for_1P1D.yml)")
-    parser.add_argument("--tags", type=str, help="Ansible playbook tags")
+    parser.add_argument("--ansible-tag", type=str, help="Ansible playbook tags")
 
     # Service startup parameters
     parser.add_argument("--wait-timeout", type=int, default=300,
