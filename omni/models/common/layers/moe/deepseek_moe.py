@@ -541,7 +541,7 @@ class DeepseekMoE(nn.Module):
             shared_output, _ = self.shared_experts.down_proj.forward(intermediate_hiddenstates_share)
 
         # prefetch weights for attention next layer
-        if next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
+        if model_extra_config.operator_opt_config.attn_prefetch > 0 and next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
                 attn_prefetch_size = model_extra_config.operator_opt_config.attn_prefetch * 1024 * 1024
                 attn_prefetch_flag = shared_output
                 torch_npu.npu_prefetch(next_attention_weights['q_a_proj_weight'], attn_prefetch_flag, attn_prefetch_size)

@@ -474,7 +474,7 @@ class DeepseekMLA(nn.Module):
             q_len = 1
             if model_extra_config.operator_opt_config.use_mlaprolog:
                 block_num, block_size, head_size, _ = key_cache.shape
-                bsz, _ = hidden_states.view(-1, 7168).shape
+                bsz, _ = hidden_states.view(-1, hidden_states.shape[-1]).shape
                 if self.quant_symbol:
                     hidden_states_mla_prolog, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
                 else:
