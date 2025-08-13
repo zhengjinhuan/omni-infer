@@ -15,10 +15,8 @@ from vllm.distributed import get_ep_group
 from omni.adaptors.vllm.distributed.parallel_state import GroupCoordinator
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.moe.fused_moe.fused_moe import (
-    fused_experts_w8a8_moe_dispatch_combine,
-    fused_experts_w4a8_moe_dispatch_combine,
+    fused_experts_moe_dispatch_combine,
     moe_infer_fusion,
-    moe_infer_fusion_w4a8,
     fused_experts_w8a8_allgather_ep,
     fused_experts_w8a8_allgather_ep_a2,
     fused_experts_w4a8_allgather_ep
@@ -26,6 +24,7 @@ from omni.models.common.layers.moe.fused_moe.fused_moe import (
 
 SEQ_SPLIT_LENGTH = 4096
 torch.npu.config.allow_internal_format = True
+
 
 class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
@@ -35,13 +34,13 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         self.smooth_scale = None
 
     def create_weights(
-        self,
-        layer: torch.nn.Module,
-        num_experts: int,
-        hidden_size: int,
-        intermediate_size_per_partition: int,
-        params_dtype: torch.dtype,
-        **extra_weight_attrs,
+            self,
+            layer: torch.nn.Module,
+            num_experts: int,
+            hidden_size: int,
+            intermediate_size_per_partition: int,
+            params_dtype: torch.dtype,
+            **extra_weight_attrs,
     ) -> None:
         # Fused gate_up_proj (column parallel)
         w13_weight = torch.nn.Parameter(torch.empty(num_experts,
@@ -54,10 +53,10 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         # down_proj (row parallel)
         w2_weight = torch.nn.Parameter(torch.empty(num_experts,
-                                                    hidden_size,
-                                                    intermediate_size_per_partition,
-                                                    dtype=torch.int8),
-                                        requires_grad=False)
+                                                   hidden_size,
+                                                   intermediate_size_per_partition,
+                                                   dtype=torch.int8),
+                                       requires_grad=False)
         layer.register_parameter("w2_weight", w2_weight)
         set_weight_attrs(w2_weight, extra_weight_attrs)
 
@@ -68,11 +67,11 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
                                                   2 * intermediate_size_per_partition,
                                                   dtype=torch.float32
                                                   if params_dtype == torch.float16 else torch.bfloat16),
-                                        requires_grad=False)
+                                       requires_grad=False)
         w13_offset = torch.nn.Parameter(torch.zeros(num_experts,
-                                                  2 * intermediate_size_per_partition,
-                                                  dtype=torch.float32
-                                                  if params_dtype == torch.float16 else torch.bfloat16),
+                                                    2 * intermediate_size_per_partition,
+                                                    dtype=torch.float32
+                                                    if params_dtype == torch.float16 else torch.bfloat16),
                                         requires_grad=False)
         layer.register_parameter("w13_weight_scale", w13_scale)
         layer.register_parameter("w13_weight_offset", w13_offset)
@@ -83,20 +82,20 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
                                                  hidden_size,
                                                  dtype=torch.float32
                                                  if params_dtype == torch.float16 else torch.bfloat16),
-                                        requires_grad=False)
+                                      requires_grad=False)
         w2_offset = torch.nn.Parameter(torch.zeros(num_experts,
-                                                 hidden_size,
-                                                 dtype=torch.float32
-                                                 if params_dtype == torch.float16 else torch.bfloat16),
-                                        requires_grad=False)
+                                                   hidden_size,
+                                                   dtype=torch.float32
+                                                   if params_dtype == torch.float16 else torch.bfloat16),
+                                       requires_grad=False)
         layer.register_parameter("w2_weight_scale", w2_scale)
         layer.register_parameter("w2_weight_offset", w2_offset)
         set_weight_attrs(w2_scale, extra_weight_attrs)
         set_weight_attrs(w2_offset, extra_weight_attrs)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        layer.w13_weight = torch.nn.Parameter(layer.w13_weight.transpose(1,2).contiguous(), requires_grad=False)
-        layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1,2).contiguous(), requires_grad=False)
+        layer.w13_weight = torch.nn.Parameter(layer.w13_weight.transpose(1, 2).contiguous(), requires_grad=False)
+        layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1, 2).contiguous(), requires_grad=False)
         if model_extra_config.operator_opt_config.gmm_nz:
             layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
             layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
@@ -112,7 +111,7 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         self.local_expert_indices = [
             self.local_expert_indices_offset + i for i in range(self.n_routed_experts)
         ]
-        self.smooth_scale = torch.ones((self.n_routed_experts, layer.w13_weight_scale.shape[-1]//2),
+        self.smooth_scale = torch.ones((self.n_routed_experts, layer.w13_weight_scale.shape[-1] // 2),
                                        dtype=torch.float32, device=current_platform.device_type)
         torch._dynamo.mark_static(self.smooth_scale)
 
@@ -127,68 +126,68 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
             comm_group: Optional[GroupCoordinator] = None
     ) -> torch.Tensor:
         max_num_deployed_expert_per_rank = self.n_routed_experts
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.is_moe_layer(layer.moe_layer_idx):
+        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.is_moe_layer(
+                layer.moe_layer_idx):
             max_num_deployed_expert_per_rank = layer.planner.get_max_num_deployed_expert_per_rank()
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
             is_prefill = attn_metadata is None or attn_metadata.prefill is not None
-            if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
+            if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (
+                    model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
                 if is_prefill and model_extra_config.operator_opt_config.enable_pd_separated:
                     out = moe_infer_fusion(
                         layer,
                         x,
                         topk_ids,
                         topk_weights,
-                        layer.w13_weight,
-                        layer.w2_weight,
-                        layer.w13_weight_scale,
-                        layer.w2_weight_scale,
                         self.warm_up,
                         is_prefill,
                         comm_group=comm_group
                     )
                 else:
-                    out = fused_experts_w8a8_moe_dispatch_combine(layer,
-                                                                    x,
-                                                                    topk_weights,
-                                                                    topk_ids,
-                                                                    max_num_deployed_expert=max_num_deployed_expert_per_rank * get_ep_group().world_size,
-                                                                    is_prefill=is_prefill,
-                                                                    is_route_expert=True
-                                                                    )
+                    out = fused_experts_moe_dispatch_combine(layer,
+                                                             x,
+                                                             topk_weights,
+                                                             topk_ids,
+                                                             max_num_deployed_expert=max_num_deployed_expert_per_rank * get_ep_group().world_size,
+                                                             is_prefill=is_prefill,
+                                                             is_route_expert=True
+                                                             )
             else:
                 if os.getenv("ASCEND_PLATFORM", "A3") == "A2":
                     out = fused_experts_w8a8_allgather_ep_a2(hidden_states=x,
-                                                        pertoken_scale=pertoken_scale,
-                                                        w1=layer.w13_weight,
-                                                        w2=layer.w2_weight,
-                                                        w1_scale=layer.w13_weight_scale,
-                                                        w2_scale=layer.w2_weight_scale,
-                                                        topk_weights=topk_weights,
-                                                        topk_ids=topk_ids,
-                                                        n_routed_experts=self.n_routed_experts,
-                                                        is_prefill=is_prefill,
-                                                        max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank, #ENABLE_OMNI_PLANNER
-                                                        smooth_scale=self.smooth_scale)
+                                                             pertoken_scale=pertoken_scale,
+                                                             w1=layer.w13_weight,
+                                                             w2=layer.w2_weight,
+                                                             w1_scale=layer.w13_weight_scale,
+                                                             w2_scale=layer.w2_weight_scale,
+                                                             topk_weights=topk_weights,
+                                                             topk_ids=topk_ids,
+                                                             n_routed_experts=self.n_routed_experts,
+                                                             is_prefill=is_prefill,
+                                                             max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank,
+                                                             # ENABLE_OMNI_PLANNER
+                                                             smooth_scale=self.smooth_scale)
                 else:
                     out = fused_experts_w8a8_allgather_ep(hidden_states=x,
-                                                      pertoken_scale=pertoken_scale,
-                                                      w1=layer.w13_weight,
-                                                      w2=layer.w2_weight,
-                                                      w1_scale=layer.w13_weight_scale,
-                                                      w2_scale=layer.w2_weight_scale,
-                                                      topk_weights=topk_weights,
-                                                      topk_ids=topk_ids,
-                                                      n_routed_experts=self.n_routed_experts,
-                                                      is_prefill=is_prefill,
-                                                      max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank #ENABLE_OMNI_PLANNER
-                                                      )
+                                                          pertoken_scale=pertoken_scale,
+                                                          w1=layer.w13_weight,
+                                                          w2=layer.w2_weight,
+                                                          w1_scale=layer.w13_weight_scale,
+                                                          w2_scale=layer.w2_weight_scale,
+                                                          topk_weights=topk_weights,
+                                                          topk_ids=topk_ids,
+                                                          n_routed_experts=self.n_routed_experts,
+                                                          is_prefill=is_prefill,
+                                                          max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank
+                                                          # ENABLE_OMNI_PLANNER
+                                                          )
             if self.warm_up:
                 self.warm_up = False
             return out
         else:
             row_idx = torch.arange(topk_ids.numel(), device=current_platform.device_type,
-                                   dtype=torch.int32).view(-1, x.shape[0]).transpose(0,1)
+                                   dtype=torch.int32).view(-1, x.shape[0]).transpose(0, 1)
             token_num = x.shape[0]
             if token_num > SEQ_SPLIT_LENGTH:  # Split seq to reduce memory usage
                 x_list = x.split(SEQ_SPLIT_LENGTH)
@@ -200,26 +199,27 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
                     row_idx = torch.arange(split_token * top_k).to(torch.int32).view(
                         (top_k, split_token)).T.contiguous().npu()
                     out.append(fused_experts_w8a8(x_list[i],
-                                                    layer.w13_weight,
-                                                    layer.w2_weight,
-                                                    layer.w13_weight_scale,
-                                                    layer.w2_weight_scale,
-                                                    layer.w13_weight_offset,
-                                                    layer.w2_weight_offset,
-                                                    topk_weights_list[i],
-                                                    topk_ids_list[i],
-                                                    row_idx))
+                                                  layer.w13_weight,
+                                                  layer.w2_weight,
+                                                  layer.w13_weight_scale,
+                                                  layer.w2_weight_scale,
+                                                  layer.w13_weight_offset,
+                                                  layer.w2_weight_offset,
+                                                  topk_weights_list[i],
+                                                  topk_ids_list[i],
+                                                  row_idx))
                 return torch.concat(out)
             return fused_experts_w8a8(x,
-                                        layer.w13_weight,
-                                        layer.w2_weight,
-                                        layer.w13_weight_scale,
-                                        layer.w2_weight_scale,
-                                        layer.w13_weight_offset,
-                                        layer.w2_weight_offset,
-                                        topk_weights,
-                                        topk_ids,
-                                        row_idx)
+                                      layer.w13_weight,
+                                      layer.w2_weight,
+                                      layer.w13_weight_scale,
+                                      layer.w2_weight_scale,
+                                      layer.w13_weight_offset,
+                                      layer.w2_weight_offset,
+                                      topk_weights,
+                                      topk_ids,
+                                      row_idx)
+
 
 def fused_experts_w8a8(hidden_states: torch.Tensor,
                        w1: torch.Tensor,
@@ -232,7 +232,6 @@ def fused_experts_w8a8(hidden_states: torch.Tensor,
                        topk_ids: torch.Tensor,
                        row_idx: torch.Tensor,
                        ):
-
     num_tokens, hidden_size = hidden_states.shape
     n_routed_experts = len(w1)
     sorted_tokens, expanded_src_to_dst_row, expanded_expert_idx = \
@@ -242,16 +241,19 @@ def fused_experts_w8a8(hidden_states: torch.Tensor,
     w1_scale = w1_scale.to(torch.bfloat16)
     w2_scale = w2_scale.to(torch.bfloat16)
     sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_quant(sorted_tokens)
-    gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], scale=[w1_scale], per_token_scale=[pertoken_scale],
-                                          bias=None, group_list=expert_tokens, split_item=3, output_dtype=act_dtype, group_type=0,
-                                          group_list_type=0)[0]
+    gate_up_proj = \
+        torch_npu.npu_grouped_matmul([sorted_tokens], [w1], scale=[w1_scale], per_token_scale=[pertoken_scale],
+                                     bias=None, group_list=expert_tokens, split_item=3, output_dtype=act_dtype,
+                                     group_type=0,
+                                     group_list_type=0)[0]
 
     gate_up_proj = torch_npu.npu_swiglu(gate_up_proj)
     gate_up_proj, pertoken_scale = torch_npu.npu_dynamic_quant(gate_up_proj)  # , smooth_scales=scale_2)
 
     out = torch_npu.npu_grouped_matmul([gate_up_proj], [w2], scale=[w2_scale], per_token_scale=[pertoken_scale],
-                                 bias=None, group_list=expert_tokens, split_item=3, output_dtype=act_dtype, group_type=0,
-                                 group_list_type=0)[0]
+                                       bias=None, group_list=expert_tokens, split_item=3, output_dtype=act_dtype,
+                                       group_type=0,
+                                       group_list_type=0)[0]
     out = out.float()
     return torch_npu.npu_moe_finalize_routing(out, None, None, None, topk_weights,
                                               expanded_src_to_dst_row, topk_ids).to(torch.bfloat16)
@@ -417,29 +419,27 @@ class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
             is_prefill = attn_metadata is None or attn_metadata.prefill is not None
-            if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
+            if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (
+                    model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
                 if is_prefill and model_extra_config.operator_opt_config.enable_pd_separated:
-                    out = moe_infer_fusion_w4a8(layer, x, topk_ids, topk_weights, layer.w13_weight, layer.w2_weight,
-                                                layer.w13_weight_int4_scale, layer.w2_weight_int4_scale,
-                                                layer.w13_weight_bias,
-                                                layer.w2_weight_bias,
-                                                self.warm_up, is_prefill, comm_group)
+                    out = moe_infer_fusion(
+                        layer,
+                        x,
+                        topk_ids,
+                        topk_weights,
+                        self.warm_up,
+                        is_prefill,
+                        comm_group=comm_group
+                    )
                 else:
-                    out = fused_experts_w4a8_moe_dispatch_combine(layer,
-                                                                  x,
-                                                                  layer.w13_weight,
-                                                                  layer.w2_weight,
-                                                                  layer.w13_weight_int4_scale,
-                                                                  layer.w2_weight_int4_scale,
-                                                                  layer.w13_weight_bias,
-                                                                  layer.w2_weight_bias,
-                                                                  topk_weights,
-                                                                  topk_ids,
-                                                                  n_routed_experts=self.n_routed_experts * get_ep_group().world_size,
-                                                                  max_num_deployed_expert=max_num_deployed_expert_per_rank * get_ep_group().world_size,
-                                                                  # ENABLE_OMNI_PLANNER
-                                                                  is_prefill=is_prefill  # ENABLE_OMNI_PLANNER
-                                                                  )
+                    out = fused_experts_moe_dispatch_combine(layer,
+                                                             x,
+                                                             topk_weights,
+                                                             topk_ids,
+                                                             max_num_deployed_expert=max_num_deployed_expert_per_rank * get_ep_group().world_size,
+                                                             is_prefill=is_prefill,
+                                                             is_route_expert=True
+                                                             )
             else:
                 out = fused_experts_w4a8_allgather_ep(hidden_states=x,
                                                       pertoken_scale=pertoken_scale,

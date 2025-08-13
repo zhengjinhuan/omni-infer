@@ -255,9 +255,9 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
             self.quant_description['fa_quant_type'] is not None:
             return CompressedTensorsKVCacheMethod(self)
         elif isinstance(layer, FusedMoE):
-            layer.num_bits = 0
+            layer.weight_num_bits = 0
             moe_method, weight_num_bits = self.get_moe_method(prefix)
-            layer.num_bits = weight_num_bits
+            layer.weight_num_bits = weight_num_bits
             return moe_method
         return None
 

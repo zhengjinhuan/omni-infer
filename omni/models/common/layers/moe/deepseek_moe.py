@@ -48,7 +48,7 @@ from omni.models.common.layers.linear import (
 from omni.models.common.layers.activation import SiluAndMul
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE, UNQUANT_MODE, DYNAMIC_QUANT_MODE
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_w8a8_moe_dispatch_combine
+from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
 
 if model_extra_config.operator_opt_config.use_omni_placement:
     from omni_planner import OmniPlanner
@@ -472,16 +472,16 @@ class DeepseekMoE(nn.Module):
         weight1_3 = self.experts.w13_weight
         weight2 = self.experts.w2_weight
         if self.quant_symbol:
-            if self.experts.num_bits == 8:
+            if self.experts.weight_num_bits == 8:
                 weight_scale1_3 = self.experts.w13_weight_scale
                 weight_scale2 = self.experts.w2_weight_scale
-            elif self.experts.num_bits == 4:
+            elif self.experts.weight_num_bits == 4:
                 weight_scale1_3 = self.experts.w13_weight_int4_scale
                 weight_scale2 = self.experts.w2_weight_int4_scale
                 weight_bias1_3 = self.experts.w13_weight_bias
                 weight_bias2 = self.experts.w2_weight_bias
             else:
-                raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.num_bits}")
+                raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.weight_num_bits}")
 
             if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
                 pertoken_scale = dynamic_scale
@@ -496,7 +496,7 @@ class DeepseekMoE(nn.Module):
             intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
         if self.quant_symbol:
             # w8a8
-            if self.experts.num_bits == 8:
+            if self.experts.weight_num_bits == 8:
                 gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
                                                             split_item=3, output_dtype=torch.int32, group_type=0,
                                                             group_list_type=1)[0]
@@ -510,7 +510,7 @@ class DeepseekMoE(nn.Module):
                                                 group_list=group_list, split_item=3, output_dtype=act_dtype,
                                                 group_type=0,
                                                 group_list_type=1)[0]
-            elif self.experts.num_bits == 4:
+            elif self.experts.weight_num_bits == 4:
                 gate_up_proj = \
                     torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=[weight_bias1_3], scale=[weight_scale1_3],
                                                  offset=None, antiquant_scale=None, antiquant_offset=None,
@@ -541,7 +541,7 @@ class DeepseekMoE(nn.Module):
                                                                      group_list_type=1,
                                                                      tuning_config=self.tuning_config)[0]
             else:
-                raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.num_bits}")
+                raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.weight_num_bits}")
         else:
             # bf16
             gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
@@ -644,7 +644,7 @@ class DeepseekMoE(nn.Module):
         if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
             fake_topk_ids = attn_metadata.decode.best_topk
             topk_ids = tng.scope.npu_wait_tensor(fake_topk_ids, topk_ids)
-        hidden_states = fused_experts_w8a8_moe_dispatch_combine(self.shared_experts or self.experts,
+        hidden_states = fused_experts_moe_dispatch_combine(self.shared_experts or self.experts,
                                                                 hidden_states,
                                                                 topk_weights,
                                                                 topk_ids,
