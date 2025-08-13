@@ -426,13 +426,14 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 
 ```
 
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --》默认按照task全部任务顺序执行
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --》默认按照task全部任务顺序执行
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_docker --》指定镜像创建并启动新的容器实例
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags sync_code --》只执行代码同步更新任务
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags pip_install --》安装 omniinfer 相关包
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags ranktable --》生成ranktable文件
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_server --》只执行pd分离服务拉起
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_proxy --》只执行global_proxy分离服务拉起
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags sync_code --》只执行代码同步更新任务
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags fetch_log --》将日志存放在执行机指定路径
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags sync_code --》过滤sync
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server --》只执行pd分离服务拉起
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_proxy --》只执行global_proxy分离服务拉起
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags fetch_log --》将日志存放在执行机指定路径
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --skip-tags sync_code --》过滤sync
 
 ```
