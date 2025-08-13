@@ -209,7 +209,7 @@
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
+      PROFILING_NAMELIST=${CODE_PATH}/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -275,7 +275,7 @@
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
+      PROFILING_NAMELIST=${CODE_PATH}/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -917,6 +917,15 @@
       when: "'D' in group_names"
       tags: run_server
 
+    # proc_bind
+    - name: Remove proc_trace.txt if it exists (P & D nodes)
+      ansible.builtin.file:
+        path: /tmp/process/proc_trace.txt
+        state: absent
+      when: "'P' in group_names or 'D' in group_names"
+      tags:
+        - run_server
+
     - name: Generate a script to run the vllm server for the prefill instances.
       copy:
         content: "{{ run_vllm_server_prefill_cmd }}"
@@ -1029,6 +1038,58 @@
       when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length == 1"
       tags:
         - run_server
+      
+    
+    - name: check vLLM is Ready
+      shell: |
+        timeout=600
+        while [ $timeout -gt 0 ]; do
+          if grep -q "Application startup complete" {{ ansible_env.LOG_PATH }}/server_0.log; then
+            echo "Service ready"
+            exit 0
+          fi
+          sleep 20
+          timeout=$((timeout - 20))
+        done
+        echo "Timeout waiting for service" >&2
+        exit 0
+      delegate_to: "{{ inventory_hostname }}"
+      become: yes
+      when: "'P' in group_names or 'D' in group_names"
+      tags:
+        - proc_bind
+    
+    - name: Ensure bind_cpu.sh is executable
+      file:
+        path: ${CODE_PATH}/v0.3.0/omniinfer/tools/scripts/bind_cpu.sh
+        mode: "0755"
+      become: yes
+      tags:
+        - proc_bind
+    
+    # proc_bind
+    - name: Prefill cpu_pin
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c ${CODE_PATH}/tools/scripts/bind_cpu.sh"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+        ROLE: "P"
+      become: yes
+      when: "'P' in group_names"
+      tags:
+        - proc_bind
+    
+    # proc_bind
+    - name: Decode cpu_pin
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c ${CODE_PATH}/tools/scripts/bind_cpu.sh"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+        ROLE: "D"
+      become: yes
+      when: "'D' in group_names"
+      tags:
+        - proc_bind
 
     - name: Generate a script to kill all nginx processes in the container.
       copy:
