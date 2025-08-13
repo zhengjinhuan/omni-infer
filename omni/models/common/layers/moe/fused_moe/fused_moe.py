@@ -901,7 +901,7 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask,
+            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
         })
 
         if model_extra_config.operator_opt_config.enable_mc2_v2:
@@ -947,7 +947,7 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask,
+            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
         }
         kwargs.update(stage3_kwargs)
 

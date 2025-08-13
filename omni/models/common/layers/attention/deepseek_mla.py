@@ -439,8 +439,8 @@ class DeepseekMLA(nn.Module):
                 dist.all_to_all_single(all_to_all_attn_output, attn_output, group=device_group)
                 if model_extra_config.parall_config.o_proj_tp_size > 1:
                     attn_output = all_to_all_attn_output.view(
-                        get_tensor_model_parallel_world_size() // get_o_proj_dp_group().world_size,
-                        q.shape[0] // get_tensor_model_parallel_world_size() * get_o_proj_dp_group().world_size,
+                        get_tensor_model_parallel_world_size() // get_o_proj_tp_group().world_size,
+                        q.shape[0] // get_tensor_model_parallel_world_size() * get_o_proj_tp_group().world_size,
                         self.num_local_heads * self.v_head_dim
                     ).transpose(0, 1).contiguous()
                 else:
@@ -474,7 +474,7 @@ class DeepseekMLA(nn.Module):
             q_len = 1
             if model_extra_config.operator_opt_config.use_mlaprolog:
                 block_num, block_size, head_size, _ = key_cache.shape
-                bsz, _ = hidden_states.view(-1, 7168).shape
+                bsz, _ = hidden_states.view(-1, hidden_states.shape[-1]).shape
                 if self.quant_symbol:
                     hidden_states_mla_prolog, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
                 else:
@@ -578,7 +578,7 @@ class DeepseekMLA(nn.Module):
                     q_pe = q_pe.view(bsz, self.num_local_heads, -1)
 
             bsz, _, q_dim = q_nope.size()
-            input_layout = "TND_NTD" if model_extra_config.operator_opt_config.use_a3_high_performance_cann else "TND"
+            input_layout = "TND_NTD"
             if self.enable_graph_mode:
                 attn_output, _ = tng.ops.npu_fused_infer_attention_score(
                         q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
@@ -605,11 +605,8 @@ class DeepseekMLA(nn.Module):
                         )
 
             # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-            if model_extra_config.operator_opt_config.use_a3_high_performance_cann:
-                attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
-            else:
-                attn_output = attn_output.squeeze(1).transpose(0, 1)
-            # attn_output = pp_matmul(attn_output, self.W_UV, mm_type=4)
+            attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+
             attn_output = (
                 torch.matmul(attn_output, self.W_UV)
                 .transpose(1, 0)

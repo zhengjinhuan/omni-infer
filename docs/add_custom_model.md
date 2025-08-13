@@ -298,91 +298,68 @@ class SimpleSampler(RejectionSamplerV1)
 ```
 ## 4. 模型量化
 当前支持加载A8W8的量化权重，量化后的权重`config.json`需要包含`quantization_config`字段，才能被omniinfer正常加载。
-下面的类图以compressed_tensors为例描述了omniinfer当前的量化框架。
-```mermaid
-classDiagram
-    class AscendQuantizer {
-        +get_linear_method()
-        +get_moe_method()
-        +get_attention_method()
-        +get_linear_quant_type()
-        +get_quantizer()
+权重量化可以参考[omni_infer_installation_guide中的权重转换章节](omni_infer_installation_guide.md#权重转换)，生成的权重的config.json中的`quantization_config`应如下所示：
+```json
+"quantization_config" {
+  "config_groups": {
+    "group_0": {
+      "input_activations": {
+        "actorder": null,
+        "block_structure": null,
+        "dynamic": true,
+        "group_size": null,
+        "num_bits": 8,
+        "observer": "memoryless",
+        "observer_kwargs": {},
+        "strategy": "token",
+        "symmetric": true,
+        "type": "int"
+      },
+      "output_activations": null,
+      "targets": [
+        "Linear"
+      ],
+      "weights": {
+        "actorder": null,
+        "block_structure": null,
+        "dynamic": true,
+        "group_size": null,
+        "num_bits": {
+          "self_attn.kv_a_proj_with_mqa": 8,
+          "self_attn.q_a_proj": 8,
+          "self_attn.q_b_proj": 8,
+          "self_attn.o_proj": 8,
+          "mlp.down_proj": 8,
+          "mlp.gate_up_proj": 8,
+          "mlp.shared_experts": 8,
+          "mlp.experts": 8
+        },
+        "observer": "minmax",
+        "observer_kwargs": {},
+        "strategy": "channel",
+        "symmetric": true,
+        "type": int
+      }
     }
-
-    class CompressedTensorsQuantizer {
-        +get_linear_method() AscendCompressedTensorsW8A8Int8LinearMethod
-        +get_moe_method() AscendCompressedTensorsW8A8Int8MoEMethod
-    }
-
-    class AscendQuantConfig {
-        +__init__()
-        +get_quant_method() QuantizeMethodBase
-    }
-
-    class AscendLinearMethod {
-        +AscendQuantizer quantizer
-        +__init__()
-        +create_weights()
-        +apply(layer, x, bias, inner_gather)
-    }
-
-    class AscendKVCacheMethod {
-        +AscendQuantizer quantizer
-        +__init__()
-        +create_weights()
-        +apply()
-    }
-
-    class AscendFusedMoEMethod {
-        +AscendQuantizer quantizer
-        +__init__()
-        +create_weights()
-        +apply()
-    }
-
-    class AscendCompressedTensorsW8A8Int8LinearMethod {
-        +get_weight()
-        +get_pertensor_param()
-        +get_perchannel_param()
-        +apply()
-    }
-    class AscendCompressedTensorsW8A8Int8MoEMethod {
-        +get_weight()
-        +get_dynamic_quant_param()
-        +apply()
-    }
-
-    AscendQuantizer <|-- CompressedTensorsQuantizer
-    AscendLinearMethod <.. AscendQuantConfig
-    AscendKVCacheMethod <.. AscendQuantConfig
-    AscendFusedMoEMethod <.. AscendQuantConfig
-    AscendLinearMethod-->AscendQuantizer
-    AscendFusedMoEMethod-->AscendQuantizer
-    AscendKVCacheMethod-->AscendQuantizer
-    CompressedTensorsQuantizer..>AscendCompressedTensorsW8A8Int8LinearMethod
-    CompressedTensorsQuantizer..>AscendCompressedTensorsW8A8Int8MoEMethod
+  },
+  "format": "int-quantized",
+  "global_compression_ratio": 1.5943962512751308,
+  "ignore": [
+  ],
+  "kv_cache_scheme": null,
+  "quant_method": "compressed-tensors",
+  "quantization_status": "compressed"
+}
 ```
 新增量化方法的步骤:
-- 参考已有的CompressedTensorsQuantizer，在`omni/quantization/quatizer.py`中新增quantizer
+- 参考已有的CompressedTensorsQuantizer，在`omni/adaptors/vllm/utils.py`中新增支持的量化方法。
 ```python
-  class CompressedTensorsQuantizer(AscendQuantizer):
-      @staticmethod
-      def get_linear_method():
-          return AscendCompressedTensorsW8A8Int8LinearMethod()
-  
-      @staticmethod
-      def get_moe_method():
-          return AscendCompressedTensorsW8A8Int8MoEMethod()
-
-  SUPPORT_ASCEND_QUANTIZER_MATHOD = [
-      "compressed-tensors",
-      ]
-
-  SUPPORT_ASCEND_QUANTIZERS = {
-      "compressed-tensors": CompressedTensorsQuantizer,
-  }
+ASCEND_COMPRESSED_TENSORS = "ascend_compressed_tensors"
+`SUPPORTED_QUANTIZATION_METHODS` = [ASCEND_COMPRESSED_TENSORS]
 ```
-- 新增对应的量化实现
+- 在`omni/quantization/__init__.py`中新增引入，如`from omni.quantization.compressed_tensors import compressed_tensors`
+- 在`omni/quantization/`目录中新增对应量化方法的适配。
+- 如果是基于compressed_tensors新增不同的量化类型，如w4a8, 基于已有的compressed_tensors实现扩展。
 ## 5. 模型并行
 当前omniinfer支持常见的并行策略，如TP/EP/DP/PP等。
 推理框架中如vllm针对PP/TP/DP/EP分别提供了命令行参数及环境变量，如下所示：
@@ -432,25 +409,44 @@ classDiagram
   - 基本通信算子扩展
   如果需要新增通信算子，或为已有的通信算子替换昇腾算子，需要修改`omni/adaptors/vllm/distributed/communicator.py`
 ## 6. 图模式
-在推理框架中可通过命令行参数启用图模式，以 vllm 为例，参数为`--additional_config={'enable_graph_mode': True}`。
-另外，对于使用GE图的场景下，还提供了`GraphCompileConfiguration`类用于图模式配置，如下所示：
+> 在推理框架中可通过命令行参数启用图模式，以 vllm 为例，参数为`--additional_config='{"graph_model_compile_config": {"level":1}}'`，其中level为1表示图模式，level为0表示eager模式 。
+
+新增模型如果想要使能GE图，需要在模型类名上添加@support_torch_compile装饰器，同时需要实现should_use_eager_mode(self, *args, **kwargs)函数，告知框架该模型什么情况下走图模式，什么情况下走eager模式，默认走eager模式。
+
+比如deepseekV3模型，在模型类中添加@support_torch_compile装饰器，并实现should_use_eager_mode(self, *args, **kwargs)函数，如下所示：
+
+```python
+@support_torch_compile
+class DeepseekV3ForCausalLM(nn.Module):
+    
+     def should_use_eager_mode(self, *args, **kwargs):
+            attn_metadata = kwargs.get("attn_metadata", None)
+            if not attn_metadata:
+                return True
+    
+            if isinstance(attn_metadata, dict):
+                attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+    
+            if attn_metadata.prefill:
+                return True
+    
+            return False
+```
+
+如果模型中需要使用静态shape（框架默认已对input、position、kv_cache、attn_metadata做静态shape标记），则需要继承`GraphCompileConfiguration`类，并实现`mark_static_for_graph`方法，该方法中需要对模型中的tensor进行静态标记，如下所示：
 ```python
 class GraphCompileConfiguration:
     """
     When the graph mode is turned on
     you can set the gear or clarify the static shape by inheriting this class to speed up the model running
     """
-
-    def set_dynamic_gears(self, *args, **kwargs):
-        pass
-
-
     def mark_static_for_graph(self, *args, **kwargs):
         torch._dynamo.mark_static(args[0])
         torch._dynamo.mark_static(args[1])
 #模型中需要对特定的tensor做mark static操作时，继承GraphCompileConfiguration类
-class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
+class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
 ```
+
 ## 7. 模型配置
 模型配置独立于推理框架提供的命令行参数、环境变量，当前实现位于`omni/models/common/model_config.py`，
 可以通过环境变量`MODEL_EXTRA_CFG_PATH`来指定json格式的模型配置文件，PD分离场景可以为P/D分别指定不同的配置文件。如下所示：
@@ -465,19 +461,14 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
     "operator_optimizition_config": {
         "enable_kv_rmsnorm_rope_cache": true,   # 是否开启rmsnorm和rope融合，默认开启
         "prefill_moe_all_to_all": true,         # P的moe层是否使用all to all，默认开启。设置为false时，使用allgather+scatter
-        "enable_node_mlp": false,               # 是否开启MLP TP，和dense_mlp_tp_size配合使用，默认开启
         "moe_multi_stream_tune": false,         # 是否开启多流，只能图模式使用，单算子会报错, 开启提升3ms性能
         "best_ep": false,                       # 是否开启强制负载均衡，测试精度时必须关闭
-        "enable_pd_separated": false,           # 是否开启PD分离，默认开启
         "merge_qkv": false,                     # merge_qkv当前未使能，为false
         "two_stage_comm": false,                # 卡内卡间多级通信，A2使用，为false
-        "use_w8a8_dynamic_quant": true,         # 是否使用w8a8动态量化，默认开启
         "gmm_nz": false,                        # 是否开启gmm_nz，测试性能时使用，P开启，D关闭
         "decode_moe_dispatch_combine": true,    # D的moe层是否使用dispatch+combine算子，默认开启。设置为false时，使用all to all
         "use_omni_placement": false,            # 是否使用omni placement
         "omni_placement_config_path": null,     # omni placement配置文件
-        "enable_moe_expert_parallel": true,     # Moe层是否使用专家并行，默认开启
-        "use_a3_high_performance_cann": true,   # 是否使用A3的高性能CANN包，根据实际CANN包设置，默认为True
         "use_super_kernel": false,              # 是否使用super kernel融合算子，仅图模式可用，开启提升2ms性能
         "use_mlaprolog": false,                 # 暂未使能，默认关闭
         "opt_w2_scale_cast": false,             # 是否将w2_scale权重转换为float32，默认false
@@ -488,7 +479,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
         "enable_pipeline_comm": false,          # d节点使用，moe部分通信pipline，decode为2机时打开，a2相关
         "pd_seperate_prefill": false,           # pd分离版本下prefill节点打开，a2相关
         "prefill_enable_long_seq": false,       # prefill使能长序列，64k以上打开，默认关闭，a2相关
-        "enable_prefetch": false,               # d节点使用，权重和kv_cache prefetch开关，a2相关
         "prefill_moe_multi_stream": true,       # p节点使用，moe部分是否开启多流，a2相关
         "prefill_enable_mla_alltoall_local": true, # p节点使用，mla部分是否开启all2all，a2相关
         "prefill_enable_pipeline_comm": true,   # p节点使用，moe部分是否开启通信pipline，a2相关

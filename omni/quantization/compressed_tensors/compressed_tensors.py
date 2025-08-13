@@ -223,7 +223,8 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg,
                                      user_quant) -> Optional[str]:
-        if torch.npu.is_available():
+        quant_method = hf_quant_cfg['quant_method']
+        if torch.npu.is_available() and quant_method == 'compressed-tensors':
             return ASCEND_COMPRESSED_TENSORS
         return None
 
@@ -245,15 +246,10 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
 
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
-        from vllm.attention.layer import Attention
         if isinstance(layer, LinearBase):
             scheme = self.get_scheme(layer=layer, layer_name=prefix)
             layer.scheme = scheme
             return CompressedTensorsLinearMethod(self)
-        elif isinstance(layer, Attention) and \
-            'fa_quant_type' in self.quant_description.keys() and \
-            self.quant_description['fa_quant_type'] is not None:
-            return CompressedTensorsKVCacheMethod(self)
         elif isinstance(layer, FusedMoE):
             layer.weight_num_bits = 0
             moe_method, weight_num_bits = self.get_moe_method(prefix)

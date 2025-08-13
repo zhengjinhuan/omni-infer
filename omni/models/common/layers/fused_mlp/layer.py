@@ -5,11 +5,13 @@ from vllm.model_executor.layers.quantization.base_config import (QuantizationCon
                                                                  QuantizeMethodBase)
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.distributed import (
+    get_tensor_model_parallel_world_size,
+    get_tensor_model_parallel_rank,
     tensor_model_parallel_all_reduce,
     tensor_model_parallel_all_gather,
-    tensor_model_parallel_reduce_scatter
+    tensor_model_parallel_reduce_scatter,
+    get_tp_group
 )
-
 from omni.models.common.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
 
 class FusedMLPMethodBase(QuantizeMethodBase):
@@ -50,8 +52,7 @@ class UnquantizedFusedMLPMethod(FusedMLPMethodBase):
         if x_transform == "AG":
             x = tensor_model_parallel_all_gather(x, dim=0)
         elif x_transform == "A2A":
-            # x = module_parallel_x_all_to_all(x, layer.gate_up_proj.prefix)
-            raise NotImplementedError
+            x = get_tp_group().all_to_all(x)
         gate_up, _ = layer.gate_up_proj(x, x_transform=None)
         x = layer.act_fn(gate_up)
         x, _ = layer.down_proj(x, reduce_type=None)
@@ -75,9 +76,13 @@ class FusedMLP(torch.nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
         self.gate_up_proj = MergedColumnParallelFlashCommLinear(
             hidden_size,
             [intermediate_size] * 2,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.gate_up_proj",
@@ -85,6 +90,8 @@ class FusedMLP(torch.nn.Module):
         self.down_proj = RowParallelFlashCommLinear(
             intermediate_size,
             hidden_size,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.down_proj",

@@ -62,7 +62,10 @@ class PlacementMapping {
                                                          // num_deploy_experts_per_device_]
 
     aclrtStream stream_; // 用于mapping同步更新的Stream
-    std::vector<int> expert_id_deployed_nums_;
+    std::vector<int32_t> expert_id_deployed_nums_host_;
+    Tensor expert_id_deployed_nums_;
+
+    bool enable_rank_round_robin_ = false;
 
   private:
     /**
@@ -101,7 +104,9 @@ class PlacementMapping {
     PlacementMapping(const std::string &placement_pattern_filename, int rank,
                      int num_devices_per_host, int max_redundant_per_expert,
                      int max_num_deployed_expert, size_t placement_pattern_ptr,
-                     std::vector<int64_t> pattern_shape, size_t selector_ptr);
+                     std::vector<int64_t> pattern_shape, size_t selector_ptr,
+                     bool enable_rank_round_robin,
+                     size_t num_redundant_per_expert_ptr);
 
     /**
      * @brief Destructor for PlacementMapping
@@ -168,6 +173,7 @@ class PlacementMapping {
         int layer_id, std::vector<int> finish_table,
         std::vector<std::vector<int32_t>> same_host_candidates,
         std::vector<std::vector<int32_t>> distant_candidates);
+    void update_selector_layer(int layer_id);
     Tensor get_selector() { return selector_; }
     void set_rank(int rank) { rank_ = rank; }
     void init_selector(size_t selector_ptr);

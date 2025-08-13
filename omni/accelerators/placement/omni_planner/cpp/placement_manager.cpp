@@ -183,7 +183,8 @@ void Placement::initialize_components(size_t expert_mapping_ptr,
     assert(placement_shape.size() == 3);
     mapping_ = new PlacementMapping("", rank_, 1, num_devices_per_host_,
                                     placement_shape[2], placement_pattern_ptr,
-                                    placement_shape, expert_mapping_ptr);
+                                    placement_shape, expert_mapping_ptr, true,
+                                    placement_pattern_ptr);
 
     num_layers_ = mapping_->get_num_layers();
     num_experts_ = mapping_->get_num_experts();
@@ -558,10 +559,12 @@ PYBIND11_MODULE(omni_placement, m) {
     // 1. 绑定 PlacementMapping 类
     py::class_<PlacementMapping>(m, "PlacementMapping")
         .def(py::init<const std::string &, int, int, int, int, size_t,
-                      std::vector<int64_t>, size_t>(),
+                      std::vector<int64_t>, size_t, bool, size_t>(),
              py::arg("filename"), py::arg("rank"), py::arg("num_devices"),
              py::arg("max_deployed_num"), py::arg("max_deployed_num"),
-             py::arg("pattern"), py::arg("pattern_shape"), py::arg("selector"));
+             py::arg("pattern"), py::arg("pattern_shape"), py::arg("selector"),
+             py::arg("enable_rank_round_robin"),
+             py::arg("num_redundant_per_expert"));
 
     // 3. 绑定 MoEWeights 类
     py::class_<MoEWeights>(m, "MoEWeights")

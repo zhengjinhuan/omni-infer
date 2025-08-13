@@ -88,7 +88,7 @@ class ReplicatedDeepseekMLP(nn.Module):
         self.quant_symbol = True if quant_config else False
         self.tp_size = 1
         self.quant_mode = DYNAMIC_QUANT_MODE if quant_config else UNQUANT_MODE
-        if model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
+        if model_extra_config.parall_config.redundancy_shared_expert_num > 0 and model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             # Adapt the dispatch combine operator
             self.ep_size = get_ep_group().world_size
             self.global_rank = get_world_group().rank_in_group
@@ -220,7 +220,7 @@ class DeepseekMoE(nn.Module):
             (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
             intermediate_size = config.moe_intermediate_size * config.n_shared_experts
             # omni placement for redundancy shared experts
-            if self.redundancy_shared_expert_num > 0 and OmniPlanner is not None:
+            if self.redundancy_shared_expert_num > 0 and model_extra_config.operator_opt_config.use_omni_placement:
                 # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
                 self.planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
                                            rank=self.global_rank, world_size=self.ep_size,
@@ -455,7 +455,7 @@ class DeepseekMoE(nn.Module):
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask,
+            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
         })
 
         if model_extra_config.operator_opt_config.enable_mc2_v2:
@@ -574,7 +574,7 @@ class DeepseekMoE(nn.Module):
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask,
+            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
         }
         kwargs.update(stage3_kwargs)
 
@@ -586,7 +586,7 @@ class DeepseekMoE(nn.Module):
             shared_output, _ = self.shared_experts.down_proj.forward(intermediate_hiddenstates_share)
 
         # prefetch weights for attention next layer
-        if next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
+        if model_extra_config.operator_opt_config.attn_prefetch > 0 and next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
                 attn_prefetch_size = model_extra_config.operator_opt_config.attn_prefetch * 1024 * 1024
                 attn_prefetch_flag = shared_output
                 torch_npu.npu_prefetch(next_attention_weights['q_a_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
@@ -628,7 +628,7 @@ class DeepseekMoE(nn.Module):
                                                             layer=self.experts)
         max_num_deployed_expert=self.n_routed_experts
         if model_extra_config.operator_opt_config.use_omni_placement:
-            if self.shared_experts is not None and self.planner.is_moe_layer(self.moe_layer_idx):
+            if self.planner.is_moe_layer(self.moe_layer_idx):
                 hidden_states, topk_ids, topk_weights = self.planner.plan(layer_idx_moe=self.moe_layer_idx,
                                                                           tokens=hidden_states,
                                                                           token_expert_ids=topk_ids,
@@ -637,9 +637,6 @@ class DeepseekMoE(nn.Module):
                                                                           expert_mapping=self.expert_mapping,
                                                                           is_prefill=False)
                 max_num_deployed_expert_per_rank = self.planner.get_max_num_deployed_expert_per_rank()
-                max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
-            elif self.experts is not None and self.experts.planner.is_moe_layer(self.experts.moe_layer_idx):
-                max_num_deployed_expert_per_rank = self.experts.planner.get_max_num_deployed_expert_per_rank()
                 max_num_deployed_expert = max_num_deployed_expert_per_rank * (self.ep_size - self.redundancy_shared_expert_num)
         if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
             fake_topk_ids = attn_metadata.decode.best_topk
