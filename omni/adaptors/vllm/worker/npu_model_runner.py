@@ -22,14 +22,13 @@ import gc
 import os
 import time
 from typing import TYPE_CHECKING, Dict, Optional, Union, Any, List
-from contextlib import nullcontext, contextmanager
+from contextlib import nullcontext
 
 import numpy as np
 import torch
 import torch.distributed as dist
 from vllm.config import CompilationLevel, VllmConfig
 from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group
-from vllm import forward_context
 from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
 from vllm.sequence import IntermediateTensors, VLLM_INVALID_TOKEN_ID
@@ -44,6 +43,7 @@ from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
+from omni.adaptors.vllm.forward_context import set_forward_context
 from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
@@ -68,27 +68,6 @@ MAX_GEAR_NUM = 6
 def _get_pad_size(num_seqs):
     tp_size = get_tensor_model_parallel_world_size()
     return (tp_size - num_seqs % tp_size) % tp_size
-
-@contextmanager
-def set_forward_context(attn_metadata: Any,
-                        vllm_config: VllmConfig,
-                        virtual_engine: int = 0):
-    """A context manager that stores the current forward context,
-    can be attention metadata, etc.
-    Here we can inject common logic for every model forward pass.
-    """
-    prev_context = forward_context._forward_context
-    forward_context._forward_context = forward_context.ForwardContext(
-        no_compile_layers=vllm_config.compilation_config.static_forward_context,
-        virtual_engine=virtual_engine,
-        attn_metadata=attn_metadata,
-        dp_metadata=None)
-
-    try:
-        yield
-    finally:
-        forward_context._forward_context = prev_context
-
 
 class GraphCompileConfiguration:
     """
@@ -135,6 +114,7 @@ class NPUModelRunner(GPUModelRunner):
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
         if self.use_spec_decode:
+            self.rejection_sampler = SimpleSampler(self.sampler)
             self.drafter = PostDrafter(vllm_config, device, self)
         else:
             self.sampler = AscendSamplerV1()
@@ -814,6 +794,7 @@ class NPUModelRunner(GPUModelRunner):
             else:
                 hidden_states = forward_results
             if self.use_spec_decode:
+                self.drafter.prepare_dummy_input(input_ids)
                 self.drafter.propose(
                     num_tokens=input_ids.numel(),
                     positions=positions,

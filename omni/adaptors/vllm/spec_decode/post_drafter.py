@@ -1,16 +1,34 @@
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# This file is a part of the vllm-ascend project.
+#
+# This file is mainly Adapted from vllm-project/vllm/v1/spec_decode/eagle.py
+# Copyright 2023 The vLLM team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 import torch
 import torch.nn as nn
 from typing import Optional, List
 
 from vllm.attention.layer import Attention
-from vllm.config import (CompilationLevel, VllmConfig,
-                         get_layers_from_vllm_config)
-from vllm.forward_context import set_forward_context
+from vllm.config import VllmConfig, get_layers_from_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import get_model
 from vllm.v1.spec_decode.eagle import EagleProposer
 
-from omni.models.common.layers.sampler import SimpleSampler
+from omni.adaptors.vllm.forward_context import set_forward_context
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
 logger = init_logger(__name__)
@@ -26,7 +44,7 @@ class PostDrafter(EagleProposer):
         self.drafter_list = []
         self.method = self.vllm_config.speculative_config.method
         self.mark_static = False
-        self.rejection_sampler = SimpleSampler(runner.sampler)
+        self.rejection_sampler = runner.rejection_sampler
 
         # eagle proposer set dtype as int32, while we need int64
         self.input_ids = torch.zeros(self.max_num_tokens,
@@ -81,6 +99,9 @@ class PostDrafter(EagleProposer):
         
         return sampler_output, last_accepted_index, accepted_num
 
+    def prepare_dummy_input(self, input_ids):
+        self.input_ids[:input_ids.numel() - 1] = input_ids[1:]
+
     @torch.inference_mode()
     def propose(self,
                 num_tokens,
@@ -90,12 +111,11 @@ class PostDrafter(EagleProposer):
                 previous_hidden_states,
                 last_accepted_index,
                 sample_indices,
-                chunk_next_tokens_list: Optional[List[torch.Tensor]] = None, # for chunk prefill with multi mtp
-                chunk_next_indices: Optional[torch.Tensor] = None, # for chunk prefill with multi mtp
+                **kwargs,
     ):
-        input_ids = self.input_ids[:num_tokens].clone()
+        input_ids = self.input_ids[:num_tokens]
         if kv_caches is None:
-            with set_forward_context(None, self.vllm_config, num_tokens = num_tokens):
+            with set_forward_context(None, self.vllm_config):
                 for layer_idx in range(self.speculative_config.num_speculative_tokens):
                     self.model(
                         input_ids=input_ids,
@@ -118,7 +138,7 @@ class PostDrafter(EagleProposer):
                     torch._dynamo.mark_static(input_ids)
                     torch._dynamo.mark_static(previous_hidden_states)
                     self.mark_static = True
-            with set_forward_context(None, self.vllm_config, num_tokens=num_tokens):
+            with set_forward_context(attn_metadata, self.vllm_config):
                 is_dummy = (last_accepted_index is None) or (sample_indices is None)
                 for layer_idx in range(self.speculative_config.num_speculative_tokens):
                     drafter_logits, previous_hidden_states = self.model(
@@ -145,4 +165,3 @@ class PostDrafter(EagleProposer):
                 return None
             else:
                 return torch.stack(draft_forward_tokens_list, dim=1)
-
