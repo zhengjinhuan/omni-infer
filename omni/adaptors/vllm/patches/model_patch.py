@@ -108,6 +108,10 @@ def patch_pangu():
     ModelConfig._verify_with_expert_parallelism = _verify_with_expert_parallelism
     ModelConfig.get_head_size = get_head_size
     print("++++++++++++++++++++++patch_pangu++++++++++++++++++++++++++++")
+def patch_linear():
+    from vllm.model_executor.layers import linear
+    from omni.models.common.layers.linear import AscendUnquantizedLinearMethod
+    linear.UnquantizedLinearMethod = AscendUnquantizedLinearMethod
 
 _patch_done = False
 
@@ -121,6 +125,7 @@ def patch_all():
     patch_sampler()
     patch_compilation()
     patch_pangu()
+    patch_linear()
     _patch_done = True
 
 patch_all() 
