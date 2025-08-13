@@ -223,7 +223,8 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg,
                                      user_quant) -> Optional[str]:
-        if torch.npu.is_available():
+        quant_method = hf_quant_cfg['quant_method']
+        if torch.npu.is_available() and quant_method == 'compressed-tensors':
             return ASCEND_COMPRESSED_TENSORS
         return None
 

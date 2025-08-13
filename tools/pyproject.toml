@@ -20,4 +20,5 @@ dependencies = [
 omni_cli = "omni_cli.main:main"
 
 [tool.setuptools.packages.find]
-where = ["omni_cli"]
+where = ["."]
+include = ["omni_cli*"]

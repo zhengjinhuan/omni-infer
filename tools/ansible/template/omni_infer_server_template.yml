@@ -177,7 +177,7 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
+      EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -258,7 +258,7 @@
           {% endfor %}
       )
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
       GPU_UTIL=0.92
       ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}}'
       VLLM_ENABLE_MC2=1
@@ -843,7 +843,6 @@
       when:
         - "'D' in group_names"
         - d_dynamic_files.matched > 0
-      register: fetch_result
       tags: ranktable
 
     - name: The executor synchronizes the files to the first prefill instances.
@@ -920,7 +919,7 @@
       failed_when: false
       no_log: true
       when: "'D' in group_names"
-      tags: run_server
+      tags: stop_server
 
     - name: Kill all Ray processes in the container of decode.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
@@ -929,7 +928,7 @@
       failed_when: false
       no_log: true
       when: "'D' in group_names"
-      tags: run_server
+      tags: stop_server
 
     - name: Generate a script to run the vllm server for the prefill instances.
       copy:
@@ -1087,12 +1086,21 @@
       tags:
         - fetch_log
 
-    - name: Forward logs from all machines to the executor.
-      ansible.builtin.synchronize:
-        mode: pull
-        src: "{{ ansible_env.LOG_PATH }}"
-        dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+    - name: Get a list of log files that match the format.
+      ansible.builtin.find:
+        paths: '{{ ansible_env.LOG_PATH }}'
+        patterns: ".*.log"
+        use_regex: yes
+      register: log_files
       when: "'P' in group_names or 'D' in group_names"
-      delegate_to: localhost
-      tags:
-        - fetch_log
+      changed_when: false
+      tags: fetch_log
+
+    - name: Forward logs from all machines to the executor.
+      ansible.builtin.fetch:
+        src: "{{ item }}"
+        dest: '{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/'
+        flat: yes
+      loop: "{{ log_files.files | map(attribute='path') | list }}"
+      when: "'P' in group_names or 'D' in group_names"
+      tags: fetch_log

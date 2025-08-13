@@ -776,7 +776,7 @@ class SimpleSampler(RejectionSamplerV1):
         self.main_sampler.topk_topp_sampler = AscendTopKTopPSamplerV1()
         self.minus_one = None
 
-    def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
+    def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills, next_tokens: list[int]):
 
         if num_decodes != 0 and num_prefills != 0:
             raise ("Chunked prefill is not supported in current version.")
@@ -823,6 +823,10 @@ class SimpleSampler(RejectionSamplerV1):
         if num_prefills > 0:
             mtp_input_tokens = torch.empty_like(input_ids)
             mtp_input_tokens[:-1] = input_ids[1:] # for prefill
+            if len(next_tokens) != forward_tokens.numel():
+                raise RuntimeError(f"Shape mismatch! {len(next_tokens)=}, {forward_tokens.shape=}, {logits_indices.shape=}, {batch_size=}.")
+            next_tokens = torch.tensor(next_tokens).to(forward_tokens).view_as(forward_tokens)
+            forward_tokens = torch.where(next_tokens != VLLM_INVALID_TOKEN_ID, next_tokens, forward_tokens)
         else:
             mtp_input_tokens = input_ids.clone()
         mtp_input_tokens[logits_indices] = forward_tokens.view(-1)

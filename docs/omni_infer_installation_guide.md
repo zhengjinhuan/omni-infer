@@ -431,6 +431,7 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags sync_code --》只执行代码同步更新任务
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags pip_install --》安装 omniinfer 相关包
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags ranktable --》生成ranktable文件
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags stop_server --》停止vllm以及nginx服务
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server --》只执行pd分离服务拉起
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_proxy --》只执行global_proxy分离服务拉起
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags fetch_log --》将日志存放在执行机指定路径

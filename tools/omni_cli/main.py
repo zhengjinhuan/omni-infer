@@ -20,8 +20,8 @@ import yaml
 import requests
 import json
 import os
-from omni.cli.config_transform import transform_deployment_config
-from omni.cli.config_transform import detect_file_encoding
+from omni_cli.config_transform import transform_deployment_config
+from omni_cli.config_transform import detect_file_encoding
 
 def execute_command(command):
     """Execute the ansible command"""
@@ -96,6 +96,11 @@ def upgrade_packages():
     command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags pip_install"
     execute_command(command)
 
+def fetch_logs():
+    """Fetch logs"""
+    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags fetch_log"
+    execute_command(command)
+
 def main():
     # Create main argument parser with description
     parser = argparse.ArgumentParser(description="Omni Inference Service Management")
@@ -104,11 +109,17 @@ def main():
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
     start_group = start_parser.add_mutually_exclusive_group()
-    start_group.add_argument("--normal", action="store_true", help="Start in normal mode (default)")
+    start_group.add_argument(
+        "--normal",
+        nargs=1,
+        metavar='config_path',
+        help="Start in normal mode (default) with config file"
+    )
     start_group.add_argument(
         "--prepare_dev",
-        action="store_true",
-        help="Start in developer mode: Environmental preparation"
+        nargs=1,
+        metavar='config_path',
+        help="Start in developer mode with config file: Environmental preparation"
     )
     start_group.add_argument("--run_dev", action="store_true", help="Start in developer mode: Start the service")
 
@@ -116,35 +127,40 @@ def main():
     subparsers.add_parser("stop", help="Stop the omni service")
 
     # SYNC_DEV command configuration
+    subparsers.add_parser("sync_dev", help="Developer mode: Synchronize the code")
+
+    # INSTALL_DEV command configuration
     subparsers.add_parser("install_dev", help="Developer mode: Install packages")
 
     # CFG command configuration
     cfg_parser = subparsers.add_parser("cfg", help="Modify configuration")
     cfg_group = cfg_parser.add_mutually_exclusive_group()
-    cfg_group.add_argument("--set", action="store_true", help="Set configuration")
-    cfg_group.add_argument("--delete", action="store_true", help="Delete configuration")
+    cfg_group.add_argument("--set", nargs=1, metavar='config_path', help="Set configuration")
+    cfg_group.add_argument("--delete", nargs=1, metavar='config_path', help="Delete configuration")
 
     # INSPECT command configuration
-    subparsers.add_parser("inspect", help="Inspect Configuration")
+    inspect_parser = subparsers.add_parser("inspect", help="Inspect Configuration")
+    inspect_parser.add_argument('config_path', type=str, help='Path to the configuration file')
 
     # UPGRADE command configuration
     subparsers.add_parser("upgrade", help="Upgrade packages")
+
+    # FETCH_LOG command configuration
+    subparsers.add_parser("fetch_log", help="Upgrade packages")
 
     args = parser.parse_args()
     if args.command == "start" and not any([args.normal, args.prepare_dev, args.run_dev]):
         args.normal = True
 
     # Command processing logic
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = f"{current_dir}/omni_infer_deployment.json"
     if args.command == "start":
         print("Start omni service.")
         if args.normal:
             print("Normal Mode.")
-            start_omni_service_in_normal_mode(config_path)
+            start_omni_service_in_normal_mode(args.normal[0])
         elif args.prepare_dev:
             print("Developer mode: Environmental preparation.")
-            prepare_omni_service_in_developer_mode(config_path)
+            prepare_omni_service_in_developer_mode(args.prepare_dev[0])
         elif args.run_dev:
             print("Developer mode: Start the service.")
             run_omni_service_in_developer_mode()
@@ -160,16 +176,19 @@ def main():
     elif args.command == "cfg":
         if args.set:
             print("Set configuration.")
-            set_configuration(config_path)
+            set_configuration(args.set[0])
         elif args.delete:
             print("Delete configuration.")
-            del_configuration(config_path)
+            del_configuration(args.delete[0])
     elif args.command == "inspect":
         print("Inspect configuration.")
-        inspect_configuration(config_path=)
+        inspect_configuration(args.config_path)
     elif args.command == "upgrade":
         print("Upgrade packages")
         upgrade_packages()
+    elif args.command == "fetch_log":
+        print("Fetch logs")
+        fetch_logs()
 
 
 if __name__ == "__main__":

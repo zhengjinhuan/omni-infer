@@ -196,7 +196,8 @@ def transform_config_for_inventory(logger, input_data):
     decode_group = input_data['deployment']['decode']['group1']
     missing_keys = required_keys - set(decode_group.keys())
     if missing_keys:
-        logger.error("The group of decode is missing necessary configuration. The missing configuration is: %s", missing_keys)
+        logger.error("The group of decode is missing necessary configuration. The missing configuration is: %s", \
+            missing_keys)
         return None
 
     d_hosts = output['all']['children']['D']['hosts']
@@ -343,7 +344,7 @@ def transform_deployment_config(config_path):
 
         # update the omni_infer_server.yml
         update_yml_file(logger, playbookArges, \
-            f"{input_data['services']['code_path']}/omniinfer/omni/cli/omni_infer_server.yml")
+            f"{input_data['services']['code_path']}/omniinfer/tools/ansible/template/omni_infer_server_template.yml")
 
         # Write to output file
         with open(f'{os.getcwd()}/omni_infer_inventory.yml', 'w') as f:

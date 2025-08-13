@@ -78,9 +78,13 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
         self.enable_dynamic = getattr(self.config, 'enable_dynamic', True)
 
+        self.enable_rank_round_robin = self.config.getattr("enable_rank_round_robin",None)
+        if self.enable_rank_round_robin is None:
+            print(f"[Placement-Error]-enable_rank_round_robin is not defined in config.yaml")
+            exit(1)
 
         # Load and validate placement pattern
-        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts)
+        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts, self.enable_rank_round_robin)
         if (self.expert_mapping.get_world_size() != self.world_size):
             print(f"[Placement-Error]-Pattern world_size is {self.expert_mapping.get_world_size()} should be {self.world_size}.")
             exit(1)
@@ -98,7 +102,12 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self._init_placement_manager()  
 
         # Get selector
+        if not self.enable_rank_round_robin:
+            max_num_tokens = 100000
+            self.redundant_bias = torch.arange(max_num_tokens, dtype=torch.int32, device = self.device).view(-1,1)
+
         self.selector = self.expert_mapping.get_selector()
+        self.num_redundant_per_expert = self.expert_mapping.get_num_redundant_per_expert()
 
         if self.enable_dump and self.rank == 0:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -270,7 +279,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # Input validation check
         if not self.is_moe_layer(layer_idx_moe):
             return tokens, token_expert_ids, token_expert_scores
-        token_expert_ids = torch.nn.functional.embedding(token_expert_ids,expert_mapping).squeeze(-1)
+        if self.enable_rank_round_robin:
+            token_expert_ids = torch.nn.functional.embedding(token_expert_ids,expert_mapping).squeeze(-1)
+        else:
+            batch_size = token_expert_ids.shape[0]
+            token_expert_ids = expert_mapping[token_expert_ids, self.redundant_bias[:batch_size,] % self.num_redundant_per_expert[layer_idx_moe][token_expert_ids]]
         return tokens, token_expert_ids, token_expert_scores
 
 
@@ -335,7 +348,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         return self.rank>=self.world_size
 
     def record_activation(self, layer_idx_moe, expert_token_num, support_multi_stream=False):
-        if  self.is_moe_layer(layer_idx_moe):
+        if  self.is_moe_layer(layer_idx_moe) and (self.enable_dynamic or self.enable_dump):
             if not support_multi_stream:
                 self.npu_activation_count[layer_idx_moe:layer_idx_moe + 1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe + 1]+expert_token_num[None]) % self.max_activation_count
             else:
