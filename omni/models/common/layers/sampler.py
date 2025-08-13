@@ -200,9 +200,6 @@ def _apply_top_k_top_p_faster(
   
 def _need_log_probs(sampling_metadata, include_gpu_probs_tensor):
     need_log_probs = False
-    # if use speculation need_log_probs must be true
-    if model_extra_config.operator_opt_config.use_chunked_prefill:
-        return True
     for seq_group in sampling_metadata.seq_groups:
         if seq_group.is_prompt and seq_group.sampling_params.prompt_logprobs is not None:
             need_log_probs = True
