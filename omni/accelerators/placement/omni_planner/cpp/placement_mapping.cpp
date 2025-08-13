@@ -14,9 +14,11 @@ PlacementMapping::PlacementMapping(
     const std::string &placement_pattern_filename, int rank,
     int num_devices_per_host, int max_redundant_per_expert,
     int max_num_deployed_expert, size_t placement_pattern_ptr,
-    std::vector<int64_t> placement_shape, size_t selector_ptr)
+    std::vector<int64_t> placement_shape, size_t selector_ptr,
+    bool enable_rank_round_robin, size_t num_redundant_per_expert_ptr)
     : rank_(rank), num_devices_per_host_(num_devices_per_host),
-      max_redundant_per_expert_(max_redundant_per_expert) {
+      max_redundant_per_expert_(max_redundant_per_expert),
+      enable_rank_round_robin_(enable_rank_round_robin) {
 
     // init_placement_pattern
     init_placement_pattern(placement_pattern_filename, placement_pattern_ptr,
@@ -41,6 +43,10 @@ PlacementMapping::PlacementMapping(
 
     // Construct mappings
     init_DeployedPositionToLogisticsIdMapping();
+    expert_id_deployed_nums_ =
+        Tensor((uint64_t)num_redundant_per_expert_ptr,
+               get_num_layers() * get_num_experts(), sizeof(int32_t), "int32_t",
+               "redundant_nums");
 
     // Mapping更新到HBM用的Stream
     ACLCHECK(aclrtCreateStream(&stream_));
@@ -217,12 +223,13 @@ int32_t PlacementMapping::get_redundant_count(int32_t layer_id,
     }
 
     int32_t offset = layer_id * num_experts_ + expert_id;
-    return expert_id_deployed_nums_[offset];
+    return expert_id_deployed_nums_host_[offset];
 }
 
 void PlacementMapping::init_DeployedPositionToLogisticsIdMapping() {
 
-    expert_id_deployed_nums_.resize(get_num_layers() * get_num_experts(), 0);
+    expert_id_deployed_nums_host_.resize(get_num_layers() * get_num_experts(),
+                                         0);
 
     size_t length = num_layers_ * num_deploy_experts_;
     globalDeployedPositionToLogisticsIdMappingHost_.resize(length, -1);
@@ -232,10 +239,11 @@ void PlacementMapping::init_DeployedPositionToLogisticsIdMapping() {
             int32_t local_position_id = 0;
             for (int32_t expert = 0; expert < num_experts_; ++expert) {
                 if (placement_pattern_vector_[rank][layer][expert] == 1) {
-                    expert_id_deployed_nums_[layer * num_experts_ + expert]++;
+                    expert_id_deployed_nums_host_[layer * num_experts_ +
+                                                  expert]++;
                     // 确保冗余计数不超过最大允许值
-                    assert(expert_id_deployed_nums_[layer * num_experts_ +
-                                                    expert] <
+                    assert(expert_id_deployed_nums_host_[layer * num_experts_ +
+                                                         expert] <
                            max_redundant_per_expert_);
 
                     // 计算全局位置ID：使用设备编号乘以每设备最大专家数作为基础偏移，再加上当前位置
@@ -322,12 +330,12 @@ bool PlacementMapping::checkUpdateIsValied(size_t layer_id, int expert_id,
         throw std::runtime_error("[Error]-rank[" + std::to_string(rank_) +
                                  "]  checkUpdateIsValied");
     size_t offset = get_num_experts() * layer_id + expert_id;
-    expert_id_deployed_nums_[offset] += ops;
-    if (expert_id_deployed_nums_[offset] < 0) {
+    expert_id_deployed_nums_host_[offset] += ops;
+    if (expert_id_deployed_nums_host_[offset] < 0) {
         std::cout << "[Error] rank[" << rank_
                   << "] on Deployed Mapping Update !!!!!!!!!! with\t layer_id["
                   << layer_id << "] expert_id[" << expert_id << "] nums["
-                  << expert_id_deployed_nums_[offset] << "]" << std::endl;
+                  << expert_id_deployed_nums_host_[offset] << "]" << std::endl;
         ;
         return false;
     }
@@ -364,9 +372,16 @@ int PlacementMapping::getGlobalPositionOffset(
 }
 
 void PlacementMapping::init_selector(size_t selector_ptr) {
-    selector_host_.resize(num_layers_ * num_experts_, 0);
-    selector_ = Tensor((uint64_t)selector_ptr, num_layers_ * num_experts_,
-                       sizeof(int32_t), "int32_t", "selector");
+    size_t size;
+    if (enable_rank_round_robin_) {
+        size = num_layers_ * num_experts_;
+    } else {
+        size = num_layers_ * get_max_redundant_per_expert() * num_experts_;
+    }
+
+    selector_host_.resize(size, 0);
+    selector_ = Tensor((uint64_t)selector_ptr, size, sizeof(int32_t), "int32_t",
+                       "selector");
     std::vector<bool> tmp(num_layers_, true);
     update_selector(tmp);
 }
@@ -426,6 +441,31 @@ void PlacementMapping::update_selector_layer(
     }
 }
 
+void PlacementMapping::update_selector_layer(int layer_id) {
+    // For disable topological affinity selector
+
+    size_t position_offset = layer_id * this->num_deploy_experts_;
+    size_t logits_offset =
+        layer_id * get_max_redundant_per_expert() * this->num_experts_;
+
+    std::vector<int32_t> cur_count(get_num_experts(), 0);
+
+    for (int pos_id = 0; pos_id < num_deploy_experts_; ++pos_id) {
+        int logit_expert_id =
+            globalDeployedPositionToLogisticsIdMappingHost_[position_offset +
+                                                            pos_id];
+        if (logit_expert_id == -1)
+            continue;
+
+        int32_t redundant_idx = cur_count[logit_expert_id];
+        size_t offset = logits_offset +
+                        logit_expert_id * get_max_redundant_per_expert() +
+                        redundant_idx;
+        selector_host_[offset] = pos_id;
+        cur_count[logit_expert_id]++;
+    }
+}
+
 void PlacementMapping::update_selector(std::vector<bool> is_layer_update) {
 
     std::vector<int> finish_table(num_experts_, 0);
@@ -441,9 +481,15 @@ void PlacementMapping::update_selector(std::vector<bool> is_layer_update) {
 
     for (int layer_id = 0; layer_id < num_layers_; ++layer_id) {
         if (is_layer_update[layer_id])
-            update_selector_layer(layer_id, finish_table, same_host_candidates,
-                                  distant_candidates);
+            if (enable_rank_round_robin_) {
+                update_selector_layer(layer_id, finish_table,
+                                      same_host_candidates, distant_candidates);
+            } else {
+                update_selector_layer(layer_id);
+            }
     }
 
     selector_.to_device(selector_host_.data(), stream_);
+    expert_id_deployed_nums_.to_device(expert_id_deployed_nums_host_.data(),
+                                       stream_);
 }
