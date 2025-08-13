@@ -181,7 +181,7 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill_2K.json"
-      EXTRA_ARGS='--max-num-batched-tokens 33008 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32'
+      EXTRA_ARGS='--max-num-batched-tokens 33008 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32 --tool-parser-plugin ${CODE_PATH}/omniinfer/tools/scripts/ascend_kimi_k2_tool_parser.py --tool-call-parser=ascend_kimi_k2 --enable-auto-tool-choice'
       GPU_UTIL=0.85
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -269,7 +269,7 @@
           {% endfor %}
       )
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode_2K.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 30'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 30  --tool-parser-plugin ${CODE_PATH}/omniinfer/tools/scripts/ascend_kimi_k2_tool_parser.py --tool-call-parser=ascend_kimi_k2 --enable-auto-tool-choice'
       GPU_UTIL=0.92
       ADDITIONAL_CONFIG='{"enable_graph_mode": true, "use_cached_npu_graph": true, "enable_omni_attn": true, "multi_rank_pull_kv": true}'
       VLLM_ENABLE_MC2=1
