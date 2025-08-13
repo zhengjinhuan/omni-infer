@@ -47,12 +47,8 @@ class ModelOperatorOptConfig:
     enable_pipeline_comm: bool = False
     pd_seperate_prefill: bool = False
     prefill_enable_long_seq: bool = False
-    prefill_moe_multi_stream: bool = True
     prefill_enable_mla_alltoall: bool = False
-    prefill_enable_mla_alltoall_local: bool = True
-    prefill_enable_pipeline_comm: bool = True
-    prefill_mla_multi_stream: bool = True
-    enable_dense_local_tp: int = 1
+    prefill_enable_mla_alltoall_local: bool = False
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
