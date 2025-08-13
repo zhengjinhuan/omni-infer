@@ -50,6 +50,7 @@ from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
+from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 
 MTP_METHOD_NAME = "deepseek_mtp"
 
@@ -134,7 +135,7 @@ class NPUModelRunner(GPUModelRunner):
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
         if self.use_spec_decode:
-            self.rejection_sampler = SimpleSampler(self.sampler)
+            self.drafter = PostDrafter(vllm_config, device, self)
         else:
             self.sampler = AscendSamplerV1()
         self._init_graph_options()
@@ -159,10 +160,13 @@ class NPUModelRunner(GPUModelRunner):
                                         device="cpu",
                                         pin_memory=is_pin_memory_available())
         self.seq_lens_np = self.seq_lens_cpu.numpy()
+        num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
+        self.chunk_next_tokens = torch.zeros(
+            self.max_num_reqs * num_tokens_per_reqs_decode, dtype= torch.int64, device=self.device
+        )
         # TODO: support arbitrary spec tokens
         self.graph_block_tables = np.zeros(
-            (self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * \
-             (1 + self.speculative_config.num_speculative_tokens),
+            (self.max_num_reqs * num_tokens_per_reqs_decode,
              (self.model_config.max_model_len + self.block_size - 1) // self.block_size),
             dtype=np.int32)
         self.attn_mask = None
@@ -351,7 +355,7 @@ class NPUModelRunner(GPUModelRunner):
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
         if self.lora_config:
             self.set_active_loras(self.input_batch, num_scheduled_tokens)
-        return attn_metadata, graph_pad_size, sample_indices, positions, has_spec_tokens
+        return attn_metadata, graph_pad_size, sample_indices, positions
 
     def _simple_prepare_inputs(
         self,
@@ -562,7 +566,7 @@ class NPUModelRunner(GPUModelRunner):
                     return EMPTY_MODEL_RUNNER_OUTPUT
                 return self.kv_connector_no_forward(scheduler_output)
             if self.curr_step == 0:
-                attn_metadata, graph_pad_size, sample_indices, positions, _ = self._prepare_inputs(scheduler_output)
+                attn_metadata, graph_pad_size, sample_indices, positions = self._prepare_inputs(scheduler_output)
             else:
                 attn_metadata, positions = self._simple_prepare_inputs(attn_metadata, positions,
                         sampled_tokens, cached_spec_token[-1], accepted_num)
@@ -586,9 +590,14 @@ class NPUModelRunner(GPUModelRunner):
                 self.apply_grammar_bitmask(scheduler_output, logits)
             start_4 = time.time()
 
+            # TODO move into scheduler or prepare_inputs
             # find the requests that are doing chunk prefill
             discard_sampled_tokens_req_indices = []
-            chunk_next_tokens = []
+            chunk_next_tokens = [] if self.use_spec_decode else None
+            chunk_next_indices = [] if self.use_spec_decode else None
+
+            num_decodes = self.attn_metadata_builders[0]._num_decodes
+            num_prefills = self.attn_metadata_builders[0]._num_prefills
             for i, req_id in enumerate(self.input_batch.req_ids):
                 req_state = self.requests[req_id]
                 seq_len = (req_state.num_computed_tokens +
@@ -598,14 +607,22 @@ class NPUModelRunner(GPUModelRunner):
                     # Rewind the generator state as if the token was not sampled.
                     generator = self.input_batch.generators.get(i)
                     if generator is not None:
-                        generator.set_offset(generator.get_offset() - 4)
+                        generator.set_offset(generator.get_offset() - 12) # ascend npu, move 12 every one generation, which is 4 on cuda.
                     # Record the index of the request that should not be sampled,
                     # so that we could clear the sampled tokens before returning.
                     discard_sampled_tokens_req_indices.append(i)
-                    chunk_next_tokens.append(req_state.get_token_id(seq_len))
-                else:
-                    chunk_next_tokens.append(VLLM_INVALID_TOKEN_ID)
-
+                    if self.use_spec_decode:
+                        chunk_next_tokens.append(req_state.get_token_id(seq_len))
+                        chunk_next_indices.append(sample_indices[-num_prefills + i])
+            if self.use_spec_decode and len(chunk_next_tokens) > 0:
+                chunk_next_tokens = torch.tensor(chunk_next_tokens) # CPU
+                chunk_next_tokens_buffer = self.chunk_next_tokens[:chunk_next_tokens.numel()]
+                chunk_next_tokens_buffer.copy_(chunk_next_tokens, non_blocking=True)
+                chunk_next_tokens = chunk_next_tokens_buffer
+                chunk_next_indices = torch.stack(chunk_next_indices)
+            else:
+                chunk_next_tokens = None
+                chunk_next_indices = None
             start_5 = time.time()
 
             # Sample the next token and get logprobs if needed.
@@ -613,26 +630,30 @@ class NPUModelRunner(GPUModelRunner):
             if not self.use_spec_decode:
                 sampler_output = self.sampler(logits=logits, sampling_metadata=sampling_metadata)
             else:
-                first_meta = next(iter(attn_metadata.values()))
-                sampler_output, mtp_input_tokens, last_accepted_index, accepted_num = self.rejection_sampler(
-                        input_ids=input_ids,
-                        logits=logits,
-                        logits_indices=sample_indices,
-                        sampling_metadata=sampling_metadata,
-                        num_decodes=first_meta.num_decodes,
-                        num_prefills=first_meta.num_prefills,
-                        next_tokens=chunk_next_tokens,
-                    )
-
+                sampler_output, last_accepted_index, accepted_num = self.drafter.verify_and_prepare_inputs(
+                    input_ids=input_ids,
+                    logits=logits,
+                    logits_indices=sample_indices,
+                    sampling_metadata=sampling_metadata,
+                    num_decodes=num_decodes,
+                    num_prefills=num_prefills,
+                    chunk_next_tokens=chunk_next_tokens,
+                    chunk_next_indices=chunk_next_indices,
+                )
             start_6 = time.time()
 
             if not self.use_spec_decode:
                 # Speculative decoding is not enabled.
                 spec_tokens_tensor = None
             elif self.speculative_config.method == MTP_METHOD_NAME:
-                spec_tokens_tensor = self.run_mtp(
-                    attn_metadata, raw_hidden_states, mtp_input_tokens, positions,
-                    sample_indices, last_accepted_index
+                spec_tokens_tensor = self.drafter.propose(
+                    num_tokens=input_ids.numel(),
+                    positions=positions,
+                    kv_caches=self.kv_caches,
+                    attn_metadata=attn_metadata,
+                    previous_hidden_states=raw_hidden_states,
+                    last_accepted_index=last_accepted_index,
+                    sample_indices=sample_indices,
                 )
             else:
                 raise ValueError(f"Speculative method {self.speculative_config.method} is not supported in this version.")
@@ -695,60 +716,6 @@ class NPUModelRunner(GPUModelRunner):
         )
 
     @torch.inference_mode()
-    def run_mtp(self, attn_metadata, raw_hidden_states, mtp_input_tokens, positions,
-                sample_indices, last_accepted_index):
-        attn_state = next(iter(attn_metadata.values())).attn_state
-        mtp_forward_token_list = []
-        num_layers = self.speculative_config.num_speculative_tokens
-        use_graph_mode = self.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly
-
-        def update_tokens(mtp_input_tokens, mtp_forward_tokens):
-            mtp_input_tokens[:-1] = mtp_input_tokens.clone()[1:]
-            if use_graph_mode:
-                mtp_input_tokens[last_accepted_index] = mtp_forward_tokens
-            else:
-                mtp_input_tokens[sample_indices] = mtp_forward_tokens
-
-        with set_forward_context(attn_metadata, self.vllm_config):
-            for layer_idx in range(num_layers):
-                drafter = self.drafter_list[layer_idx]
-                # first time for graph mode need call mark_static
-                if use_graph_mode and not self.drafter_mark_static:
-                    if isinstance(drafter, GraphCompileConfiguration):
-                        drafter.mark_static_for_graph(mtp_input_tokens, raw_hidden_states)
-                    else:
-                        mark_static_for_graph_default(mtp_input_tokens, hidden_states=raw_hidden_states)
-                drafter_kwargs = dict(
-                    input_ids=mtp_input_tokens.to(torch.long),
-                    positions=positions,
-                    kv_caches=self.kv_caches[-num_layers + layer_idx:],
-                    attn_metadata=attn_metadata,
-                    previous_hidden_states=raw_hidden_states,
-                    intermediate_tensors=None,
-                    inputs_embeds=None,
-                    require_hidden_states=True,
-                )
-                # need to set selected_indices when not in graph mode
-                if not use_graph_mode:
-                    drafter_kwargs["selected_indices"] = sample_indices
-                else:
-                    drafter_kwargs["selected_indices"] = None
-
-                mtp_logits, mtp_hidden_states = drafter(**drafter_kwargs)
-                mtp_forward_tokens = mtp_logits[last_accepted_index].argmax(dim=-1)
-                mtp_forward_token_list.append(mtp_forward_tokens)
-
-                # update tokens except for the last layer
-                if layer_idx != num_layers - 1:
-                    update_tokens(mtp_input_tokens, mtp_forward_tokens)
-                    raw_hidden_states = mtp_hidden_states
-
-            if use_graph_mode and not self.drafter_mark_static:
-                self.drafter_mark_static = True
-
-        return torch.stack(mtp_forward_token_list, dim=1)
-
-    @torch.inference_mode()
     def _dummy_run(self, num_tokens: int, is_capture_model: bool = False) -> torch.Tensor:
         if self.is_multimodal_model:
             input_ids, inputs_embeds = None, self.inputs_embeds[:num_tokens]
@@ -769,29 +736,6 @@ class NPUModelRunner(GPUModelRunner):
         positions = self.mrope_positions[:, :num_tokens] if self.uses_mrope else self.positions[:num_tokens]
         raw_hidden_states = None
 
-        def run_dummy_spec_decode(hidden_states, attn_metadata, kv_caches, drafter_list, mark_static=False):
-            if self.use_spec_decode and self.speculative_config.method == MTP_METHOD_NAME:
-                for layer_idx in range(self.speculative_config.num_speculative_tokens):
-                    drafter = drafter_list[layer_idx]
-                    if mark_static and not self.dummy_drafter_mark_static:
-                        if isinstance(drafter, GraphCompileConfiguration):
-                            drafter.mark_static_for_graph(input_ids, hidden_states)
-                        else:
-                            mark_static_for_graph_default(input_ids, hidden_states=hidden_states)
-                    drafter(
-                        input_ids=input_ids,
-                        positions=positions,
-                        kv_caches=kv_caches,
-                        attn_metadata=attn_metadata,
-                        previous_hidden_states=hidden_states,
-                        intermediate_tensors=None,
-                        selected_indices=None,
-                        inputs_embeds=None,
-                        require_hidden_states=True,
-                    )
-                if mark_static and not self.dummy_drafter_mark_static:
-                    self.dummy_drafter_mark_static = True
-
         # No kv_caches: profile run
         if not self.kv_caches:
             with set_forward_context(None, self.vllm_config):
@@ -805,7 +749,16 @@ class NPUModelRunner(GPUModelRunner):
                     raw_hidden_states, hidden_states = forward_results
                 else:
                     hidden_states = forward_results
-                run_dummy_spec_decode(raw_hidden_states, None, None, self.drafter_list)
+                if self.use_spec_decode: 
+                    self.drafter.propose(
+                        num_tokens=num_tokens,
+                        positions=positions,
+                        kv_caches=None,
+                        attn_metadata=None,
+                        previous_hidden_states=raw_hidden_states,
+                        last_accepted_index=None,
+                        sample_indices=None,
+                    )
             return hidden_states
 
         # With kv_caches: dummy run for graph capture/placement
@@ -861,10 +814,14 @@ class NPUModelRunner(GPUModelRunner):
             else:
                 hidden_states = forward_results
             if self.use_spec_decode:
-                run_dummy_spec_decode(
-                    raw_hidden_states, attn_metadata,
-                    self.kv_caches[-self.speculative_config.num_speculative_tokens:] if self.kv_caches else None,
-                    self.drafter_list, mark_static=use_compile
+                self.drafter.propose(
+                    num_tokens=input_ids.numel(),
+                    positions=positions,
+                    kv_caches=self.kv_caches,
+                    attn_metadata=attn_metadata,
+                    previous_hidden_states=raw_hidden_states,
+                    last_accepted_index=None,
+                    sample_indices=None,
                 )
         return hidden_states
 
@@ -889,22 +846,8 @@ class NPUModelRunner(GPUModelRunner):
                                                   self.lora_config, self.device)
             self.drafter_list = []
             if hasattr(self, "drafter"):
-                logger.info("Loading mtp model...")
-                original_arch = self.model_config.hf_config.architectures # ['DeepseekV3ForCausalLM']
-                original_type = self.model_config.hf_config.model_type    # 'deepseek_v3'
+                self.drafter.load_model(self.model)
 
-                architecture_list = ["DeepSeekMTPModel", "DeepSeekMTPModelDuo", "DeepSeekMTPModelTres"]
-                for mtp_layer_idx in range(self.model_config.hf_config.num_nextn_predict_layers):
-                    if self.speculative_config.num_speculative_tokens > mtp_layer_idx:
-                        self.model_config.hf_config.architectures = architecture_list[mtp_layer_idx : mtp_layer_idx + 1]
-                        self.model_config.hf_config.model_type = MTP_METHOD_NAME
-                        drafter = get_model(vllm_config=self.vllm_config)
-                        drafter.embed_tokens = self.model.model.embed_tokens
-                        drafter.shared_head['head'] = self.model.lm_head
-                        self.drafter_list.append(drafter)
-                self.model_config.hf_config.architectures = original_arch
-                self.model_config.hf_config.model_type = original_type
-                # zxp TODO: check if fusion_spec.py from line 90 needed?
         if not int(os.getenv("NO_NPU_MOCK", "0")):
             logger.info("Loading model weights took %.4f GB", m.consumed_memory / float(2**30))
 

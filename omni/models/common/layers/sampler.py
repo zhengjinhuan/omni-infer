@@ -776,7 +776,8 @@ class SimpleSampler(RejectionSamplerV1):
         self.main_sampler.topk_topp_sampler = AscendTopKTopPSamplerV1()
         self.minus_one = None
 
-    def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills, next_tokens: list[int]):
+    # TODO to support mixture case
+    def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
 
         if num_decodes != 0 and num_prefills != 0:
             raise ("Chunked prefill is not supported in current version.")
@@ -793,43 +794,17 @@ class SimpleSampler(RejectionSamplerV1):
         if self.main_sampler is None or sampling_metadata.all_greedy:
             forward_tokens = logits.argmax(dim=-1).to(dtype = input_ids.dtype, device=input_ids.device).view(batch_size, -1)
         else:
-            if sampling_metadata.allowed_token_ids_mask is None \
-                and len(sampling_metadata.bad_words_token_ids) == 0 \
-                and len(sampling_metadata.logit_bias) == 0 \
-                and len(sampling_metadata.min_tokens) == 0 \
-                and sampling_metadata.no_penalties \
-                and sampling_metadata.min_p is None \
-                and len(sampling_metadata.generators) == 0 \
-                and sampling_metadata.top_k is None \
-                and sampling_metadata.top_p is None:
-                old_temperature = sampling_metadata.temperature
-                samping_metadata.temperature = sampling_metadata.temperature.repeat_interleave(num_sampling_tokens_per_req)
-                sampler_output = self.main_sampler(logits, sampling_metadata)
-                forward_tokens = sampler_output.sampled_token_ids.view(batch_size, -1)
+            start_indices = torch.arange(batch_size, device=logits.device) * num_sampling_tokens_per_req
+            forward_tokens = torch.empty_like(logits_indices, dtype=input_ids.dtype, device=input_ids.device).view(batch_size, -1)
+            for i in range(num_sampling_tokens_per_req):
+                sampler_output = self.main_sampler(
+                    logits=logits[start_indices],
+                    sampling_metadata=sampling_metadata,
+                )
+                start_indices += 1
+                forward_tokens[:, i] = sampler_output.sampled_token_ids.view(-1)
                 sampler_output.sampled_token_ids = None
-                sampling_metadata.temperature = old_temperature
-            else :
-                start_indices = torch.arange(batch_size, device=logits.device) * num_sampling_tokens_per_req
-                forward_tokens = torch.empty_like(logits_indices, dtype=input_ids.dtype, device=input_ids.device).view(batch_size, -1)
-                for i in range(num_sampling_tokens_per_req):
-                    sampler_output = self.main_sampler(
-                        logits=logits[start_indices],
-                        sampling_metadata=sampling_metadata,
-                    )
-                    start_indices += 1
-                    forward_tokens[:, i] = sampler_output.sampled_token_ids.view(-1)
-                    sampler_output.sampled_token_ids = None
-                    
-        if num_prefills > 0:
-            mtp_input_tokens = torch.empty_like(input_ids)
-            mtp_input_tokens[:-1] = input_ids[1:] # for prefill
-            if len(next_tokens) != forward_tokens.numel():
-                raise RuntimeError(f"Shape mismatch! {len(next_tokens)=}, {forward_tokens.shape=}, {logits_indices.shape=}, {batch_size=}.")
-            next_tokens = torch.tensor(next_tokens).to(forward_tokens).view_as(forward_tokens)
-            forward_tokens = torch.where(next_tokens != VLLM_INVALID_TOKEN_ID, next_tokens, forward_tokens)
-        else:
-            mtp_input_tokens = input_ids.clone()
-        mtp_input_tokens[logits_indices] = forward_tokens.view(-1)
+
         # Create output buffer.
         # output_token_ids: 
         # if accepted [input_ids[-1], forward_tokens_result]
@@ -858,7 +833,7 @@ class SimpleSampler(RejectionSamplerV1):
             logprobs_tensors = None
         )
 
-        return sampler_output, mtp_input_tokens, last_accepted_index, accepted_num
+        return sampler_output, forward_tokens, last_accepted_index, accepted_num
 
 def _multinomial(
     probs: torch.Tensor,
