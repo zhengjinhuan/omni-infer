@@ -439,8 +439,8 @@ class DeepseekMLA(nn.Module):
                 dist.all_to_all_single(all_to_all_attn_output, attn_output, group=device_group)
                 if model_extra_config.parall_config.o_proj_tp_size > 1:
                     attn_output = all_to_all_attn_output.view(
-                        get_tensor_model_parallel_world_size() // get_o_proj_dp_group().world_size,
-                        q.shape[0] // get_tensor_model_parallel_world_size() * get_o_proj_dp_group().world_size,
+                        get_tensor_model_parallel_world_size() // get_o_proj_tp_group().world_size,
+                        q.shape[0] // get_tensor_model_parallel_world_size() * get_o_proj_tp_group().world_size,
                         self.num_local_heads * self.v_head_dim
                     ).transpose(0, 1).contiguous()
                 else:
