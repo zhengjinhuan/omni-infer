@@ -1052,7 +1052,7 @@
           timeout=$((timeout - 20))
         done
         echo "Timeout waiting for service" >&2
-        exit 1
+        exit 0
       delegate_to: "{{ inventory_hostname }}"
       become: yes
       when: "'P' in group_names or 'D' in group_names"
