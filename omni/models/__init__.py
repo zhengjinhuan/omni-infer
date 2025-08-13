@@ -46,6 +46,14 @@ def register_model():
         "omni.models.qwen.qwen3_moe:Qwen3MoeForCausalLM"
     )
 
+    ModelRegistry.register_model(
+        "PanguUltraMoEForCausalLM",
+        "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
+    
+    ModelRegistry.register_model(
+        "PanguUltraMoEMTPModel",
+        "omni.models.pangu.pangu_ultra_moe_mtp:PanguUltraMoEMTP")
+
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
         int(os.getenv("CAPTURE_MODE", default='0')) or

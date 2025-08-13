@@ -65,6 +65,7 @@ class DeepseekMLA(nn.Module):
             kv_lora_rank: int,
             rope_theta: float = 10000,
             rope_scaling: Optional[Dict[str, Any]] = None,
+            rope_is_neox_style: Optional[bool] = False,
             max_position_embeddings: int = 8192,
             cache_config: Optional[CacheConfig] = None, # type: ignore
             quant_config: Optional[QuantizationConfig] = None,
@@ -175,13 +176,15 @@ class DeepseekMLA(nn.Module):
                                                              quant_config=quant_config,
                                                              prefix=f"{prefix}.o_proj")
 
-        rope_scaling["rope_type"] = 'deepseek_yarn'
+        if rope_scaling:
+            rope_scaling["rope_type"] = 'deepseek_yarn'
+
         self.rotary_emb = get_rope(qk_rope_head_dim,
                                    rotary_dim=qk_rope_head_dim,
                                    max_position=max_position_embeddings,
                                    base=rope_theta,
                                    rope_scaling=rope_scaling,
-                                   is_neox_style=False)
+                                   is_neox_style=rope_is_neox_style)
 
         if rope_scaling:
             mscale_all_dim = rope_scaling.get("mscale_all_dim", False)
