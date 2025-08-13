@@ -11,13 +11,9 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "ansible>=8.0",
     "pyyaml>=6.0",
     "chardet",
 ]
-
-[project.scripts]
-omni_cli = "omni.cli.main:main"
 
 [project.entry-points."vllm.platform_plugins"]
 npu = "omni.adaptors.vllm.platform:register"

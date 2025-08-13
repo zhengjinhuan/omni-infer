@@ -48,7 +48,6 @@
     ranktable_save_path: "/tmp/ranktable_save_path"
     docker_run_cmd: |
       docker run -it --shm-size=500g \
-        -e CODE_PATH=$CODE_PATH \
         -e RANKTABLE_SAVE_PATH={{ ranktable_save_path }} \
         -e LOG_PATH=$LOG_PATH \
         --net=host \
@@ -71,7 +70,6 @@
         -v $LOG_PATH:$LOG_PATH \
         -v $MODEL_PATH:$MODEL_PATH \
         -v $SCRIPTS_PATH:$SCRIPTS_PATH \
-        -v $CODE_PATH:$CODE_PATH \
         -v {{ ranktable_save_path }}:{{ ranktable_save_path }} \
         -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime \
 
@@ -85,7 +83,7 @@
 
       rm -rf ${PREFILL_RANKTABLE_SAVE_PATH}
       mkdir -p ${PREFILL_RANKTABLE_SAVE_PATH}
-      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --prefill-server-list "${PREFILL_SERVER_LIST}" --api-server --save-dir ${PREFILL_RANKTABLE_SAVE_PATH}
+      python /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --prefill-server-list "${PREFILL_SERVER_LIST}" --api-server --save-dir ${PREFILL_RANKTABLE_SAVE_PATH}
 
     generate_decode_ranktable_cmd: |
       #!/bin/bash
@@ -94,7 +92,7 @@
 
       rm -rf ${DECODE_RANKTABLE_SAVE_PATH}
       mkdir -p ${DECODE_RANKTABLE_SAVE_PATH}
-      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --decode-server-list ${DECODE_SERVER_LIST} --save-dir ${DECODE_RANKTABLE_SAVE_PATH}
+      python /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py --mode gen --decode-server-list ${DECODE_SERVER_LIST} --save-dir ${DECODE_RANKTABLE_SAVE_PATH}
 
     generate_global_ranktable_cmd: |
       #!/bin/bash
@@ -130,7 +128,7 @@
         mkdir -p "${RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}"
 
         if [ "$comma_count" -ge 1 ]; then
-          python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
+          python /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
           --mode merge-local \
           --local-ranktable-list ${part} \
           --save-dir ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}
@@ -153,7 +151,7 @@
       api_server_files=$(ls collect_files_p/api/*.json | head -1)
 
       if [ $DECODE_POD_NUM -gt 1 ]; then
-        python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
+        python /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
         --mode merge-local \
         --local-ranktable-list ${decode_ranktable_list} \
         --save-dir ${RANKTABLE_SAVE_PATH}/global/collect_files_d
@@ -163,7 +161,7 @@
         decode_local_ranktable_merge="${decode_ranktable_list}"
       fi
 
-      python ${CODE_PATH}/omniinfer/tools/scripts/pd_ranktable_tools.py \
+      python /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
         --mode merge-all \
         --api-server-list ${api_server_files} \
         --prefill-server-list ${prefill_local_ranktable_merge} \
@@ -178,7 +176,7 @@
       export HCCL_EXEC_TIMEOUT=1800
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
-      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_prefill.json"
+      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
@@ -204,12 +202,12 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
-      pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
+      pip install /workspace/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
-      cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
+      cd /workspace/omniinfer/tools/scripts
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -259,7 +257,7 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode.json"
+      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32'
       GPU_UTIL=0.92
       ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}}'
@@ -270,12 +268,12 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
-      pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
+      pip install /workspace/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
-      cd ${CODE_PATH}/omniinfer/tools/scripts
-      bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
+      cd /workspace/omniinfer/tools/scripts
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -331,7 +329,7 @@
         done
       done
 
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/sched/global_proxy
+      cd /workspace/omniinfer/omni/accelerators/sched/global_proxy
 
       NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
       if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
@@ -343,7 +341,7 @@
       unset https_proxy
       bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
 
-      cd ${CODE_PATH}/omniinfer/tools/scripts
+      cd /workspace/omniinfer/tools/scripts
       bash global_proxy.sh \
         --listen-port "$PROXY_NODE_PORT" \
         --prefill-servers-list "$prefill_result" \
@@ -451,8 +449,10 @@
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines && git config --global --add safe.directory {{ ansible_env.CODE_PATH }}/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
+    docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
+    docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
 
   tasks:
     - name: generate container name.
@@ -569,6 +569,20 @@
           ansible_host not in
           (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
         )
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container (prefill).
+      command: bash -c "{{ docker_cp_prefill_code_cmd }}"
+      environment: 
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container (decode).
+      command: bash -c "{{ docker_cp_decode_code_cmd }}"
+      environment: 
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
       tags: sync_code
 
     - name: docker_update_prefill_code_cmd.
@@ -871,7 +885,7 @@
         dest: "$SCRIPTS_PATH/kill_python_processes.sh"
         mode: '0750'
       when: "'P' in group_names or 'D' in group_names"
-      tags: run_server
+      tags: stop_server
 
     - name: Generate a script to kill all Ray processes in the container. 
       copy:
@@ -879,7 +893,7 @@
         dest: "$SCRIPTS_PATH/kill_ray_processes.sh"
         mode: '0750'
       when: "'P' in group_names or 'D' in group_names"
-      tags: run_server
+      tags: stop_server
 
     - name: Kill all Python processes in the container of prefill.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
@@ -888,7 +902,7 @@
       failed_when: false
       no_log: true
       when: "'P' in group_names"
-      tags: run_server
+      tags: stop_server
 
     - name: Kill all Ray processes in the container of prefill.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
@@ -897,7 +911,7 @@
       failed_when: false
       no_log: true
       when: "'P' in group_names"
-      tags: run_server
+      tags: stop_server
 
     - name: Kill all Python processes in the container of decode.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
