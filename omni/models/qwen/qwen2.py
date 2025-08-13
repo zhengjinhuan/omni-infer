@@ -33,6 +33,7 @@ from transformers import Qwen2Config
 from vllm.forward_context import get_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
+from vllm.compilation.decorators import support_torch_compile
 from vllm.distributed import get_pp_group, get_tp_group, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
@@ -50,7 +51,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     maybe_prefix)
 from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear
-from omni.models.common.layers.rotary_embedding_extend import get_rope, RotaryEmbedding
+from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
 from omni.models.common.layers.fused_mlp import FusedMLP
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
@@ -121,6 +122,9 @@ class Qwen2Attention(nn.Module):
             prefix=f"{prefix}.o_proj",
         )
 
+        if rope_scaling is None:
+            rope_scaling = {'factor': '0'}
+        rope_scaling["rope_type"] = 'qwen'
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -169,6 +173,7 @@ class Qwen2DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.layer_name = f"{prefix}.self_attn.attn"
         # Requires transformers > 4.32.0
         rope_theta = getattr(config, "rope_theta", 1000000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -287,7 +292,7 @@ class Qwen2Model(nn.Module):
         base = getattr(config, "rope_theta", 1000000)
         rotary_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         max_len = config.max_position_embeddings
-        full_cos, full_sin = RotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
+        full_cos, full_sin = QwenRotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
         self.register_buffer("full_cos", full_cos, persistent=False)
         self.register_buffer("full_sin", full_sin, persistent=False)
 
@@ -478,7 +483,7 @@ class Qwen2Model(nn.Module):
             loaded_params.add(name)
         return loaded_params
 
-
+@support_torch_compile
 class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     packed_modules_mapping = {
         "qkv_proj": [
@@ -564,3 +569,11 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
+
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+        return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
