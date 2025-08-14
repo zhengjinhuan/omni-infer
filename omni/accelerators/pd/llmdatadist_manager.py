@@ -81,7 +81,7 @@ class LLMDataDistConfig:
         else:
             raise ValueError
 
-        self.cluster_id_start = self.local_group.device_list[0].cluster_id
+        self.cluster_id_start = self.local_group.cluster_id_start
 
         if ignore_load_rank:
             self.rank = -1
@@ -90,13 +90,9 @@ class LLMDataDistConfig:
         else:
             self.rank = get_world_group().rank_in_group
             self.local_rank = get_world_group().local_rank
-            if self.is_prefill:
-                self.cluster_id = self.local_group.device_list[0].cluster_id
-                if self.multi_rank_pull_kv:
-                    # In multi_rank_pull_kv mode, each rank in prefill group has different cluster_id.
-                    self.cluster_id = self.local_group.device_list[self.rank].cluster_id
-            else:
-                self.cluster_id = self.local_group.device_list[self.rank].cluster_id
+            self.cluster_id = self.local_group.device_list[self.rank].cluster_id
+        self.kv_parallel_size = self.kv_transfer_config.kv_parallel_size
+        self.kv_producer_dp_size = self.kv_transfer_config.kv_connector_extra_config.get("kv_producer_dp_size", 1)
 
     @cached_property
     def role(self):
@@ -121,8 +117,17 @@ class LLMDataDistManager:
 
         self.data_dist_engine = self._init_llm_data_dist()
 
-        self.registerd_kv_caches = []
+        self.registered_kv_caches = []
         self.rank_link_info_map = {}
+
+        self.registered_link_infos = {}
+
+    def get_real_remote_cluster_ids(self, meta: "ReqMeta"):
+        remote_cluster_ids = self.registered_link_infos.get(
+            (meta.remote_cluster_id, meta.remote_dp_rank, self.rank), None)
+        if remote_cluster_ids is None:
+            raise ValueError(f"Could not find remote cluster id from {meta.remote_cluster_id=}, {meta.remote_dp_rank=}.")
+        return remote_cluster_ids
 
     def _init_llm_data_dist(self):
         data_dist = LLMDataDist(self.data_dist_config.role, self.data_dist_config.cluster_id)
@@ -142,8 +147,8 @@ class LLMDataDistManager:
         return data_dist
 
     def register_memory(self, kv_caches: dict[str, torch.Tensor]):
-        if len(self.registerd_kv_caches) > 0:
-            raise ValueError("Attr `registerd_kv_caches` must be empty before register kv_caches.")
+        if len(self.registered_kv_caches) > 0:
+            raise ValueError("Attr `registered_kv_caches` must be empty before register kv_caches.")
         if isinstance(kv_caches, dict):
             flatten_kv_caches = unzip_kv_cache_dict(kv_caches)
         else:
@@ -164,8 +169,8 @@ class LLMDataDistManager:
                 cache_key = None
 
             cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
-            self.registerd_kv_caches.append(cache)
-        logger.error(f" ***** registerd_kv_caches num:{len(self.registerd_kv_caches)}")
+            self.registered_kv_caches.append(cache)
+        logger.error(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
 
     def _pull_blocks(self, src_cache_key, dst_cache, src_blocks, dst_blocks):
         for _ in range(KV_CACHE_RETRY_TIMES):
@@ -193,7 +198,7 @@ class LLMDataDistManager:
         # If this line is not added, the fx mode will report an error.
         # The preliminary reason is that the context is lost when multiple coroutines pull kv.
         torch.npu.set_device(f"npu:{self.local_rank}")
-        for model_id, kv_cache in enumerate(self.registerd_kv_caches):
+        for model_id, kv_cache in enumerate(self.registered_kv_caches):
             prompt_cache_key = BlocksCacheKey(
                 prompt_cluster_id=prompt_cluster_id, model_id=model_id)
             self._pull_blocks(prompt_cache_key, kv_cache,
@@ -208,56 +213,50 @@ class LLMDataDistManager:
             prefill_server_groups = self.data_dist_config.global_rank_table.prefill_group
             decode_server_groups = [self.data_dist_config.local_group]
 
-        prefill_tp_size = len(prefill_server_groups[0].device_list)
-        prefill_dp_size = 1
+        prefill_tp_size = len(prefill_server_groups[0].device_list) // self.data_dist_config.kv_producer_dp_size
+        prefill_dp_size = self.data_dist_config.kv_producer_dp_size
 
-        decode_tp_size = self.data_dist_config.kv_transfer_config.kv_parallel_size
+        decode_tp_size = self.data_dist_config.kv_parallel_size
         decode_dp_size = len(decode_server_groups[0].device_list) // decode_tp_size
         decode_num = len(decode_server_groups)
 
         link_num = 0
-        registed_link_infos = {}
         for prefill_server_group in prefill_server_groups:
-            registed_link_info = {}
             for decode_server_group in decode_server_groups:
                 decode_id = 0
                 for decode_device in decode_server_group.device_list:
                     d_rank = decode_device.rank_id
-                    p_rank = get_p_start_rank(prefill_tp_size, prefill_dp_size, decode_tp_size, decode_dp_size,
+                    # compute p_rank with dp_size=1, and expand to dp_size>1.
+                    p_rank_start = get_p_start_rank(prefill_tp_size, 1, decode_tp_size, decode_dp_size,
                                               decode_num, decode_id, d_rank)
 
-                    decode_cluster_id = decode_device.cluster_id
+                    pd_pairs = [(p_rank_start + dp_idx * prefill_tp_size, d_rank) for dp_idx in range(prefill_dp_size)]
 
-                    if self.multi_rank_pull_kv:
-                        # first kv link
+                    for prefill_dp_rank, (p_rank, d_rank) in enumerate(pd_pairs):
                         prefill_cluster_id = prefill_server_group.device_list[p_rank].cluster_id
-
-                        link_num = self._create_kv_link(prefill_server_group, decode_server_group, p_rank, d_rank,
-                                                        prefill_cluster_id, decode_cluster_id, link_num)
-                        # second kv link
-                        second_p_rank = (p_rank + 1) % prefill_tp_size
-                        second_prefill_cluster_id = prefill_server_group.device_list[second_p_rank].cluster_id
-
-                        link_num = self._create_kv_link(prefill_server_group, decode_server_group, second_p_rank, d_rank,
-                                                       second_prefill_cluster_id, decode_cluster_id, link_num)
-
-                        if not self.data_dist_config.is_prefill:
-                            registed_link_info[decode_cluster_id] = [prefill_cluster_id, second_prefill_cluster_id]
-                    else:
-                        prefill_cluster_id = prefill_server_group.device_list[0].cluster_id
                         decode_cluster_id = decode_device.cluster_id
 
-                        link_num = self._create_kv_link(prefill_server_group, decode_server_group, p_rank, d_rank,
-                                                        prefill_cluster_id, decode_cluster_id, link_num)
+                        if self.multi_rank_pull_kv:
+                            # first kv link
+                            link_num = self._create_kv_link(prefill_server_group, decode_server_group, p_rank, d_rank,
+                                                            prefill_cluster_id, decode_cluster_id, link_num)
+                            # second kv link
+                            second_p_rank = (p_rank + 1) % prefill_tp_size
+                            second_prefill_cluster_id = prefill_server_group.device_list[second_p_rank].cluster_id
 
-            if self.multi_rank_pull_kv:
-                registed_link_infos[prefill_server_group.device_list[0].cluster_id] = registed_link_info
-            else:
-                # In single rank pull kv mode, all ranks in prefill group have the same cluster_id.
-                # So only save one key in registed_link_infos.
-                registed_link_infos[prefill_server_group.device_list[0].cluster_id] = {}
+                            link_num = self._create_kv_link(prefill_server_group, decode_server_group, second_p_rank, d_rank,
+                                                           second_prefill_cluster_id, decode_cluster_id, link_num)
 
-        return registed_link_infos, self.check_register_status()
+                            prefill_cluster_id_list = [prefill_cluster_id, second_prefill_cluster_id]
+                        else:
+                            link_num = self._create_kv_link(prefill_server_group, decode_server_group, p_rank, d_rank,
+                                                            prefill_cluster_id, decode_cluster_id, link_num)
+                            prefill_cluster_id_list = [prefill_cluster_id]
+
+                        if not self.data_dist_config.is_prefill:
+                            self.registered_link_infos[(prefill_server_group.cluster_id_start, prefill_dp_rank, d_rank)] = prefill_cluster_id_list
+
+        return self.check_register_status()
 
     def _create_kv_link(
         self, prefill_server_group, decode_server_group, p_rank, d_rank, prefill_cluster_id, decode_cluster_id,link_num
@@ -283,17 +282,18 @@ class LLMDataDistManager:
 
             ranktables = d_ranktables
 
-        self._build_device_link(comm_names, cluster_rank_infos, ranktables)
+        need_build = self._build_device_link(comm_names, cluster_rank_infos, ranktables)
 
-        link_num += 1
-        if link_num >= SCHEDULER_LINK_BATCH_SIZE:
-            link_num = 0
-            time.sleep(SCHEDULER_LINK_INTERVAL)
+        if need_build:
+            link_num += 1
+            if link_num >= SCHEDULER_LINK_BATCH_SIZE:
+                link_num = 0
+                time.sleep(SCHEDULER_LINK_INTERVAL)
         return link_num
 
     def _build_device_link(self, comm_names, cluster_rank_infos, rank_tables):
         if self.rank in comm_names and self.rank in cluster_rank_infos and self.rank in rank_tables:
-            logger.warning(f"create link:{comm_names}")
+            logger.warning(f"Current cluster id is {self.data_dist_config.cluster_id}, create link:{comm_names}")
             comm_name = comm_names[self.rank]
 
             cluster_rank_info = cluster_rank_infos[self.rank]
@@ -303,6 +303,8 @@ class LLMDataDistManager:
             logger.info(f"rank:{self.rank} linked {comm_name}:{comm_id}, cluster_rank_info:{cluster_rank_info}")
             # Save comm_name information
             self.rank_link_info_map[comm_name] = RankLinkInfo(comm_name, comm_id, cluster_rank_info)
+            return True
+        return False
 
     def check_register_status(self):
         status = {comm_name: False for comm_name in self.rank_link_info_map.keys()}
@@ -328,7 +330,7 @@ class LLMDataDistManager:
 
             if ready_num < len(self.rank_link_info_map):
                 time.sleep(3)
-
+        logger.debug(f"rank:{self.rank} build {ready_num} links successful.")
         return True
 
 
