@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-#include "omni_proxy.h"
-#include "omni_scheduler.h"
-#include "omni_utils.h"
+#include <omni_proxy.h>
+#include <omni_scheduler.h>
+#include <omni_utils.h>
 
 static void update_prefill_weights(omni_req_group_t *group)
 {
@@ -86,7 +86,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
             }
         }
 
-        req->upstream_endpoint_idx = selected;
+        req->prefill_upstream_endpoint_idx = selected;
         gs->prefill_states[selected].num_running++;
         gs->prefill_states[selected].num_tokens += req->metrics.prompt_num_tokens;
 
@@ -98,7 +98,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
         req->metrics.time_prefill_scheduled = ngx_current_msec;
 
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Prefill-%d] Schedule to: %d",
-                      req->slot_index, req->upstream_endpoint_idx);
+                      req->slot_index, req->prefill_upstream_endpoint_idx);
     }
 
     // TODO: estimated expected next schedule time
@@ -136,7 +136,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
             }
         }
 
-        req->upstream_endpoint_idx = selected;
+        req->decode_upstream_endpoint_idx = selected;
         gs->decode_states[selected].num_running++;
 
         omni_global_phase_change_to(req, PHASE_DECODE_WAITING_SCHEDULE, PHASE_DECODE_SCHEDULED);
@@ -146,6 +146,6 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
         req->metrics.time_decode_scheduled = ngx_current_msec;
 
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Decode-%d] Schedule to: %d",
-                      req->slot_index, req->upstream_endpoint_idx);
+                      req->slot_index, req->decode_upstream_endpoint_idx);
     }
 }
