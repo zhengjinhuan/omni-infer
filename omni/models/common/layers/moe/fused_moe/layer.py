@@ -116,13 +116,10 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
             per_token_scales=None
         )
         group_list = tokens_per_local_expert.to(torch.int64)
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.enable_dump and layer.moe_layer_idx < 58:
-            if is_prefill:
-                layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx + 1].add_(group_list[None])
-            else:
-                with tng.scope.npu_stream_switch('22'):
-                    layer.planner.npu_activation_count[layer.moe_layer_idx:layer.moe_layer_idx + 1].add_(
-                        group_list[None])
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            layer.planner.record_activation(layer.moe_layer_idx, group_list,
+                                            support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
+                                                not is_prefill))
         mm1_mm3 = torch_npu.npu_grouped_matmul([hidden_states_sorted_by_experts], [w1],
                                                group_list=group_list, split_item=3, group_type=0,
                                                group_list_type=1)[0]
