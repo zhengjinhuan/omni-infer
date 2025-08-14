@@ -65,6 +65,8 @@ if model_extra_config.operator_opt_config.use_omni_placement:
     _GLOBAL_STEP = 0
 
 MAX_GEAR_NUM = 6
+NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which is 4 on cuda.
+
 def _get_pad_size(num_seqs):
     tp_size = get_tensor_model_parallel_world_size()
     return (tp_size - num_seqs % tp_size) % tp_size
@@ -587,7 +589,7 @@ class NPUModelRunner(GPUModelRunner):
                     # Rewind the generator state as if the token was not sampled.
                     generator = self.input_batch.generators.get(i)
                     if generator is not None:
-                        generator.set_offset(generator.get_offset() - 12) # ascend npu, move 12 every one generation, which is 4 on cuda.
+                        generator.set_offset(generator.get_offset() - NPU_GENERATOR_OFFSET_STEP)
                     # Record the index of the request that should not be sampled,
                     # so that we could clear the sampled tokens before returning.
                     discard_sampled_tokens_req_indices.append(i)
