@@ -237,7 +237,6 @@
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_prefill.log 2>&1 &
     
-    # HCCL
     run_vllm_server_decode_cmd: |
       #!/bin/bash
 
@@ -245,8 +244,6 @@
       HCCL_BUFFSIZE=1000
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
-      export HCCL_IF_BASE_PORT=59000
-      sysctl -w net.ipv4.ip_local_reserved_ports=59000-60015
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
@@ -920,7 +917,6 @@
       when: "'D' in group_names"
       tags: run_server
 
-    # proc_bind
     - name: Remove proc_trace.txt if it exists (P & D nodes)
       ansible.builtin.file:
         path: /tmp/process/proc_trace.txt
@@ -1070,7 +1066,6 @@
       tags:
         - proc_bind
     
-    # proc_bind
     - name: Prefill cpu_pin
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c ${CODE_PATH}/tools/scripts/bind_cpu.sh"
       environment:
@@ -1082,7 +1077,6 @@
       tags:
         - proc_bind
     
-    # proc_bind
     - name: Decode cpu_pin
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c ${CODE_PATH}/tools/scripts/bind_cpu.sh"
       environment:
