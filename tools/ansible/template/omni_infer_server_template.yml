@@ -185,6 +185,15 @@
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
+      # ems env adapter
+      # export ENABLE_VLLM_EMS=0
+      # export MOE_KV_SPLIT=1
+      # export EMS_STORE_LOCAL=1
+      # export EMS_GET_BATCH_SIZE=16
+      # export EMS_GET_THREAD_NUM=26
+      # export MODEL_ID=cc_kvstore@_@ds_default_ns_001
+      # export ACCELERATE_ID=cc_kvstore@_@ds_default_ns_001
+
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
         export MASTER_NODE_IP=$HOST_IP
         export NNODES=$NNODES
