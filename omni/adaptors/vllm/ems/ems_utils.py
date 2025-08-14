@@ -113,7 +113,7 @@ class EmsKVCacheManager:
         根据kv_caches缓存信息通过偏移获取特定block的KV缓存
 
         参数:
-        - block_id:请求的block的ID，基于该ID进行缓存地址的计算
+        - block_id: 请求的block的ID，基于该ID进行缓存地址的计算
         """
         return self._block_addr_list[block_id]
     

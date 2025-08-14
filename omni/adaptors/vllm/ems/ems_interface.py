@@ -80,8 +80,8 @@ def _cal_info_load_reqs(scheduler_output: SchedulerOutput, block_size):
                                 new_req.req_id] + new_req.num_computed_tokens - 1) // block_size
         num_computed_blocks = new_req.num_computed_tokens // block_size
 
-        logger.info(f"[EMS] Load req {new_req.req_id}, block_ids: {new_req.block_ids},"
-                    f"prompt_len: {len(new_req.prompt_token_ids)},"
+        logger.info(f"[EMS] Load req {new_req.req_id}, block_ids: {new_req.block_ids}, "
+                    f"prompt len: {len(new_req.prompt_token_ids)},"
                     f"num_scheduled_tokens: {scheduler_output.num_scheduled_tokens[new_req.req_id]}, "
                     f"num_computed_tokens: {new_req.num_computed_tokens}, "
                     f"num_total_blocks: {num_total_blocks}, num_computed_blocks: {num_computed_blocks}")

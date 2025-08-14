@@ -76,7 +76,7 @@ class EmsAdapter:
             option = CcKvOption(write_rcache=EmsEnv.enable_write_rcache, read_local_only=EmsEnv.enable_read_local_only)
             submit_time = time.perf_counter()
             if not self._check_params(keys_load, values_load):
-                logger.error(f"[EMS] req {req_id} async load checkparams fail.")
+                logger.error(f"[EMS] req {req_id} async load check params fail.")
                 load_events[req_id] = (None, submit_time)
                 continue
             if len(keys_load) < MIN_BLOCK_LEN:
@@ -88,7 +88,7 @@ class EmsAdapter:
                 load_events[req_id] = (load_future, submit_time)
             except EmsException as e:
                 self.status_checker.set_status(False)
-                logger.error(f"[EMS] req {req_id} load failed, error:{e}.")
+                logger.error(f"[EMS] req {req_id} load failed, error: {e}.")
                 load_events[req_id] = (None, submit_time)
 
         for req_id, (load_future, submit_time) in load_events.items():
@@ -119,7 +119,7 @@ class EmsAdapter:
         for new_req in scheduler_output.scheduled_new_reqs:
             # v1 调度不区分prefill和decode，会把token_budget填满，这会导致请求被截断，一次step只计算部分token
             num_total_blocks = (scheduler_output.num_scheduled_tokens[
-                new_req.req_id] + new_req.num_computed_tokens - 1) // block_size
+                                    new_req.req_id] + new_req.num_computed_tokens - 1) // block_size
             num_computed_blocks = new_req.num_computed_tokens // block_size
 
             logger.info(f"[EMS] Save req {new_req.req_id}, block_ids: {new_req.block_ids}, "
@@ -177,7 +177,7 @@ class EmsAdapter:
         return not self.is_mla or self.rank == 0
     
     def _cal_save_kv(self, keys_save_total: List[str], values_save_total: List[List[KvBufferWrapper]]) \
-        -> Tuple[List[str], List[List[KvBufferWrapper]]]:
+            -> Tuple[List[str], List[List[KvBufferWrapper]]]:
         if not self.is_mla:
             return keys_save_total, values_save_total
         
@@ -239,11 +239,11 @@ class EmsStatusChecker:
                     logger.info("EMS health status is abnormal.")
             except Exception as e:
                 self._ems_ok = False
-                logger.exception(f"Ems health status exception, {e}")
+                logger.exception(f"EMS health status exception, {e}")
 
     def _start_cc_health_check(self):
         """启动一个新线程来执行定时任务"""
         health_check_thread = threading.Thread(target=self._check_and_update, name="cc-health")
         health_check_thread.daemon = True
         health_check_thread.start()
-        logger.info("start EMS health check")
+        logger.info("Start EMS health check")
