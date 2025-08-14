@@ -45,13 +45,12 @@ class MetricsStat:
         self.max_latency_us = max(self.max_latency_us, elapsed_time_us)
 
 
-
 class MetricsManager:
     NS_TO_US: ClassVar[int] = 1_000
 
     def __init__(self, log_interval_second: int = 30):
         self.log_interval_second = log_interval_second
-        self.metrixs_stats: Dict[MetricsType, MetricsStat] = {
+        self.metrics_stats: Dict[MetricsType, MetricsStat] = {
             metric: MetricsStat() for metric in MetricsType
         }
 
@@ -66,7 +65,7 @@ class MetricsManager:
             return
         
         elapsed_time_us = (time.perf_counter_ns() - start_time) // self.NS_TO_US
-        self.metrixs_stats[metrics_type].update_stat(elapsed_time_us)
+        self.metrics_stats[metrics_type].update_stat(elapsed_time_us)
 
     def _start_log_task(self):
         background_thread = threading.Thread(target=self._log_task, name="ems-metrics")

@@ -5,7 +5,7 @@ def patch_ems():
     EngineCore._pre_cc_handle = _pre_cc_handle
     EngineCore.step = step
     Executor.load_kv_cache = load_kv_cache
-    print("+++++++++++++++++++++++++patch_ems++++++++++++++++++++++++++++++++++")
+    print("++++++++++++++++++++++++++++patch_ems++++++++++++++++++++++++++++++++++++++++")
 
 
 patch_ems()

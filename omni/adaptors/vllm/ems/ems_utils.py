@@ -12,7 +12,7 @@ class EmsKeyGenerator:
     _SPLITER = "@"
 
     def __init__(self, pp_size: int, tp_size: int, tp_rank: int):
-        """tp_rank:当前卡在tp group中的rank"""
+        """tp_rank: 当前卡在tp group中的rank"""
         self.key_prefix = self._SPLITER.join(
             [f"{EmsEnv.llm_engine}", f"{EmsEnv.access_id}", f"pp{pp_size}", f"tp{tp_size}", f"{tp_rank}"])
         
@@ -28,7 +28,7 @@ class EmsKVCacheManager:
 
     def __init__(self, model_type):
         # KV缓存初始化参数
-        self.integrated_kv = "deepseek" in model_type and not EmsEnv.is_moe_kv_split
+        self._is_integrated_kv = "deepseek" in model_type and not EmsEnv.is_moe_kv_split
         self._is_dict_format = False
         self._kvcache_initialized = False
         self._key_size = 0
@@ -38,16 +38,16 @@ class EmsKVCacheManager:
 
     def initialize_kvcache(self, kv_caches):
         """
-        MOE模型：只有K的缓存
-        非MOE模型：包含k/v两种缓存
+        MOE模型: 只有k的缓存
+        非MOE模型: 包含k/v两种缓存
 
         kvcache形状 [layers, k_v_index, GPU_blocks, Block_size, Attention heads Number, Head_size}]
         k_cache: k_v_index = 0
         v_cache: k_v_index = 1
 
         用于初始化kvcache缓存相关的全局变量
-        并与激素那各层kvcache的内存地址偏移起始点。
-        该函数仅在首次调用时执行
+        并预计算各层kvcache的内存地址偏移起始点。
+        该函数仅在首次调用时执行。
         """
         if not kv_caches:
             return
@@ -106,14 +106,14 @@ class EmsKVCacheManager:
         logger.info(
             f"[EMS][KVCache] first_layer_k_cache shape is {first_layer_k_cache.shape}, "
             f"first_layer_v_cache shape is {first_layer_v_cache.shape}, "
-            f"block num: {len(self._block_addr_list)}, slice num per block is {len(self._block_addr_list[0])}")
+            f"block num: {len(self._block_addr_list)},slice num per block is {len(self._block_addr_list[0])}")
         
     def get_block_kv_buffer(self, block_id: int) -> List[KvBufferWrapper]:
         """
         根据kv_caches缓存信息通过偏移获取特定block的KV缓存
 
-        参数：
-        -block_id:请求的block的ID，基于该ID进行缓存地址的计算
+        参数:
+        - block_id:请求的block的ID，基于该ID进行缓存地址的计算
         """
         return self._block_addr_list[block_id]
     

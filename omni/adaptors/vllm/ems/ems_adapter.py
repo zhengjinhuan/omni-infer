@@ -1,4 +1,4 @@
-# Copyright (c) HuaWei Technologies Co., Ltd. 2025-2025. All rights reserved
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved
 
 import time
 import threading
@@ -18,6 +18,7 @@ from omni.adaptors.vllm.ems.ems_utils import EmsKeyGenerator, EmsKVCacheManager,
 SLEEP_SECONDS = 30
 MIN_BLOCK_LEN = 24
 
+
 class EmsAdapter:
     def __init__(self, vllm_config: VllmConfig):
         rank = vllm_config.parallel_config.rank
@@ -35,21 +36,21 @@ class EmsAdapter:
         self.context_caching = self._init_ems_cc(local_rank, rank)
         self.save_events = {}
 
-    def bind_kvcaches(self, kv_caches:List[torch.Tensor]):
+    def bind_kvcaches(self, kv_caches: List[torch.Tensor]):
         self.kvcache_manager.initialize_kvcache(kv_caches)
 
     def _check_params(self, key_list, value_list) -> bool:
         if not self.context_caching:
-            logger.error("[EMS] CC is not initialed")
+            logger.error("[EMS] CC is not initialed.")
             return False
         
         if not self.status_checker.get_status():
-            logger.error("[EMS] CC is unhealthy")
+            logger.error("[EMS] CC status is unhealthy")
             return False
         
         if len(key_list) == 0 or len(key_list) != len(value_list):
             logger.error(
-                f"[EMS] key/value list length is invalid, key len is {len(key_list)}, value len is {len(value_list)}")
+                f"[EMS] Key/value list length is invalid, key len is {len(key_list)}, value len is {len(value_list)}")
             return False
         
         return True
@@ -69,7 +70,7 @@ class EmsAdapter:
                 load_events[req_id] = (None, 0)
                 continue
             
-            keys_load = self._cal_keys_by_hashed(hash_blocks)
+            keys_load = self._cal_keys_by_hashes(hash_blocks)
             values_load = self._cal_values(block_ids)
 
             option = CcKvOption(write_rcache=EmsEnv.enable_write_rcache, read_local_only=EmsEnv.enable_read_local_only)
@@ -116,7 +117,7 @@ class EmsAdapter:
         block_size = self.vllm_config.cache_config.block_size
 
         for new_req in scheduler_output.scheduled_new_reqs:
-            # v1 调度不区分prefill和decode，会把token_budget填满，这会导致请求被截断，一次step值计算部分token
+            # v1 调度不区分prefill和decode，会把token_budget填满，这会导致请求被截断，一次step只计算部分token
             num_total_blocks = (scheduler_output.num_scheduled_tokens[
                 new_req.req_id] + new_req.num_computed_tokens - 1) // block_size
             num_computed_blocks = new_req.num_computed_tokens // block_size
@@ -132,7 +133,7 @@ class EmsAdapter:
             
             keys_total = self._cal_keys(new_req.prompt_token_ids, block_size)
             keys_save_total = keys_total[num_computed_blocks:num_total_blocks]
-            values_save_total = self._cal_values(new_req.blockids[0][num_computed_blocks:num_total_blocks])
+            values_save_total = self._cal_values(new_req.block_ids[0][num_computed_blocks:num_total_blocks])
 
             keys_save, values_save = self._cal_save_kv(keys_save_total, values_save_total)
 
@@ -141,7 +142,7 @@ class EmsAdapter:
             
             option = CcKvOption(write_rcache=EmsEnv.enable_write_rcache, read_local_only=EmsEnv.enable_read_local_only)
             if not self._check_params(keys_save, values_save):
-                logger.error(f"[EMS] req {new_req.req_id} async save check params fail")
+                logger.error(f"[EMS] req {new_req.req_id} async save check params fail.")
                 continue
             try:
                 submit_time = time.perf_counter()
@@ -172,6 +173,7 @@ class EmsAdapter:
         return "deepseek" in vllm_config.model_config.hf_config.model_type
     
     def _need_save(self):
+        # mla, tp组内所有rank产生的kvcache一样，只保存rank 0的kvcache
         return not self.is_mla or self.rank == 0
     
     def _cal_save_kv(self, keys_save_total: List[str], values_save_total: List[List[KvBufferWrapper]]) \
@@ -180,7 +182,7 @@ class EmsAdapter:
             return keys_save_total, values_save_total
         
         if EmsEnv.ems_store_local:
-            n_parts = min(self.vllm_config.parallel_config.tensor_prarallel_size, 16)
+            n_parts = min(self.vllm_config.parallel_config.tensor_parallel_size, 16)
             cur_part = (self.rank - n_parts) if self.rank >= n_parts else self.rank
         else:
             n_parts = self.vllm_config.parallel_config.tensor_parallel_size
@@ -197,16 +199,16 @@ class EmsAdapter:
             Ems.init(ems_config)
             cc = Ems.get_cc()
         except EmsException as e:
-            logger.error(f"[EMS] Init ems failed, error {e}.")
+            logger.error(f"[EMS] Init ems failed, error: {e}.")
 
         return cc
     
     @collect_metric(MetricsType.CAL_KEYS)
-    def _cal_keys(self, token_ids: List[int], block_size: int) -> List[int]:
+    def _cal_keys(self, token_ids: List[int], block_size: int) -> List[str]:
         hash_blocks = cal_hash_blocks(token_ids, block_size)
-        return self._cal_keys_by_hashed(hash_blocks)
+        return self._cal_keys_by_hashes(hash_blocks)
     
-    def _cal_keys_by_hashed(self, hash_blocks: List[int]) -> List[str]:
+    def _cal_keys_by_hashes(self, hash_blocks: List[int]) -> List[str]:
         return [self.key_generator.gen_key(block_hash) for block_hash in hash_blocks]
 
     @collect_metric(MetricsType.CAL_VALUES)

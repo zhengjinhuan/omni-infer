@@ -9,17 +9,17 @@ from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.ems.ems_metrics import collect_metric, MetricsType
 
 if EmsEnv.enable_vllm_ems:
-    from onni.adaptors.vllm.ems.ems_utils import cal_hash_blocks
+    from omni.adaptors.vllm.ems.ems_utils import cal_hash_blocks
 
 
 def step(self) -> EngineCoreOutputs:
     """Schedule, execute, and make output."""
     # Check for any requests remaining in the scheduler - unfinished
     # or finished and not yet removed from the batch
-    if not self.scheduler.has_reuqests():
+    if not self.scheduler.has_requests():
         return EngineCoreOutputs(
             outputs = [],
-            scheduler_stats=self.scheduler.schedule()
+            scheduler_stats=self.scheduler.make_stats(),
         )
     scheduler_output = self.scheduler.schedule()
 
@@ -51,7 +51,7 @@ def _pre_cc_handle(self, scheduler_output: SchedulerOutput) -> None:
 
     self.total_blocks += sum(len(v) for _, v, _ in info_load_reqs)
     self.success_blocks += sum(output)
-    logger.info("[EMS] Load hit rate %.2f%%", 100 * self.success_blocks / max(self.total_blocks, 1))
+    logger.info("[EMS] Load hit rate: %.2f%%", 100.0 * self.success_blocks / max(self.total_blocks, 1))
 
     for num_block, new_req in zip(output, load_scheduled_new_reqs):
         ems_computed_tokens = num_block * self.scheduler.block_size
@@ -75,12 +75,12 @@ def _cal_info_load_reqs(scheduler_output: SchedulerOutput, block_size):
     load_scheduled_new_reqs = []
 
     for new_req in scheduler_output.scheduled_new_reqs:
-        # v1调度不区分prefill和deocde，会把toekn_budget填满，这会导致请求被截断，一次step只计算部分token
+        # v1调度不区分prefill和deocde，会把token_budget填满，这会导致请求被截断，一次step只计算部分token
         num_total_blocks = (scheduler_output.num_scheduled_tokens[
                                 new_req.req_id] + new_req.num_computed_tokens - 1) // block_size
         num_computed_blocks = new_req.num_computed_tokens // block_size
 
-        logger.info(f"[EMS] Load req {new_req}, block_ids: {new_req.block_ids},"
+        logger.info(f"[EMS] Load req {new_req.req_id}, block_ids: {new_req.block_ids},"
                     f"prompt_len: {len(new_req.prompt_token_ids)},"
                     f"num_scheduled_tokens: {scheduler_output.num_scheduled_tokens[new_req.req_id]}, "
                     f"num_computed_tokens: {new_req.num_computed_tokens}, "

@@ -545,7 +545,7 @@ class NPUModelRunner(GPUModelRunner):
         start = time.time()
 
         if EmsEnv.enable_vllm_ems:
-            self.ems_adapter.sync_save_event(scheduler_output)
+            self.ems_adapter.sync_save_event()
 
         # Update KVConnector with the KVConnector metadata forward().
         self._update_states(scheduler_output)
@@ -679,6 +679,10 @@ class NPUModelRunner(GPUModelRunner):
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
         return_spec_token = [None] * (self.total_step - 1)
         return_spec_token.append(None if cached_spec_token[-1] is None else cached_spec_token[-1].tolist())
+
+        if EmsEnv.enable_vllm_ems:
+            self.ems_adapter.async_save(scheduler_output)
+
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
