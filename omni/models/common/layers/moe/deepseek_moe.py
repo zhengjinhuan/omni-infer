@@ -166,8 +166,7 @@ class DeepseekMoE(nn.Module):
                                      quant_config=None,
                                      params_dtype=torch.float32,
                                      prefix=f"{prefix}.gate")
-        self.topk_method = getattr(config, "topk_method", "topk")
-        if self.topk_method == "noaux_tc":
+        if getattr(config, "topk_method", "topk") == "noaux_tc":
             self.gate.e_score_correction_bias = nn.Parameter(
                 torch.empty(self.n_routed_experts, dtype=torch.float), requires_grad=False)
         else:
