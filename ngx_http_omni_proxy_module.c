@@ -202,14 +202,17 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
     ngx_http_omni_main_conf_t *mcf;
     ngx_omni_upstream_entry_t *entry;
 
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Prefill-%d]: enter main request handler", req->slot_index);
-
     olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
     if (olcf == NULL || olcf->upstream_name.len == 0)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: no upstream_name in loc conf");
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
+
+    g_state->pd_policy = olcf->pd_policy;
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                  "[Prefill-%d]: enter main request handler, policy:%d",
+                  req->slot_index, g_state->pd_policy);
 
     /* find parsed upstream entry from main conf */
     mcf = ngx_http_get_module_main_conf(r, ngx_http_omni_proxy_module);
@@ -1208,6 +1211,8 @@ ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->upstream_name = prev->upstream_name;
     }
 
+    ngx_conf_merge_uint_value(conf->pd_policy, prev->pd_policy, PD_SEQUENTIAL);
+
     return NGX_CONF_OK;
 }
 
@@ -1369,7 +1374,7 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
 
     omni_register_worker(g_state, &g_state->shmtx);
 
-    printf("Init timer, pid: %u, worker: %u\n", ngx_pid, ngx_worker);
+    printf("Init timer, pid: %u, worker: %lu\n", ngx_pid, ngx_worker);
 
     ngx_add_timer(&local_state.omni_proxy_timer_event, TIMER_INTERVAL);
 
@@ -1390,24 +1395,58 @@ static char *omni_proxy_init_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
     clcf->handler = omni_proxy_handler;
 
     ngx_http_omni_loc_conf_t *olcf = conf;
-    ngx_str_t *value;
+    ngx_str_t *value = cf->args->elts;
+
+    // tokens start at value[1]
+    for (ngx_uint_t i = 1; i < cf->args->nelts; i++)
+    {
+        ngx_str_t *v = &value[i];
+
+        // pd_policy=sequential|parallel
+        if (v->len >= sizeof("pd_policy=") - 1 &&
+            ngx_strncasecmp(v->data, (u_char *)"pd_policy=", sizeof("pd_policy=") - 1) == 0)
+        {
+            u_char *val = v->data + (sizeof("pd_policy=") - 1);
+            size_t len = v->len - (sizeof("pd_policy=") - 1);
+
+            if (len == 0)
+            {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "empty value for \"pd_policy\"");
+                return NGX_CONF_ERROR;
+            }
+
+            if (len == sizeof("sequential") - 1 &&
+                ngx_strncasecmp(val, (u_char *)"sequential", sizeof("sequential") - 1) == 0)
+            {
+                olcf->pd_policy = PD_SEQUENTIAL;
+                continue;
+            }
+
+            if (len == sizeof("parallel") - 1 &&
+                ngx_strncasecmp(val, (u_char *)"parallel", sizeof("parallel") - 1) == 0)
+            {
+                olcf->pd_policy = PD_PARALLEL;
+                continue;
+            }
+
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid value \"%V\" for \"pd_policy\" "
+                               "(expected \"sequential\" or \"parallel\")",
+                               v);
+            return NGX_CONF_ERROR;
+        }
+
+        // Default to be the upstream name
+        olcf->upstream_name.len = value[1].len;
+        olcf->upstream_name.data = ngx_pstrdup(cf->pool, &value[1]);
+        if (olcf->upstream_name.data == NULL)
+        {
+            return NGX_CONF_ERROR;
+        }
+    }
+
     ngx_url_t u;
-
-    value = cf->args->elts;
-
-    if (value[1].len == 0)
-    {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "omni_proxy requires upstream name");
-        return NGX_CONF_ERROR;
-    }
-
-    olcf->upstream_name.len = value[1].len;
-    olcf->upstream_name.data = ngx_pstrdup(cf->pool, &value[1]);
-    if (olcf->upstream_name.data == NULL)
-    {
-        return NGX_CONF_ERROR;
-    }
-
     ngx_memzero(&u, sizeof(ngx_url_t));
     u.url = value[1];
     u.no_resolve = 1;
@@ -1424,7 +1463,7 @@ static char *omni_proxy_init_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
 static ngx_command_t omni_proxy_commands[] = {
     {
         ngx_string("omni_proxy"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE2,
         omni_proxy_init_conf,
         NGX_HTTP_LOC_CONF_OFFSET,
         0,

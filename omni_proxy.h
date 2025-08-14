@@ -49,6 +49,7 @@ typedef struct
 typedef struct
 {
     ngx_str_t upstream_name;
+    ngx_uint_t pd_policy;
     ngx_uint_t rr_index;
     ngx_http_upstream_srv_conf_t *upstream;
 } ngx_http_omni_loc_conf_t;
