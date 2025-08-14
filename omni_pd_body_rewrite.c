@@ -1,4 +1,7 @@
-#include "pd_body_rewrite.h"
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+
+#include "omni_pd_body_rewrite.h"
 #include "jsmn.h"
 
 static char *prefill_response_json_keys[] = {
@@ -422,9 +425,6 @@ ngx_int_t omni_proxy_save_origin_body(
     ngx_chain_t *cl;
     size_t len = 0;
     u_char *body_data = NULL;
-    u_char *p;
-    char *modified_json_str = NULL;
-    ngx_buf_t *b;
 
     if (r->request_body == NULL || r->request_body->bufs == NULL)
     {
