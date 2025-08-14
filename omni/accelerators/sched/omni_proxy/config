@@ -9,7 +9,9 @@ ngx_module_name=ngx_http_omni_proxy_module
 
 # Source files for the module
 ngx_module_srcs="$ngx_addon_dir/ngx_http_omni_proxy_module.c \
-                 $ngx_addon_dir/pd_body_rewrite.c"
+                 $ngx_addon_dir/omni_pd_body_rewrite.c \
+                 $ngx_addon_dir/omni_scheduler.c \
+                 $ngx_addon_dir/omni_utils.c"
 
 # Include directories for the module
 ngx_module_incs="$ngx_addon_dir"
