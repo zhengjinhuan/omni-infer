@@ -9,13 +9,10 @@ ROLE=${ROLE:-P}
 
 mkdir -p "$(dirname "$LOG_FILE")" && >"$LOG_FILE"
 
-
-# 1. 初始全空闲
 free_cpus=({0..319})
 declare -A idx_map
 for i in "${!free_cpus[@]}"; do idx_map[${free_cpus[i]}]=$i; done
 
-# 2. 收集 marker.txt 中需要处理的 pid
 declare -A keep_pids
 while IFS='|' read -r pid _ _; do
     [[ -n $pid ]] && keep_pids[$pid]=1
@@ -31,7 +28,6 @@ done < <(
     }' "$MARKER"
 )
 
-# 3. 从系统扫描，剔除真正占用的核
 while read -r cpu; do
     [[ -n ${idx_map[$cpu]} ]] || continue          
     idx=${idx_map[$cpu]}
@@ -59,7 +55,6 @@ done < <(
     done | sort -nu
 )
 
-
 remove_cpu() {
     local cpu=$1 idx=${idx_map[$cpu]}
     [[ -n $idx ]] || return 1
@@ -83,12 +78,11 @@ parse() {
     }' "$MARKER"
 }
 
-declare -A processed          # 记录已处理过的 pid
+declare -A processed          
 
-# 4. Worker（倒序）
 while IFS='|' read -r pid tag lr; do
     [[ $tag == "Worker" && -n $lr ]] || continue
-    [[ -z ${processed[$pid]} ]] || continue      # 同 pid 只处理一次
+    [[ -z ${processed[$pid]} ]] || continue      
     processed[$pid]=1
     start=$(( (lr/2)*40 )); end=$(( start + 39 ))
     cpu=""
@@ -104,7 +98,6 @@ while IFS='|' read -r pid tag lr; do
     taskset -pc "$cpu" "$pid" >/dev/null
 done < <(parse | sort -t'|' -k3,3nr)
 
-# 5. 其余进程
 while IFS='|' read -r pid tag lr; do
     [[ $tag != "Worker" ]] || continue
     [[ "$ROLE" == "D" && $tag == "Tokenizer" ]] && continue

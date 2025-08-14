@@ -236,7 +236,7 @@
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_prefill.log 2>&1 &
-
+    
     run_vllm_server_decode_cmd: |
       #!/bin/bash
 
@@ -917,7 +917,6 @@
       when: "'D' in group_names"
       tags: run_server
 
-    # proc_bind
     - name: Remove proc_trace.txt if it exists (P & D nodes)
       ansible.builtin.file:
         path: /tmp/process/proc_trace.txt
@@ -1067,7 +1066,6 @@
       tags:
         - proc_bind
     
-    # proc_bind
     - name: Prefill cpu_pin
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c ${CODE_PATH}/tools/scripts/bind_cpu.sh"
       environment:
@@ -1079,7 +1077,6 @@
       tags:
         - proc_bind
     
-    # proc_bind
     - name: Decode cpu_pin
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c ${CODE_PATH}/tools/scripts/bind_cpu.sh"
       environment:
