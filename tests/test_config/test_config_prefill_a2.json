@@ -16,14 +16,10 @@
         "omni_placement_config_path": ".",
         "opt_w2_scale_cast": false,
         "enable_round_pipeline_comm": false,
-        "enable_pipeline_comm": false,
+        "enable_pipeline_comm": true,
         "pd_seperate_prefill": true,
         "prefill_enable_long_seq": false,
         "use_prefetch": false,
-        "prefill_moe_multi_stream": true,
-        "prefill_enable_mla_alltoall_local": true,
-        "prefill_enable_pipeline_comm": true,
-        "prefill_mla_multi_stream": false,
-        "enable_dense_local_tp": 1
+        "prefill_enable_mla_alltoall_local": true
     }
 }

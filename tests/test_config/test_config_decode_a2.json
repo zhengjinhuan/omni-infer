@@ -21,10 +21,6 @@
         "pd_seperate_prefill": false,
         "prefill_enable_long_seq": false,
         "use_prefetch": true,
-        "prefill_moe_multi_stream": false,
-        "prefill_enable_mla_alltoall_local": false,
-        "prefill_enable_pipeline_comm": false,
-        "prefill_mla_multi_stream": false,
-        "enable_dense_local_tp": 1
+        "prefill_enable_mla_alltoall_local": false
     }
 }
