@@ -26,6 +26,8 @@ enable_dynamic: True
 max_redundant_per_expert: 1 # 10
 max_redundant_per_rank: 0 # 1
 
+enable_rank_round_robin: True
+
 enable_dump: False
 dump_dir: "../dump_data"
 

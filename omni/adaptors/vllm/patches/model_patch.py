@@ -44,6 +44,11 @@ def patch_compilation():
     decorators._support_torch_compile = _support_torch_compile
     print("+++++++++++++++++++++++patch_compilation+++++++++++++++++++++++++++")
 
+def patch_linear():
+    from vllm.model_executor.layers import linear
+    from omni.models.common.layers.linear import AscendUnquantizedLinearMethod
+    linear.UnquantizedLinearMethod = AscendUnquantizedLinearMethod
+
 _patch_done = False
 
 def patch_all():
@@ -55,6 +60,7 @@ def patch_all():
     patch_embedding()
     patch_sampler()
     patch_compilation()
+    patch_linear()
     _patch_done = True
 
 patch_all() 

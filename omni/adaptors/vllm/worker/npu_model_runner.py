@@ -32,7 +32,7 @@ from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_paral
 from vllm import forward_context
 from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
-from vllm.sequence import IntermediateTensors
+from vllm.sequence import IntermediateTensors, VLLM_INVALID_TOKEN_ID
 from vllm.utils import (DeviceMemoryProfiler, is_pin_memory_available,
                         LayerBlockType, LazyLoader, cdiv)
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
@@ -46,7 +46,7 @@ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
-from omni.models.common.layers.sampler import SimpleSampler
+from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
@@ -137,7 +137,8 @@ class NPUModelRunner(GPUModelRunner):
         self.max_num_reqs = self.scheduler_config.max_num_seqs
         if self.use_spec_decode:
             self.rejection_sampler = SimpleSampler(self.sampler)
-
+        else:
+            self.sampler = AscendSamplerV1()
         self._init_graph_options()
 
         self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,
@@ -232,7 +233,7 @@ class NPUModelRunner(GPUModelRunner):
             for req_id in self.input_batch.req_ids
         ], dtype=np.int32)
         max_num_scheduled_tokens = num_scheduled_tokens.max()
-        num_scheduled_spec_decode_tokens = len(scheduler_output.scheduled_spec_decode_tokens)
+        num_scheduled_spec_decode_reqs = len(scheduler_output.scheduled_spec_decode_tokens)
 
         # Prepare positions
         req_indices = np.repeat(self.arange_np[:num_reqs], num_scheduled_tokens)
@@ -264,10 +265,11 @@ class NPUModelRunner(GPUModelRunner):
                 out=block_table.slot_mapping_np[:total_num_scheduled_tokens])
 
         # check and set attention state
+        can_decode = self.vllm_config.kv_transfer_config is None or self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
         if np.array_equal(self.seq_lens_np[:num_reqs], num_scheduled_tokens):
             attn_state = AscendAttentionState.PrefillNoCache
         # We assume it is the decode stage, where prefill occurs but only one token is not hit in cache.
-        elif np.all(num_scheduled_tokens == 1) or num_scheduled_spec_decode_tokens == num_reqs:
+        elif can_decode and (np.all(num_scheduled_tokens == 1) or num_scheduled_spec_decode_reqs == num_reqs):
             attn_state = AscendAttentionState.DecodeOnly
         # splitfuse
         else:
@@ -586,33 +588,25 @@ class NPUModelRunner(GPUModelRunner):
             if temp_finished_recving is not None:
                 finished_recving.update(temp_finished_recving)
             start_2 = time.time()
-            logits = self.model.compute_logits(hidden_states[sample_indices], None)
+            if hidden_states.shape[0] == sample_indices.shape[0]:
+                # assume indices=[x1,x2,...,xn], if xn >= n, we cannot slice,
+                # if xn < n, then indices=[0,1,...,n-1], no need to slice.
+                logits = self.model.compute_logits(hidden_states, None)
+            else:
+                logits = self.model.compute_logits(hidden_states[sample_indices], None)
             start_3 = time.time()
             # Apply structured output bitmasks if present
             if scheduler_output.grammar_bitmask is not None:
                 self.apply_grammar_bitmask(scheduler_output, logits)
             start_4 = time.time()
 
-            # Sample the next token and get logprobs if needed.
-            sampling_metadata = self.input_batch.sampling_metadata
-            if not self.use_spec_decode:
-                sampler_output = self.sampler(logits=logits, sampling_metadata=sampling_metadata)
-            else:
-                first_meta = next(iter(attn_metadata.values()))
-                sampler_output, mtp_input_tokens, last_accepted_index, accepted_num = self.rejection_sampler(
-                    input_ids=input_ids,
-                    logits=logits,
-                    logits_indices=sample_indices,
-                    sampling_metadata=sampling_metadata,
-                    num_decodes=first_meta.num_decodes,
-                    num_prefills=first_meta.num_prefills
-                )
-            start_5 = time.time()
-
+            # find the requests that are doing chunk prefill
             discard_sampled_tokens_req_indices = []
+            chunk_next_tokens = []
             for i, req_id in enumerate(self.input_batch.req_ids):
                 req_state = self.requests[req_id]
-                seq_len = req_state.num_computed_tokens + scheduler_output.num_scheduled_tokens[req_id]
+                seq_len = (req_state.num_computed_tokens +
+                           scheduler_output.num_scheduled_tokens[req_id])
                 if seq_len < req_state.num_tokens:
                     # Ignore the sampled token.
                     # Rewind the generator state as if the token was not sampled.
@@ -622,6 +616,28 @@ class NPUModelRunner(GPUModelRunner):
                     # Record the index of the request that should not be sampled,
                     # so that we could clear the sampled tokens before returning.
                     discard_sampled_tokens_req_indices.append(i)
+                    chunk_next_tokens.append(req_state.get_token_id(seq_len))
+                else:
+                    chunk_next_tokens.append(VLLM_INVALID_TOKEN_ID)
+
+            start_5 = time.time()
+
+            # Sample the next token and get logprobs if needed.
+            sampling_metadata = self.input_batch.sampling_metadata
+            if not self.use_spec_decode:
+                sampler_output = self.sampler(logits=logits, sampling_metadata=sampling_metadata)
+            else:
+                first_meta = next(iter(attn_metadata.values()))
+                sampler_output, mtp_input_tokens, last_accepted_index, accepted_num = self.rejection_sampler(
+                        input_ids=input_ids,
+                        logits=logits,
+                        logits_indices=sample_indices,
+                        sampling_metadata=sampling_metadata,
+                        num_decodes=first_meta.num_decodes,
+                        num_prefills=first_meta.num_prefills,
+                        next_tokens=chunk_next_tokens,
+                    )
+
             start_6 = time.time()
 
             if not self.use_spec_decode:
@@ -654,17 +670,19 @@ class NPUModelRunner(GPUModelRunner):
                     self.input_batch.vocab_size,
                 )
             sampled_tokens = sampled_token_ids
-            spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor
+            spec_token_ids: list[list[int]] = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
 
             # Mask out the sampled tokens that should not be sampled.
             for i in discard_sampled_tokens_req_indices:
                 valid_sampled_token_ids[i].clear()
+                if spec_token_ids is not None:
+                    spec_token_ids[i].clear()
             # Clear KVConnector state after all KVs are generated.
             if has_kv_transfer_group():
                 get_kv_transfer_group().clear_connector_metadata()
 
             cached_sampled_token_ids.append(valid_sampled_token_ids)
-            cached_spec_token.append(spec_token_ids)
+            cached_spec_token.append(spec_tokens_tensor)
             cached_logprobs.append(logprobs_lists)
             cached_prompt_logprobs_dict.append({})
 
@@ -672,13 +690,13 @@ class NPUModelRunner(GPUModelRunner):
             cost_proc_reqs = start_2 - start_1
             cost_logits = start_3 - start_2
             cost_bitmask = start_4 - start_3
-            cost_sampler = start_5 - start_4
-            cost_disc = start_6 - start_5
+            cost_disc = start_5 - start_4
+            cost_sampler = start_6 - start_5
             cost_output = time.time() - start_6
             cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_output
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
         return_spec_token = [None] * (self.total_step - 1)
-        return_spec_token.append(None if cached_spec_token[-1] is None else cached_spec_token[-1].tolist())
+        return_spec_token.append(spec_token_ids)
 
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.async_save(scheduler_output)
@@ -870,7 +888,7 @@ class NPUModelRunner(GPUModelRunner):
 
     def profile_run(self) -> None:
         if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
-            hidden_states = self._dummy_run(self.max_batch_size * model_extra_config.parall_config.dp_size)
+            hidden_states = self._dummy_run(self.max_batch_size * get_dp_group().world_size)
         else:
             hidden_states = self._dummy_run(self.max_num_tokens)
 

@@ -51,7 +51,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     maybe_prefix)
 from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear
-from omni.models.common.layers.rotary_embedding_extend import get_rope, RotaryEmbedding
+from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
 from omni.models.common.layers.fused_mlp import FusedMLP
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
@@ -122,6 +122,9 @@ class Qwen2Attention(nn.Module):
             prefix=f"{prefix}.o_proj",
         )
 
+        if rope_scaling is None:
+            rope_scaling = {'factor': '0'}
+        rope_scaling["rope_type"] = 'qwen'
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -289,7 +292,7 @@ class Qwen2Model(nn.Module):
         base = getattr(config, "rope_theta", 1000000)
         rotary_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         max_len = config.max_position_embeddings
-        full_cos, full_sin = RotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
+        full_cos, full_sin = QwenRotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
         self.register_buffer("full_cos", full_cos, persistent=False)
         self.register_buffer("full_sin", full_sin, persistent=False)
 
