@@ -53,11 +53,13 @@ typedef struct omni_request_s
 {
     uint16_t in_use;
     uint16_t slot_index;
+    uint32_t phase_state;
+    int worker_pid;
     void *backend;
     uint32_t last_retry;
-    int worker_pid;
-    uint16_t upstream_endpoint_idx;
-    uint32_t phase_state;
+
+    uint16_t prefill_upstream_endpoint_idx;
+    uint16_t decode_upstream_endpoint_idx;
     omni_request_metrics_t metrics;
 } omni_req_t;
 

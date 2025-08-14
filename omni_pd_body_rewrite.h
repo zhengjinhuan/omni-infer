@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "omni_proxy.h"
+#include <omni_proxy.h>
 
 ngx_int_t omni_proxy_save_origin_body(
     ngx_http_request_t *r,

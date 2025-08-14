@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <ngx_atomic.h>
-#include "omni_utils.h"
+#include <omni_utils.h>
 
 omni_req_t *omni_allocate_request(omni_request_pool_t *pool, void *data)
 {

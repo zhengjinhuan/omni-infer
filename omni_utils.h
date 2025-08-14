@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "omni_metrics.h"
-#include "omni_proxy.h"
+#include <omni_metrics.h>
+#include <omni_proxy.h>
 
 #define BIT(n) (1U << (n))
 
@@ -155,16 +155,6 @@ static inline omni_req_t *omni_info_to_req(omni_req_info_t *info)
     return omni_id_to_req(info->slot_index);
 }
 
-static inline void omni_global_phase_change_to(omni_req_t *req, omni_proxy_request_phase_t from, omni_proxy_request_phase_t to)
-{
-    omni_phase_change_to(req, omni_get_global_state()->groups, from, to);
-}
-
-static inline void omni_local_phase_change_to(omni_req_t *req, omni_proxy_request_phase_t from, omni_proxy_request_phase_t to)
-{
-    omni_phase_change_to(req, omni_get_local_state()->groups, from, to);
-}
-
 static inline ngx_http_request_t *omni_get_http_request(omni_req_t *req)
 {
     ngx_http_request_t *r = req->backend;
@@ -174,4 +164,16 @@ static inline ngx_http_request_t *omni_get_http_request(omni_req_t *req)
         return NULL;
     }
     return r;
+}
+
+static inline void omni_global_phase_change_to(omni_req_t *req, omni_proxy_request_phase_t from, omni_proxy_request_phase_t to)
+{
+    printf("[Phase-%d]: Global from: %d To: %d.\n", req->slot_index, from, to);
+    omni_phase_change_to(req, omni_get_global_state()->groups, from, to);
+}
+
+static inline void omni_local_phase_change_to(omni_req_t *req, omni_proxy_request_phase_t from, omni_proxy_request_phase_t to)
+{
+    printf("[Phase-%d]: Local from: %d To: %d.\n", req->slot_index, from, to);
+    omni_phase_change_to(req, omni_get_local_state()->groups, from, to);
 }
