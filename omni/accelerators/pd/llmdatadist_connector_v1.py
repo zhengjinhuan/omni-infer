@@ -249,8 +249,11 @@ class PrefillConnectorWorker:
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True, name=thread_name)
             self.thread.start()
             dump_thread_to_file(self.thread, thread_name, thread_dump_path)
-        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
-        if ENABLED:
+
+        # check whether omni attention is enabled
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+        use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+        if use_omni_attn_mgr:
             manager_cls = OmniBiGroupDataDistManager
             logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
             self.datadist_manager = manager_cls(vllm_config)
@@ -418,8 +421,9 @@ class DecodeConnectorWorker:
             (self.multi_rank_pull_kv or self.multi_thread_pull_kv):
             raise ValueError("multi_rank_pull_kv and multi_thread_pull_kv are not supported when tp > 1.")
 
-        from omni.accelerators.cache import OmniBiGroupDataDistManager, ENABLED
-        if ENABLED:
+        from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+        use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+        if use_omni_attn_mgr:
             manager_cls = OmniBiGroupDataDistManager
             logger.warning(f"DecodeConnector is using Omni datadist manager for KV transfer.")
             self.datadist_manager = manager_cls(vllm_config)
@@ -453,7 +457,7 @@ class DecodeConnectorWorker:
         sub = context.socket(zmq.SUB)
         sub.connect(f"ipc:///tmp/sched-pub-{self.vllm_config.parallel_config.data_parallel_rank_local}")
         sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        
+
         while True:
             serialized_data = sub.recv()
             metadata = pickle.loads(serialized_data)
