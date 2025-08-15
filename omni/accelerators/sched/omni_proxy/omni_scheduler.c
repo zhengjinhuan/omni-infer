@@ -73,8 +73,10 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
 
         uint32_t least_load = UINT32_MAX;
         uint32_t selected = UINT32_MAX;
-        for (int j = 0; j < gs->num_prefill_endpoints; j++)
+        for (int m = gs->last_selected_prefill; m < gs->num_prefill_endpoints + gs->last_selected_prefill; m++)
         {
+            int j = m % gs->num_prefill_endpoints;
+
             if (gs->prefill_states[j].num_tokens < least_load)
             {
                 least_load = gs->prefill_states[j].num_tokens;
@@ -87,6 +89,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
         }
 
         req->prefill_upstream_endpoint_idx = selected;
+        gs->last_selected_prefill = selected + 1;
         gs->prefill_states[selected].num_running++;
         gs->prefill_states[selected].num_tokens += req->metrics.prompt_num_tokens;
 
@@ -132,8 +135,9 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
 
         uint32_t least_load = UINT32_MAX;
         uint32_t selected = UINT32_MAX;
-        for (int j = 0; j < gs->num_decode_endpoints; j++)
+        for (int m = gs->last_selected_decode; m < gs->num_decode_endpoints + gs->last_selected_decode; m++)
         {
+            int j = m % gs->num_decode_endpoints;
             if (gs->decode_states[j].num_running < least_load)
             {
                 least_load = gs->decode_states[j].num_running;
@@ -146,6 +150,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
         }
 
         req->decode_upstream_endpoint_idx = selected;
+        gs->last_selected_decode = selected + 1;
         gs->decode_states[selected].num_running++;
 
         omni_global_phase_change_to(req, PHASE_DECODE_WAITING_SCHEDULE, PHASE_DECODE_SCHEDULED);
