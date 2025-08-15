@@ -10,7 +10,7 @@ while [[ $# -gt 0 ]]; do
         --build-path)
             if [[ -n "$2" ]]; then
                 PROJECT_DIR="$2"
-                PROJECT_DIR="$(cd "${PROJECT_DIR]}" && pwd)" # Convert to absolute path
+                PROJECT_DIR="$(cd "${PROJECT_DIR}" && pwd)" # Convert to absolute path
                 shift 2
             else
                 echo "Error: --build-path requires a directory path"
