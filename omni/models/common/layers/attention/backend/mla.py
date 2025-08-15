@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional, List, Type, TypeVar, Dict
 import itertools
 import numpy as np
 import torch
+import torch_npu
 
 from vllm.attention.backends.abstract import (
     AttentionBackend,
@@ -94,7 +95,7 @@ class AscendMLABackend(AttentionBackend):
         layer_kv_cache_nope = torch.zeros(
                         kv_cache_shape[:-2] +
                         (1, kv_lora_dim, ),
-                        dtype=dtype,
+                        dtype=dtype if not model_extra_config.operator_opt_config.fa_quant else torch.int8,
                         pin_memory=True,
                         device=device)
         layer_kv_cache_pe = torch.zeros(
@@ -103,6 +104,10 @@ class AscendMLABackend(AttentionBackend):
                             dtype=dtype,
                             pin_memory=True,
                             device=device)
+        if device != 'cpu':
+            # force tensor format to ND
+            layer_kv_cache_nope = torch_npu.npu_format_cast(layer_kv_cache_nope, 2)
+            layer_kv_cache_pe = torch_npu.npu_format_cast(layer_kv_cache_pe, 2)
         return (layer_kv_cache_nope, layer_kv_cache_pe)
 
 @dataclass
