@@ -31,30 +31,22 @@ from torch import nn
 from transformers import Qwen3Config
 
 from vllm.attention import Attention, AttentionType, AttentionMetadata
-from vllm.config import CacheConfig, VllmConfig
+from vllm.config import CacheConfig
 from vllm.compilation.decorators import support_torch_compile
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
-from vllm.logger import logger
-from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
-from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.vocab_parallel_embedding import (
-    ParallelLMHead,
-    VocabParallelEmbedding,
-)
+from vllm.model_executor.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
-from vllm.model_executor.models.interfaces import SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (
-    AutoWeightsLoader,
     PPMissingLayer,
     is_pp_missing_parameter,
     make_empty_intermediate_tensors_factory,
     make_layers,
-    maybe_prefix,
 )
+
+from .qwen2 import Qwen2ForCausalLM
 from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear
 from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
@@ -411,96 +403,5 @@ class Qwen3Model(nn.Module):
         return loaded_params
 
 @support_torch_compile
-class Qwen3ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
-    packed_modules_mapping = {
-        "qkv_proj": [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-        ],
-        "gate_up_proj": [
-            "gate_proj",
-            "up_proj",
-        ],
-    }
-
-    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
-        super().__init__()
-        lora_config = None
-
-        self.config = vllm_config.model_config.hf_config
-        self.lora_config = lora_config
-
-        self.quant_config = vllm_config.quant_config
-        self.model = Qwen3Model(self.config, vllm_config.cache_config, vllm_config.quant_config,
-                                prefix=maybe_prefix(prefix, "model"))
-        self.sampler = Sampler()
-
-        if get_pp_group().is_last_rank:
-            if self.config.tie_word_embeddings:
-                self.lm_head = self.model.embed_tokens
-            else:
-                self.lm_head = ParallelLMHead(self.config.vocab_size,
-                                              self.config.hidden_size,
-                                              quant_config=vllm_config.quant_config,
-                                              prefix=maybe_prefix(
-                                                  prefix, "lm_head"),
-                                              parallel_lmhead=False)
-        else:
-            self.lm_head = PPMissingLayer()
-
-        self.logits_processor = LogitsProcessor(self.config.vocab_size)
-
-        self.make_empty_intermediate_tensors = (
-            self.model.make_empty_intermediate_tensors)
-
-    def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.model.get_input_embeddings(input_ids)
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        kv_caches: List[torch.Tensor] = None,
-        attn_metadata: AttentionMetadata = None,
-        selected_indices: Optional[torch.Tensor] = None,
-        intermediate_tensors: Optional[IntermediateTensors] = None,
-        inputs_embeds = None,
-        **kwargs
-    ) -> Union[torch.Tensor, IntermediateTensors]:
-        hidden_states = self.model(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, None)
-        return hidden_states
-
-    def compute_logits(
-        self,
-        hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[torch.Tensor]:
-        logits = self.logits_processor(self.lm_head, hidden_states,
-                                       sampling_metadata)
-        return logits
-
-    def load_weights(self, weights: Iterable[tuple[str,
-                                                   torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=(["lm_head."]
-                           if self.config.tie_word_embeddings else None),
-        )
-        return loader.load_weights(weights)
-
-    def sample(
-            self,
-            logits: Optional[torch.Tensor],
-            sampling_metadata: SamplingMetadata,
-    ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(logits, sampling_metadata)
-        return next_tokens
-
-    def should_use_eager_mode(self, *args, **kwargs):
-        attn_metadata = kwargs.get("attn_metadata", None)
-        if not attn_metadata:
-            return True
-        if isinstance(attn_metadata, dict):
-            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
-        return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
+class Qwen3ForCausalLM(Qwen2ForCausalLM):
+    pass
