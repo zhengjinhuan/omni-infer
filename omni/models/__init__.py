@@ -42,6 +42,11 @@ def register_model():
         "omni.models.qwen.qwen2:Qwen2ForCausalLM")
 
     ModelRegistry.register_model(
+        "Qwen3MoeForCausalLM",
+        "omni.models.qwen.qwen3_moe:Qwen3MoeForCausalLM"
+    )
+
+    ModelRegistry.register_model(
         "PanguProMoEForCausalLM",
         "omni.models.pangu.pangu_pro_moe.pangu_moe:PanguProMoEForCausalLM")
 

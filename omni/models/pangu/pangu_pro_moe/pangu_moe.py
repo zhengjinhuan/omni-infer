@@ -72,6 +72,8 @@ from .pangu_parallel_state import (
 from .device import is_310p
 from .fused_moe import patch_fused_moe_ops
 
+from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
+
 logger = init_logger(__name__)
 
 _ROUTER_SCALE = None
@@ -630,7 +632,7 @@ class PanguProMoEAttention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
 
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
+        q, k = self.rotary_emb(positions, q, k, self.attn.layer_name)
         
         attn_output = self.attn(q, k, v)
         
@@ -691,6 +693,7 @@ class PanguProMoEDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
         self.layer_id = layer_idx    # for debug
+        self.layer_name = f"{prefix}.self_attn.attn"
 
     def forward(
         self,
@@ -777,7 +780,6 @@ class PanguProMoEDecoderLayer(nn.Module):
         return hidden_states, residual
 
 
-@support_torch_compile
 class PanguProMoEModel(nn.Module):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -888,6 +890,7 @@ class PanguProMoEModel(nn.Module):
         return hidden_states
 
 
+@support_torch_compile
 class PanguProMoEForCausalLM(nn.Module, SupportsPP):
 
     fall_back_to_pt_during_load = False
@@ -966,6 +969,7 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
         attn_metadata: Optional[AttentionMetadata] = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
+        *args, **kwargs
     ) -> Union[torch.Tensor, IntermediateTensors]:
         hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors,
@@ -1149,3 +1153,17 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
+
+    def should_use_eager_mode(self, *args, **kwargs):
+        """Return if a layer should use eager mode. This function is
+        to fit the attention backend of Omni infer.
+ 
+        Returns:
+            bool: True for eager mode, False for graph mode
+        """
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+        return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
