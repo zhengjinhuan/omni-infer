@@ -168,12 +168,12 @@ static inline ngx_http_request_t *omni_get_http_request(omni_req_t *req)
 
 static inline void omni_global_phase_change_to(omni_req_t *req, omni_proxy_request_phase_t from, omni_proxy_request_phase_t to)
 {
-    printf("[Phase-%d]: Global from: %d To: %d.\n", req->slot_index, from, to);
+    // printf("[Phase-%d]: Global from: %d To: %d.\n", req->slot_index, from, to);
     omni_phase_change_to(req, omni_get_global_state()->groups, from, to);
 }
 
 static inline void omni_local_phase_change_to(omni_req_t *req, omni_proxy_request_phase_t from, omni_proxy_request_phase_t to)
 {
-    printf("[Phase-%d]: Local from: %d To: %d.\n", req->slot_index, from, to);
+    // printf("[Phase-%d]: Local from: %d To: %d.\n", req->slot_index, from, to);
     omni_phase_change_to(req, omni_get_local_state()->groups, from, to);
 }

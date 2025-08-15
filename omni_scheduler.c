@@ -93,7 +93,16 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
         omni_global_phase_change_to(req, PHASE_PREFILL_WAITING_SCHEDULE, PHASE_PREFILL_SCHEDULED);
         omni_req_leave_phase(req, PHASE_PREFILL_WAITING_SCHEDULE);
         omni_req_enter_phase(req, PHASE_PREFILL_SCHEDULED);
+
         // If policy is parallel, we can change to DECODE_SCHEDULED directly
+        if (gs->pd_policy == PD_PARALLEL)
+        {
+            req->decode_upstream_endpoint_idx = 0;
+            gs->decode_states[selected].num_running++;
+
+            omni_add_req_to_group(req->slot_index, &gs->groups[PHASE_DECODE_SCHEDULED]);
+            omni_req_enter_phase(req, PHASE_DECODE_SCHEDULED);
+        }
 
         req->metrics.time_prefill_scheduled = ngx_current_msec;
 
