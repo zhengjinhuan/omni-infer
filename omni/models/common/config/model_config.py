@@ -49,6 +49,7 @@ class ModelOperatorOptConfig:
     prefill_enable_long_seq: bool = False
     prefill_enable_mla_alltoall: bool = False
     prefill_enable_mla_alltoall_local: bool = False
+    fa_quant: bool = False
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
