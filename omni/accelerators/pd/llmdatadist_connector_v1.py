@@ -2,6 +2,11 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import json
+from collections.abc import Iterator
+import math
+import threading
+from typing import TYPE_CHECKING, Any, Optional, Union
+import zmq
 import os
 import pickle
 import threading
@@ -44,6 +49,7 @@ GET_META_MSG = b"get_meta_msg"
 logger = init_logger(__name__)
 
 thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
+BLOCK_RELEASE_DELAY = 30  # seconds, use to free blocks when the request is finished for a long time 
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
 
@@ -57,6 +63,9 @@ class ReqMeta:
     spec_token_ids: Optional[list[int]]
     remote_dp_rank: Optional[int]
 
+@dataclass
+class ReqMetaPrefill:
+    finish_time: float
 
 class DatadistConnectorMetadata(KVConnectorMetadata):
     """Metadata for datadist connector."""
@@ -77,6 +86,21 @@ class DatadistConnectorMetadata(KVConnectorMetadata):
             remote_cluster_id=kv_transfer_params["remote_cluster_id"],
             spec_token_ids=kv_transfer_params["spec_token_ids"],
             remote_dp_rank=kv_transfer_params.get("remote_dp_rank", 0),
+        )
+
+class DatadistConnectorMetadataPrefill(KVConnectorMetadata):
+    """Metadata for datadist connector."""
+
+    def __init__(self):
+        self.requests: dict[str, ReqMeta] = {}
+
+    def add_new_req(
+        self,
+        request_id: str,
+        finish_time: float,
+    ):
+        self.requests[request_id] = ReqMeta(
+            finish_time=finish_time
         )
 
 
@@ -164,14 +188,14 @@ class LLMDataDistConnector(KVConnectorBase_V1):
         """Get the finished recving and sending requests."""
         if self.connector_worker is None:
             raise RuntimeError("self.connector_worker cannot be None")
-        return self.connector_worker.get_finished()
+        return self.connector_worker.get_finished(self._connector_metadata)
 
     def start_load_kv(self, forward_context: "ForwardContext",
                       **kwargs) -> None:
         if self.connector_worker is None:
             raise RuntimeError("self.connector_worker cannot be None")
-        if not isinstance(self._connector_metadata, DatadistConnectorMetadata):
-            raise RuntimeError("self._connector_metadata must be an instance of DatadistConnectorMetadata")
+        if not isinstance(self._connector_metadata, Union[DatadistConnectorMetadata, DatadistConnectorMetadataPrefill]):
+            raise RuntimeError("self._connector_metadata must be an instance of DatadistConnectorMetadata or DatadistConnectorMetadataPrefill")
         self.connector_worker.start_load_kv(self._connector_metadata)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
@@ -196,6 +220,8 @@ class PrefillConnectorScheduler:
         self.host_ip = host_ip
         self.host_port = host_port
         logger.info("Initializing LLMDataDist Scheduler %s %s %s", cluster_id_start, host_ip, host_port)
+        # initialize the dict to save requests finish time
+        self.requests_finish_time = dict()
 
     def get_num_new_matched_tokens(
             self, request: "Request",
@@ -211,7 +237,11 @@ class PrefillConnectorScheduler:
             self,
             scheduler_output: SchedulerOutput,
     ) -> KVConnectorMetadata:
-        metadata = DatadistConnectorMetadata()
+        metadata = DatadistConnectorMetadataPrefill()
+        # add requests finish time to metadata, to pass to worker connector
+        metadata.requests = {req_id: ReqMetaPrefill(finish_time=finish_time)
+                     for req_id, finish_time in self.requests_finish_time.items()}
+        self.requests_finish_time.clear()
         return metadata
 
     def request_finished(
@@ -228,6 +258,10 @@ class PrefillConnectorScheduler:
             return False, None
 
         delay_free_blocks = len(block_ids) > 0
+        # record the finish time of the request
+        if delay_free_blocks:
+            self.requests_finish_time[request.request_id] = time.monotonic()
+
         return delay_free_blocks, dict(
             remote_block_ids=block_ids,
             remote_cluster_id=self.cluster_id_start,
@@ -268,21 +302,45 @@ class PrefillConnectorWorker:
             manager_cls = LLMDataDistManager
             self.datadist_manager = manager_cls(vllm_config)
 
+        # initialize the dict to save requests finish time
+        self.requests_finish_time = dict()
+
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.datadist_manager.register_memory(kv_caches)
         self.datadist_manager.register_link()
         pass
 
-    def start_load_kv(self, metadata: DatadistConnectorMetadata):
+    def start_load_kv(self, metadata: DatadistConnectorMetadataPrefill):
         pass
 
-    def get_finished(self) -> tuple[set[str], set[str]]:
+    def get_finished(self, metadata: DatadistConnectorMetadataPrefill) -> tuple[set[str], set[str]]:
         """
         Get requests that are done sending or recving.
         """
         all_done_sending: set[str] = set()
         all_done_recving: set[str] = set()
         if self.rank == 0:
+            # Update requests_finish_time with new finish times from metadata
+            with self._transfer_lock:
+                self.requests_finish_time.update(
+                    {req_id: meta.finish_time for req_id, meta in metadata.requests.items()}
+                )
+                current_time = time.monotonic()
+                # Identify requests whose finish time exceeds BLOCK_RELEASE_DELAY
+                out_date_reqs = []
+                for req_id, finish_time in self.requests_finish_time.items():
+                    if current_time - finish_time > BLOCK_RELEASE_DELAY:
+                        out_date_reqs.append(req_id)
+                    else:
+                        # Since the dict is ordered by finish_time, we can break early
+                        break
+                for req_id in out_date_reqs:
+                    logger.warning(
+                        f"Request {req_id} is out of date, finish time: {self.requests_finish_time[req_id]}. Freeing blocks now."
+                    )
+                    all_done_sending.add(req_id)
+                    del self.requests_finish_time[req_id]
+
             if len(self.receive_req_list) == 0:
                 return all_done_sending, all_done_recving
 
@@ -290,6 +348,9 @@ class PrefillConnectorWorker:
                 for req_id in self.receive_req_list:
                     logger.debug(f"Get_finished: request {req_id}")
                     all_done_sending.add(req_id)
+                    # if the request's kv has been received, remove it from requests_finish_time
+                    if req_id in self.requests_finish_time:
+                        del self.requests_finish_time[req_id]
                 self.receive_req_list.clear()
 
         return all_done_sending, all_done_recving
@@ -727,7 +788,7 @@ class DecodeConnectorWorker:
         except Exception as e:
             logger.error(f"Failed to send reqest_id {json_data} to prefill: {e}")
 
-    def get_finished(self) -> tuple[set[str], set[str]]:
+    def get_finished(self, metadata: DatadistConnectorMetadata) -> tuple[set[str], set[str]]:
         # for decode size, done_sending is no need
         all_done_sending: set[str] = set()
         with self._transfer_lock:
