@@ -54,6 +54,10 @@ class ServerGroup:
         return self.server_list == other.server_list
 
     @property
+    def cluster_id_start(self) -> int:
+        return self.server_list[0].device_list[0].cluster_id
+
+    @property
     def host_ip(self) -> str:
         return self.server_list[0].server_ip
 

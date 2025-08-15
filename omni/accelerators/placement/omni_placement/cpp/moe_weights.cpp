@@ -199,6 +199,9 @@ void MoEWeights::init_weights(
         throw std::runtime_error("Invalid nums of layer or expert of "
                                  "npu_weights_: size cannot be 0");
     }
+
+    npu_weights_[0][0].info();
+
     num_layers_ = npu_weights_.size();
     size_t expert_size =
         npu_weights_[0][0].get_total_size(); // FIXEME: 每个专家的大小均一致

@@ -268,6 +268,8 @@
 
       # install omni_placement
       pip uninstall omni_placement -y
+      
+      python ${CODE_PATH}/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \

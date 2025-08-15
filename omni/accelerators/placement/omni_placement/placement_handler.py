@@ -11,14 +11,12 @@ import re
 import time
 
 def deepseek_filter_func(key, first_k_dense_replace=3):
-    NAMES = ("w13_weight", "w2_weight", "w2_weight_offset", "w2_weight_scale", "w13_weight_offset", "w13_weight_scale")
-    pattern = r"^.*\.layers\.(\d+)\..*\.(.+)$"
+    pattern = r".*\.layers\.(\d+)\..*\.experts(?:\..*)?$"
     match = re.match(pattern, key)
 
     if match:
         layer = int(match.group(1))  # 提取layer数字
-        name = match.group(2)        # 提取name
-        return layer >= first_k_dense_replace and name in NAMES
+        return layer >= first_k_dense_replace
     return False
 
 def deepseek_get_layer_idx_func(key,first_k_dense_replace=3):
