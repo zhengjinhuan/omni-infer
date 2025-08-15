@@ -275,6 +275,7 @@
       cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
       rm -rf *.egg-info/
       pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
+      python ${CODE_PATH}/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
