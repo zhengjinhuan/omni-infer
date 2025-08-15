@@ -9,12 +9,10 @@ ROLE=${ROLE:-P}
 
 mkdir -p "$(dirname "$LOG_FILE")" && >"$LOG_FILE"
 
-# Initialize free CPUs
 free_cpus=({0..319})
 declare -A idx_map
 for i in "${!free_cpus[@]}"; do idx_map[${free_cpus[i]}]=$i; done
 
-# Catch process info
 declare -A keep_pids
 while IFS='|' read -r pid _ _; do
     [[ -n $pid ]] && keep_pids[$pid]=1
@@ -30,7 +28,6 @@ done < <(
     }' "$MARKER"
 )
 
-# Remove the used cpus from free_cpus
 while read -r cpu; do
     [[ -n ${idx_map[$cpu]} ]] || continue          
     idx=${idx_map[$cpu]}
@@ -45,7 +42,7 @@ done < <(
         [[ $pid =~ ^[0-9]+$ ]] || continue
         [[ -n ${keep_pids[$pid]} ]] && continue
         mask=$(taskset -pc "$pid" 2>/dev/null | awk -F':' '/current affinity list/ {print $2}' || true)
-        [[ -z $mask || "$mask" == " 0-319" ]] && continue   # with blank_space
+        [[ -z $mask || "$mask" == " 0-319" ]] && continue   # 未绑核或全核，空格不能删" 0-319"
         echo "$mask" | tr ',' '\n' | while read -r range; do
             if [[ $range =~ ^([0-9]+)-([0-9]+)$ ]]; then
                 for ((c=${BASH_REMATCH[1]}; c<=${BASH_REMATCH[2]}; c++)); do
@@ -69,7 +66,6 @@ remove_cpu() {
     unset idx_map[$cpu]
 }
 
-# Catch local_rank of Workers
 parse() {
     awk -F'[[:space:]]+' '{
         pid=tag=lr=""
@@ -84,7 +80,6 @@ parse() {
 
 declare -A processed          
 
-# Bind worker with npu NUMA_map: Local_rank = 0-1 -> CPU:0-39, ..., Local_rank = 14-15 -> CPU:280-319
 while IFS='|' read -r pid tag lr; do
     [[ $tag == "Worker" && -n $lr ]] || continue
     [[ -z ${processed[$pid]} ]] || continue      
@@ -103,7 +98,6 @@ while IFS='|' read -r pid tag lr; do
     taskset -pc "$cpu" "$pid" >/dev/null
 done < <(parse | sort -t'|' -k3,3nr)
 
-# Bind other processes
 while IFS='|' read -r pid tag lr; do
     [[ $tag != "Worker" ]] || continue
     [[ "$ROLE" == "D" && $tag == "Tokenizer" ]] && continue
