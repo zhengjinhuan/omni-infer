@@ -65,7 +65,7 @@ cd $BUILD_ROOT
 python -m build
 mv dist/omni_i* $BUILD_ROOT/build/dist
 
-cd $BUILD_ROOT/omni/accelerators/sched/global_proxy
+cd $BUILD_ROOT/omni/accelerators/sched/global_proxy/build/
 bash build.sh
 
 cd $PWD

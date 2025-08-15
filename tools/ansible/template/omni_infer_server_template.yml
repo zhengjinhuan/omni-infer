@@ -27,7 +27,6 @@
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
-    HTTP_PROXY: ""  # Set to your HTTP proxy if needed to download nginx, like "http://your.proxy:port"
 
     # Configuration for containers
     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
@@ -328,18 +327,6 @@
         done
       done
 
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/sched/global_proxy
-
-      NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
-      if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
-        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" > ${LOG_PATH}/install_nginx.log 2>&1
-      fi
-
-      tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
-      unset http_proxy
-      unset https_proxy
-      bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
-
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash global_proxy.sh \
         --listen-port "$PROXY_NODE_PORT" \
@@ -443,8 +430,6 @@
 
     docker_start_proxy_cmd_c: >
       {{ docker_exec_cmd }}
-      -e http_proxy=$HTTP_PROXY
-      -e https_proxy=$HTTP_PROXY
       -e PREFILL_LB_SDK=$PREFILL_LB_SDK
       -e DECODE_LB_SDK=$DECODE_LB_SDK
       -d $DOCKER_NAME_C
