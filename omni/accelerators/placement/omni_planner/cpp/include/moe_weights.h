@@ -36,6 +36,10 @@ class ExpertWeights {
     }
     ExpertWeights(std::vector<Tensor> weights) : weights_(weights) {
         total_size_ = 0;
+
+        if (weights.size() == 0)
+            throw std::runtime_error("Invalid ExpertWeights.weights.size: 0");
+
         for (auto &weight : weights_) {
             total_size_ += weight.get_total_size();
         }
@@ -83,6 +87,12 @@ class ExpertWeights {
         }
         return ret;
     };
+
+    void info() {
+        std::cout << "One Expert has " + std::to_string(weights_.size()) +
+                         " weights"
+                  << std::endl;
+    }
 
   private:
     int expert_id_; // TODO: 不再维护，后期废弃， 统一在placement_mapping中维护

@@ -53,6 +53,7 @@
   },
   "services": {
     "log_path": "/data/omniinfer/log",
+    "log_path_in_executor": "/data/omniinfer/log_path_in_executor",
     "model_path": "/data/models/DeepSeek-R1-w8a8-fusion",
     "code_path": "/data/code_path",
     "http_proxy": "",

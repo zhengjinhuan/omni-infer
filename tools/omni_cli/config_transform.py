@@ -253,7 +253,7 @@ def transform_config_for_inventory(logger, input_data):
 def transform_config_for_playbook(logger, input_data):
     """The core function for executing configuration conversion"""
     updates = {}
-    global_required_keys = {'log_path', 'model_path', 'code_path', 'docker_image'}
+    global_required_keys = {'log_path', 'log_path_in_executor', 'model_path', 'code_path', 'docker_image'}
     missing_keys = global_required_keys - set(input_data['services'])
     if missing_keys:
         logger.error("Missing global configuration: %s", missing_keys)
@@ -266,6 +266,7 @@ def transform_config_for_playbook(logger, input_data):
         return None
 
     updates["LOG_PATH"] = input_data['services']['log_path']
+    updates["LOG_PATH_IN_EXECUTOR"] = input_data['services']['log_path_in_executor']
     updates["MODEL_PATH"] = input_data['services']['model_path']
     updates["CODE_PATH"] = input_data['services']['code_path']
     if 'http_proxy' in input_data['services'].keys():

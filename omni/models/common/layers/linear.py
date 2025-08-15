@@ -16,7 +16,8 @@ from vllm.model_executor.layers.linear import (LinearBase,
                                                ReplicatedLinear,
                                                RowParallelLinear as RowParallelLinearGPU,
                                                adjust_marlin_shard,
-                                               adjust_scalar_to_fused_array)
+                                               adjust_scalar_to_fused_array,
+                                               UnquantizedLinearMethod)
 from vllm import logger
 
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig, QuantizeMethodBase
@@ -38,7 +39,16 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_o_proj_tp_group,
     GroupCoordinator
 )
+from omni.models.common.config.model_config import model_extra_config
 
+class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
+
+    def process_weights_after_loading(self, layer):
+        if model_extra_config.operator_opt_config.unquant_bmm_nz:
+            weight = layer.weight
+            weight.data = torch_npu.npu_format_cast(weight.data, 29)
+            layer.weight = Parameter(weight, requires_grad=False)
+        return
 
 class AscendMergedColumnParallelLinear(LinearBase):
     def __init__(self,
@@ -505,7 +515,7 @@ class Tp2DpAndTpRowParallelLinear(AscendRowParallelLinear):
                                                   input_parallel,
                                                   bias=bias_)
         if self.reduce_results and self.tp_size > 1:
-            output = get_o_proj_tp_group.reduce_scatter(output_parallel)
+            output = get_o_proj_tp_group().reduce_scatter(output_parallel)
         else:
             output = output_parallel
 

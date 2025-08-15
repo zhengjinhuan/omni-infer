@@ -108,6 +108,12 @@ def main():
 
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
+    start_group.add_argument(
+        "config_path",
+        nargs='?',
+        default=None,
+        help="Start in normal mode with config file"
+    )
     start_group = start_parser.add_mutually_exclusive_group()
     start_group.add_argument(
         "--normal",
@@ -146,7 +152,7 @@ def main():
     subparsers.add_parser("upgrade", help="Upgrade packages")
 
     # FETCH_LOG command configuration
-    subparsers.add_parser("fetch_log", help="Upgrade packages")
+    subparsers.add_parser("fetch_log", help="Fetch logs")
 
     args = parser.parse_args()
     if args.command == "start" and not any([args.normal, args.prepare_dev, args.run_dev]):
@@ -155,8 +161,11 @@ def main():
     # Command processing logic
     if args.command == "start":
         print("Start omni service.")
-        if args.normal:
-            print("Normal Mode.")
+        if args.config_path is not None:
+            print("Normal mode.")
+            start_omni_service_in_normal_mode(args.config_path)
+        elif args.normal:
+            print("Normal mode.")
             start_omni_service_in_normal_mode(args.normal[0])
         elif args.prepare_dev:
             print("Developer mode: Environmental preparation.")

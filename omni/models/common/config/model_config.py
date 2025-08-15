@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 import json
 import threading
 from vllm.logger import logger
@@ -20,20 +20,16 @@ class ModelParallelConfig:
 class ModelOperatorOptConfig:
     enable_kv_rmsnorm_rope_cache: bool = True
     prefill_moe_all_to_all: bool = True
-    enable_node_mlp: bool = False
     moe_multi_stream_tune: bool = False
     best_ep: bool = False
-    enable_pd_separated: bool = False
     merge_qkv: bool = False
     two_stage_comm: bool = False
-    use_chunked_prefill: bool = False
-    use_w8a8_dynamic_quant: bool = True
     gmm_nz: bool = False
+    unquant_bmm_nz: bool = False
     decode_moe_dispatch_combine: bool = True
     use_omni_placement: bool = False
     omni_placement_config_path:str = None
     enable_moe_expert_parallel: bool = True
-    use_a3_high_performance_cann: bool = True
     use_super_kernel: bool = False
     enable_prefill_micro_batch: bool = False
     use_mlaprolog: bool = False
@@ -44,20 +40,16 @@ class ModelOperatorOptConfig:
 
     use_prefetch: bool = True # 是否开启预取
     expert_gate_up_prefetch: int = 50 # 默认预取大小为 50Mb；如果是权重是BF16型，设置为 30Mb
-    expert_down_prefetch: int = 28 # 当权重是BF16且ep_size > 64 时，默认预取大小为 28Mb，否则为0
+    expert_down_prefetch: int = 28 # 当权重是w8a8且ep_size > 64 时，默认预取大小为 28Mb，否则为0
     attn_prefetch: int = 96 # 默认预取大小为 96Mb
 
     enable_round_pipeline_comm: bool = False
     enable_pipeline_comm: bool = False
     pd_seperate_prefill: bool = False
     prefill_enable_long_seq: bool = False
-    enable_prefetch: bool = False
-    prefill_moe_multi_stream: bool = True
     prefill_enable_mla_alltoall: bool = False
-    prefill_enable_mla_alltoall_local: bool = True
-    prefill_enable_pipeline_comm: bool = True
-    prefill_mla_multi_stream: bool = True
-    enable_dense_local_tp: int = 1
+    prefill_enable_mla_alltoall_local: bool = False
+    fa_quant: bool = False
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
@@ -78,6 +70,11 @@ class ModelExtraConfig:
     model_extra_cfg_path: str = ""
 
 
+def filter_dict_by_dataclass(dataclass_type, data_dict):
+    valid_keys = {f.name for f in fields(dataclass_type)}
+    return {k: v for k, v in data_dict.items() if k in valid_keys}
+
+
 def init_model_extra_config() -> ModelExtraConfig:
     model_config = ModelExtraConfig()
     model_extra_cfg_path = envs.MODEL_EXTRA_CFG_PATH
@@ -87,7 +84,7 @@ def init_model_extra_config() -> ModelExtraConfig:
             config_data = json.load(f)
         # Recursively create nested objects
         parall_config = ModelParallelConfig(**config_data['model_parallel_config'])
-        operator_opt_config = ModelOperatorOptConfig(**config_data['operator_optimizition_config'])
+        operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimizition_config']))
         model_config = ModelExtraConfig(
                 parall_config=parall_config,
                 operator_opt_config=operator_opt_config,

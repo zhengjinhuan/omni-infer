@@ -174,6 +174,7 @@
       . ~/.bashrc
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
+      export ASCEND_GLOBAL_LOG_LEVEL=3
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
@@ -202,9 +203,9 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log
       rm -rf *.egg-info/
-      pip install /workspace/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
+      pip install /workspace/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log
 
       cd /workspace/omniinfer/tools/scripts
       bash /workspace/omniinfer/tools/scripts/pd_run.sh \
@@ -233,7 +234,7 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_prefill.log 2>&1 &
+        --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_prefill.log 2>&1 &
 
     run_vllm_server_decode_cmd: |
       #!/bin/bash
@@ -242,6 +243,7 @@
       HCCL_BUFFSIZE=1000
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
+      export ASCEND_GLOBAL_LOG_LEVEL=3
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
@@ -268,9 +270,10 @@
       # install omni_placement
       pip install pybind11
       pip uninstall omni_placement -y
-      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
+      cd /workspace/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log
       rm -rf *.egg-info/
-      pip install /workspace/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
+      pip install /workspace/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log
+      python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd /workspace/omniinfer/tools/scripts
       bash /workspace/omniinfer/tools/scripts/pd_run.sh \
@@ -302,7 +305,7 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_decode.log 2>&1 &
+        --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_decode.log 2>&1 &
 
     run_proxy_cmd: |
       #!/bin/bash
@@ -333,20 +336,20 @@
 
       NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
       if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
-        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" > ${LOG_PATH}/install_nginx.log 2>&1
+        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" > ${LOG_PATH}/{{ inventory_hostname }}/install_nginx.log 2>&1
       fi
 
       tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
       unset http_proxy
       unset https_proxy
-      bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
+      bash build.sh >> ${LOG_PATH}/{{ inventory_hostname }}/install_nginx.log 2>&1
 
       cd /workspace/omniinfer/tools/scripts
       bash global_proxy.sh \
         --listen-port "$PROXY_NODE_PORT" \
         --prefill-servers-list "$prefill_result" \
         --decode-servers-list "$decode_result" \
-        --log-file ${LOG_PATH}/nginx_error.log \
+        --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
         --log-level notice \
         --core-num 4 \
         --start-core-index 16 \
@@ -451,8 +454,8 @@
 
     docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
     docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
 
   tasks:
     - name: generate container name.
@@ -548,6 +551,13 @@
       when: "'C' in group_names"
       tags:
         - run_docker
+
+    - name: Create a directory to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+        state: directory
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: sync_code
 
     - name: Create a directory to store the code.
       ansible.builtin.file:
@@ -1081,26 +1091,16 @@
       ansible.builtin.file:
         path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
         state: directory
-      when: "'P' in group_names or 'D' in group_names"
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       delegate_to: localhost
       tags:
         - fetch_log
 
-    - name: Get a list of log files that match the format.
-      ansible.builtin.find:
-        paths: '{{ ansible_env.LOG_PATH }}'
-        patterns: ".*.log"
-        use_regex: yes
-      register: log_files
-      when: "'P' in group_names or 'D' in group_names"
-      changed_when: false
-      tags: fetch_log
-
     - name: Forward logs from all machines to the executor.
-      ansible.builtin.fetch:
-        src: "{{ item }}"
-        dest: '{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/'
-        flat: yes
-      loop: "{{ log_files.files | map(attribute='path') | list }}"
-      when: "'P' in group_names or 'D' in group_names"
-      tags: fetch_log
+      ansible.builtin.synchronize:
+        mode: pull
+        src: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}/"
+        dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags:
+        - fetch_log
