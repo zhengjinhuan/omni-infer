@@ -334,7 +334,7 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     }
 
     ngx_uint_t min_decode = wla_shm->peers[candidate[0]].total_decode_num;
-    chosen = candidate[0];
+    chosen = candidate[rand() % candidate_count];
     for (i = 1; i < candidate_count; i++) {
         ngx_uint_t idx = candidate[i];
         if (wla_shm->peers[idx].total_decode_num < min_decode) {

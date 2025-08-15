@@ -25,7 +25,7 @@ from vllm import utils
 from vllm.utils import FlexibleArgumentParser, supports_dynamo, vllm_lib
 from typing import Callable, List, Optional, Tuple
 
-from omni.adaptors.vllm.utils import ASCEND_QUATIZATION_METHOD
+from omni.adaptors.vllm.utils import SUPPORTED_QUANTIZATION_METHODS
 
 CUSTOM_OP_ENABLED = False  # Custom operations not enabled for Omni inference
 
@@ -174,9 +174,6 @@ class ConfigUpdater:
         """
         if parser is None:
             return
-        quant_action = parser._option_string_actions.get('--quantization')
-        if quant_action and hasattr(quant_action, 'choices') and ASCEND_QUATIZATION_METHOD not in quant_action.choices:
-            quant_action.choices.append(ASCEND_QUATIZATION_METHOD)
 
     @classmethod
     def update_vllm_config(cls, vllm_config: 'VllmConfig') -> None:
@@ -243,23 +240,12 @@ class ConfigUpdater:
 
     @staticmethod
     def _may_enable_omni_attn(vllm_config: 'VllmConfig') -> None:
-        if not vllm_config.additional_config:
-            return
-        def to_bool(val):
-            if isinstance(val, int):
-                return val == 1
-            if isinstance(val, str):
-                return val.lower() in ["1", "true"]
-            if isinstance(val, bool):
-                return val
-            raise ValueError(f"Cannot convert variable to bool. Type {type(val)}. Value {val}.")
-        enable_omni_attn = to_bool(vllm_config.additional_config.get("enable_omni_attn", False))
+        from omni.accelerators.cache import apply_omni_attn_patch, check_omni_attn_cmd_arg
+        enable_omni_attn = check_omni_attn_cmd_arg(vllm_config.additional_config)
+        kv_transfer_config = vllm_config.kv_transfer_config
+        is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
         omni_attn_config = vllm_config.additional_config.get("omni_attn_config", None)
-        if enable_omni_attn:
-            from omni.accelerators.cache import apply_omni_attn_patch
-            kv_transfer_config = vllm_config.kv_transfer_config
-            is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
-            apply_omni_attn_patch(enable=True, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
+        apply_omni_attn_patch(enable=enable_omni_attn, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
 
 
 class NPUPlatform(Platform):
@@ -272,7 +258,7 @@ class NPUPlatform(Platform):
     ray_device_key: str = "NPU"
     device_control_env_var: str = "ASCEND_RT_VISIBLE_DEVICES"
     dispatch_key: str = "PrivateUse1"
-    supported_quantization: list[str] = [ASCEND_QUATIZATION_METHOD]
+    supported_quantization: list[str] = SUPPORTED_QUANTIZATION_METHODS
 
     def __init__(self):
         """Initialize the NPU platform and configure environment."""
@@ -297,7 +283,7 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
-        from omni.quantization.quant_config import AscendQuantConfig  # noqa: F401
+        import omni.quantization  # noqa: F401
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:
@@ -410,8 +396,8 @@ class NPUPlatform(Platform):
             str: The module path to the attention backend class.
         """
         ensure_v1_engine()
-        return ("omni.models.common.layers.attention.mla.AscendMLABackend" if use_mla
-                else "omni.models.common.layers.attention.attention.AscendAttentionBackend")
+        return ("omni.models.common.layers.attention.backend.mla.AscendMLABackend" if use_mla
+                else "omni.models.common.layers.attention.backend.attention.AscendAttentionBackend")
 
     @classmethod
     def get_punica_wrapper(cls) -> str:

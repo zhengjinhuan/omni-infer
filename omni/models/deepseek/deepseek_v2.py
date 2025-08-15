@@ -69,6 +69,7 @@ from vllm.model_executor.models.utils import (
 from vllm.sequence import IntermediateTensors
 
 import omni.adaptors.vllm.envs as envs_ascend
+from omni.models.common.layers.fused_moe.layer import FusedMoE
 
 
 VLLM_ENABLE_MC2: bool = envs_ascend.VLLM_ENABLE_MC2
@@ -103,12 +104,9 @@ class CustomDeepseekV2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
         # NOTE: `torch_npu.npu_dequant_swiglu_quant` can only be enabled in dynamic quant
-        from omni.ops.quantization.w8a8_dynamic import AscendW8A8DynamicLinearMethod
         self.is_dynamic_quant = not isinstance(
             self.gate_up_proj.quant_method,
-            UnquantizedLinearMethod) and isinstance(
-                self.gate_up_proj.quant_method.quant_method,
-                AscendW8A8DynamicLinearMethod)
+            UnquantizedLinearMethod)
 
     def forward(self, x):
         if self.is_dynamic_quant:
@@ -180,8 +178,7 @@ class CustomDeepseekV2MoE(nn.Module):
         else:
             self.gate.e_score_correction_bias = None
 
-        from omni.ops.fused_moe import AscendFusedMoE
-        self.experts = AscendFusedMoE(
+        self.experts = FusedMoE(
             num_experts=config.n_routed_experts,
             top_k=config.num_experts_per_tok,
             hidden_size=config.hidden_size,
@@ -676,6 +673,7 @@ class CustomDeepseekV2ForCausalLM(DeepseekV2ForCausalLM):
         attn_metadata: Optional[AttentionMetadata] = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
+        **kwargs
     ) -> Union[torch.Tensor, IntermediateTensors]:
         hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors,

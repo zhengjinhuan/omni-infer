@@ -17,7 +17,7 @@ index bc11686d7..81a167592 100644
              for i, engine_prompt in enumerate(engine_prompts):
                  sampling_params: Union[SamplingParams, BeamSearchParams]
 +                if reuse_prefilled_tokens:
-+                    if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++                    if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                        engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
 +                        new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
 +                        delta_text = tokenizer.convert_tokens_to_string([new_tokens])
@@ -30,7 +30,7 @@ index bc11686d7..81a167592 100644
          assert final_res is not None
  
 +        if reuse_prefilled_tokens:
-+            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                prompt_token_ids = request.kv_transfer_params["prefilled_token"]
 +                new_tokens = tokenizer.convert_ids_to_tokens(prompt_token_ids[0])
 +                prompt_text = tokenizer.convert_tokens_to_string([new_tokens])
@@ -51,7 +51,7 @@ index bc11686d7..81a167592 100644
          num_generated_tokens = sum(
              len(output.token_ids) for output in final_res.outputs)
 +        if reuse_prefilled_tokens:
-+            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                num_generated_tokens += 1
          usage = UsageInfo(prompt_tokens=num_prompt_tokens,
                            completion_tokens=num_generated_tokens,
@@ -76,7 +76,7 @@ index a162a01ee..3cd064d6d 100644
                  else:
                      assert_never(engine_prompt)
 +                if reuse_prefilled_tokens:
-+                    if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++                    if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                        engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
 +                        new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
 +                        delta_text = tokenizer.convert_tokens_to_string([new_tokens])
@@ -98,7 +98,7 @@ index a162a01ee..3cd064d6d 100644
              prompt_text = final_res.prompt
  
 +            if reuse_prefilled_tokens:
-+                if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++                if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                    prompt_token_ids = request.kv_transfer_params["prefilled_token"]
 +                    new_tokens = tokenizer.convert_ids_to_tokens(prompt_token_ids[0])
 +                    prompt_text = tokenizer.convert_tokens_to_string([new_tokens])
@@ -119,7 +119,7 @@ index a162a01ee..3cd064d6d 100644
              num_prompt_tokens += len(prompt_token_ids)
  
 +        if reuse_prefilled_tokens:
-+            if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
++            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                num_generated_tokens += 1
          usage = UsageInfo(
              prompt_tokens=num_prompt_tokens,

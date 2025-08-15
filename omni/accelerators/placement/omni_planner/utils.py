@@ -141,10 +141,6 @@ def convert_param_to_ctype(param_list):
         length = tensor.numel()
         element_size = tensor.element_size()
         address = tensor.data_ptr()
-        # if tensor_name.split(".")[1]=="57" and tensor_name.split(".")[3]=="16":
-        #     print("1"*100)
-        #     print(address,"length:",length,"element_size: ",element_size)
-        #     print("1"*100)
         dtype = str(tensor.dtype)[len('torch.'):]
         weight = omni_placement.Tensor(
             data_ptr=address,

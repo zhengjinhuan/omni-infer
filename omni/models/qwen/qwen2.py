@@ -29,36 +29,32 @@ from typing import Any, Optional, Union, List
 import torch
 from torch import nn
 from transformers import Qwen2Config
-from transformers import PretrainedConfig
 
-from vllm.forward_context import get_forward_context, set_forward_context
+from vllm.forward_context import get_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.compilation.decorators import support_torch_compile
+from vllm.distributed import get_pp_group, get_tp_group, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
-from omni.models.common.layers.layernorm import RMSNormFlashComm
-from omni.models.common.layers.linear import (RowParallelFlashCommLinear, QKVParallelFlashCommLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from omni.models.common.layers.rotary_embedding_extend import get_rope, RotaryEmbedding
-from omni.models.common.layers.fused_mlp import FusedMLP
-from omni.models.common.layers.attention.attention import AscendAttentionState
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead, VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, maybe_remap_kv_scale_name)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
-
-from omni.adaptors.vllm.distributed.communication_op import (tensor_model_parallel_all_reduce_async,
-                                                             tensor_model_parallel_all_gather_async,
-                                                             tensor_model_parallel_reduce_scatter_async)
-
 from vllm.model_executor.models.interfaces import SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
+from omni.models.common.layers.layernorm import RMSNormFlashComm
+from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear
+from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
+from omni.models.common.layers.fused_mlp import FusedMLP
+from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+
 
 logger = init_logger(__name__)
 
@@ -84,6 +80,7 @@ class Qwen2Attention(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         tp_size = get_tensor_model_parallel_world_size()
+        tp_rank=get_tensor_model_parallel_rank()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -109,6 +106,8 @@ class Qwen2Attention(nn.Module):
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
+            tp_size,
+            tp_rank,
             bias=True,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
@@ -116,11 +115,16 @@ class Qwen2Attention(nn.Module):
         self.o_proj = RowParallelFlashCommLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj",
         )
 
+        if rope_scaling is None:
+            rope_scaling = {'factor': '0'}
+        rope_scaling["rope_type"] = 'qwen'
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -169,6 +173,7 @@ class Qwen2DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.layer_name = f"{prefix}.self_attn.attn"
         # Requires transformers > 4.32.0
         rope_theta = getattr(config, "rope_theta", 1000000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -249,7 +254,7 @@ class Qwen2DecoderLayer(nn.Module):
 class Qwen2Model(nn.Module):
 
     def __init__(self,
-                 config: PretrainedConfig,
+                 config: Qwen2Config,
                  cache_config: Optional[CacheConfig] = None,
                  quant_config: Optional[QuantizationConfig] = None,
                  prefix: str = "",
@@ -287,7 +292,7 @@ class Qwen2Model(nn.Module):
         base = getattr(config, "rope_theta", 1000000)
         rotary_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         max_len = config.max_position_embeddings
-        full_cos, full_sin = RotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
+        full_cos, full_sin = QwenRotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
         self.register_buffer("full_cos", full_cos, persistent=False)
         self.register_buffer("full_sin", full_sin, persistent=False)
 
@@ -387,20 +392,20 @@ class Qwen2Model(nn.Module):
             attn_output_mb0, attn_output_mb1 = torch.split(attn_output, split_sizes)
 
             output_mb0, _ = layer.self_attn.o_proj(attn_output_mb0, reduce_type=None)
-            hidden_states_mb0, hidden_states_mb0_handle = tensor_model_parallel_all_reduce_async(output_mb0)
+            hidden_states_mb0, hidden_states_mb0_handle = get_tp_group().all_reduce_async(output_mb0)
 
             output_mb1, _ = layer.self_attn.o_proj(attn_output_mb1, reduce_type=None)
-            hidden_states_mb1, hidden_states_mb1_handle = tensor_model_parallel_all_reduce_async(output_mb1)
+            hidden_states_mb1, hidden_states_mb1_handle = get_tp_group().all_reduce_async(output_mb1)
 
             hidden_states_mb0_handle.wait()
             hidden_states_mb0, residual_mb0 = layer.post_attention_layernorm(hidden_states_mb0, residual_mb0)
             hidden_states_mb0 = layer.mlp(hidden_states_mb0, x_transform=None, reduce_type=None, is_prefill=True)
-            hidden_states_mb0, hidden_states_mb0_handle = tensor_model_parallel_all_reduce_async(hidden_states_mb0)
+            hidden_states_mb0, hidden_states_mb0_handle = get_tp_group().all_reduce_async(hidden_states_mb0)
 
             hidden_states_mb1_handle.wait()
             hidden_states_mb1, residual_mb1 = layer.post_attention_layernorm(hidden_states_mb1, residual_mb1)
             hidden_states_mb1 = layer.mlp(hidden_states_mb1, x_transform=None, reduce_type=None, is_prefill=True)
-            hidden_states_mb1, hidden_states_mb1_handle = tensor_model_parallel_all_reduce_async(hidden_states_mb1)
+            hidden_states_mb1, hidden_states_mb1_handle = get_tp_group().all_reduce_async(hidden_states_mb1)
 
         hidden_states_mb0_handle.wait()
         hidden_states_mb1_handle.wait()
@@ -478,7 +483,7 @@ class Qwen2Model(nn.Module):
             loaded_params.add(name)
         return loaded_params
 
-
+@support_torch_compile
 class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     packed_modules_mapping = {
         "qkv_proj": [
@@ -531,9 +536,10 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         positions: torch.Tensor,
         kv_caches: List[torch.Tensor] = None,
         attn_metadata: AttentionMetadata = None,
-        prefill_padding_or_selected_indices: Optional[torch.Tensor] = None,
+        selected_indices: Optional[torch.Tensor] = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
-        inputs_embeds = None
+        inputs_embeds = None,
+        **kwargs
     ) -> Union[torch.Tensor, IntermediateTensors]:
         hidden_states = self.model(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, None)
         return hidden_states
@@ -563,3 +569,11 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
+
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+        return attn_metadata.attn_state != AscendAttentionState.DecodeOnly

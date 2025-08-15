@@ -4,15 +4,14 @@ from llm_datadist.v2.llm_types import Cache, CacheDesc, BlocksCacheKey
 from omni.accelerators.pd.llmdatadist_manager import (
     LLMDataDistManager,
     TORCH_DTYPE_TO_NPU_DTYPE,
-    unzip_kv_cache,
+    unzip_kv_cache_dict,
     logger,
 )
 from . import kv_cache_interface as itfc
 
-
 class OmniBiGroupDataDistManager(LLMDataDistManager):
-    def __init__(self, kv_transfer_config):
-        super().__init__(kv_transfer_config)
+    def __init__(self, vllm_config):
+        super().__init__(vllm_config)
         self.registerd_kv_caches: list[list[Cache]] = [[], []]
 
     @override
@@ -21,7 +20,7 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
             raise ValueError("Attr `registerd_kv_caches` must be empty before register kv_caches.")
         # NOTE: flatten_kv_caches is a nested list like [[k1,k2,...,kL], [v1,v2,...,vL]]
         # if KV is just one tensor, then it's [[kv1,kv2,...,kvL]]
-        flatten_kv_caches: list[list[torch.Tensor]] = unzip_kv_cache(kv_caches)
+        flatten_kv_caches: list[list[torch.Tensor]] = unzip_kv_cache_dict(kv_caches)
         num_layers = len(flatten_kv_caches[0])
 
         # partition layer indices into full and omni
@@ -86,6 +85,8 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
         for omni. In contrast, `src_blocks` is a list corresponding to the block table
         allocated for all layers during prefill.
         """
+        if isinstance(src_blocks[0], int):
+            src_blocks = [src_blocks] * len(tgt_blocks)
         torch.npu.set_device(f"npu:{self.local_rank}")
         sink, recent = itfc.SINK, itfc.RECENT
         omni_max_blocks = sink + recent
@@ -93,6 +94,7 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
         used_ids = set()
 
         for flag in range(len(self.registerd_kv_caches)):
+            group_src_blocks: list[int] = src_blocks[flag]
             group_tgt_blocks: list[int] = tgt_blocks[flag]
             for model_id, kv_cache in enumerate(self.registerd_kv_caches[flag]):
                 cur_id = flag * N + model_id
@@ -104,13 +106,15 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
                     prompt_cluster_id=prompt_cluster_id, model_id=cur_id)
                 if flag == 0:
                     self._pull_blocks(prompt_cache_key, kv_cache,
-                                      src_blocks, group_tgt_blocks)
+                                      group_src_blocks, group_tgt_blocks)
                 else:
-                    tmp_src, tmp_tgt = src_blocks, group_tgt_blocks
-                    if len(src_blocks) < omni_max_blocks:
-                        tmp_tgt = group_tgt_blocks[:len(src_blocks)]
-                    elif len(src_blocks) > omni_max_blocks:
-                        tmp_src = src_blocks[:sink] + src_blocks[-recent:]
+                    if len(group_tgt_blocks) == 0:
+                        continue
+                    tmp_src, tmp_tgt = group_src_blocks, group_tgt_blocks
+                    if len(group_src_blocks) < omni_max_blocks:
+                        tmp_tgt = group_tgt_blocks[:len(group_src_blocks)]
+                    elif len(group_src_blocks) > omni_max_blocks:
+                        tmp_src = group_src_blocks[:sink] + group_src_blocks[-recent:]
                     if len(tmp_src) != len(tmp_tgt):
                         raise RuntimeError("src and tgt cannot match for omni kv caches. "
                                            f"{src_blocks=}, {tgt_blocks=}, "

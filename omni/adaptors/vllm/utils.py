@@ -41,7 +41,10 @@ else:
 # Maximum number of graphs that can be captured by ACL Graph
 MAX_CAPTURE_SIZE = 1920
 
-ASCEND_QUATIZATION_METHOD = "ascend"
+ASCEND_COMPRESSED_TENSORS = "ascend_compressed_tensors"
+NPU_W8A8_DYNAMIC = 'npu_w8a8_dynamic'
+SUPPORTED_QUANTIZATION_METHODS = [ASCEND_COMPRESSED_TENSORS, NPU_W8A8_DYNAMIC]
+
 BLOCK_NUM_CACHE_PATH_NAME = ".block_nums"
 BLOCK_NUM_CACHE_FILE_NAME = "block_num"
 

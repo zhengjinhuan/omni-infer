@@ -6,6 +6,7 @@ class Device:
         self.device_id = int(device_info["device_id"])
         self.device_ip = device_info["device_ip"]
         self.rank_id = int(device_info["rank_id"])
+        self.cluster_id = int(device_info.get("cluster_id", "0"))
 
     def __repr__(self) -> str:
         return ("Device("
@@ -16,15 +17,11 @@ class Device:
     def __eq__(self, other):
         return self.device_ip == other.device_ip
 
-    def get_numa_config_format(self):
-        return dict(item_id=self.rank_id, device_id=self.device_id, ipaddr=self.device_ip)
-
 
 class Server:
-    def __init__(self, server_info, cluster_id=0):
+    def __init__(self, server_info):
         self.server_id = server_info["server_id"]
         self.server_ip = server_info["server_ip"]
-        self.cluster_id = cluster_id
         self.device_list = self.init_device_list(server_info)
 
     @staticmethod
@@ -46,26 +43,38 @@ class Server:
     def __eq__(self, other):
         return self.server_ip == other.server_ip and self.device_list == other.device_list
 
-    def get_numa_config_format(self):
-        return [device.get_numa_config_format() for device in self.device_list]
-
-    def get_server_ip(self):
-        return self.server_ip
-
 
 class ServerGroup:
-    def __init__(self, group_info, start_cluster_id=0):
-        self.group_id = group_info["group_id"]
-        self.server_count = int(group_info["server_count"])
-        self.server_list = self.init_server_list(group_info, start_cluster_id)
+    def __init__(self, group_info):
+        self.group_id = int(group_info["group_id"])
+        self.server_count = int(group_info.get("server_count", "0"))
+        self.server_list = self.init_server_list(group_info)
+
+    def __eq__(self, other):
+        return self.server_list == other.server_list
+
+    @property
+    def cluster_id_start(self) -> int:
+        return self.server_list[0].device_list[0].cluster_id
+
+    @property
+    def host_ip(self) -> str:
+        return self.server_list[0].server_ip
 
     @staticmethod
-    def init_server_list(group_info, start_cluster_id):
+    def init_server_list(group_info):
         server_list = []
         for cluster_id, server_info in enumerate(group_info["server_list"]):
             server_list.append(
-                Server(server_info, start_cluster_id + cluster_id))
+                Server(server_info))
         return server_list
+
+    @property
+    def device_list(self):
+        device_list_all = []
+        for server in self.server_list:
+            device_list_all.extend(server.device_list)
+        return device_list_all
 
     def __repr__(self) -> str:
         return ("Group("
@@ -82,8 +91,9 @@ class ServerGroup:
                 return True
         return False
 
-    def get_cluster_id(self, server: Server):
-        for this_server in self.server_list:
-            if this_server == server:
-                return this_server.cluster_id
-        raise ValueError("can not find the server in this group")
+    def get_server_by_rank_id(self, rank_id):
+        device = self.device_list[rank_id]
+        for server in self.server_list:
+            if device in server.device_list:
+                return server
+        return None

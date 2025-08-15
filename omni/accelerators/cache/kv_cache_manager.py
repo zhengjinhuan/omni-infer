@@ -77,7 +77,8 @@ class OmniKVCacheManager:
                 "kv cache groups"
             )
         if enable_caching:
-            raise ValueError("OmniKVCacheManager does not support prefix caching yet")
+            enable_caching = False
+            logger.warning("OmniKVCacheManager does not support prefix caching yet, enable_caching is set to False")
 
         if enable_kv_cache_events:
             raise ValueError("OmniKVCacheManager does not support cache events yet")
@@ -151,6 +152,13 @@ class OmniKVCacheManager:
         """
         return self.hybrid_managers[0]
 
+    @property
+    def block_pool(self) -> BlockPool:
+        """For compatibility, we create a pseudo `block_pool` which
+        is actually the full attention manager.
+        """
+        return self.block_pools[0]
+
     def make_prefix_cache_stats(self) -> Optional[PrefixCacheStats]:
         """Get (and reset) the prefix cache stats.
 
@@ -194,6 +202,7 @@ class OmniKVCacheManager:
         num_new_tokens: int,
         num_new_computed_tokens: int = 0,
         new_computed_blocks: Optional[OmniKVCacheBlocks] = None,
+        num_draft_tokens: int = 0,
         num_lookahead_tokens: int = 0,
         delay_cache_blocks: bool = False,
     ) -> Optional[OmniKVCacheBlocks]:
@@ -292,7 +301,7 @@ class OmniKVCacheManager:
         # NOTE: call `cache_blocks` only on full attention layers
         self.hybrid_managers[0].cache_blocks(
             request, self.req_to_block_hashes[request.request_id],
-            num_computed_tokens + num_new_tokens - len(request.spec_token_ids))
+            num_computed_tokens + num_new_tokens - num_draft_tokens)
 
         return OmniKVCacheBlocks(new_blocks)
 

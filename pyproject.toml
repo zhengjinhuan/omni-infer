@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omni_infer"
-version = "0.1.0"
-description = "Omni Infer"
+version = "0.4.0"
+description = "Omni_Infer is a powerful suite of inference accelerators tailored for the Ascend NPU platform, fully compatible with vLLM, and designed to deliver high-performance, enterprise-grade inference with native support and a growing feature set."
 authors = [
     { name="Huawei" }
 ]
@@ -25,6 +25,8 @@ npu = "omni.adaptors.vllm.platform:register"
 [project.entry-points."vllm.general_plugins"]
 npu_optimized_models = "omni.models:register_model"
 kv_connectors = "omni.accelerators.pd:register"
+tool_parsers = "omni.adaptors.vllm.entrypoints.openai.tool_parsers:register_tool"
+reasoning = "omni.adaptors.vllm.reasoning:register_reasoning"
 
 [tool.setuptools.packages.find]
 include = ["omni*"]

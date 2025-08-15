@@ -87,8 +87,6 @@ OmniConfig global_omni_config;
 
 namespace py = pybind11;
 
-const int MAX_LAYER = 58;
-
 /**
  * Constructor for Placement class
  *
@@ -185,7 +183,8 @@ void Placement::initialize_components(size_t expert_mapping_ptr,
     assert(placement_shape.size() == 3);
     mapping_ = new PlacementMapping("", rank_, 1, num_devices_per_host_,
                                     placement_shape[2], placement_pattern_ptr,
-                                    placement_shape, expert_mapping_ptr);
+                                    placement_shape, expert_mapping_ptr, true,
+                                    placement_pattern_ptr);
 
     num_layers_ = mapping_->get_num_layers();
     num_experts_ = mapping_->get_num_experts();
@@ -324,7 +323,6 @@ void Placement::placement_manager(aclrtContext currentContext) {
         int fail_handshake_count = 0;
         std::string rank_str = std::to_string(rank_);
         while (idx < changeInstructions_this_rank.size()) {
-            TRACK_START();
             if (should_stop_)
                 break;
             ChangeInstruction instruction = changeInstructions_this_rank[idx];
@@ -343,15 +341,12 @@ void Placement::placement_manager(aclrtContext currentContext) {
                                 ? instruction.target_expert_id
                                 : instruction.source_expert_id;
 
-            TRACK_POINT("tag1, Rank: " + rank_str);
-
             // int expert_id = (instruction.rank_a == rank_) ?
             // instruction.expert_idx_a : instruction.expert_idx_b; // UnitTest:
             // 不要交换收益
 
             int position_offset = mapping->getGlobalPositionOffset(
                 layer, global_position_id_this_layer);
-            TRACK_POINT("getGlobalPositionOffset tag2, Rank: " + rank_str);
 
             if (type == OperationType::ADD &&
                 instruction.source_rank == rank_) {
@@ -369,7 +364,6 @@ void Placement::placement_manager(aclrtContext currentContext) {
                 t_rank, position_offset, expert_id); // 对端握手成功， 准备下发
             // mapping 有一把琐 要加在 deployed_mapping更新，
             // 且保证权重入队完成后才解锁
-            TRACK_POINT("performGlobalHandshake, Rank: " + rank_str);
 
             if (flag) {
                 fail_handshake_count = 0;
@@ -404,7 +398,6 @@ void Placement::placement_manager(aclrtContext currentContext) {
             } else {
                 fail_handshake_count++;
             }
-            TRACK_POINT("checkPositionIsConsistency, Rank: " + rank_str);
             std::unique_lock<std::mutex> lock = acquire_lock();
             sub_thread_is_changing_ = true;
             lock.unlock();
@@ -438,9 +431,6 @@ void Placement::placement_manager(aclrtContext currentContext) {
                 idx++;
                 continue;
             }
-            TRACK_POINT(
-                "update_globalDeployedPositionToLogisticsIdMapping, Rank: " +
-                rank_str);
 
             if (flag) {
                 void *recv_buff_address = dist_ptr->get_recv_buff_address();
@@ -451,13 +441,11 @@ void Placement::placement_manager(aclrtContext currentContext) {
                     need_enqueue_recv_buff);
                 sub_thread_is_changing_ = false;
                 idx++;
-                TRACK_POINT("replacement, Rank: " + rank_str);
             } else {
                 sub_thread_is_changing_ = false;
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
-        TRACK_START();
         // 所有Rank 完成本次Optimizer优化的同步等待
         while (true) {
             if (should_stop_)
@@ -481,7 +469,6 @@ void Placement::placement_manager(aclrtContext currentContext) {
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(10)); // wait other ranks
         }
-        TRACK_POINT("wait all rank finish Optimize, Rank: " + rank_str);
         std::cout << getTimestamp() << "rank[" << rank_ << "] finished"
                   << std::endl;
 
@@ -560,10 +547,12 @@ PYBIND11_MODULE(omni_placement, m) {
     // 1. 绑定 PlacementMapping 类
     py::class_<PlacementMapping>(m, "PlacementMapping")
         .def(py::init<const std::string &, int, int, int, int, size_t,
-                      std::vector<int64_t>, size_t>(),
+                      std::vector<int64_t>, size_t, bool, size_t>(),
              py::arg("filename"), py::arg("rank"), py::arg("num_devices"),
              py::arg("max_deployed_num"), py::arg("max_deployed_num"),
-             py::arg("pattern"), py::arg("pattern_shape"), py::arg("selector"));
+             py::arg("pattern"), py::arg("pattern_shape"), py::arg("selector"),
+             py::arg("enable_rank_round_robin"),
+             py::arg("num_redundant_per_expert"));
 
     // 3. 绑定 MoEWeights 类
     py::class_<MoEWeights>(m, "MoEWeights")

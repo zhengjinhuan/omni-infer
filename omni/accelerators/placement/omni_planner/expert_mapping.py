@@ -10,7 +10,7 @@ from omni_planner import omni_placement
 from omni_planner.config import Config
 
 class ExpertMapping:
-    def __init__(self, config: Config, device: str = "npu", rank: int = 0, world_size: int = 1, num_devices_per_host: int = 8, enable_dynamic: bool = False, num_experts: int = 256):
+    def __init__(self, config: Config, device: str = "npu", rank: int = 0, world_size: int = 1, num_devices_per_host: int = 8, enable_dynamic: bool = False, num_experts: int = 256, enable_rank_round_robin: bool = False):
         self.pattern_path = config.getattr("pattern_path", None)
         self.device = device
         self.rank = rank
@@ -18,6 +18,7 @@ class ExpertMapping:
         self.num_devices_per_host = num_devices_per_host
         self.max_moe_layer_num = config.max_moe_layer_num
         self.num_experts = num_experts
+        self.enable_rank_round_robin = enable_rank_round_robin
 
         self.placement_pattern = self._load_placement_pattern_with_validation()
 
@@ -36,7 +37,12 @@ class ExpertMapping:
 
         max_redundant_per_expert = self.get_max_redundant_per_expert()
         
-        self.selector = torch.zeros(num_layers,num_eps,1,dtype=torch.int32,device=self.device)
+        if self.enable_rank_round_robin:
+            self.selector = torch.zeros(num_layers,num_eps,1,dtype=torch.int32,device=self.device)
+        else:
+            self.selector = torch.zeros(num_layers,num_eps,max_redundant_per_expert,dtype=torch.int32,device=self.device) 
+        
+        self.num_redundant_per_expert = torch.zeros(num_layers, num_eps, dtype=torch.int32, device=self.device)
 
         self.placement_pattern_cpu = self.placement_pattern.cpu()
         self.placement_mapping = omni_placement.PlacementMapping("",  # TODO: pattern path, parse pattern in native C++
@@ -46,10 +52,15 @@ class ExpertMapping:
                                                                 max(self.get_deployed_experts_per_layer()),
                                                                 self.placement_pattern_cpu.data_ptr(),
                                                                 list(self.placement_pattern_cpu.size()),
-                                                                self.selector.data_ptr())
+                                                                self.selector.data_ptr(),
+                                                                self.enable_rank_round_robin,
+                                                                self.num_redundant_per_expert.data_ptr())
 
     def get_selector(self):
         return self.selector
+    
+    def get_num_redundant_per_expert(self):
+        return self.num_redundant_per_expert
 
     def _load_placement_pattern_with_validation(self) -> Optional[torch.Tensor]:
         """Load and validate placement pattern from config."""
@@ -91,6 +102,9 @@ class ExpertMapping:
                     f"evenly divisible by num_devices_per_host ({self.num_devices_per_host})")
         return pattern
 
+    def is_moe_layer(self, layer_idx_moe):
+        return layer_idx_moe < self.max_moe_layer_num
+
     # @calculate_time
     def is_expert_on_current_rank(
         self,
@@ -111,7 +125,7 @@ class ExpertMapping:
         Returns:
             Tuple (exists_on_rank, local_position)
         """
-        if layer_idx_moe > 57:
+        if not self.is_moe_layer(layer_idx_moe):
             return self._default_deployment_check(expert_id, current_rank, experts_per_rank)
 
 
