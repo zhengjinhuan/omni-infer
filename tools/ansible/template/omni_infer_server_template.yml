@@ -183,7 +183,10 @@
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-
+      unset https_proxy
+      unset http_proxy
+      unset proxy
+      
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
         export MASTER_NODE_IP=$HOST_IP
         export NNODES=$NNODES
@@ -262,7 +265,10 @@
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-
+      unset https_proxy
+      unset http_proxy
+      unset proxy
+      
       # install omni_placement
       pip uninstall omni_placement -y
       
