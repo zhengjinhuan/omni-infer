@@ -94,7 +94,11 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
     omni_phase_transition_all(req, 0, PHASE_PREFILL_WAITING_SCHEDULE);
     req->metrics.time_enter_wait_prefill = ngx_current_msec;
 
-    r->count++;
+    if (g_state->pd_policy == PD_PARALLEL)
+    {
+        omni_add_req_to_group(req->slot_index, &local_state.groups[PHASE_DECODE_WAITING_SCHEDULE]);
+        req->metrics.time_enter_wait_decode = ngx_current_msec;
+    }
 }
 
 static void omni_proxy_remove_req_from_groups(omni_req_t *req)
@@ -364,8 +368,11 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     }
 
     // check policy
-    omni_phase_transition_all(req, PHASE_PREFILLING, PHASE_DECODE_WAITING_SCHEDULE);
-    req->metrics.time_enter_wait_decode = ngx_current_msec;
+    if (g_state->pd_policy == PD_SEQUENTIAL)
+    {
+        omni_phase_transition_all(req, PHASE_PREFILLING, PHASE_DECODE_WAITING_SCHEDULE);
+        req->metrics.time_enter_wait_decode = ngx_current_msec;
+    }
 
     return NGX_DONE;
 }
@@ -408,7 +415,7 @@ static ngx_int_t ngx_http_prefill_wakeup(omni_req_t *req)
     ngx_http_request_t *sr;
 
     ngx_int_t rc = ngx_http_subrequest(r, &sub_uri, &args, &sr, psr,
-                                       NGX_HTTP_SUBREQUEST_WAITED | NGX_HTTP_SUBREQUEST_IN_MEMORY);
+                                       NGX_HTTP_SUBREQUEST_IN_MEMORY);
     if (rc != NGX_OK)
     {
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
@@ -729,6 +736,9 @@ static ngx_int_t ngx_http_omni_input_filter(void *data, ssize_t bytes)
     ngx_http_request_t *r = data;
     ngx_http_upstream_t *u = r->upstream;
 
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+                  "ngx_http_omni_input_filter: bytes %lu", bytes);
+
     u->buffer.last = u->buffer.pos + bytes;
     if (u->buffer.pos != NULL && u->buffer.pos < u->buffer.last)
     {
@@ -737,7 +747,7 @@ static ngx_int_t ngx_http_omni_input_filter(void *data, ssize_t bytes)
         if (b == NULL)
         {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "ngx_http_omni_input_filter: [Line %d]", __LINE__);
+                          "ngx_http_omni_input_filter, create buf failed");
             return NGX_ERROR;
         }
         ngx_memcpy(b->pos, u->buffer.pos, len);
@@ -749,7 +759,7 @@ static ngx_int_t ngx_http_omni_input_filter(void *data, ssize_t bytes)
         if (cl == NULL)
         {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "ngx_http_omni_input_filter: [Line %d]", __LINE__);
+                          "ngx_http_omni_input_filter, allocate chain failed");
             return NGX_ERROR;
         }
         cl->buf = b;
@@ -759,7 +769,7 @@ static ngx_int_t ngx_http_omni_input_filter(void *data, ssize_t bytes)
         if (rc == NGX_ERROR)
         {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "ngx_http_omni_input_filter: [Line %d]", __LINE__);
+                          "ngx_http_omni_input_filter, putput failed");
             return NGX_ERROR;
         }
     }
