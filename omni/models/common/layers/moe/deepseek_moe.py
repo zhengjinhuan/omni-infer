@@ -222,7 +222,7 @@ class DeepseekMoE(nn.Module):
                                            world_size=get_world_group().world_size,
                                            num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix)
+                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix, first_k_dense_replace=self.first_k_dense_replace)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
             self.experts = FusedMoE(
                 num_experts=self.n_routed_experts,
