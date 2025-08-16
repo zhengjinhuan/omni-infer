@@ -8,7 +8,7 @@
 
 ngx_module_t ngx_http_omni_proxy_module;
 
-#define TIMER_INTERVAL 2
+#define TIMER_INTERVAL 1
 
 static const char *PREFILL_URI = "/prefill_sub";
 static const size_t PREFILL_URI_LEN = sizeof("/prefill_sub") - 1;
