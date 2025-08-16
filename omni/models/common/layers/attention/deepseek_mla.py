@@ -594,7 +594,8 @@ class DeepseekMLA(nn.Module):
                     k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // nz_block_size, block_size, nz_block_size)
                     k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM)
 
-                    tng.scope.npu_wait_tensor(q_pe, k_nope)
+                    if model_extra_config.operator_opt_config.moe_multi_stream_tune:
+                        tng.scope.npu_wait_tensor(q_pe, k_nope)
                     # cos, sin = self.rotary_emb.get_cos_sin(positions)
                     q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin) # BNSD
                     if self.fa_quant:
