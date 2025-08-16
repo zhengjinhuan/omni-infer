@@ -47,6 +47,7 @@ from omni.models.common.layers.linear import (
 from omni.models.qwen.fused_moe import FusedMoE, FusedMoEMethodBase
 from omni.adaptors.vllm.utils import NPU_W8A8_DYNAMIC
 
+from omni.models.common.config.model_config import model_extra_config
 
 logger = init_logger(__name__)
 
@@ -338,6 +339,9 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
         layer.w13_weight_scale = torch.nn.Parameter(
             layer.w13_weight_scale.data.float(), requires_grad=False
         )
+        if model_extra_config.operator_opt_config.gmm_nz:
+            layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight.data, 29).contiguous()
+            layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight.data, 29).contiguous()
 
     def apply(
             self,
