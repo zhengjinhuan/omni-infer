@@ -552,20 +552,23 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     }
 }
 
-static ngx_int_t
-ngx_http_omni_create_request(ngx_http_request_t *r)
+static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
 {
-    ngx_chain_t *cl, *body_chain;
-    ngx_buf_t *hdr;
+    ngx_chain_t *cl;
     size_t body_len = 0;
     ngx_str_t host;
     omni_req_context_t *ctx = ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 
     omni_proxy_prepare_decode_request_body(r, ctx);
 
-    body_chain = r->request_body->bufs;
+    if (r->request_body == NULL || r->request_body->bufs == NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "ngx_http_omni_create_request: request body is NULL");
+        return NGX_ERROR;
+    }
 
-    for (cl = body_chain; cl; cl = cl->next)
+    for (cl = r->request_body->bufs; cl; cl = cl->next)
     {
         body_len += ngx_buf_size(cl->buf);
     }
@@ -579,50 +582,69 @@ ngx_http_omni_create_request(ngx_http_request_t *r)
         host = r->headers_in.server;
     }
 
-    hdr = ngx_create_temp_buf(r->pool,
-                              128 + r->uri.len + host.len);
+    ngx_buf_t *hdr = ngx_create_temp_buf(r->pool, 256 + r->uri.len + host.len);
     if (hdr == NULL)
     {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "ngx_http_omni_create_request: failed to create temp buffer for request header");
         return NGX_ERROR;
     }
 
-    hdr->last = ngx_snprintf(hdr->last,
-                             hdr->end - hdr->last,
-                             "POST %V HTTP/1.1\r\n"
-                             "Host: %V\r\n"
-                             //  "Connection: keep-alive\r\n"
-                             "Content-Type: application/json\r\n"
-                             "Content-Length: %O\r\n"
-                             "\r\n",
-                             &r->uri,
-                             &host,
-                             (off_t)body_len);
+    hdr->last = ngx_snprintf(hdr->last, hdr->end - hdr->last,
+                             "POST %V HTTP/1.1\r\n", &r->uri);
+
+    ngx_list_part_t *part = &r->headers_in.headers.part;
+    ngx_table_elt_t *h = part->elts;
+    ngx_uint_t i;
+
+    for (;;)
+    {
+        for (i = 0; i < part->nelts; i++)
+        {
+            if (h[i].key.len == sizeof("Content-Length") - 1 &&
+                ngx_strncasecmp(h[i].key.data,
+                                (u_char *)"Content-Length",
+                                h[i].key.len) == 0)
+            {
+                continue;
+            }
+
+            hdr->last = ngx_snprintf(hdr->last, hdr->end - hdr->last,
+                                     "%V: %V\r\n", &h[i].key, &h[i].value);
+        }
+
+        if (part->next == NULL)
+        {
+            break;
+        }
+        part = part->next;
+        h = part->elts;
+    }
+
+    hdr->last = ngx_snprintf(hdr->last, hdr->end - hdr->last,
+                             "Content-Length: %O\r\n\r\n", (off_t)body_len);
 
     cl = ngx_alloc_chain_link(r->pool);
     if (cl == NULL)
     {
         return NGX_ERROR;
     }
-    cl->buf = hdr;
-    cl->next = body_chain;
 
+    cl->buf = hdr;
+    cl->next = r->request_body->bufs;
     r->upstream->request_bufs = cl;
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "ngx_http_omni_create_request: [Line %d]", __LINE__);
 
     return NGX_OK;
 }
 
-static ngx_int_t
-ngx_http_omni_reinit_request(ngx_http_request_t *r)
+static ngx_int_t ngx_http_omni_reinit_request(ngx_http_request_t *r)
 {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "ngx_http_omni_reinit_request(ngx_http_request_t *r): [Line %d]", __LINE__);
     return NGX_OK;
 }
 
-static ngx_int_t
-ngx_http_omni_process_header(ngx_http_request_t *r)
+static ngx_int_t ngx_http_omni_process_header(ngx_http_request_t *r)
 {
     ngx_int_t rc;
     ngx_http_upstream_t *u;
@@ -692,8 +714,7 @@ ngx_http_omni_process_header(ngx_http_request_t *r)
     }
 }
 
-static ngx_int_t
-ngx_http_omni_process_status_line(ngx_http_request_t *r)
+static ngx_int_t ngx_http_omni_process_status_line(ngx_http_request_t *r)
 {
     ngx_int_t rc;
     ngx_http_upstream_t *u = r->upstream;
