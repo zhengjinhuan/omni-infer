@@ -42,9 +42,25 @@ def register_model():
         "omni.models.qwen.qwen2:Qwen2ForCausalLM")
 
     ModelRegistry.register_model(
+        "Qwen3ForCausalLM",
+        "omni.models.qwen.qwen3:Qwen3ForCausalLM")
+    
+    ModelRegistry.register_model(
         "Qwen3MoeForCausalLM",
         "omni.models.qwen.qwen3_moe:Qwen3MoeForCausalLM"
     )
+
+    ModelRegistry.register_model(
+        "PanguUltraMoEForCausalLM",
+        "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
+
+    ModelRegistry.register_model(
+        "PanguUltraMoEMTPModel",
+        "omni.models.pangu.pangu_ultra_moe_mtp:PanguUltraMoEMTP")
+
+    ModelRegistry.register_model(
+        "PanguProMoEForCausalLM",
+        "omni.models.pangu.pangu_pro_moe.pangu_moe:PanguProMoEForCausalLM")
 
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or

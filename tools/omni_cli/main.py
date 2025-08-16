@@ -108,11 +108,11 @@ def main():
 
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
-    start_group.add_argument(
+    start_parser.add_argument(
         "config_path",
         nargs='?',
         default=None,
-        help="Start in normal mode with config file"
+        help='Start in normal mode with config file'
     )
     start_group = start_parser.add_mutually_exclusive_group()
     start_group.add_argument(

@@ -61,7 +61,7 @@ else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
 
 if model_extra_config.operator_opt_config.use_omni_placement:
-    from omni_planner import OmniPlanner
+    from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
     _GLOBAL_STEP = 0
 
 MAX_GEAR_NUM = 6
@@ -372,16 +372,25 @@ class NPUModelRunner(GPUModelRunner):
             block_table.slot_mapping[:total_num_scheduled_tokens] = block_numbers * block_size + block_offsets
 
         for kv_cache_group_id, kv_cache_group_spec in enumerate(self.kv_cache_config.kv_cache_groups):
+            block_size = kv_cache_group_spec.kv_cache_spec.block_size
             block_table: BlockTable = self.input_batch.block_table[kv_cache_group_id]
             first_layer_in_group = kv_cache_group_spec.layer_names[0]
             attn_metadata_i = attn_metadata[first_layer_in_group]
-            attn_metadata_i.slot_mapping[:total_num_scheduled_tokens] = block_table.slot_mapping[:total_num_scheduled_tokens]
-            input_positions = positions[:total_num_scheduled_tokens]
-            attn_metadata_i.decode.input_positions[:total_num_scheduled_tokens] = input_positions
-            attn_metadata_i.decode.seq_lens[:total_num_scheduled_tokens] = (input_positions + 1).to(self.seq_lens.dtype)
-            cos, sin = self.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(attn_metadata_i.decode.input_positions)
-            attn_metadata_i.decode.cos = cos
-            attn_metadata_i.decode.sin = sin
+            if kv_cache_group_spec.kv_cache_spec.use_mla:
+                attn_metadata_i.slot_mapping[:total_num_scheduled_tokens] = block_table.slot_mapping[:total_num_scheduled_tokens]
+                input_positions = positions[:total_num_scheduled_tokens]
+                attn_metadata_i.decode.input_positions[:total_num_scheduled_tokens] = input_positions
+                attn_metadata_i.decode.seq_lens[:total_num_scheduled_tokens] = (input_positions + 1).to(self.seq_lens.dtype)
+                cos, sin = self.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(attn_metadata_i.decode.input_positions)
+                attn_metadata_i.decode.cos = cos
+                attn_metadata_i.decode.sin = sin
+            else:
+                attn_metadata_i.slot_mapping[:total_num_scheduled_tokens] = block_table.slot_mapping[:total_num_scheduled_tokens]
+                attn_metadata_i.slot_indices = torch.stack([attn_metadata_i.slot_mapping // block_size,
+                    attn_metadata_i.slot_mapping % block_size], dim=1)
+                input_positions = positions[:total_num_scheduled_tokens]
+                attn_metadata_i.seq_lens[:total_num_scheduled_tokens] = (input_positions + 1).to(self.seq_lens.dtype)
+                attn_metadata_i.seq_lens_list = attn_metadata_i.seq_lens.tolist()
             if kv_cache_group_id == 0:
                 self.full_attn_metadata = attn_metadata_i
 
@@ -393,7 +402,7 @@ class NPUModelRunner(GPUModelRunner):
         index = torch.argmin(torch.cat([cached_token, torch.full((num_reqs, 1), -1, device=self.device)], dim = 1), dim = 1) - 1
         last_tokens = cached_token[torch.arange(num_reqs), index]
         if token_each_reqs == 1:
-            self.input_ids = last_tokens
+            self.input_ids[:num_reqs] = last_tokens.to(dtype=self.input_ids.dtype)
         else:
             input_ids_2d = self.input_ids.reshape(-1, token_each_reqs)
             input_ids_2d[:num_reqs, 0] = last_tokens
