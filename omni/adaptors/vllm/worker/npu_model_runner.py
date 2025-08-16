@@ -52,8 +52,6 @@ from omni.models.common.config.model_config import update_model_extra_config, mo
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 
-MTP_METHOD_NAME = "deepseek_mtp"
-
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -499,6 +497,7 @@ class NPUModelRunner(GPUModelRunner):
             raw_hidden_states, hidden_states = forward_results
         else:
             hidden_states = forward_results
+            raw_hidden_states = forward_results
         start_ret = time.time()
         cost_before_fc = start_fc - start_before_f
         cost_fc = start_ret - start_fc
@@ -647,7 +646,7 @@ class NPUModelRunner(GPUModelRunner):
             if not self.use_spec_decode:
                 # Speculative decoding is not enabled.
                 spec_tokens_tensor = None
-            elif self.speculative_config.method == MTP_METHOD_NAME:
+            else:
                 spec_tokens_tensor = self.drafter.propose(
                     num_tokens=input_ids.numel(),
                     positions=positions,
@@ -657,8 +656,6 @@ class NPUModelRunner(GPUModelRunner):
                     last_accepted_index=last_accepted_index,
                     sample_indices=sample_indices,
                 )
-            else:
-                raise ValueError(f"Speculative method {self.speculative_config.method} is not supported in this version.")
 
             # NOTE: NPU -> CPU Sync happens here.
             # Move as many CPU operations as possible before this sync point.
@@ -752,6 +749,7 @@ class NPUModelRunner(GPUModelRunner):
                     raw_hidden_states, hidden_states = forward_results
                 else:
                     hidden_states = forward_results
+                    raw_hidden_states = forward_results
                 if self.use_spec_decode: 
                     self.drafter.propose(
                         num_tokens=num_tokens,
@@ -816,6 +814,7 @@ class NPUModelRunner(GPUModelRunner):
                 raw_hidden_states, hidden_states = forward_results
             else:
                 hidden_states = forward_results
+                raw_hidden_states = forward_results
             if self.use_spec_decode:
                 self.drafter.prepare_dummy_input(input_ids)
                 self.drafter.propose(
@@ -918,8 +917,7 @@ class NPUModelRunner(GPUModelRunner):
         if self.enable_torchair_graph_mode:
             decode_gear_list = self.decode_gear_list
             graph_num = len(decode_gear_list)
-            use_spec_decode = False if not self.vllm_config.speculative_config else (
-                    self.vllm_config.speculative_config.method == MTP_METHOD_NAME)
+            use_spec_decode = self.vllm_config.speculative_config is not None
             base_time = 4
             min_time = base_time * graph_num
             max_time = 2 * base_time * graph_num

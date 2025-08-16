@@ -53,8 +53,8 @@ class PostDrafter(EagleProposer):
         self.positions = None
         self.hidden_states = None
         self.arange = None
-        if self.method not in ('deepseek_mtp',):
-            raise ValueError(f"Speculative method should be one of ('deepseek_mtp',), while get {self.method}.")
+        if self.method not in ('deepseek_mtp', 'eagle'):
+            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle'), while get {self.method}.")
     
     def load_model(self, target_model: nn.Module) -> None:
         draft_model_config = \
@@ -116,14 +116,14 @@ class PostDrafter(EagleProposer):
         input_ids = self.input_ids[:num_tokens]
         if kv_caches is None:
             with set_forward_context(None, self.vllm_config):
-                for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                for i in range(self.speculative_config.num_speculative_tokens):
                     self.model(
                         input_ids=input_ids,
                         positions=positions,
                         kv_caches=None,
                         attn_metadata=None,
                         previous_hidden_states=previous_hidden_states,
-                        mtp_layer_idx=layer_idx,
+                        mtp_layer_idx=i,
                     )
                 return None
         else:
@@ -140,7 +140,7 @@ class PostDrafter(EagleProposer):
                     self.mark_static = True
             with set_forward_context(attn_metadata, self.vllm_config):
                 is_dummy = (last_accepted_index is None) or (sample_indices is None)
-                for layer_idx in range(self.speculative_config.num_speculative_tokens):
+                for i in range(self.speculative_config.num_speculative_tokens):
                     drafter_logits, previous_hidden_states = self.model(
                         input_ids=input_ids,
                         positions=positions,
@@ -148,12 +148,19 @@ class PostDrafter(EagleProposer):
                         attn_metadata=attn_metadata,
                         previous_hidden_states=previous_hidden_states,
                         selected_indices=None if attn_state == AscendAttentionState.DecodeOnly else sample_indices,
-                        mtp_layer_idx=layer_idx,
+                        mtp_layer_idx=i,
                     )
+                    # TODO use one eagle/mtp as autoregressive to predict more than one token
                     if not is_dummy:
+                        if drafter_logits is None:
+                            # keep same with computation in model runner
+                            if previous_hidden_states.shape[0] == sample_indices.shape[0]:
+                                drafter_logits = self.model.compute_logits(previous_hidden_states, None)
+                            else:
+                                drafter_logits = self.model.compute_logits(previous_hidden_states[sample_indices], None)
                         draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
                         draft_forward_tokens_list.append(draft_forward_tokens)
-                    if layer_idx == self.speculative_config.num_speculative_tokens - 1:
+                    if i == self.speculative_config.num_speculative_tokens - 1:
                         break
                     if not is_dummy:
                         input_ids = torch.roll(input_ids, -1, -1)
