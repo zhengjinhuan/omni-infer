@@ -53,10 +53,14 @@ def register_model():
     ModelRegistry.register_model(
         "PanguUltraMoEForCausalLM",
         "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
-    
+
     ModelRegistry.register_model(
         "PanguUltraMoEMTPModel",
         "omni.models.pangu.pangu_ultra_moe_mtp:PanguUltraMoEMTP")
+
+    ModelRegistry.register_model(
+        "PanguProMoEForCausalLM",
+        "omni.models.pangu.pangu_pro_moe.pangu_moe:PanguProMoEForCausalLM")
 
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
