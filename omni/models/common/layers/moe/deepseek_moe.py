@@ -64,7 +64,7 @@ from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_
 from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
 
 if model_extra_config.operator_opt_config.use_omni_placement:
-    from omni_planner import OmniPlanner
+    from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
 
 """NPU Stream Switch Names"""
 STREAM_SHARED_EXPERT = 'stream_shared_expert'

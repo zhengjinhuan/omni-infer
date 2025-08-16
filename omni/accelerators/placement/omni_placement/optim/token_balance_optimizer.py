@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-from omni_planner.optim.optimizers import Optimizer
+from .optimizers import Optimizer
 import torch
 import time
 class TokenBalance(Optimizer):

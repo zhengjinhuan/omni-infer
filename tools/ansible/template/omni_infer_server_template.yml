@@ -27,7 +27,6 @@
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
-    HTTP_PROXY: ""  # Set to your HTTP proxy if needed to download nginx, like "http://your.proxy:port"
 
     # Configuration for containers
     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
@@ -35,6 +34,7 @@
     DOCKER_NAME_D: "you_name_omni_infer_decode"
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
+    ASCEND_TOOLKIT_HOME: "/usr/local/Ascend/latest"
 
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "pd_score_balance"
@@ -203,11 +203,7 @@
       fi
 
       # install omni_placement
-      pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
-      rm -rf *.egg-info/
-      pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
@@ -270,11 +266,8 @@
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
       # install omni_placement
-      pip install pybind11
       pip uninstall omni_placement -y
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/pip.log
-      rm -rf *.egg-info/
-      pip install ${CODE_PATH}/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/pip.log
+      
       python ${CODE_PATH}/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
@@ -333,18 +326,6 @@
           ((port++))
         done
       done
-
-      cd ${CODE_PATH}/omniinfer/omni/accelerators/sched/global_proxy
-
-      NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
-      if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
-        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" > ${LOG_PATH}/install_nginx.log 2>&1
-      fi
-
-      tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
-      unset http_proxy
-      unset https_proxy
-      bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       bash global_proxy.sh \
@@ -423,6 +404,7 @@
       -e NNODES=$NNODES
       -e NODE_RANK=$NODE_RANK
       -e NODE_IP_LIST=$NODE_IP_LIST
+      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME 
       -d $DOCKER_NAME_P
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
@@ -442,13 +424,12 @@
       -e SOCKET_IFNAME=$SOCKET_IFNAME
       -e NUM_SERVERS=$NUM_SERVERS
       -e HOST=$HOST
+      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME 
       -d $DOCKER_NAME_D
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
 
     docker_start_proxy_cmd_c: >
       {{ docker_exec_cmd }}
-      -e http_proxy=$HTTP_PROXY
-      -e https_proxy=$HTTP_PROXY
       -e PREFILL_LB_SDK=$PREFILL_LB_SDK
       -e DECODE_LB_SDK=$DECODE_LB_SDK
       -d $DOCKER_NAME_C

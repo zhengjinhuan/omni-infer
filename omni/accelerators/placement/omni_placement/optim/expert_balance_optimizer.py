@@ -4,7 +4,7 @@
 import os
 import torch
 import torch_npu
-from omni_planner.optim.optimizers import Optimizer
+from .optimizers import Optimizer
 
 class ExpertsBalanceOptimizer(Optimizer):
     def __init__(self, cluster_status, batch_size=48, top_k_count=8) -> None:

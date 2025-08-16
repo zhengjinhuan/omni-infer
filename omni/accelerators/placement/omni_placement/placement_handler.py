@@ -3,10 +3,10 @@
 
 import torch
 import ctypes
-from omni_planner import omni_placement
-from omni_planner.distributed_ops import distribution_warmup
+from . import omni_placement
+from .distributed_ops import distribution_warmup
 from collections import defaultdict
-from omni_planner.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,calculate_time
+from .utils import filter_dict_keys, convert_param_dict_to_list, convert_param_to_ctype, calculate_time
 import re
 import time
 

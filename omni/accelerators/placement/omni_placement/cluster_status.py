@@ -4,8 +4,8 @@
 import torch
 import torch_npu
 from collections import deque
-from omni_planner.config import Config
-from omni_planner.expert_mapping import ExpertMapping
+from .config import Config
+from .expert_mapping import ExpertMapping
 
 class ClusterStatus:
     """

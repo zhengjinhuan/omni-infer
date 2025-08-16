@@ -6,7 +6,7 @@ import torch_npu
 import time
 from functools import wraps
 import ctypes
-from omni_planner import omni_placement
+from . import omni_placement
 from collections import defaultdict
 
 def get_expert_ids(local_rank_pattern):

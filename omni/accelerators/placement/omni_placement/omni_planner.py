@@ -13,14 +13,14 @@ import torchair as tng
 import ctypes
 
 from typing import Optional
-from omni_planner.cluster_status import ClusterStatus
-from omni_planner.placement_handler import create_cluster_activation, create_placement_manager, init_dram_weights, do_placement_optimizer
-from omni_planner.optim.optimizers import Optimizer
-from omni_planner.optim.optimizers_loader import _create_optimizers
-from omni_planner.config import Config
-from omni_planner.expert_mapping import ExpertMapping
-from omni_planner.utils import calculate_time
-from omni_planner import omni_placement
+from .cluster_status import ClusterStatus
+from .placement_handler import create_cluster_activation, create_placement_manager, init_dram_weights, do_placement_optimizer
+from .optim.optimizers import Optimizer
+from .optim.optimizers_loader import _create_optimizers
+from .config import Config
+from .expert_mapping import ExpertMapping
+from .utils import calculate_time
+from . import omni_placement
 from datetime import datetime
 
 import time
@@ -155,7 +155,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self.hccl_comm_world_size = self.world_size
         self.world_size -= self.num_redundancy_shared_expert_rank
 
-        self.num_devices_per_host = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")  # omni_planner config file
+        self.num_devices_per_host = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")  # omni_placement config file
         self.num_devices_per_host = len(self.num_devices_per_host.split(",")) if self.num_devices_per_host else num_devices_per_host
 
         # Validate that world_size is consistent with num_devices_per_host

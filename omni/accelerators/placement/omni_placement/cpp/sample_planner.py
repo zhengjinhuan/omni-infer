@@ -2,7 +2,7 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import sys
-from omni_planner import omni_placement
+from .. import omni_placement
 import numpy as np
 import threading
 import time
@@ -90,7 +90,7 @@ cluster_activation = create_cluster_activation(expert_to_index)
 moe_weights = create_moe_weights(cluster_activation, expert_to_index, placement_pattern)
 print(expert_to_index)
 print(placement_pattern)
-print("omni_planner is successfully initialized.")
+print("omni_placement is successfully initialized.")
 """
 """
 rank_id = "0"

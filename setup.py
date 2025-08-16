@@ -3,9 +3,8 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
-from setuptools import setup, find_packages
+from setuptools import setup, Extension
 import pybind11
-from pybind11.setup_helpers import Pybind11Extension, build_ext
 import torch
 
 
@@ -27,21 +26,21 @@ class PathManager:
         self.ascend_inc = os.path.join(ascend_root, "include")
         self.ascend_lib = os.path.join(ascend_root, "lib64")
 
-        # my own headers
-        self.header = "omni_placement/cpp/include"
+        # omni_placement headers
+        self.header = "omni/accelerators/placement/omni_placement/cpp/include"
 
         # csrc
         self.sources = [
-            "omni_placement/cpp/placement_manager.cpp",
-            "omni_placement/cpp/placement_mapping.cpp",
-            "omni_placement/cpp/placement_optimizer.cpp",
-            "omni_placement/cpp/expert_load_balancer.cpp",
-            "omni_placement/cpp/dynamic_eplb_greedy.cpp",
-            "omni_placement/cpp/expert_activation.cpp",
-            "omni_placement/cpp/tensor.cpp",
-            "omni_placement/cpp/moe_weights.cpp",
-            "omni_placement/cpp/distribution.cpp",
-            "omni_placement/cpp/utils.cpp"
+            "omni/accelerators/placement/omni_placement/cpp/placement_manager.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/placement_mapping.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/placement_optimizer.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/expert_load_balancer.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/dynamic_eplb_greedy.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/expert_activation.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/tensor.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/moe_weights.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/distribution.cpp",
+            "omni/accelerators/placement/omni_placement/cpp/utils.cpp"
         ]
 
         self.check()
@@ -51,6 +50,8 @@ class PathManager:
             raise FileNotFoundError(f"PyTorch include path not found: {self.torch_inc}")
         if not os.path.exists(self.torch_lib):
             raise FileNotFoundError(f"PyTorch lib path not found: {self.torch_lib}")
+        if not os.path.exists(self.header):
+            raise FileNotFoundError(f"omni_placement include path not found: {self.header}")
 
     def get_include_dirs(self):
         include_dirs = [self.header, self.pybind_inc, self.ascend_inc, self.torch_inc]
@@ -73,11 +74,12 @@ paths = PathManager()
 
 # 定义扩展模块
 ext_modules = [
-    Pybind11Extension(
-        "omni_placement.omni_placement",
+    Extension(
+        "omni.accelerators.placement.omni_placement.omni_placement",
         sources=paths.sources,
         include_dirs=paths.get_include_dirs(),
-        language='c++',
+        library_dirs=paths.get_library_dirs(),
+        libraries=['hccl', 'torch', 'torch_python', 'ascendcl'],
         extra_compile_args=[
             '-std=c++17',
             '-pthread',
@@ -88,33 +90,14 @@ ext_modules = [
             '-ltorch',
             '-ltorch_python',
         ] + paths.get_extra_link_args(),
-        library_dirs=paths.get_library_dirs(),
-        libraries=['hccl', 'torch', 'torch_python', 'ascendcl']
+        language='c++',
     ),
 ]
 
 
 setup(
-    name='omni_placement',  # 包的名称
-    version='0.6.27+dynamic',  # 包的版本
-    description='Package for optimizing MoE layer',  # 简短描述
-    packages=find_packages(
-        exclude=(
-            ".cloudbuild",
-            "build",
-            "examples",
-            "scripts",
-            "tests",
-            "utils",
-            "omni_placement.cpp",
-        )
-    ),
-    install_requires=['numpy',
-        'torch',
-        'transformers',
-        'pybind11',
-    ],  # 依赖的其他包
+    name='omni_infer',
+    version='0.1.0',
+    description='Omni Infer',
     ext_modules=ext_modules,
-    cmdclass={"build_ext": build_ext},
-    include_package_data=True,
 )

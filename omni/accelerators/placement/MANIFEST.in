@@ -1,4 +1,4 @@
-include omni_planner/*.py
-include omni_planner/*.so
-include omni_planner/optim/*.py
-exclude omni_planner/cpp/*.cpp
+include omni_placement/*.py
+include omni_placement/*.so
+include omni_placement/optim/*.py
+exclude omni_placement/cpp/*.cpp

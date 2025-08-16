@@ -61,7 +61,7 @@ else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
 
 if model_extra_config.operator_opt_config.use_omni_placement:
-    from omni_planner import OmniPlanner
+    from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
     _GLOBAL_STEP = 0
 
 MAX_GEAR_NUM = 6
