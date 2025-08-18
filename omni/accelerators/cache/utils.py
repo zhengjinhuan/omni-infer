@@ -80,3 +80,13 @@ def compute_omni_attn_metadata(
         torch.from_numpy(slot_mapping).to(torch.int64),
         torch.from_numpy(omni_attn_seq_lens).to(torch.int64) if omni_attn_seq_lens is not None else None,
     )
+
+
+def to_bool_or_raise(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return val == 1
+    if isinstance(val, str):
+        return val.lower() in ["1", "true"]
+    raise ValueError(f"Cannot convert variable to bool. Type {type(val)}. Value {val}.")

@@ -311,6 +311,8 @@ export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
 export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
+export CPU_AFFINITY_CONF=1,npu0:0-1,npu1:40-41,npu2:80-81,npu3:120-121,npu4:160-161,npu5:200-201,npu6:240-241,npu7:280-281
+
 if [ -n "$HCCL_OP_EXPANSION_MODE" ]; then
     export HCCL_OP_EXPANSION_MODE
     echo "HCCL_OP_EXPANSION_MODE: $HCCL_OP_EXPANSION_MODE"
@@ -399,12 +401,12 @@ common_operations() {
 if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
   if [ "$IP" = "$HOST_IP" ]; then
     export RAY_USAGE_STATS_ENABLED=0
-    ray start --head --num-gpus=16
+    ray start --head --num-gpus=$NUM_SERVERS
     sleep 10s
     common_operations
   else
     sleep 5s
-    command="ray start --address='$HOST_IP:6379' --num-gpus=16 &> /dev/null"
+    command="ray start --address='$HOST_IP:6379' --num-gpus=$NUM_SERVERS &> /dev/null"
     echo $command
     cost_time=0
     end_time=300

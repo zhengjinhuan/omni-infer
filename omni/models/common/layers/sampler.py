@@ -18,6 +18,7 @@ from vllm.model_executor.sampling_metadata import SamplingTensors
 from vllm.model_executor.layers.rejection_sampler import RejectionSampler as RejectionSamplerGPU
 from vllm.v1.sample.rejection_sampler import RejectionSampler as RejectionSamplerV1
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler as TopKTopPSampler
+from vllm.v1.sample.sampler import Sampler as SamplerV1
 from vllm.v1.outputs import SamplerOutput as SamplerOutputV1
 from vllm.sampling_params import SamplingType
 from vllm.sequence import Logprob, VLLM_INVALID_TOKEN_ID
@@ -199,9 +200,6 @@ def _apply_top_k_top_p_faster(
   
 def _need_log_probs(sampling_metadata, include_gpu_probs_tensor):
     need_log_probs = False
-    # if use speculation need_log_probs must be true
-    if model_extra_config.operator_opt_config.use_chunked_prefill:
-        return True
     for seq_group in sampling_metadata.seq_groups:
         if seq_group.is_prompt and seq_group.sampling_params.prompt_logprobs is not None:
             need_log_probs = True
@@ -649,10 +647,10 @@ def apply_top_k_top_p(
     """
     if p is None:
         if k is None:
-            return logits
+            return logits, None
 
         # Avoid sorting vocab for top-k only case.
-        return apply_top_k_only(logits, k)
+        return apply_top_k_only(logits, k), None
 
     logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
 
@@ -674,8 +672,7 @@ def apply_top_k_top_p(
         logits_sort.masked_fill_(top_p_mask, -float("inf"))
 
     # Re-sort the probabilities.
-    logits = logits_sort.scatter(dim=-1, index=logits_idx, src=logits_sort)
-    return logits
+    return logits_sort, logits_idx
 
 
 def apply_top_k_only(
@@ -705,6 +702,7 @@ def apply_top_k_only(
 
 def random_sample(
     probs: torch.Tensor,
+    idx: Optional[torch.Tensor],
     generators: dict[int, torch.Generator],
     stream
 ) -> torch.Tensor:
@@ -727,9 +725,12 @@ def random_sample(
             for i, generator in generators.items():
                 q[i].exponential_(generator=generator)
     torch.npu.default_stream().wait_stream(stream)
-    return probs.div_(q).argmax(dim=-1).view(-1)
-
-class TopKTopPSamplerNPU(TopKTopPSampler):
+    res = probs.div_(q).argmax(dim=-1).view(-1)
+    if idx == None:
+        return res
+    else:
+        return idx[torch.arange(res.shape[0]), res]
+class AscendTopKTopPSamplerV1(TopKTopPSampler):
     """
     Module that performs optional top-k and top-p filtering followed by
     weighted random sampling of logits.
@@ -752,9 +753,14 @@ class TopKTopPSamplerNPU(TopKTopPSampler):
 
         The logits tensor may be updated in-place.
         """
-        logits = apply_top_k_top_p(logits, k, p)
+        logits, idx = apply_top_k_top_p(logits, k, p)
         probs = logits.softmax(dim=-1, dtype=torch.float32)
-        return random_sample(probs, generators, self.dsa_stream)
+        return random_sample(probs, idx, generators, self.dsa_stream)
+
+class AscendSamplerV1(SamplerV1):
+    def __init__(self):
+        super().__init__()
+        self.topk_topp_sampler = AscendTopKTopPSamplerV1()
 
 class SimpleSampler(RejectionSamplerV1):
  
@@ -764,9 +770,10 @@ class SimpleSampler(RejectionSamplerV1):
         self.previous_repetition_penalties = [] 
         self.previous_presence_penalties = []
         self.main_sampler = main_sampler
-        self.main_sampler.topk_topp_sampler = TopKTopPSamplerNPU()
+        self.main_sampler.topk_topp_sampler = AscendTopKTopPSamplerV1()
         self.minus_one = None
 
+    # TODO to support mixture case
     def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
 
         if num_decodes != 0 and num_prefills != 0:
@@ -784,39 +791,17 @@ class SimpleSampler(RejectionSamplerV1):
         if self.main_sampler is None or sampling_metadata.all_greedy:
             forward_tokens = logits.argmax(dim=-1).to(dtype = input_ids.dtype, device=input_ids.device).view(batch_size, -1)
         else:
-            if sampling_metadata.allowed_token_ids_mask is None \
-                and len(sampling_metadata.bad_words_token_ids) == 0 \
-                and len(sampling_metadata.logit_bias) == 0 \
-                and len(sampling_metadata.min_tokens) == 0 \
-                and sampling_metadata.no_penalties \
-                and sampling_metadata.min_p is None \
-                and len(sampling_metadata.generators) == 0 \
-                and sampling_metadata.top_k is None \
-                and sampling_metadata.top_p is None:
-                old_temperature = sampling_metadata.temperature
-                samping_metadata.temperature = sampling_metadata.temperature.repeat_interleave(num_sampling_tokens_per_req)
-                sampler_output = self.main_sampler(logits, sampling_metadata)
-                forward_tokens = sampler_output.sampled_token_ids.view(batch_size, -1)
+            start_indices = torch.arange(batch_size, device=logits.device) * num_sampling_tokens_per_req
+            forward_tokens = torch.empty_like(logits_indices, dtype=input_ids.dtype, device=input_ids.device).view(batch_size, -1)
+            for i in range(num_sampling_tokens_per_req):
+                sampler_output = self.main_sampler(
+                    logits=logits[start_indices],
+                    sampling_metadata=sampling_metadata,
+                )
+                start_indices += 1
+                forward_tokens[:, i] = sampler_output.sampled_token_ids.view(-1)
                 sampler_output.sampled_token_ids = None
-                sampling_metadata.temperature = old_temperature
-            else :
-                start_indices = torch.arange(batch_size, device=logits.device) * num_sampling_tokens_per_req
-                forward_tokens = torch.empty_like(logits_indices, dtype=input_ids.dtype, device=input_ids.device).view(batch_size, -1)
-                for i in range(num_sampling_tokens_per_req):
-                    sampler_output = self.main_sampler(
-                        logits=logits[start_indices],
-                        sampling_metadata=sampling_metadata,
-                    )
-                    start_indices += 1
-                    forward_tokens[:, i] = sampler_output.sampled_token_ids.view(-1)
-                    sampler_output.sampled_token_ids = None
-                    
-        if num_prefills > 0:
-            mtp_input_tokens = torch.empty_like(input_ids)
-            mtp_input_tokens[:-1] = input_ids[1:] # for prefill
-        else:
-            mtp_input_tokens = input_ids.clone()
-        mtp_input_tokens[logits_indices] = forward_tokens.view(-1)
+
         # Create output buffer.
         # output_token_ids: 
         # if accepted [input_ids[-1], forward_tokens_result]
@@ -845,7 +830,7 @@ class SimpleSampler(RejectionSamplerV1):
             logprobs_tensors = None
         )
 
-        return sampler_output, mtp_input_tokens, last_accepted_index, accepted_num
+        return sampler_output, forward_tokens, last_accepted_index, accepted_num
 
 def _multinomial(
     probs: torch.Tensor,

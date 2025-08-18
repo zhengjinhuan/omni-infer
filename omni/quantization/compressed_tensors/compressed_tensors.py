@@ -223,7 +223,8 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg,
                                      user_quant) -> Optional[str]:
-        if torch.npu.is_available():
+        quant_method = hf_quant_cfg['quant_method']
+        if torch.npu.is_available() and quant_method == 'compressed-tensors':
             return ASCEND_COMPRESSED_TENSORS
         return None
 
@@ -238,26 +239,21 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
         if self._is_dynamic_token_w8a8(weight_quant, input_quant, weight_num_bits):
             return (AscendCompressedTensorsW8A8Int8MoEMethod(), weight_num_bits)
         elif self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
-            return (AscendCompressedTensorsW4A8Int8MoEMethod(), weight_num_bits)
+            return (AscendCompressedTensorsW4A8Int8MoEMethod(self), weight_num_bits)
         else:
             raise RuntimeError(
                 f"Unsupported FusedMoe scheme: {weight_quant}, {input_quant}")
 
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
-        from vllm.attention.layer import Attention
         if isinstance(layer, LinearBase):
             scheme = self.get_scheme(layer=layer, layer_name=prefix)
             layer.scheme = scheme
             return CompressedTensorsLinearMethod(self)
-        elif isinstance(layer, Attention) and \
-            'fa_quant_type' in self.quant_description.keys() and \
-            self.quant_description['fa_quant_type'] is not None:
-            return CompressedTensorsKVCacheMethod(self)
         elif isinstance(layer, FusedMoE):
-            layer.num_bits = 0
+            layer.weight_num_bits = 0
             moe_method, weight_num_bits = self.get_moe_method(prefix)
-            layer.num_bits = weight_num_bits
+            layer.weight_num_bits = weight_num_bits
             return moe_method
         return None
 

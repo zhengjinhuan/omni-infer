@@ -125,7 +125,7 @@ def run_default_mode(args):
     env['ASCEND_RT_VISIBLE_DEVICES'] = args.server_list  # Use first 8 NPUs
     env['VLLM_WORKER_MULTIPROC_METHOD'] = 'fork'   # Process spawning method
     env['OMNI_USE_QWEN'] = '1'  # Enable custom model support
-  
+    env['VLLM_USE_V1'] = '1'
 
     if args.graph_true.lower() == 'false':
           # Base command for API server
@@ -149,7 +149,7 @@ def run_default_mode(args):
     elif args.graph_true.lower() == 'true':
         # Base command for API server
         additional_config = args.additional_config if args.additional_config else \
-                '{"enable_graph_mode": true, "enable_hybrid_graph_mode": true}'
+                '{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false, "block_num_floating_range":50}, "enable_hybrid_graph_mode": true}'
         cmd = [
             'python',  os.path.join(args.code_path,'omniinfer/tools/scripts/start_api_servers.py'),
             '--num-servers', '1',
@@ -204,12 +204,15 @@ def start_perfill_api_servers(intf, args):
     
     # Specialized environment for prefill servers
     env['VLLM_LLMDATADIST_ZMQ_PORT'] = '5570'  # ZeroMQ port for data distribution
-    env['ASCEND_RT_VISIBLE_DEVICES'] = '0,1,2,3,4,5,6,7'  # NPUs for prefill
+    env['ASCEND_RT_VISIBLE_DEVICES'] = args.prefill_server_list  # NPUs for prefill
     
+    prefill_server_list_list = args.prefill_server_list.split(',')
+    prefill_rank_table_suffix = ''.join(prefill_server_list_list)
+
     # Ranktable paths for distributed training
     env['RANK_TABLE_PATH'] = os.path.join(args.code_path, 'omniinfer/tools/scripts/global_path/')
     env['GLOBAL_RANK_TABLE_FILE_PATH'] = os.path.join(args.code_path, 'omniinfer/tools/scripts/global_path/global_ranktable_merge.json')
-    env['RANK_TABLE_FILE_PATH'] = os.path.join(args.code_path, f'omniinfer/tools/scripts/perfill-ranktable/local_ranktable_{ip}_01234567.json')
+    env['RANK_TABLE_FILE_PATH'] = os.path.join(args.code_path, f'omniinfer/tools/scripts/perfill-ranktable/local_ranktable_{ip}_{prefill_rank_table_suffix}.json')
     env['ROLE'] = 'prefill'  # Server role identifier
 
     # HCCL communication settings
@@ -237,13 +240,13 @@ def start_perfill_api_servers(intf, args):
         '--master-ip', intf['ip'],  # Coordinator IP
         '--master-port', args.master_port,    # Coordinator port
         '--base-api-port', args.service_port,  # API service port
-        '--tp', '8',                # 8-way tensor parallelism
+        '--tp', str(len(args.prefill_server_list.split(','))),                # 8-way tensor parallelism
         '--served-model-name', args.model_name,
-        '--max-model-len', '40960', # Max context length
+        '--max-model-len', args.max_model_len, # Max context length
         '--log-dir', args.log_path + '/prefill/',  # Log directory
         '--no-enable-prefix-caching',  # Disable caching
         '--gpu-util', '0.9',        # Target NPU utilization
-        '--extra-args', '--max-num-batched-tokens 40960 --enforce-eager ',  # Perf mance flags
+        '--extra-args', f'--max-num-batched-tokens {args.max_model_len} --enforce-eager ',  # Perf mance flags
         '--kv-transfer-config', json.dumps(kv_transfer_config)  # KV transfer settings
     ]
 
@@ -258,11 +261,15 @@ def start_decoder_api_servers(intf, args):
     
     # Specialized environment for decoder servers
     env['VLLM_LLMDATADIST_ZMQ_PORT'] = '5569'  # Different ZeroMQ port
-    env['ASCEND_RT_VISIBLE_DEVICES'] = '8,9,10,11,12,13,14,15'  # Different NPU set
+    env['ASCEND_RT_VISIBLE_DEVICES'] = args.decode_server_list  # Different NPU set
+    
+    deocde_server_list_list = args.decode_server_list.split(',')
+    decode_rank_table_suffix = ''.join(deocde_server_list_list)
+
     # Ranktable paths for distributed training
     env['RANK_TABLE_PATH'] = os.path.join(args.code_path, 'omniinfer/tools/scripts/global_path/')
     env['GLOBAL_RANK_TABLE_FILE_PATH'] = os.path.join(args.code_path, 'omniinfer/tools/scripts/global_path/global_ranktable_merge.json')
-    env['RANK_TABLE_FILE_PATH'] = os.path.join(args.code_path, f'omniinfer/tools/scripts/decode-ranktable/local_ranktable_{ip}_89101112131415.json')
+    env['RANK_TABLE_FILE_PATH'] = os.path.join(args.code_path, f'omniinfer/tools/scripts/decode-ranktable/local_ranktable_{ip}_{decode_rank_table_suffix}.json')
     env['ROLE'] = 'decode'  # Server role identifier
 
     # Advanced HCCL settings
@@ -311,12 +318,12 @@ def start_decoder_api_servers(intf, args):
             '--master-ip', intf['ip'],      # Coordinator IP
             '--master-port', args.master_port,        # Coordinator port
             '--base-api-port', str(int(args.service_port) + 100),      # API service port
-            '--tp', '8',                    # 8-way tensor parallelism
+            '--tp', str(len(args.decode_server_list.split(','))),                    # 8-way tensor parallelism
             '--served-model-name', args.model_name,
-            '--max-model-len', '40960',    # Max context length
+            '--max-model-len',  args.max_model_len,    # Max context length
             '--log-dir', args.log_path + '/decode/',  # Log directory
             '--no-enable-prefix-caching',  # Disable caching
-            '--extra-args', '--max-num-batched-tokens 40960 ',  # Performance flag
+            '--extra-args', f'--max-num-batched-tokens {args.max_model_len} ',  # Performance flag
             '--kv-transfer-config', json.dumps(kv_transfer_config)  # KV transfer settings
         ]
 
@@ -326,7 +333,7 @@ def start_decoder_api_servers(intf, args):
     # Graph mode specific optimizations
     elif args.graph_true.lower() == 'true':
         additional_config = args.additional_config if args.additional_config else \
-                '{"enable_graph_mode": true, "decode_gear_list": [64]}'
+                '{"graph_model_compile_config":{"level":1,"use_ge_graph_cached":false, "block_num_floating_range":50}, "decode_gear_list": [64]}'
         # Command to start decoder API servers
         cmd = [
             'python', os.path.join(args.code_path,'omniinfer/tools/scripts/start_api_servers.py'),
@@ -337,12 +344,12 @@ def start_decoder_api_servers(intf, args):
             '--master-ip', intf['ip'],      # Coordinator IP
             '--master-port', args.master_port,        # Coordinator port
             '--base-api-port', str(int(args.service_port) + 100),      # API service port
-            '--tp', '8',                    # 8-way tensor parallelism
+            '--tp', str(len(args.decode_server_list.split(','))),           # 8-way tensor parallelism
             '--served-model-name', args.model_name,
-            '--max-model-len', '40960',    # Max context length
+            '--max-model-len',  args.max_model_len,    # Max context length
             '--log-dir', args.log_path + '/decode/',  # Log directory
             '--no-enable-prefix-caching',  # Disable caching
-            '--extra-args', '--max-num-batched-tokens 40960 ',  # Performance flag
+            '--extra-args', f'--max-num-batched-tokens {args.max_model_len} ',  # Performance flag
             '--additional-config', additional_config,  # Graph mode config
             '--kv-transfer-config', json.dumps(kv_transfer_config)  # KV transfer settings
         ]
@@ -380,49 +387,56 @@ def pd_ranktable(intf, args):
     ip = intf['ip']
     
     # Prefill ranktable generation
-    target_path_perfill = os.path.join(args.code_path, 'omniinfer/tools/scripts/perfill-ranktable/')
-    if not os.path.exists(target_path_perfill):
-        print(f'Path {target_path_perfill} does not exist, creating it...')
-        cmd_p = [
-            'python', os.path.join(args.code_path, 'omniinfer/tools/scripts/pd_ranktable_tools.py'),
-            '--mode', 'gen',
-            '--prefill-server-list', '0,1,2,3,4,5,6,7',  # NPU IDs for prefill
-            '--api-server',             # API server flag
-            '--save-dir', './perfill-ranktable',
-        ]
-        subprocess.run(cmd_p)
-    else:
-        print(f'Path {target_path_perfill} already exists, skipping creation...')
+    # target_path_perfill = os.path.join(args.code_path, 'omniinfer/tools/scripts/perfill-ranktable/')
+    # if not os.path.exists(target_path_perfill):
+    #     print(f'Path {target_path_perfill} does not exist, creating it...')
+    cmd_p = [
+        'python', os.path.join(args.code_path, 'omniinfer/tools/scripts/pd_ranktable_tools.py'),
+        '--mode', 'gen',
+        '--prefill-server-list', args.prefill_server_list,  # NPU IDs for prefill
+        '--api-server',             # API server flag
+        '--save-dir', './perfill-ranktable',
+    ]
+    subprocess.run(cmd_p)
+    # else:
+    #     print(f'Path {target_path_perfill} already exists, skipping creation...')
 
     # Decoder ranktable generation
-    target_path_decode = os.path.join(args.code_path,'omniinfer/tools/scripts/decode-ranktable/')
-    if not os.path.exists(target_path_decode):
-        print(f'Path {target_path_decode} does not exist, creating it...')
-        cmd_d = [
-            'python', os.path.join(args.code_path, 'omniinfer/tools/scripts/pd_ranktable_tools.py'),
-            '--mode', 'gen',
-            '--decode-server-list', '8,9,10,11,12,13,14,15',  # NPU IDs for decoder
-            '--save-dir', './decode-ranktable',
-        ]
-        subprocess.run(cmd_d)
-    else:
-        print(f'Path {target_path_decode} already exists, skipping creation...')
+    # target_path_decode = os.path.join(args.code_path,'omniinfer/tools/scripts/decode-ranktable/')
+    # if not os.path.exists(target_path_decode):
+    #     print(f'Path {target_path_decode} does not exist, creating it...')
+    cmd_d = [
+        'python', os.path.join(args.code_path, 'omniinfer/tools/scripts/pd_ranktable_tools.py'),
+        '--mode', 'gen',
+        '--decode-server-list', args.decode_server_list,  # NPU IDs for decoder
+        '--save-dir', './decode-ranktable',
+    ]
+    subprocess.run(cmd_d)
+    # else:
+    #     print(f'Path {target_path_decode} already exists, skipping creation...')
 
     # Global ranktable merge
-    target_path_global = os.path.join(args.code_path, 'omniinfer/tools/scripts/global_path/')
-    if not os.path.exists(target_path_global):
-        print(f'Path {target_path_global} does not exist, creating it...')
-        cmd_global = [
-            'python', os.path.join(args.code_path, 'omniinfer/tools/scripts/pd_ranktable_tools.py'),
-            '--mode', 'merge-all',  # Merge all ranktables
-            '--api-server-list', f'perfill-ranktable/local_ranktable_{ip}_host.json',
-            '--prefill-server-list', f'perfill-ranktable/local_ranktable_{ip}_01234567.json',
-            '--decode-server-list', f'decode-ranktable/local_ranktable_{ip}_89101112131415.json',
-            '--save-dir', 'global_path'
-        ]
-        subprocess.run(cmd_global)
-    else:
-        print(f'Path {target_path_global} already exists, skipping creation...')
+    # target_path_global = os.path.join(args.code_path, 'omniinfer/tools/scripts/global_path/')
+    # if not os.path.exists(target_path_global):
+    #     print(f'Path {target_path_global} does not exist, creating it...')
+
+    prefill_server_list_list = args.prefill_server_list.split(',')
+    prefill_rank_table_suffix = ''.join(prefill_server_list_list)
+
+    deocde_server_list_list = args.decode_server_list.split(',')
+    decode_rank_table_suffix = ''.join(deocde_server_list_list)
+
+    cmd_global = [
+        'python', os.path.join(args.code_path, 'omniinfer/tools/scripts/pd_ranktable_tools.py'),
+        '--mode', 'merge-all',  # Merge all ranktables
+        '--api-server-list', f'perfill-ranktable/local_ranktable_{ip}_host.json',
+        '--prefill-server-list', f'perfill-ranktable/local_ranktable_{ip}_{prefill_rank_table_suffix}.json',
+        '--decode-server-list', f'decode-ranktable/local_ranktable_{ip}_{decode_rank_table_suffix}.json',
+        '--save-dir', 'global_path'
+    ]
+    subprocess.run(cmd_global)
+    # else:
+    #     print(f'Path {target_path_global} already exists, skipping creation...')
 
 def run_pd_separate_mode(args):
     """Run pipeline parallel (prefill/decoder separate) mode"""
@@ -489,11 +503,18 @@ if __name__ == "__main__":
                         help="Local machine's IP address for service binding (default: auto-detect from network interface)")
     parser.add_argument('--model-name', type=str, default='default_model',
                         help="Model identifier used for API endpoints (default: default_model)")
+    parser.add_argument('--max-model-len', type=str, default='20960',
+                        help="Maximum context length supported by the model in tokens (default: 20960)")
     parser.add_argument('--log-path', type=str, default='./apiserverlog',
                         help="Directory path for storing service logs (default: ./apiserverlog)")
+
     parser.add_argument('--server-list', type=str, default='0,1,2,3,4,5,6,7',
                         help="default mode: NPU device IDs for parallel processing (default: 0-7)")
-
+    parser.add_argument('--prefill-server-list', type=str, default='0,1,2,3,4,5,6,7',
+                        help="pd-separated:NPU device IDs dedicated to prompt prefill processing (default: '0,1,2,3,4,5,6,7')")
+    parser.add_argument('--decode-server-list', type=str, default='8,9,10,11,12,13,14,15',
+                        help="pd-separated:NPU device IDs dedicated to token decoding processing (default: '8,9,10,11,12,13,14,15')")
+    
     parser.add_argument('--service-port', type=str, default='6660',
                         help="- In 'pd' mode: Prefill service port (Decoder uses this port + offset)\n"
                             "Global proxy will connect to these ports (default: 6660)")

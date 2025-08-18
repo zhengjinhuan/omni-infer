@@ -31,13 +31,13 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionLayer, AttentionType)
 from vllm.attention.backends.utils import CommonAttentionState
 from vllm.forward_context import ForwardContext, get_forward_context
-from vllm.utils import direct_register_custom_op
+from vllm.utils import (direct_register_custom_op, supports_dynamo)
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.block_table import BlockTable
 from vllm.platforms import current_platform
-from vllm.config import get_current_vllm_config
+from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 
@@ -117,6 +117,9 @@ class AscendMetadata:
     # Current state of this attention run.
     attn_state: AscendAttentionState = AscendAttentionState.ChunkedPrefill
     attn_mask: Optional[torch.Tensor] = None
+    cos: Optional[torch.Tensor] = None
+    sin: Optional[torch.Tensor] = None
+    is_pd_seperate_d: bool = False
 
 
 class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
@@ -290,6 +293,11 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                               position=self.runner.positions[:num_actual_tokens],
                                               attn_state=attn_state)
 
+        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+
+        is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
+                           self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
+
         attn_metadata = AscendMetadata(num_actual_tokens=num_actual_tokens,
                                        block_tables=block_table,
                                        query_lens=query_lens,
@@ -300,7 +308,10 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                        slot_mapping=slot_mapping,
                                        slot_indices=slot_indices,
                                        attn_mask=attn_mask,
-                                       attn_state=attn_state)
+                                       attn_state=attn_state,
+                                       cos=cos,
+                                       sin=sin,
+                                       is_pd_seperate_d=is_pd_seperate_d)
         return attn_metadata
 
     def build_dummy(self, num_tokens: int, max_pad_size: int = -1) -> AscendMetadata:
@@ -320,6 +331,13 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
 
         slot_indices = torch.stack([slot_mapping // self.block_size, slot_mapping % self.block_size], dim=1)
 
+        fake_positions = torch.zeros(max_pad_size, dtype=torch.int64, device=self.device)
+
+        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+
+        is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
+                           self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
+
         return AscendMetadata(
             num_actual_tokens=num_tokens,
             block_tables=block_table,
@@ -332,6 +350,9 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             is_only_prefill=False,
             attn_state=self.runner.attn_state,
             attn_mask=self.runner.attn_mask,
+            cos=cos,
+            sin=sin,
+            is_pd_seperate_d=is_pd_seperate_d
         )
 
     def mark_static_for_attn_metadata(self, attn_metadata):
@@ -340,8 +361,12 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             torch._dynamo.mark_static(attn_metadata.seq_lens)
             if attn_metadata.slot_mapping is not None:
                 torch._dynamo.mark_static(attn_metadata.slot_mapping)
+            if attn_metadata.slot_indices is not None:
                 torch._dynamo.mark_static(attn_metadata.slot_indices)
-
+            if attn_metadata.cos is not None:
+                torch._dynamo.mark_static(attn_metadata.cos)
+            if attn_metadata.sin is not None:
+                torch._dynamo.mark_static(attn_metadata.sin)
 
 
 class AscendAttentionBackendImpl(AttentionImpl):
@@ -382,11 +407,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.key_cache = None
         self.value_cache = None
 
-        self.enable_graph_mode = False
-        additional_config = get_current_vllm_config().additional_config
-        if additional_config:
-            self.enable_graph_mode = additional_config.get(
-                "enable_graph_mode", False)
+        cur_vllm_config = get_current_vllm_config()
+        self.enable_graph_mode = (cur_vllm_config.npu_compilation_config.level >  \
+                                  CompilationLevel.NO_COMPILATION and supports_dynamo())
 
         if AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE is None:
             AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE = ~torch.tril(
@@ -608,9 +631,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
 
                 attn_output = torch_npu.npu_fusion_attention(
-                    query,
-                    key,
-                    value,
+                    query[:actual_seq_qlen[-1], :],
+                    key[:actual_seq_qlen[-1], :],
+                    value[:actual_seq_qlen[-1], :],
                     head_num=self.num_heads,
                     input_layout="TND",
                     scale=self.scale,
@@ -620,8 +643,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     actual_seq_qlen=actual_seq_qlen,
                     actual_seq_kvlen=actual_seq_kvlen)[0]
 
-                output = output.view_as(attn_output)
-                output.copy_(attn_output)
+                output[:actual_seq_qlen[-1], :].copy_(attn_output)
 
         elif attn_metadata.attn_state == AscendAttentionState.PrefillCacheHit:
             if attn_metadata is None:
@@ -651,16 +673,17 @@ class AscendAttentionBackendImpl(AttentionImpl):
             attn_output = None
             if self.enable_graph_mode:
                 attn_output, _ = tng.ops.npu_fused_infer_attention_score(
-                    query,
+                    torch.transpose(query.view(num_batch, -1, self.num_heads, self.head_size), 1, 2),
                     self.key_cache,
                     self.value_cache,
                     num_heads=self.num_heads,
                     num_key_value_heads=self.num_kv_heads,
-                    input_layout="BSH",
+                    input_layout="BNSD",
                     scale=self.scale,
                     actual_seq_lengths_kv=attn_metadata.seq_lens,
                     block_table=block_tables,
                     block_size=block_size,
+                    inner_precise=1
                 )
             else:
                 attn_output, _ = torch_npu.npu_fused_infer_attention_score(
@@ -692,8 +715,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
             cu_seqlen_k = torch.cumsum(cu_seqlen_k, dim=0)
             max_seqlen_q = torch.max(attn_metadata.query_lens)
             max_seqlen_k = torch.max(attn_metadata.seq_lens)
-            self.vanilla_chunked_prefill(output, query, self.key_cache,
-                                    self.value_cache,
+            self.vanilla_chunked_prefill(output, query,
+                                    self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                                    self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size), 
                                     attn_metadata.block_tables,
                                     cu_seqlen_q, cu_seqlen_k,
                                     max_seqlen_q, max_seqlen_k,

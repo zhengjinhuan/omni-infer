@@ -11,9 +11,9 @@ import os
 import random
 from unittest.mock import MagicMock, patch
 import time
-from omni_planner.cluster_status import ClusterStatus
-from omni_planner.expert_mapping import ExpertMapping
-from omni_planner.optim.expert_balance_optimizer import ExpertsBalanceOptimizer
+from ..omni_placement.cluster_status import ClusterStatus
+from ..omni_placement.expert_mapping import ExpertMapping
+from ..omni_placement.optim.expert_balance_optimizer import ExpertsBalanceOptimizer
 import warnings
 
 # Suppress warnings

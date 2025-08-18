@@ -41,7 +41,6 @@ from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
-    get_dp_group,
     get_pp_group,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_gather
@@ -78,7 +77,11 @@ from omni.models.common.layers.moe.deepseek_moe import DeepseekMoE
 from omni.models.common.layers.attention.deepseek_mla import DeepseekMLA 
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.attention.backend.mla import group_request_list
-from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
+
+if model_extra_config.operator_opt_config.unquant_bmm_nz:
+    # if use weight nz, this config must be True
+    torch.npu.config.allow_internal_format = True
+
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
@@ -164,8 +167,7 @@ class DeepseekDecoderLayer(nn.Module):
             qk_nope_head_dim=config.qk_nope_head_dim,
             qk_rope_head_dim=config.qk_rope_head_dim,
             v_head_dim=config.v_head_dim,
-            q_lora_rank=config.q_lora_rank
-            if hasattr(config, "q_lora_rank") else None,
+            q_lora_rank=config.q_lora_rank if hasattr(config, "q_lora_rank") else None,
             kv_lora_rank=config.kv_lora_rank,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
@@ -236,7 +238,7 @@ class DeepseekDecoderLayer(nn.Module):
         # hidden : tokens * 7168
 
         # Perform full hidden splitting to avoid OOM
-        if model_extra_config.parall_config.dp_size > 1 and (attn_metadata is None or attn_metadata.prefill is not None):
+        if model_extra_config.parall_config.dp_size > 1 and attn_metadata is None:
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
             local_length = hidden_states.shape[0]
             # global_max_length = torch.tensor(0, dtype=torch.int64)
@@ -265,7 +267,6 @@ class DeepseekDecoderLayer(nn.Module):
                 hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
                 if isinstance(hidden_states, (tuple, list)):
                     assert len(hidden_states) == 2
-                    # 0 is the shared expert hidden_states, 1 is the routing expert hidden_states, add operation cannot be placed in the super kernel
                     hidden_states = hidden_states[0] + hidden_states[1]
             else:
                 hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
@@ -695,7 +696,7 @@ class DeepseekV3Model(nn.Module):
 
 
 @support_torch_compile
-class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
+class DeepseekV3ForCausalLM(nn.Module):
 
     packed_modules_mapping = {
         "gate_up_proj": ["gate_proj", "up_proj"],
@@ -721,7 +722,6 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             self.model.make_empty_intermediate_tensors)
 
         self.return_hidden_states = True
-        self.input_marked = False
         self.max_num_token = vllm_config.scheduler_config.max_num_batched_tokens
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -906,14 +906,3 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration):
             return True
 
         return False
-
-    def mark_static_for_graph(self, input_ids, positions, attn_metadata, kv_caches):
-        if not self.input_marked:
-            torch._dynamo.mark_static(input_ids)
-            torch._dynamo.mark_static(positions)
-            for i in range(len(kv_caches)):
-                if kv_caches[i][0] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][0])
-                if kv_caches[i][1] is not None:
-                    torch._dynamo.mark_static(kv_caches[i][1])
-            self.input_marked = True

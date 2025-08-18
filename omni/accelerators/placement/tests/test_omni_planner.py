@@ -12,9 +12,9 @@ import os
 
 from unittest.mock import MagicMock, patch
 
-from omni_planner.omni_planner import OmniPlanner
-from omni_planner.config import Config
-from omni_planner.cluster_status import ClusterStatus
+from ..omni_placement.omni_planner import OmniPlanner
+from ..omni_placement.config import Config
+from ..omni_placement.cluster_status import ClusterStatus
 
 #torch.set_printoptions(threshold=float("inf"))  # Print all values
 class TestOmniPlanner(unittest.TestCase):

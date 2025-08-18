@@ -29,6 +29,7 @@ from vllm.config import VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce,
+                              get_world_group,
                               get_dp_group)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import logger
@@ -178,7 +179,7 @@ class NPUWorker(WorkerBase):
         last_use_kv_cache_bytes = cur_npu_kv_cache_bytes
 
         if self.use_cached_npu_graph:
-            dp_size = get_dp_group().world_size
+            dp_size = get_world_group().world_size
             if check_torchair_cache_exists() and check_block_num_cache_exist():
                 logger.info("Currently use graph cache")
                 npu_kv_cache_bytes = read_block_num_from_file(torch.distributed.get_rank())
@@ -190,7 +191,7 @@ class NPUWorker(WorkerBase):
                     torch.tensor([0], dtype=old_kv_cache_bytes.dtype, device="cpu")
                     for _ in range(dp_size)
                 ]
-                dist.all_gather(all_kv_cache_bytes, old_kv_cache_bytes, group=get_dp_group().cpu_group)
+                dist.all_gather(all_kv_cache_bytes, old_kv_cache_bytes, group=get_world_group().cpu_group)
                 for kv_cache_bytes in all_kv_cache_bytes:
                     if kv_cache_bytes != old_kv_cache_bytes:
                         raise RuntimeError(f"The block num data of some ranks has been modified, origin: {old_kv_cache_bytes}, now: {kv_cache_bytes}")
@@ -205,7 +206,7 @@ class NPUWorker(WorkerBase):
                     torch.tensor([0], dtype=cur_npu_kv_cache_bytes.dtype, device="cpu")
                     for _ in range(dp_size)
                 ]
-                dist.all_gather(all_kv_cache_bytes, cur_npu_kv_cache_bytes, group=get_dp_group().cpu_group)
+                dist.all_gather(all_kv_cache_bytes, cur_npu_kv_cache_bytes, group=get_world_group().cpu_group)
                 kv_cache_bytes = int(min(all_kv_cache_bytes[:]))
                 write_block_num_to_file(torch.distributed.get_rank(), kv_cache_bytes)
                 clear_var(cur_npu_kv_cache_bytes, all_kv_cache_bytes)
@@ -284,6 +285,8 @@ class NPUWorker(WorkerBase):
             self.profiler.stop()
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            self.model_runner.planner.place_experts()
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
 

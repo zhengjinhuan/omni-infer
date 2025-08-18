@@ -111,8 +111,8 @@ def start_single_node_api_servers(
         # Set environment variables for each server
         env = os.environ.copy()
         env["VLLM_DP_SIZE"] = str(total_dp_size)
-        env["VLLM_DP_RANK"] = str(rank + server_offset)
-        env["VLLM_DP_RANK_LOCAL"] = str(rank + server_offset)
+        env["VLLM_DP_RANK"] = str(rank + server_offset // tp)
+        env["VLLM_DP_RANK_LOCAL"] = str(rank + server_offset // tp)
         env["VLLM_DP_MASTER_IP"] = master_ip
         env["VLLM_DP_MASTER_PORT"] = str(master_port)
 

@@ -28,20 +28,20 @@ class PathManager:
         self.ascend_lib = os.path.join(ascend_root, "lib64")
 
         # my own headers
-        self.header = "omni_planner/cpp/include"
+        self.header = "omni_placement/cpp/include"
 
         # csrc
         self.sources = [
-            "omni_planner/cpp/placement_manager.cpp",
-            "omni_planner/cpp/placement_mapping.cpp",
-            "omni_planner/cpp/placement_optimizer.cpp",
-            "omni_planner/cpp/expert_load_balancer.cpp",
-            "omni_planner/cpp/dynamic_eplb_greedy.cpp",
-            "omni_planner/cpp/expert_activation.cpp",
-            "omni_planner/cpp/tensor.cpp",
-            "omni_planner/cpp/moe_weights.cpp",
-            "omni_planner/cpp/distribution.cpp",
-            "omni_planner/cpp/utils.cpp"
+            "omni_placement/cpp/placement_manager.cpp",
+            "omni_placement/cpp/placement_mapping.cpp",
+            "omni_placement/cpp/placement_optimizer.cpp",
+            "omni_placement/cpp/expert_load_balancer.cpp",
+            "omni_placement/cpp/dynamic_eplb_greedy.cpp",
+            "omni_placement/cpp/expert_activation.cpp",
+            "omni_placement/cpp/tensor.cpp",
+            "omni_placement/cpp/moe_weights.cpp",
+            "omni_placement/cpp/distribution.cpp",
+            "omni_placement/cpp/utils.cpp"
         ]
 
         self.check()
@@ -74,7 +74,7 @@ paths = PathManager()
 # 定义扩展模块
 ext_modules = [
     Pybind11Extension(
-        "omni_planner.omni_placement",
+        "omni_placement.omni_placement",
         sources=paths.sources,
         include_dirs=paths.get_include_dirs(),
         language='c++',
@@ -106,7 +106,7 @@ setup(
             "scripts",
             "tests",
             "utils",
-            "omni_planner.cpp",
+            "omni_placement.cpp",
         )
     ),
     install_requires=['numpy',
