@@ -270,7 +270,7 @@
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode_k2.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 30 --no-enable-prefix-caching'
       GPU_UTIL=0.92
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}, "use_ge_graph_cached":true,"enable_omni_attn": true, "multi_rank_pull_kv": true}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true},"enable_omni_attn": true, "multi_rank_pull_kv": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
