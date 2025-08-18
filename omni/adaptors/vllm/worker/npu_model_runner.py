@@ -514,14 +514,21 @@ class NPUModelRunner(GPUModelRunner):
             self.maybe_setup_kv_connector(scheduler_output)
             finished_sending, finished_recving = (
                 self.get_finished_kv_transfers(scheduler_output))
-
-        if not finished_sending and not finished_recving:
+            loading_kv_failure = self.get_loading_kv_failure_req_ids()
+        if not finished_sending and not finished_recving and not loading_kv_failure:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
         output.finished_sending = finished_sending
         output.finished_recving = finished_recving
+        output.loading_kv_failure = loading_kv_failure
         return output
+
+    @staticmethod
+    def get_loading_kv_failure_req_ids() -> Optional[set[str]]:
+        if has_kv_transfer_group():
+            return get_kv_transfer_group().get_load_kv_failure_reqs()
+        return None
 
     @torch.inference_mode()
     def execute_model(
@@ -549,6 +556,7 @@ class NPUModelRunner(GPUModelRunner):
         finished_sending = set()
         accepted_num = 0
         finished_recving = set()
+        loading_kv_failure = set()
         for self.curr_step in range(self.total_step):
             start_1 = time.time()
             if not scheduler_output.total_num_scheduled_tokens:
@@ -568,6 +576,9 @@ class NPUModelRunner(GPUModelRunner):
                 finished_sending.update(temp_finished_sending)
             if temp_finished_recving is not None:
                 finished_recving.update(temp_finished_recving)
+            tmp_loading_kv_failure = self.get_loading_kv_failure_req_ids()
+            if tmp_loading_kv_failure is not None:
+                loading_kv_failure.update(tmp_loading_kv_failure)
             start_2 = time.time()
             if hidden_states.shape[0] == sample_indices.shape[0]:
                 # assume indices=[x1,x2,...,xn], if xn >= n, we cannot slice,
@@ -704,6 +715,7 @@ class NPUModelRunner(GPUModelRunner):
             prompt_logprobs_dict=cached_prompt_logprobs_dict,
             finished_sending=finished_sending,
             finished_recving=finished_recving,
+            loading_kv_failure=loading_kv_failure,
         )
 
     @torch.inference_mode()
