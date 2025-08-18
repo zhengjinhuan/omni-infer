@@ -120,7 +120,7 @@ class AscendMetadata:
     cos: Optional[torch.Tensor] = None
     sin: Optional[torch.Tensor] = None
     is_pd_seperate_d: bool = False
-
+    kv_index: Optional[torch.Tensor] = None
 
 class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
 
@@ -130,6 +130,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.runner = runner
         self.dtype = runner.dtype
         self.device = runner.device
+        self.kv_cache_spec = kv_cache_spec
         self.block_size = runner.block_size
         self.block_table = block_table
         mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", 100)
@@ -236,7 +237,20 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                                           max_blocks]
 
         return graph_block_tables
-
+    
+    def get_kv_index(self, seq_lens: torch.Tensor, block_tables: torch.Tensor, block_size: int):
+        num_reqs = seq_lens.shape[0]
+        if block_tables.shape[0] != num_reqs:
+            raise RuntimeError(f"block_tables and seq_lens do not match. {seq_lens.shape=}, {block_tables.shape=}")
+        slots = block_tables[..., None] * block_size + torch.arange(block_size)
+        slots = slots.reshape(num_reqs, -1)
+        kv_index = torch.empty(seq_lens.sum(), dtype=slots.dtype)
+        start = 0
+        for i, n in enumerate(seq_lens):
+            kv_index[start:start+n] = slots[i, :n]
+            start += n
+        return kv_index
+    
     def build(self,
               num_reqs,
               num_actual_tokens,
@@ -244,8 +258,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
               common_prefix_len,
               graph_pad_size=-1):
 
-        block_table = self.runner.input_batch.block_table[
-                          0].get_device_tensor()[:num_reqs]
+        block_table = self.block_table.get_device_tensor()[:num_reqs]
 
         seq_lens = self.runner.seq_lens_cpu[:num_reqs]
         query_lens = seq_lens - self.runner.input_batch.num_computed_tokens_cpu_tensor[:num_reqs]
@@ -285,7 +298,15 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                     dim=0)
             block_table = self._get_graph_runner_block_tables(
                 self._num_decode_tokens, block_table)
-
+            kv_index = None
+        else:
+            kv_index = self.get_kv_index(
+                seq_lens=seq_lens,
+                block_tables=self.block_table.get_cpu_tensor()[:num_reqs],
+                block_size=self.block_size,
+            )
+            kv_index = kv_index.to(self.runner.device)
+            
         slot_indices = torch.stack([slot_mapping // self.block_size, slot_mapping % self.block_size], dim=1)
 
         attn_mask = self._make_attention_mask(seq_lens=seq_lens,
@@ -311,7 +332,8 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                        attn_state=attn_state,
                                        cos=cos,
                                        sin=sin,
-                                       is_pd_seperate_d=is_pd_seperate_d)
+                                       is_pd_seperate_d=is_pd_seperate_d,
+                                       kv_index=kv_index)
         return attn_metadata
 
     def build_dummy(self, num_tokens: int, max_pad_size: int = -1) -> AscendMetadata:
@@ -416,117 +438,6 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 torch.ones((2048, 2048), dtype=torch.bool, device="npu")
             )
 
-    def vanilla_chunked_prefill(
-        self,
-        output: torch.Tensor,
-        query: torch.Tensor,  # (num_tokens, heads, head_size)
-        key_cache: torch.Tensor,  # (num_blocks, block_size, kv_heads, head_size)
-        value_cache: torch.
-        Tensor,  # (num_blocks, block_size, kv_heads, head_size,)
-        block_tables: torch.Tensor,  # (num_seqs, max_num_blocks_per_seq)
-        cu_seqlen_q: torch.Tensor,  # (num_seqs + 1,)
-        cu_seqlen_k: torch.Tensor,  # (num_seqs + 1,)
-        max_seqlen_q: int,
-        max_seqlen_k: int,
-        scale: float,
-        alibi_slopes: Optional[torch.Tensor],
-        causal: bool = True,
-    ) -> None:
-        num_query_heads = query.shape[1]
-        head_dim = value_cache.shape[3]
-        num_kv_heads = value_cache.shape[2]
-        block_size = value_cache.shape[1]
-        num_batch = cu_seqlen_q.shape[0] - 1
-        max_num_blocks_per_seq = block_tables.shape[1]
-
-        key = key_cache[block_tables].view(num_batch,
-                                        max_num_blocks_per_seq * block_size,
-                                        num_kv_heads, head_dim)
-
-        value = value_cache[block_tables].view(num_batch,
-                                            max_num_blocks_per_seq * block_size,
-                                            num_kv_heads, head_dim)
-        key = key[:, :max_seqlen_k, :, :]
-        value = value[:, :max_seqlen_k, :, :]
-
-        seqlen_k = cu_seqlen_k[1:] - cu_seqlen_k[:-1]
-        seqlen_q = cu_seqlen_q[1:] - cu_seqlen_q[:-1]
-        seqlen_q = seqlen_q.view(-1, 1)
-        seqlen_k = seqlen_k.view(-1, 1)
-        seqlen_diff = seqlen_k - seqlen_q
-        q_idx_mask = (torch.arange(0, max_seqlen_q,
-                                device=current_platform.device_type).view(1, -1).repeat(num_batch, 1))
-        k_idx_mask = (torch.arange(0, max_seqlen_k,
-                                device=current_platform.device_type).view(1, -1).repeat(num_batch, 1))
-        q_mask = q_idx_mask < seqlen_q
-        k_mask = k_idx_mask < seqlen_k
-
-        # calculate idx for causal mask of query    [batch, max_seqlen_q]
-        causal_mask_idx = (q_idx_mask + seqlen_diff)[q_mask]
-
-        # generate causal mask [batch, max_seqlen_q, max_seqlen_k]
-        tril_mask = torch.tril(torch.ones(max_seqlen_k, max_seqlen_k,
-                                        device=current_platform.device_type))
-        tril_mask[tril_mask == 0] = float("-inf")
-        tril_mask[tril_mask == 1] = 0
-        causal_mask = tril_mask[causal_mask_idx]
-        causal_mask_padding = torch.empty([num_batch, max_seqlen_q, max_seqlen_k],
-                                        device=current_platform.device_type).fill_(float("-inf"))
-        causal_mask_padding[q_mask] = causal_mask
-        causal_mask_padding = causal_mask_padding.unsqueeze(1)
-
-        pad_q = torch.zeros(
-            [num_batch, max_seqlen_q, num_query_heads, head_dim],
-            device=current_platform.device_type,
-            dtype=query.dtype,
-        )
-        pad_k = torch.zeros(
-            [num_batch, max_seqlen_k, num_kv_heads, head_dim],
-            device=current_platform.device_type,
-            dtype=key.dtype,
-        )
-        pad_v = torch.zeros(
-            [num_batch, max_seqlen_k, num_kv_heads, head_dim],
-            device=current_platform.device_type,
-            dtype=value.dtype,
-        )
-        pad_q[q_mask] = query
-        pad_k[k_mask] = key[k_mask]
-        pad_v[k_mask] = value[k_mask]
-
-        if num_query_heads > num_kv_heads:
-            pad_k = pad_k.view(
-                [num_batch, max_seqlen_k, num_kv_heads, 1, head_dim])
-            pad_k = pad_k.repeat(1, 1, 1, num_query_heads // num_kv_heads, 1).view(
-                [num_batch, max_seqlen_k, num_query_heads, head_dim])
-            pad_v = pad_v.view(
-                [num_batch, max_seqlen_k, num_kv_heads, 1, head_dim])
-            pad_v = pad_v.repeat(1, 1, 1, num_query_heads // num_kv_heads, 1).view(
-                [num_batch, max_seqlen_k, num_query_heads, head_dim])
-        # permute to [b, h, n, k]
-        pad_q = pad_q.permute(0, 2, 1, 3)
-        pad_k = pad_k.permute(0, 2, 1, 3)
-        pad_v = pad_v.permute(0, 2, 1, 3)
-        attn_mask = torch.empty([num_batch, 1, 1, max_seqlen_k],
-                                device=current_platform.device_type).fill_(float("-inf"))
-        attn_mask[:, :, :, :max_seqlen_k].masked_fill_(k_mask[:, None, None, :], 0)
-        attn_weights = torch.einsum("bhqd,bhkd->bhqk", pad_q, pad_k)
-        attn_weights *= scale
-        attn_mask = attn_mask.float()
-        attn_weights = attn_weights + attn_mask
-        if causal:
-            attn_weights = attn_weights + causal_mask_padding
-
-        attn_weights = torch.softmax(attn_weights, dim=-1)
-        attn_output = torch.einsum("bhqk,bhkd->bhqd", attn_weights, pad_v.float())
-        attn_output = attn_output.permute(0, 2, 1, 3)
-
-        attn_output = (attn_output[q_mask].view([-1, num_query_heads,
-                                                head_dim]).to(output.dtype))
-        output = output.view_as(attn_output)
-        output.copy_(attn_output)
-        return attn_output
-
     def forward(
             self,
             layer: AttentionLayer,
@@ -587,12 +498,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
             cast_key = key.reshape(-1, 1, self.num_kv_heads * self.head_size)
             cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
 
-            if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+            if attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
                 torch_npu._npu_reshape_and_cache(
                     key,
                     value,
-                    self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size), 
-                    self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size), 
+                    self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                    self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
                     attn_metadata.slot_mapping.int()
                 )
             else:
@@ -707,22 +618,26 @@ class AscendAttentionBackendImpl(AttentionImpl):
             # use chunked prefill for head size 192 scenario, like deepseek
             # paged_attention_splitfuse maybe crash at such scenario
 
-            cu_seqlen_q = [0] + attn_metadata.query_lens.tolist()
-            cu_seqlen_k = [0] + attn_metadata.seq_lens.tolist()
-            cu_seqlen_q = torch.tensor(cu_seqlen_q, device=current_platform.device_type)
-            cu_seqlen_k = torch.tensor(cu_seqlen_k, device=current_platform.device_type)
-            cu_seqlen_q = torch.cumsum(cu_seqlen_q, dim=0)
-            cu_seqlen_k = torch.cumsum(cu_seqlen_k, dim=0)
-            max_seqlen_q = torch.max(attn_metadata.query_lens)
-            max_seqlen_k = torch.max(attn_metadata.seq_lens)
-            self.vanilla_chunked_prefill(output, query,
-                                    self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
-                                    self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size), 
-                                    attn_metadata.block_tables,
-                                    cu_seqlen_q, cu_seqlen_k,
-                                    max_seqlen_q, max_seqlen_k,
-                                    self.scale, None, True)
+            all_key = self.key_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index].contiguous()
+            all_value = self.value_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index].contiguous()
+            actual_seq_qlen = np.array(attn_metadata.query_lens).cumsum().tolist()
+            actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
+            attn_output = torch_npu.npu_fusion_attention(
+                query,
+                all_key,
+                all_value,
+                head_num=self.num_heads,
+                input_layout="TND",
+                scale=self.scale,
+                atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                sparse_mode=3,
+                actual_seq_qlen=actual_seq_qlen,
+                actual_seq_kvlen=actual_seq_kvlen,
+            )[0]
 
+            output = output.view_as(attn_output)
+            output.copy_(attn_output)
+            
         return output.view(num_tokens, self.hidden_size)
 
 
