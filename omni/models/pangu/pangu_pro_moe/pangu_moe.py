@@ -908,7 +908,7 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
 
         if vllm_config.quant_config is not None:
             # Will merge AscendQuantConfig_Pangu_Pro_Moe into AscendQuantConfig in later builds
-            from omni.models.pangu.pangu_pro_moe.quant_config_pangu_pro_moe import AscendQuantConfig_Pangu_Pro_Moe
+            from omni.quantization.pangu_test.quant_config_pangu_pro_moe import AscendQuantConfig_Pangu_Pro_Moe
             from omni.quantization import quantizer
             from vllm.model_executor.layers.quantization import _CUSTOMIZED_METHOD_TO_QUANT_CONFIG
             quantizer.AscendQuantConfig = AscendQuantConfig_Pangu_Pro_Moe
