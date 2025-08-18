@@ -20,9 +20,10 @@ from vllm.v1.sample.rejection_sampler import RejectionSampler as RejectionSample
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler as TopKTopPSampler
 from vllm.v1.sample.sampler import Sampler as SamplerV1
 from vllm.v1.outputs import SamplerOutput as SamplerOutputV1
+from vllm.v1.sample.ops.penalties import apply_min_token_penalties
 from vllm.sampling_params import SamplingType
 from vllm.sequence import Logprob, VLLM_INVALID_TOKEN_ID
-
+from omni.models.common.layers.npu_penalty_cache import PenaltyCache
 from omni.models.common.config.model_config import model_extra_config
 
 
@@ -729,7 +730,7 @@ def random_sample(
     if idx == None:
         return res
     else:
-        return idx[torch.arange(res.shape[0]), res]
+        return torch.gather(idx, 1, res.unsqueeze(1)).view(-1)
 class AscendTopKTopPSamplerV1(TopKTopPSampler):
     """
     Module that performs optional top-k and top-p filtering followed by
@@ -757,10 +758,67 @@ class AscendTopKTopPSamplerV1(TopKTopPSampler):
         probs = logits.softmax(dim=-1, dtype=torch.float32)
         return random_sample(probs, idx, generators, self.dsa_stream)
 
+def _apply_penalties_v1(logits: torch.Tensor, prompt_mask: torch.Tensor,
+                    output_mask: torch.Tensor,
+                    output_bin_counts: torch.Tensor,
+                    presence_penalties: torch.Tensor,
+                    frequency_penalties: torch.Tensor,
+                    repetition_penalties: torch.Tensor,
+                    do_presence_penalties,
+                    do_frequency_penalties,
+                    do_repetition_penalties) -> torch.Tensor:
+    num_seqs, vocab_size = logits.shape
+    if do_repetition_penalties:
+        repetition_penalties = (repetition_penalties - 1)[:, None].repeat(1, vocab_size)
+        repetition_penalties = repetition_penalties * (prompt_mask[:num_seqs] | output_mask[:num_seqs]) + 1
+        logits = torch.where(logits > 0, logits / repetition_penalties, logits * repetition_penalties)
+    
+    if do_frequency_penalties:
+        logits -= frequency_penalties.unsqueeze(dim=1) * output_bin_counts[:num_seqs]
+
+    if do_presence_penalties:
+        logits -= presence_penalties.unsqueeze(dim=1) * output_mask[:num_seqs]
+    
+    return logits
+
 class AscendSamplerV1(SamplerV1):
     def __init__(self):
         super().__init__()
         self.topk_topp_sampler = AscendTopKTopPSamplerV1()
+
+    def apply_penalties(
+            self,
+            logits: torch.Tensor,
+            sampling_metadata: SamplingMetadata,
+    ) -> torch.Tensor:
+        if sampling_metadata.min_tokens:
+            apply_min_token_penalties(logits,
+                                      sampling_metadata.output_token_ids,
+                                      sampling_metadata.min_tokens)
+        if not sampling_metadata.no_penalties:
+            assert sampling_metadata.prompt_token_ids is not None
+            logits = _apply_penalties_v1(
+                logits,
+                self.penalty_cache.prompt_mask,
+                self.penalty_cache.output_mask,
+                self.penalty_cache.output_bin_counts,
+                sampling_metadata.presence_penalties,
+                sampling_metadata.frequency_penalties,
+                sampling_metadata.repetition_penalties,
+                self.penalty_cache.do_presence_penalties,
+                self.penalty_cache.do_frequency_penalties,
+                self.penalty_cache.do_repetition_penalties
+            )
+        return logits
+    
+    def forward(
+            self,
+            logits: torch.Tensor,
+            sampling_metadata: SamplingMetadata,
+    ) -> SamplerOutput:
+        result = super().forward(logits, sampling_metadata)
+        self.penalty_cache.save_token_ids(result.sampled_token_ids)
+        return result
 
 class SimpleSampler(RejectionSamplerV1):
  
@@ -813,7 +871,8 @@ class SimpleSampler(RejectionSamplerV1):
             output_token_ids = forward_tokens.view(-1, 1)
             accepted_num = 0
         else:
-            accepted =  input_ids[logits_indices].view(batch_size, -1)[:,1:] == forward_tokens.view(batch_size, -1)[:,:-1]  # bool [batch_size, 1]
+            accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens.view(batch_size, -1)[:, :-1]
+            self.main_sampler.penalty_cache.revert_rejected_tokens(accepted, input_ids[logits_indices].view(batch_size, -1)[:, 1:])                                    
             if model_extra_config.operator_opt_config.control_accept_rate >= 0 and model_extra_config.operator_opt_config.control_accept_rate <= 1:
                 accepted = torch.empty_like(accepted, dtype=torch.float32).uniform_() < model_extra_config.operator_opt_config.control_accept_rate
 
