@@ -730,7 +730,7 @@ class DecodeConnectorWorker:
                     'remote_host_ip': meta.remote_host,
                 }
 
-                self.queues[cluster_id].put(task)
+                self.queues[cluster_ids[0]].put(task)
             else:
                 # Use ThreadPoolExecutor to handle the task
                 future = self.executor.submit(
