@@ -19,3 +19,5 @@ git apply --whitespace=nowarn $PATCH_ROOT/patch_support_prefilled_token_skip_tok
 git apply --whitespace=nowarn $PATCH_ROOT/common_dependency.patch
 git apply --whitespace=nowarn $PATCH_ROOT/omni_attn.patch
 git apply --whitespace=nowarn $PATCH_ROOT/chunk_prefill_enable.patch
+git apply --whitespace=nowarn $PATCH_ROOT/scheduler_abort_kv_loading_failure_request.patch
+git apply --whitespace=nowarn $PATCH_ROOT/tfas_patch_request.patch

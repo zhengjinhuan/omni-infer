@@ -631,12 +631,11 @@ class DecodeConnectorWorker:
             # If local_block_ids is a flat list of int, omni-attention is not used
             # and we can directly use the local_block_ids and remote_block_ids
             if isinstance(meta.local_block_ids[0], int):
-                # local_block_ids (kv blocks in D) is more than remote_block_ids (kv blocks in P), cannot correctly pull kv
-                # raise RuntimeError to stop the process
+                # local_block_ids (kv blocks in D) is more than remote_block_ids (kv blocks in P)
+                # leaded by lookahead num, which is used by eagle and multi step
                 if len(meta.remote_block_ids) < len(meta.local_block_ids):
-                    raise RuntimeError(
-                        f"Request {req_id} has fewer remote blocks ({len(meta.remote_block_ids)}) "
-                        f"than local blocks ({len(meta.local_block_ids)}).")
+                    meta.local_block_ids = meta.local_block_ids[:len(meta.remote_block_ids)]
+                    logger.debug("look ahead token num is greater than 0")
                 # If remote_block_ids is more than local_block_ids, we only need the last N remote blocks
                 # where N is the number of local blocks
                 elif len(meta.remote_block_ids) > len(meta.local_block_ids):
@@ -659,11 +658,11 @@ class DecodeConnectorWorker:
                 if len(meta.local_block_ids[0]) == 0:
                     logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
                     continue
-                # If remote_block_ids in P is less than local_block_ids[0] in D, raise RuntimeError to stop the process
+                # remote_block_ids in P is less than local_block_ids[0] in D, 
+                # leaded by lookahead num, which is used by eagle and multi step
                 elif len(meta.remote_block_ids[0]) < len(meta.local_block_ids[0]):
-                    raise RuntimeError(
-                        f"Request {req_id} has fewer remote blocks ({len(meta.remote_block_ids[0])}) "
-                        f"than local blocks ({len(meta.local_block_ids[0])}).")
+                    meta.local_block_ids[0] = meta.local_block_ids[0][:len(meta.remote_block_ids[0])]
+                    logger.debug("look ahead token num is greater than 0")
                 # If remote_block_ids in P is more than local_block_ids[0] in D, we only need the last N remote blocks
                 elif len(meta.remote_block_ids[0]) > len(meta.local_block_ids[0]):
                     meta.remote_block_ids[0] = meta.remote_block_ids[0][-len(meta.local_block_ids[0]):]

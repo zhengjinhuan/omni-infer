@@ -8,7 +8,7 @@ import torch.nn as nn
 import unittest
 import time
 import multiprocessing as mp
-from omni_planner.placement_handler import create_cluster_activation
+from ..omni_placement.placement_handler import create_cluster_activation
 import shutil
 import pytest
 

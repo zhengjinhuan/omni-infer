@@ -61,9 +61,10 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
+from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
 
 if model_extra_config.operator_opt_config.use_omni_placement:
-    from omni_planner import OmniPlanner
+    from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
 
 """NPU Stream Switch Names"""
 STREAM_SHARED_EXPERT = 'stream_shared_expert'
@@ -159,7 +160,8 @@ class DeepseekMoE(nn.Module):
         self.node_rank = get_world_group().rank_in_group // self.device_count
         self.which_half = get_world_group().rank_in_group // (get_world_group().world_size // 2)
 
-        self.n_routed_experts = config.n_routed_experts
+        n_routed_experts_names = ['num_routed_experts', 'n_routed_experts']
+        self.n_routed_experts = get_attr_by_names(config, n_routed_experts_names, 256)
         self.redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
         self.quant_symbol = quant_config is not None
         self.is_init_gate = False
@@ -184,7 +186,7 @@ class DeepseekMoE(nn.Module):
                                      quant_config=None,
                                      params_dtype=params_dtype,
                                      prefix=f"{prefix}.gate")
-        if config.topk_method == "noaux_tc":
+        if getattr(config, "topk_method", "topk") == "noaux_tc":
             self.gate.e_score_correction_bias = nn.Parameter(
                 torch.empty(self.n_routed_experts, dtype=torch.float), requires_grad=False)
         else:
@@ -192,11 +194,15 @@ class DeepseekMoE(nn.Module):
 
         self.top_k = config.num_experts_per_tok
         self.use_grouped_topk = True
-        self.renormalize = config.norm_topk_prob
-        self.topk_group = config.topk_group
-        self.num_expert_group = config.n_group
+        self.renormalize = getattr(config, "norm_topk_prob", True)
+        self.topk_group = getattr(config, "topk_group", 1)
+        self.num_expert_group = getattr(config, "n_group", 1)
         self.custom_routing_function = None
-        self.scoring_func = config.scoring_func
+        self.scoring_func = getattr(config, "scoring_func", "sigmoid")
+        n_shared_experts_names = ['num_shared_experts', 'n_shared_experts']
+        first_k_dense_replace_names = ['num_dense_layers', 'first_k_dense_replace']
+        self.n_shared_experts = get_attr_by_names(config, n_shared_experts_names, 1)
+        self.first_k_dense_replace = get_attr_by_names(config, first_k_dense_replace_names, 3)
         
         
         self.shared_experts = None
@@ -216,7 +222,7 @@ class DeepseekMoE(nn.Module):
                                            world_size=get_world_group().world_size,
                                            num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix)
+                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix, first_k_dense_replace=self.first_k_dense_replace)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
             self.experts = FusedMoE(
                 num_experts=self.n_routed_experts,
@@ -235,11 +241,11 @@ class DeepseekMoE(nn.Module):
                 planner=self.planner,
                 moe_layer_idx=self.moe_layer_idx,
                 expert_mapping=self.expert_mapping,
-				first_k_dense_replace=config.first_k_dense_replace
+				first_k_dense_replace=self.first_k_dense_replace
             )
-        if config.n_shared_experts is not None and \
+        if self.n_shared_experts is not None and \
             (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
-            intermediate_size = config.moe_intermediate_size * config.n_shared_experts
+            intermediate_size = config.moe_intermediate_size * self.n_shared_experts
             # omni placement for redundancy shared experts
             if self.redundancy_shared_expert_num > 0 and model_extra_config.operator_opt_config.use_omni_placement:
                 # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
@@ -247,7 +253,7 @@ class DeepseekMoE(nn.Module):
                                            rank=self.global_rank, world_size=self.ep_size,
                                            num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=config.first_k_dense_replace)
+                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=self.first_k_dense_replace)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
 
             self.shared_experts = ReplicatedDeepseekMLP(
