@@ -268,12 +268,17 @@ class NPUPlatform(Platform):
         update_utils_custom_op()
         super().__init__()
 
-    def is_sleep_mode_available(self) -> bool:
+    @classmethod
+    def is_sleep_mode_available(cls) -> bool:
         """Check if sleep mode is available for NPU.
 
         Returns:
             bool: Always True for NPU.
         """
+        import omni.adaptors.vllm.envs as envs_ascend
+        if not envs_ascend.VLLM_ENABLE_SLEEP_MODE:
+            return False
+
         return True
 
     @classmethod
