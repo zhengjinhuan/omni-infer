@@ -289,6 +289,8 @@ class NPUWorker(WorkerBase):
             self.profiler.stop()
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            self.model_runner.planner.place_experts()
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
 

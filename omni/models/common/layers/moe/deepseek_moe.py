@@ -60,10 +60,11 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 )
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_w8a8_moe_dispatch_combine
+from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
+from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
 
 if model_extra_config.operator_opt_config.use_omni_placement:
-    from omni_planner import OmniPlanner
+    from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
 
 """NPU Stream Switch Names"""
 STREAM_SHARED_EXPERT = 'stream_shared_expert'
@@ -159,7 +160,8 @@ class DeepseekMoE(nn.Module):
         self.node_rank = get_world_group().rank_in_group // self.device_count
         self.which_half = get_world_group().rank_in_group // (get_world_group().world_size // 2)
 
-        self.n_routed_experts = config.n_routed_experts
+        n_routed_experts_names = ['num_routed_experts', 'n_routed_experts']
+        self.n_routed_experts = get_attr_by_names(config, n_routed_experts_names, 256)
         self.redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
         self.quant_symbol = quant_config is not None
         self.is_init_gate = False
@@ -184,7 +186,7 @@ class DeepseekMoE(nn.Module):
                                      quant_config=None,
                                      params_dtype=params_dtype,
                                      prefix=f"{prefix}.gate")
-        if config.topk_method == "noaux_tc":
+        if getattr(config, "topk_method", "topk") == "noaux_tc":
             self.gate.e_score_correction_bias = nn.Parameter(
                 torch.empty(self.n_routed_experts, dtype=torch.float), requires_grad=False)
         else:
@@ -192,11 +194,15 @@ class DeepseekMoE(nn.Module):
 
         self.top_k = config.num_experts_per_tok
         self.use_grouped_topk = True
-        self.renormalize = config.norm_topk_prob
-        self.topk_group = config.topk_group
-        self.num_expert_group = config.n_group
+        self.renormalize = getattr(config, "norm_topk_prob", True)
+        self.topk_group = getattr(config, "topk_group", 1)
+        self.num_expert_group = getattr(config, "n_group", 1)
         self.custom_routing_function = None
-        self.scoring_func = config.scoring_func
+        self.scoring_func = getattr(config, "scoring_func", "sigmoid")
+        n_shared_experts_names = ['num_shared_experts', 'n_shared_experts']
+        first_k_dense_replace_names = ['num_dense_layers', 'first_k_dense_replace']
+        self.n_shared_experts = get_attr_by_names(config, n_shared_experts_names, 1)
+        self.first_k_dense_replace = get_attr_by_names(config, first_k_dense_replace_names, 3)
         
         
         self.shared_experts = None
@@ -216,7 +222,7 @@ class DeepseekMoE(nn.Module):
                                            world_size=get_world_group().world_size,
                                            num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix)
+                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix, first_k_dense_replace=self.first_k_dense_replace)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
             self.experts = FusedMoE(
                 num_experts=self.n_routed_experts,
@@ -235,11 +241,11 @@ class DeepseekMoE(nn.Module):
                 planner=self.planner,
                 moe_layer_idx=self.moe_layer_idx,
                 expert_mapping=self.expert_mapping,
-				first_k_dense_replace=config.first_k_dense_replace
+				first_k_dense_replace=self.first_k_dense_replace
             )
-        if config.n_shared_experts is not None and \
+        if self.n_shared_experts is not None and \
             (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
-            intermediate_size = config.moe_intermediate_size * config.n_shared_experts
+            intermediate_size = config.moe_intermediate_size * self.n_shared_experts
             # omni placement for redundancy shared experts
             if self.redundancy_shared_expert_num > 0 and model_extra_config.operator_opt_config.use_omni_placement:
                 # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
@@ -247,7 +253,7 @@ class DeepseekMoE(nn.Module):
                                            rank=self.global_rank, world_size=self.ep_size,
                                            num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=config.first_k_dense_replace)
+                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=self.first_k_dense_replace)
                 self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
 
             self.shared_experts = ReplicatedDeepseekMLP(
@@ -264,11 +270,15 @@ class DeepseekMoE(nn.Module):
             self.w2_prefetch_size = 0
             self.local_expert_num = self.experts.w13_weight.shape[0]
             if self.quant_symbol:
-                self.in_scale_2 = torch.ones((self.local_expert_num, self.experts.w13_weight_scale.shape[-1] // 2), dtype=torch.float32, device=current_platform.device_type)
+                self.in_scale_2 = torch.ones((self.local_expert_num, config.moe_intermediate_size), dtype=torch.float32, device=current_platform.device_type)
                 # call the mark_static to reduce memory usage
                 torch._dynamo.mark_static(self.in_scale_2)
                 if self.ep_size > 64:
                     self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
+
+        self.tuning_config = None
+        if model_extra_config.operator_opt_config.gmm_nz:
+            self.tuning_config = model_extra_config.operator_opt_config.decode_gear_list[:1]
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         if self.redundancy_shared_expert_num > 0:
@@ -494,8 +504,16 @@ class DeepseekMoE(nn.Module):
         weight1_3 = self.experts.w13_weight
         weight2 = self.experts.w2_weight
         if self.quant_symbol:
-            weight_scale1_3 = self.experts.w13_weight_scale
-            weight_scale2 = self.experts.w2_weight_scale
+            if self.experts.weight_num_bits == 8:
+                weight_scale1_3 = self.experts.w13_weight_scale
+                weight_scale2 = self.experts.w2_weight_scale
+            elif self.experts.weight_num_bits == 4:
+                weight_scale1_3 = self.experts.w13_weight_int4_scale
+                weight_scale2 = self.experts.w2_weight_int4_scale
+                weight_bias1_3 = self.experts.w13_weight_bias
+                weight_bias2 = self.experts.w2_weight_bias
+            else:
+                raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.weight_num_bits}")
 
             if self.experts.quant_mode:  # 0: no quant 1: static quant 2: dynamic quant
                 pertoken_scale = dynamic_scale
@@ -510,19 +528,52 @@ class DeepseekMoE(nn.Module):
             intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
         if self.quant_symbol:
             # w8a8
-            gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
-                                                        split_item=3, output_dtype=torch.int32, group_type=0,
-                                                        group_list_type=1)[0]
-            
-            gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-                gate_up_proj, weight_scale=weight_scale1_3, activation_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
-                group_index=group_list, activate_left=True, quant_mode=1)
+            if self.experts.weight_num_bits == 8:
+                gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
+                                                            split_item=3, output_dtype=torch.int32, group_type=0,
+                                                            group_list_type=1)[0]
 
-            hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
-                                            per_token_scale=[pertoken_scale],bias=None,
-                                            group_list=group_list, split_item=3, output_dtype=act_dtype,
-                                            group_type=0,
-                                            group_list_type=1)[0]
+                gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
+                    gate_up_proj, weight_scale=weight_scale1_3, activation_scale=pertoken_scale, bias=None, quant_scale=self.in_scale_2, quant_offset=None,
+                    group_index=group_list, activate_left=True, quant_mode=1)
+
+                hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
+                                                per_token_scale=[pertoken_scale],bias=None,
+                                                group_list=group_list, split_item=3, output_dtype=act_dtype,
+                                                group_type=0,
+                                                group_list_type=1)[0]
+            elif self.experts.weight_num_bits == 4:
+                gate_up_proj = \
+                    torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=[weight_bias1_3], scale=[weight_scale1_3],
+                                                 offset=None, antiquant_scale=None, antiquant_offset=None,
+                                                 per_token_scale=[pertoken_scale],
+                                                 group_list=group_list,
+                                                 activation_input=None, activation_quant_scale=None,
+                                                 activation_quant_offset=None, split_item=3, group_type=0,
+                                                 group_list_type=1, act_type=0,
+                                                 tuning_config=self.tuning_config, output_dtype=torch.bfloat16)[0]
+
+                fake_scale = torch.ones(weight_bias1_3.shape, dtype=torch.float32, device="npu").view(-1,weight_bias1_3.shape[1])
+                pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
+                gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj,
+                                                                                  weight_scale=fake_scale,
+                                                                                  activation_scale=pertoken_scale,
+                                                                                  bias=None, quant_scale=None,
+                                                                                  quant_offset=None,
+                                                                                  group_index=group_list,
+                                                                                  activate_left=True,
+                                                                                  quant_mode=1)
+
+                hidden_states_experts = torch_npu.npu_grouped_matmul([gate_up_proj], [weight2], scale=[weight_scale2],
+                                                                     per_token_scale=[pertoken_scale],
+                                                                     bias=[weight_bias2],
+                                                                     group_list=group_list, split_item=3,
+                                                                     output_dtype=act_dtype,
+                                                                     group_type=0,
+                                                                     group_list_type=1,
+                                                                     tuning_config=self.tuning_config)[0]
+            else:
+                raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.weight_num_bits}")
         else:
             # bf16
             gate_up_proj = torch_npu.npu_grouped_matmul([expand_x], [weight1_3], bias=None, group_list=group_list,
@@ -622,7 +673,7 @@ class DeepseekMoE(nn.Module):
         if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
             fake_topk_ids = attn_metadata.decode.best_topk
             topk_ids = tng.scope.npu_wait_tensor(fake_topk_ids, topk_ids)
-        hidden_states = fused_experts_w8a8_moe_dispatch_combine(self.shared_experts or self.experts,
+        hidden_states = fused_experts_moe_dispatch_combine(self.shared_experts or self.experts,
                                                                 hidden_states,
                                                                 topk_weights,
                                                                 topk_ids,

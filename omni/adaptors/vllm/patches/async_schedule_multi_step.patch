@@ -466,7 +466,7 @@ index 6b30854cc8..4d9b53dd61 100644
 +                    new_tokens = output.sampled_token_ids[-1][req_idx]
 +                    spec_tokens = None
 +                    len_spec_tokens = 0
-+                    if output.spec_token_ids is not None:
++                    if output.spec_token_ids is not None and output.spec_token_ids[-1] is not None:
 +                        spec_tokens = output.spec_token_ids[-1][req_idx]
 +                        len_spec_tokens = len(spec_tokens)
 +                    if len(each_cached_req.new_token_ids) != self.cur_batch.num_scheduled_tokens[each_cached_req.req_id]:

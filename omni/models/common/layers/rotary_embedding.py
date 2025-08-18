@@ -119,6 +119,12 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
 
         return cos, sin
         # Adapt end.
+    
+    def get_cos_sin(self, positions: torch.Tensor, offsets: Optional[torch.Tensor] = None):
+        positions = torch.add(positions, offsets) if offsets is not None else positions
+        cos = self.cos[positions].view(-1, 1, 1, self.cos.shape[-1]) # bnsd
+        sin = self.sin[positions].view(-1, 1, 1, self.sin.shape[-1])
+        return cos, sin
 
     def forward_impl(
             self, seq_len: int, n_elem: int):
