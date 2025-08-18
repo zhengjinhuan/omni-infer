@@ -41,13 +41,13 @@ def execute_command(command):
 def start_omni_service_in_normal_mode(config_path):
     """Run the omni service in normal mode."""
     transform_deployment_config(config_path)
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags fetch_log"
+    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags 'sync_code,pip_install,fetch_log'"
     execute_command(command)
 
 def prepare_omni_service_in_developer_mode(config_path):
     """In developer mode, preparing to run the omni service."""
     transform_deployment_config(config_path)
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags 'run_server,fetch_log'"
+    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags 'sync_code,pip_install,run_server,fetch_log'"
     execute_command(command)
 
 def run_omni_service_in_developer_mode():
