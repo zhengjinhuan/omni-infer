@@ -529,6 +529,10 @@ class NPUModelRunner(GPUModelRunner):
         output.loading_kv_failure = loading_kv_failure
         return output
 
+    def load_kv_cache(self, info_load_reqs) -> List[int]:
+        result = self.ems_adapter.load(info_load_reqs)
+        return result
+
     @staticmethod
     def get_loading_kv_failure_req_ids() -> Optional[set[str]]:
         if has_kv_transfer_group():
