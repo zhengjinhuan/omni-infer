@@ -30,6 +30,7 @@ from torch.library import Library
 
 from vllm import utils
 from vllm.utils import vllm_lib
+from vllm.distributed.parallel_state import get_ep_group
 from vllm.distributed import get_tensor_model_parallel_rank
 from vllm.model_executor.layers.fused_moe import (
     FusedMoE,
@@ -84,6 +85,145 @@ def ascend_direct_register_custom_op(
         my_lib._register_fake(op_name, fake_impl)
 
 utils.direct_register_custom_op = ascend_direct_register_custom_op
+
+def fused_experts(
+    hidden_states: torch.Tensor,
+    w1: torch.Tensor,
+    w1_scale: torch.Tensor,
+    w1_input_scale: torch.Tensor,
+    w1_input_offset: torch.Tensor,
+    w2: torch.Tensor,
+    w2_scale: torch.Tensor,
+    w2_input_scale: torch.Tensor,
+    w2_input_offset: torch.Tensor,
+    topk_weights: torch.Tensor,
+    topk_ids: torch.Tensor,
+    top_k: int,
+    global_num_experts: int,
+    expert_map: torch.Tensor = None,
+) -> torch.Tensor:
+    """
+    Fused experts with top-k routing.
+
+    Args:
+        hidden_states: Hidden states of shape (num_tokens, hidden_size).
+        w1: Expert weights1 of shape (num_experts, intermediate_size * 2, hidden_size).
+        w2: Expert weights2 of shape (num_experts, hidden_size, intermediate_size).
+        topk_weights: Routing weights of shape (num_tokens, top_k).
+        topk_ids: Selected expert IDs of shape (num_tokens, top_k).
+        top_k: Number of experts to select.
+        expert_map: Expert mapping of shape (num_experts,).
+
+    Returns:
+        hidden_states: Hidden states after routing.
+    """
+    """
+    # Check constraints.
+    assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
+    assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
+    assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
+    assert w1.is_contiguous(), "Expert weights1 must be contiguous"
+    assert w2.is_contiguous(), "Expert weights2 must be contiguous"
+    """
+
+    original_dtype = hidden_states.dtype
+    ep_size = get_ep_group().world_size
+    local_num_experts = global_num_experts // ep_size
+    w1_input_scale, _ = w1_input_scale.max(0)
+    quant_sorted_hidden_states = quant_per_tensor(
+        hidden_states,
+        w1_input_scale,
+        None,
+        True,
+    )
+    if expert_map is not None:
+        expanded_x, expanded_row_idx, expert_token_count, expanded_scale = torch_npu.npu_moe_init_routing_v2(
+            quant_sorted_hidden_states,
+            topk_ids,
+            scale=None,
+            active_num=topk_ids.numel(),
+            expert_capacity=-1,
+            expert_num=local_num_experts,
+            drop_pad_mode=0,
+            expert_tokens_num_type=1,
+            expert_tokens_num_flag=True,
+            quant_mode=-1,
+            active_expert_range=[0, local_num_experts],
+            row_idx_type=0,
+        )
+
+    else:
+        raise NotImplementedError(
+            "The quantified version of MOE class models "
+            "currently does not support tensor parallelism")
+    if expanded_x.dtype != w1.dtype:
+        w1_input_scale, _ = w1_input_scale.max(0)
+        quant_sorted_hidden_states = quant_per_tensor(
+            expanded_x,
+            w1_input_scale,
+            None,
+            True,
+        )
+    else:
+        quant_sorted_hidden_states = expanded_x
+    gate_up_out = torch_npu.npu_grouped_matmul(
+        x=[quant_sorted_hidden_states],
+        weight=[w1],
+        scale=[w1_scale * w1_input_scale[0]],
+        split_item=2,
+        group_list_type=1,
+        group_type=0,
+        group_list=expert_token_count,
+        output_dtype=original_dtype,
+    )[0]
+    gate_up_out = torch_npu.npu_swiglu(gate_up_out)
+
+    if gate_up_out.dtype != w2.dtype:
+        w2_input_scale, _ = w2_input_scale.max(0)
+        quant_gate_up_out = quant_per_tensor(
+            gate_up_out,
+            w2_input_scale,
+            None,
+            True,
+        )
+    else:
+        quant_gate_up_out = gate_up_out
+
+    down_out = torch_npu.npu_grouped_matmul(
+        x=[quant_gate_up_out],
+        weight=[w2],
+        scale=[w2_scale * w2_input_scale[0]],
+        split_item=2,
+        group_list_type=1,
+        group_type=0,
+        group_list=expert_token_count,
+        output_dtype=original_dtype,
+    )[0]
+
+    if expert_map is not None:
+        final_hidden_states = torch_npu.npu_moe_finalize_routing(
+            down_out,
+            skip1=None,
+            skip2=None,
+            bias=None,
+            scales=topk_weights.to(down_out.dtype),
+            expanded_src_to_dst_row=expanded_row_idx,
+            export_for_source_row=topk_ids,
+            drop_pad_mode=2,
+        )
+    else:
+        raise NotImplementedError(
+            "The quantified version of MOE class models "
+            "currently does not support tensor parallelism")
+
+    return final_hidden_states
+
+def quant_per_tensor(in_tensor: torch.Tensor,
+                     input_scale: torch.Tensor,
+                     input_offset: torch.Tensor,
+                     function=False):
+    return torch_npu.npu_quantize(in_tensor, input_scale, input_offset,
+                                  torch.qint8, -1, function)
 
 @register_quantization_config(ASCEND_W8A8_STATIC)
 class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
@@ -173,13 +313,6 @@ class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
         return []
 
 
-def quant_per_tensor(in_tensor: torch.Tensor,
-                     input_scale: torch.Tensor,
-                     input_offset: torch.Tensor,
-                     function=False):
-    return torch_npu.npu_quantize(in_tensor, input_scale, input_offset,
-                                  torch.qint8, -1, function)
-
 
 class AscendLinearMethod(LinearMethodBase):
     """Linear method for Ascend quantization.
@@ -235,7 +368,7 @@ class AscendLinearMethod(LinearMethodBase):
             "weight_scale": torch.empty(output_size_per_partition, 1, dtype=params_dtype),
             "weight_offset": torch.empty(output_size_per_partition, 1, dtype=params_dtype)
         }
-         if params_dtype == torch.bfloat16:
+        if params_dtype == torch.bfloat16:
             perchannel_dict["deq_scale"] = torch.empty(output_size_per_partition, dtype=torch.float32)
         elif params_dtype == torch.float16:
             perchannel_dict["deq_scale"] = torch.empty(output_size_per_partition, dtype=torch.int64)
@@ -418,139 +551,6 @@ class AscendKVCacheMethod(BaseKVCacheMethod):
                                       "implemented for "
                                       "other case")
         return output
-
-
-def fused_experts(
-    hidden_states: torch.Tensor,
-    w1: torch.Tensor,
-    w1_scale: torch.Tensor,
-    w1_input_scale: torch.Tensor,
-    w1_input_offset: torch.Tensor,
-    w2: torch.Tensor,
-    w2_scale: torch.Tensor,
-    w2_input_scale: torch.Tensor,
-    w2_input_offset: torch.Tensor,
-    topk_weights: torch.Tensor,
-    topk_ids: torch.Tensor,
-    top_k: int,
-    global_num_experts: int,
-    expert_map: torch.Tensor = None,
-) -> torch.Tensor:
-    """
-    Fused experts with top-k routing.
-
-    Args:
-        hidden_states: Hidden states of shape (num_tokens, hidden_size).
-        w1: Expert weights1 of shape (num_experts, intermediate_size * 2, hidden_size).
-        w2: Expert weights2 of shape (num_experts, hidden_size, intermediate_size).
-        topk_weights: Routing weights of shape (num_tokens, top_k).
-        topk_ids: Selected expert IDs of shape (num_tokens, top_k).
-        top_k: Number of experts to select.
-        expert_map: Expert mapping of shape (num_experts,).
-
-    Returns:
-        hidden_states: Hidden states after routing.
-    """
-    """
-    # Check constraints.
-    assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
-    assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
-    assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
-    assert w1.is_contiguous(), "Expert weights1 must be contiguous"
-    assert w2.is_contiguous(), "Expert weights2 must be contiguous"
-    """
-
-    original_dtype = hidden_states.dtype
-    ep_size = get_ep_group().world_size
-    local_num_experts = global_num_experts // ep_size
-    w1_input_scale, _ = w1_input_scale.max(0)
-    quant_sorted_hidden_states = quant_per_tensor(
-        hidden_states,
-        w1_input_scale,
-        None,
-        True,
-    )
-    if expert_map is not None:
-        expanded_x, expanded_row_idx, expert_token_count, expanded_scale = torch_npu.npu_moe_init_routing_v2(
-            quant_sorted_hidden_states,
-            topk_ids,
-            scale=None,
-            active_num=topk_ids.numel(),
-            expert_capacity=-1,
-            expert_num=local_num_experts,
-            drop_pad_mode=0,
-            expert_tokens_num_type=1,
-            expert_tokens_num_flag=True,
-            quant_mode=-1,
-            active_expert_range=[0, local_num_experts],
-            row_idx_type=0,
-        )
-
-    else:
-        raise NotImplementedError(
-            "The quantified version of MOE class models "
-            "currently does not support tensor parallelism")
-    if expanded_x.dtype != w1.dtype:
-        w1_input_scale, _ = w1_input_scale.max(0)
-        quant_sorted_hidden_states = quant_per_tensor(
-            expanded_x,
-            w1_input_scale,
-            None,
-            True,
-        )
-    else:
-        quant_sorted_hidden_states = expanded_x
-    gate_up_out = torch_npu.npu_grouped_matmul(
-        x=[quant_sorted_hidden_states],
-        weight=[w1],
-        scale=[w1_scale * w1_input_scale[0]],
-        split_item=2,
-        group_list_type=1,
-        group_type=0,
-        group_list=expert_token_count,
-        output_dtype=original_dtype,
-    )[0]
-    gate_up_out = torch_npu.npu_swiglu(gate_up_out)
-
-    if gate_up_out.dtype != w2.dtype:
-        w2_input_scale, _ = w2_input_scale.max(0)
-        quant_gate_up_out = quant_per_tensor(
-            gate_up_out,
-            w2_input_scale,
-            None,
-            True,
-        )
-    else:
-        quant_gate_up_out = gate_up_out
-
-    down_out = torch_npu.npu_grouped_matmul(
-        x=[quant_gate_up_out],
-        weight=[w2],
-        scale=[w2_scale * w2_input_scale[0]],
-        split_item=2,
-        group_list_type=1,
-        group_type=0,
-        group_list=expert_token_count,
-        output_dtype=original_dtype,
-    )[0]
-
-    if expert_map is not None:
-        final_hidden_states = torch_npu.npu_moe_finalize_routing(
-            down_out,
-            skip1=None,
-            skip2=None,
-            bias=None,
-            scales=topk_weights.to(down_out.dtype),
-            expanded_src_to_dst_row=expanded_row_idx,
-            export_for_source_row=topk_ids,
-            drop_pad_mode=2,
-        )
-    else:
-        raise NotImplementedError(
-            "The quantified version of MOE class models "
-            "currently does not support tensor parallelism")
-
-    return final_hidden_states
 
 
 class AscendFusedMoEMethod(FusedMoEMethodBase):
