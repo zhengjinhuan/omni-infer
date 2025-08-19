@@ -173,8 +173,8 @@ def get_omni_hybrid_kv_cache_spec(self: GPUModelRunner) -> dict[str, KVCacheSpec
             if PATTERN[layer_idx] == 1:
                 kv_cache_spec[layer_name] = OmniAttentionSpec(
                     block_size=block_size,
-                    num_kv_heads=1 if use_mla else attn_module.num_kv_heads,
-                    head_size=512+64 if use_mla else attn_module.head_size,
+                    num_kv_heads=attn_module.num_kv_heads,
+                    head_size=attn_module.head_size,
                     dtype=self.kv_cache_dtype,
                     use_mla=use_mla,
                     sink_blocks=SINK,
@@ -182,8 +182,8 @@ def get_omni_hybrid_kv_cache_spec(self: GPUModelRunner) -> dict[str, KVCacheSpec
             else:
                 kv_cache_spec[layer_name] = FullAttentionSpec(
                     block_size=block_size,
-                    num_kv_heads=1 if use_mla else attn_module.num_kv_heads,
-                    head_size=512+64 if use_mla else attn_module.head_size,
+                    num_kv_heads=attn_module.num_kv_heads,
+                    head_size=attn_module.head_size,
                     dtype=self.kv_cache_dtype,
                     use_mla=use_mla)
         else:

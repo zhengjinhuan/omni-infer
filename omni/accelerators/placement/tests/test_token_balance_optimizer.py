@@ -11,9 +11,9 @@ import random
 import time
 from unittest.mock import MagicMock, patch
 
-from omni_planner.cluster_status import ClusterStatus
-from omni_planner.expert_mapping import ExpertMapping
-from omni_planner.optim.token_balance_optimizer import TokenBalance
+from ..omni_placement.cluster_status import ClusterStatus
+from ..omni_placement.expert_mapping import ExpertMapping
+from ..omni_placement.optim.token_balance_optimizer import TokenBalance
 
 # device = torch.device('npu' if torch.npu.is_available() else 'cpu')
 device = 'cpu'

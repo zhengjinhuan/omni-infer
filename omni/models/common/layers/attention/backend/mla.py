@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional, List, Type, TypeVar, Dict
 import itertools
 import numpy as np
 import torch
+import torch_npu
 
 from vllm.attention.backends.abstract import (
     AttentionBackend,
@@ -29,7 +30,7 @@ from omni.models.common.layers.attention.backend.attention import AscendAttentio
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
-
+from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
 
 def group_request_list(seq_lens, query_lens, block_tables, threshold):
     s_lens_result = []
@@ -87,18 +88,26 @@ class AscendMLABackend(AttentionBackend):
     def init_kv_cache_each_layer(kv_cache_shape, dtype, device, model_config: "ModelConfig", enable_graph_mode) -> tuple[torch.Tensor, ...]:
         # KVCache needs to store the shape of the reduced dimension as [num_blocks, block_size, 1, kv_lora_rank] [num_blocks, block_size, 1, rope_dim]
         # The shape of the augmented dimension is [num_blocks, block_size, head_num, head_dim]
+        kv_lora_dim_names = ['attention_kv_lora_dim', 'kv_lora_rank']
+        qk_rope_dim_names = ['attention_qk_rope_dim', 'qk_rope_head_dim']
+        kv_lora_dim = get_attr_by_names(model_config.hf_text_config, kv_lora_dim_names, 0)
+        qk_rope_dim = get_attr_by_names(model_config.hf_text_config, qk_rope_dim_names, 0)
         layer_kv_cache_nope = torch.zeros(
                         kv_cache_shape[:-2] +
-                        (1, model_config.hf_config.kv_lora_rank, ),
-                        dtype=dtype,
+                        (1, kv_lora_dim, ),
+                        dtype=dtype if not model_extra_config.operator_opt_config.fa_quant else torch.int8,
                         pin_memory=True,
                         device=device)
         layer_kv_cache_pe = torch.zeros(
                             kv_cache_shape[:-2] +
-                            (1, model_config.hf_config.qk_rope_head_dim, ),
+                            (1, qk_rope_dim, ),
                             dtype=dtype,
                             pin_memory=True,
                             device=device)
+        if device != 'cpu':
+            # force tensor format to ND
+            layer_kv_cache_nope = torch_npu.npu_format_cast(layer_kv_cache_nope, 2)
+            layer_kv_cache_pe = torch_npu.npu_format_cast(layer_kv_cache_pe, 2)
         return (layer_kv_cache_nope, layer_kv_cache_pe)
 
 @dataclass
