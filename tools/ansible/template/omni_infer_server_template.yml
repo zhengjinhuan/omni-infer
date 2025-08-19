@@ -1061,7 +1061,9 @@
         exit 0
       delegate_to: "{{ inventory_hostname }}"
       become: yes
-      when: "'P' in group_names or 'D' in group_names"
+      when: 
+        - "'P' in group_names or 'D' in group_names"
+        - "proc_bind_enabled | default(false)"
       tags:
         - proc_bind
     
@@ -1070,6 +1072,8 @@
         path: ${CODE_PATH}/omniinfer/tools/scripts/bind_cpu.sh
         mode: "0755"
       become: yes
+      when:
+        - "proc_bind_enabled | default(false)"
       tags:
         - proc_bind
     
@@ -1080,7 +1084,9 @@
         SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
         ROLE: "P"
       become: yes
-      when: "'P' in group_names"
+      when: 
+        - "'P' in group_names"
+        - "proc_bind_enabled | default(false)"
       tags:
         - proc_bind
     
@@ -1091,7 +1097,9 @@
         SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
         ROLE: "D"
       become: yes
-      when: "'D' in group_names"
+      when: 
+        - "'D' in group_names"
+        - "proc_bind_enabled | default(false)"
       tags:
         - proc_bind
 
