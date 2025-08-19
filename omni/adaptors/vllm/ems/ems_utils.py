@@ -26,10 +26,8 @@ class EmsKeyGenerator:
 class EmsKVCacheManager:
     """KV缓存管理器，负责KV缓存的初始化和访问"""
 
-    def __init__(self, model_type):
+    def __init__(self):
         # KV缓存初始化参数
-        self._is_integrated_kv = "deepseek" in model_type and not EmsEnv.is_moe_kv_split
-        self._is_dict_format = False
         self._kvcache_initialized = False
         self._key_size = 0
         self._value_size = 0
@@ -54,18 +52,9 @@ class EmsKVCacheManager:
         
         # 首次调用时初始化缓存参数
         if not self._kvcache_initialized:
-            first_cache = kv_caches[0]
-            self._is_dict_format = isinstance(first_cache, dict)
-            logger.info(
-                f"[EMS] Init kvcache - kvcache is dict format ? {self._is_dict_format}, "
-                f"kvcache is integrated kv ? {self._is_integrated_kv}.")
-            if self._is_dict_format:
-                target_kv_caches = [kv_cache["kv_cache"] for kv_cache in kv_caches]
-            else:
-                target_kv_caches = kv_caches
             self._block_num = len(kv_caches[0][1])
             self._block_addr_list = [[] for _ in range(self._block_num)]
-            self._initialize_format_kvcache(target_kv_caches)
+            self._initialize_format_kvcache(kv_caches)
             self._kvcache_initialized = True
             logger.info(
                 f"[EMS] Init kvcache finished - key_size: {self._key_size}, value_size: {self._value_size},"
@@ -84,16 +73,14 @@ class EmsKVCacheManager:
         first_layer_cache = kv_caches[0]
         # 提取参考块的元数据
         first_layer_k_cache = first_layer_cache[0]
-        first_layer_v_cache = None if self._is_integrated_kv else first_layer_cache[1]
+        first_layer_v_cache = first_layer_cache[1]
 
         self._key_size = first_layer_k_cache[0].element_size() * first_layer_k_cache[0].numel()
-        # 如果不是MOE模型，计算v_cache的大小
-        if first_layer_v_cache is not None:
-            self._value_size = first_layer_v_cache[0].element_size() * first_layer_v_cache[0].numel()
+        self._value_size = first_layer_v_cache[0].element_size() * first_layer_v_cache[0].numel()
 
         for layer_cache in kv_caches:
             layer_k = layer_cache[0]
-            layer_v = None if self._is_integrated_kv else layer_cache[1]
+            layer_v = layer_cache[1]
             for block_id in range(self._block_num):
                 if self._value_size == 0:
                     self._block_addr_list[block_id].extend(

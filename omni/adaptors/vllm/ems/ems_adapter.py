@@ -2,7 +2,7 @@
 
 import time
 import threading
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import torch
 from ems import Ems, EmsConfig, ContextCaching, CcConfig, CcKvOption, KvBufferWrapper, EmsException
@@ -31,7 +31,7 @@ class EmsAdapter:
         tp_rank = rank if not self.is_mla else 0
         self.key_generator = EmsKeyGenerator(self.vllm_config.parallel_config.pipeline_parallel_size,
                                              self.vllm_config.parallel_config.tensor_parallel_size, tp_rank)
-        self.kvcache_manager = EmsKVCacheManager(vllm_config.model_config.hf_config.model_type)
+        self.kvcache_manager = EmsKVCacheManager()
         self.status_checker = EmsStatusChecker()
         self.context_caching = self._init_ems_cc(local_rank, rank)
         self.save_events = {}
