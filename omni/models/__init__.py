@@ -8,7 +8,7 @@ import os
 import os
 if os.getenv("PROFILING_NAMELIST", None):
     print("<<<Profiler patch environmental variable is enabled, applying profiler patches.")
-    from omni.adaptors.vllm.patches.profiler_patches import apply_profiler_patches
+    from omni.tools.profiler import apply_profiler_patches
 
 
 def register_model():

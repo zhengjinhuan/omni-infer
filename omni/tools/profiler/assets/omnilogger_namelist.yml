@@ -4,13 +4,13 @@ targets:
     function_name: _preprocess_chat
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       raw_request_id = args[0].raw_request_id
       if os.getenv('ROLE') == "prefill":
           safe_print(trace_output_directory, f"<<<Action: Get prefill engine request and start pickle; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       raw_request_id = args[0].raw_request_id
       if os.getenv('ROLE') == "prefill":
           safe_print(trace_output_directory, f"<<<Action: Finish process request in prefill engine; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
@@ -19,7 +19,7 @@ targets:
     function_name: create_chat_completion
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       raw_request_id = "chatcmpl-" + args[1].headers.get('X-Request-Id')
       args[0].raw_request_id = raw_request_id
       if os.getenv('ROLE') == "prefill":
@@ -31,7 +31,7 @@ targets:
     function_name: add_request
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       if os.getenv('ROLE') == "prefill":
           safe_print(trace_output_directory, f"<<<Action: Prefill add waiting queue; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
 
@@ -40,7 +40,7 @@ targets:
     function_name: _update_from_kv_xfer_finished
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       for req_id in (args[0].finished_sending or ()):
           if req_id in self.requests and req_id not in self._cached_reqs_data:
               safe_print(trace_output_directory, f"<<<Action: Prefill free kv blocks; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
@@ -50,7 +50,7 @@ targets:
     function_name: _read_blocks
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       request_id = kwargs['request_id']
       safe_print(trace_output_directory, f"<<<Action: Start pull kv; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
 
@@ -59,7 +59,7 @@ targets:
     function_name: _send_pulled_kv_req_list
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       request_id = args[1][0]
       safe_print(trace_output_directory, f"<<<Action: Finish pull kv; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
 
@@ -67,7 +67,7 @@ targets:
     function_name: get_output_async
     exit_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       from vllm.v1.engine import EngineCoreOutputs
       if isinstance(result, EngineCoreOutputs) and os.getenv('ROLE') == "prefill":
           for request in getattr(result, 'outputs', []):
@@ -77,7 +77,7 @@ targets:
     function_name: allocate_slots
     exit_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       load_kv_async = False
       if "delay_cache_blocks" in kwargs:
           load_kv_async = kwargs['delay_cache_blocks']
@@ -90,7 +90,7 @@ targets:
     function_name: schedule
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       class CustomList(list):
           def append(self, item):
               if os.getenv('ROLE') == "prefill":
@@ -108,7 +108,7 @@ targets:
     function_name: execute_model
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       self.execute_model_start_time = time.time()
       for req in args[0].scheduled_new_reqs:
           if os.getenv('ROLE') == "prefill":
@@ -117,7 +117,7 @@ targets:
               safe_print(trace_output_directory, f"<<<Action: Start to send output; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       self.execute_model_end_time = time.time()
       for req in args[0].scheduled_new_reqs:
           if os.getenv('ROLE') == "prefill":
@@ -127,7 +127,7 @@ targets:
     function_name: process_input_socket
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       from vllm.v1.engine import EngineCoreRequestType
       def patch_queue_put_nowait(queue):
           original_put_nowait = queue.put_nowait
@@ -148,7 +148,7 @@ targets:
     entry_operation: |
       import os, time
       import queue
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       def patch_queue_get(queue):
           original_get = queue.get
           def patch_get():
@@ -166,12 +166,12 @@ targets:
     function_name: step
     entry_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       self.engine_step_start_time = time.time()
       self.start_free_block_num = self.scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
     exit_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       scheduler_output = self.scheduler.schedule_output # this is passed from above schedule marker
       engine_step_finish_time = time.time()
       engine_step_execute_cost = (engine_step_finish_time - self.engine_step_start_time) * 1000
