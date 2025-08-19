@@ -59,20 +59,11 @@ from vllm.sequence import IntermediateTensors
 
 from typing import Optional
 
-from vllm.distributed.parallel_state import (GroupCoordinator, get_world_group,
-                                             init_model_parallel_group)
+from vllm.distributed.parallel_state import (get_world_group,get_ep_group)
 
-from .pangu_parallel_state import (
-    get_ep_group,
-    get_etp_group,
-    model_parallel_initialized,
-    init_ascend_model_parallel,
-    destory_ascend_model_parallel,
-)
-from .device import is_310p
-from .fused_moe import patch_fused_moe_ops
-
+from omni.adaptors.vllm.distributed.parallel_state import init_ascend_model_parallel
 from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
+from .fused_moe import patch_fused_moe_ops
 
 logger = init_logger(__name__)
 
@@ -464,7 +455,7 @@ class PanguProMoESparseMoeBlock(nn.Module):
         # on 300I Duo platform, we find that num_voted_experts set to 5 achieves
         # good performance without sacrifice too much accuracy. for other platform,
         # this is set to 8 to use original pangu grouped topk.
-        num_voted_experts = 5 if is_310p() else 8
+        num_voted_experts =  8
 
         self.experts = FusedMoE(
             num_experts=config.num_experts,
@@ -908,13 +899,13 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
 
         if vllm_config.quant_config is not None:
             # Will merge AscendQuantConfig_Pangu_Pro_Moe into AscendQuantConfig in later builds
-            from omni.quantization.pangu_test.quant_config_pangu_pro_moe import AscendQuantConfig_Pangu_Pro_Moe
+            from omni.quantization.pangu_quant.quant_config_pangu_pro_moe import AscendQuantConfig_Pangu_Pro_Moe
             from omni.quantization import quantizer
             from vllm.model_executor.layers.quantization import _CUSTOMIZED_METHOD_TO_QUANT_CONFIG
             quantizer.AscendQuantConfig = AscendQuantConfig_Pangu_Pro_Moe
-            from omni.adaptors.vllm.utils import ASCEND_QUATIZATION_METHOD
+            from omni.adaptors.vllm.utils import PANGU_QUANTIZATION_METHOD
 
-            _CUSTOMIZED_METHOD_TO_QUANT_CONFIG[ASCEND_QUATIZATION_METHOD] = AscendQuantConfig_Pangu_Pro_Moe
+            _CUSTOMIZED_METHOD_TO_QUANT_CONFIG[PANGU_QUANTIZATION_METHOD] = AscendQuantConfig_Pangu_Pro_Moe
 
             from vllm.model_executor.model_loader.weight_utils import (
                     get_quant_config)

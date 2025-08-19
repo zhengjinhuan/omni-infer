@@ -22,10 +22,8 @@ from typing import Any, Callable, Dict, Optional
 import torch
 import torch_npu
 from vllm.attention.backends.abstract import AttentionType
-
-  
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
-from omni.models.pangu.pangu_pro_moe.pangu_parallel_state import get_ep_group
+from omni.models.common.layers.attention.backends.attention import AscendAttentionState
+from vllm.distributed.parallel_state import get_ep_group
 from omni.models.pangu.pangu_pro_moe.fused_moe import select_experts
 
 def quant_per_tensor(in_tensor: torch.Tensor,

@@ -80,11 +80,11 @@ from vllm.model_executor.utils import set_weight_attrs
 from vllm.model_executor.layers.fused_moe.layer import UnquantizedFusedMoEMethod
 
 from .quantizer import AscendQuantizer
-from omni.adaptors.vllm.utils import ASCEND_QUATIZATION_METHOD
+from omni.adaptors.vllm.utils import PANGU_QUANTIZATION_METHOD
 
 
 
-@register_quantization_config(ASCEND_QUATIZATION_METHOD)
+@register_quantization_config(PANGU_QUANTIZATION_METHOD)
 class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
     """Config class for Ascend
     
@@ -101,7 +101,7 @@ class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
 
     @classmethod
     def get_name(cls) -> str:
-        return ASCEND_QUATIZATION_METHOD
+        return PANGU_QUANTIZATION_METHOD
 
     @classmethod
     def get_supported_act_dtypes(cls) -> List[torch.dtype]:
@@ -124,7 +124,7 @@ class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
     def override_quantization_method(cls, hf_quant_cfg,
                                      user_quant) -> Optional[str]:
         if torch.npu.is_available():
-            return ASCEND_QUATIZATION_METHOD
+            return PANGU_QUANTIZATION_METHOD
         return None
 
     def get_quant_method(self, layer: torch.nn.Module,

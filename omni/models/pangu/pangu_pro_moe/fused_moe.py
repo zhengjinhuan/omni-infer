@@ -21,23 +21,9 @@ from typing import Callable, Optional
 import torch
 import torch_npu
 from vllm.logger import init_logger
-from vllm.platforms import current_platform
-from vllm.config import get_current_vllm_config
-from vllm.distributed import (GroupCoordinator, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank,
-                              tensor_model_parallel_all_reduce)
-from vllm.distributed.parallel_state import get_dp_group, get_ep_group
-from vllm.model_executor.layers.fused_moe.layer import (
-    FusedMoE, UnquantizedFusedMoEMethod, determine_expert_map)
 
-from vllm.model_executor.layers.fused_moe.layer import (
-    FusedMoEParallelConfig, MoEConfig)
-
-from vllm.model_executor.layers.quantization.base_config import (
-    QuantizationConfig, QuantizeMethodBase)
-
-import torch.distributed as dist
-
-from .device import is_310p
+from vllm.distributed.parallel_state import  get_ep_group
+from vllm.model_executor.layers.fused_moe.layer import UnquantizedFusedMoEMethod
 
 logger = init_logger(__name__)
 
@@ -108,12 +94,8 @@ def fused_experts_moge(
         group_list=group_list,
     )[0]
 
-    if is_310p():
-        gate_up_out = torch_npu.npu_swiglu(gate_up_out.to(torch.float32)).to(
-            torch.float16)
-    else:
-        gate_up_out = torch_npu.npu_swiglu(gate_up_out)
-        gate_up_out *= topk_scales
+    gate_up_out = torch_npu.npu_swiglu(gate_up_out)
+    gate_up_out *= topk_scales
 
     w2 = w2.transpose(1, 2)
     down_out_list = torch_npu.npu_grouped_matmul(
