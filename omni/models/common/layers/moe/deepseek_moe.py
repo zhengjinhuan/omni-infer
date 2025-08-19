@@ -62,6 +62,7 @@ from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
 from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
+from vllm.logger import logger
 
 if model_extra_config.operator_opt_config.use_omni_placement:
     from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
@@ -143,6 +144,18 @@ class ReplicatedDeepseekMLP(nn.Module):
         x, _ = self.down_proj.forward(x)
         return x
 
+def DynamicPruningUnsorted(topk_weights: torch.Tensor, 
+                           topk_ids: torch.Tensor, 
+                           thresholds: torch.Tensor):
+    invalid_id = 512
+    topk_weight_sorted, sorted_indices = torch.sort(topk_weights, dim=1, descending=True)
+    topk_id_sorted = torch.gather(topk_ids, dim=1, index=sorted_indices)
+
+    topk_weight_sum = torch.sum(topk_weight_sorted, dim=1, keepdim=True)
+    mask = (topk_weight_sorted < topk_weight_sum * thresholds).to(topk_ids.dtype)
+    new_topk_weights = topk_weight_sorted * (1-mask)
+    new_topk_ids = topk_id_sorted * (1-mask) + invalid_id*  mask
+    return new_topk_weights, new_topk_ids
 
 class DeepseekMoE(nn.Module):
 
@@ -279,6 +292,13 @@ class DeepseekMoE(nn.Module):
         self.tuning_config = None
         if model_extra_config.operator_opt_config.gmm_nz:
             self.tuning_config = model_extra_config.operator_opt_config.decode_gear_list[:1]
+        
+        self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
+                                model_extra_config.operator_opt_config.prefill_moe_all_to_all)
+        if self.experts_pruning:
+            logger.info("experts_pruning enabled")
+            self.experts_pruning_threshold = torch.tensor(
+                    [0, 0.01, 0.01, 0.01, 0.0665, 0.086, 0.125, 0.135])
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         if self.redundancy_shared_expert_num > 0:
@@ -318,6 +338,12 @@ class DeepseekMoE(nn.Module):
                                                                     layer=self.experts  # ENABLE_OMNI_PLANNER
                                                                     )
         topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids)
+
+        if self.experts_pruning:
+            topk_weights, topk_ids = DynamicPruningUnsorted(topk_weights, 
+                                                            topk_ids, 
+                                                            self.experts_pruning_threshold)
+
         if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
             topk_all = get_world_group().all_gather(topk_cat, dim=0)
