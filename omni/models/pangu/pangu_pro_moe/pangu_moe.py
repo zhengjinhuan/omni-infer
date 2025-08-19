@@ -914,26 +914,6 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
         # Run patch to replace fused moe ops
         patch_fused_moe_ops()
 
-        if vllm_config.quant_config is not None:
-            # Will merge AscendQuantConfig_Pangu_Pro_Moe into AscendQuantConfig in later builds
-            from omni.quantization.pangu_quant.quant_config_pangu_pro_moe import AscendQuantConfig_Pangu_Pro_Moe
-            from omni.quantization import quantizer
-            from vllm.model_executor.layers.quantization import _CUSTOMIZED_METHOD_TO_QUANT_CONFIG
-            quantizer.AscendQuantConfig = AscendQuantConfig_Pangu_Pro_Moe
-            from omni.adaptors.vllm.utils import PANGU_QUANTIZATION_METHOD
-
-            _CUSTOMIZED_METHOD_TO_QUANT_CONFIG[PANGU_QUANTIZATION_METHOD] = AscendQuantConfig_Pangu_Pro_Moe
-
-            from vllm.model_executor.model_loader.weight_utils import (
-                    get_quant_config)
-            quant_config = get_quant_config(vllm_config.model_config, vllm_config.load_config)
-            quant_config.quant_description = vllm_config.quant_config.quant_description
-            quant_config.packed_modules_mapping = vllm_config.quant_config.packed_modules_mapping
-            
-            vllm_config.quant_config = quant_config
-
-            logger.info("quant_config is replaced by AscendQuantConfig_Pangu_Pro_Moe.")
-
         super().__init__()
         
         logger.info("===== Model initialization Config =====")
