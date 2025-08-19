@@ -519,7 +519,7 @@ class DecodeConnectorWorker:
             # Write thread name and native_id to file
             dump_thread_to_file(self.thread_on_fast_path_req, thread_name, thread_dump_path)
 
-        if self.vllm_config.parallel_config.tensor_parallel_size > 1:
+        if self.multi_thread_pull_kv and self.vllm_config.parallel_config.tensor_parallel_size > 1:
             self.tp_sync_path = f"ipc:///tmp/tp-sync-dp{self.vllm_config.parallel_config.data_parallel_rank}"
             if get_tensor_model_parallel_rank() == 0:
                 self.input_socket = self.ctx.socket(zmq.constants.PULL)
@@ -764,8 +764,16 @@ class DecodeConnectorWorker:
             with self._transfer_lock:
                 self._recving_transfers.append(request_id)
         else:
-            # tp>1, send to decode to rank0 firstly.
-            self._send_pulled_kv_req_list(self.tp_sync_path, dict(request_id=request_id, remote_host_ip=remote_host_ip))
+            if self.multi_thread_pull_kv:
+                # tp>1, send to decode to rank0 firstly.
+                self._send_pulled_kv_req_list(self.tp_sync_path, dict(request_id=request_id, remote_host_ip=remote_host_ip))
+            else:
+                torch.distributed.barrier(group=get_tp_group().cpu_group)
+                if get_tensor_model_parallel_rank() == 0:
+                    self._send_pulled_kv_req_list(remote_host_ip, [request_id])
+                with self._transfer_lock:
+                    self._recving_transfers.append(request_id)
+
 
         cost = time.time() - start
         logger.info(f" ***** read block, req_id:{request_id}, cost:{cost:.6f}")
