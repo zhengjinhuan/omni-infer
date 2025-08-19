@@ -78,7 +78,7 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
     ```bash
     pip uninstall vllm -y
     pip uninstall omni_infer -y
-    pip uninstall omni_placement -y
+    pip uninstall omni_placement -y (若不存在omni_placement安装包可忽略)
     ```
 
 4. 编译omni_infer，最终在build/dist目录下有生成whl包；
@@ -91,10 +91,9 @@ docker run --name ${NAME} -it -d  --shm-size=500g \
     ```bash
     cd build/dist
 
-    # 安装 vllm/omni_infer/omni_placement 等 whl 包：
+    # 安装 vllm/omni_infer 等 whl 包：
     pip install vllm*.whl
     pip install omni_infer*.whl
-    pip install omni_placement*.whl
     ```
 
 ## omni_infer包检查
