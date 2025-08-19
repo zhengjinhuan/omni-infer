@@ -22,13 +22,13 @@
 
 ## 2. How to Deploy OmniPlacement
    ### 2.1 Overview
-   OmniPlacement的交付件包含3个部分，分别是：
-   - omni_placement-xxxxx.whl  (xxxxx与版本号、系统架构相关，例如omni_placement-0.7.2.2a3-cp311-cp311-linux_aarch64.whl)
+   OmniPlacement随OmniInfer交付，交付件包含3个部分，分别是：
+   - omni_infer-xxxxx.whl  (xxxxx与版本号、系统架构相关，例如omni_infer-0.4.0-cp311-cp311-linux_aarch64.whl)
    - Config.yaml (特性配置文件，通常prefill节点和Decode节点分别配置)
    - Placement pattern
 
    ### 2.2 Prerequisites
-   同omni_infer配置要求
+   同OmniInfer配置要求
 
    ### 2.3 Deployment Steps
    - **Step 1: Build OmniPlacement wheel package** （如果OmniPlacement已随[OmniInfer部署](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md)安装好，可跳过此步骤）
@@ -100,19 +100,31 @@
       -rw-r--r-- 1 root 1049089  7602304 Jul  7 10:52 DSV3_baseline_64_devices_58_MoE_Layers.npy
       -rw-r--r-- 1 root 1049089   950400 Jul  7 10:52 DSV3_baseline_8_devices_58_MoE_Layers.npy
       2.pattern_path的地址使用绝对路径
+      ``` 
       ```  
+       推荐：
+       不设置pattern_path，或设置pattern_path: null，将自动匹配模型结构和物理部署形态，生成默认的base_pattern。
+      ```
    - **Option 2: P侧配置omni infer Configuration File**
       - Locate and edit omni infer configuration file (e.g., `omni_infer/tests/test_config/test_config_prefill.json`)
       - Set `use_omni_placement: true`
       - Set `omni_placement_config_path: "/workspace/omni_infer/tests/test_config/config_p.yaml"`
       - Locate and edit omni placement configuration file (e.g., `/workspace/omni_infer/tests/test_config/config_p.yaml`)
       - Set  `pattern_path: "/workspace/omni_infer/tests/test_config/base_patterns/DSV3_baseline_16_devices_58_MoE_Layers.npy"`
-
+      ```  
+       推荐：
+       不设置pattern_path，或设置pattern_path: null，将自动匹配模型结构和物理部署形态，生成默认的base_pattern。
+      ```
 
 ## 3. How to Configure Expert Load Balancing
    ### 3.1 Overview
    - 专家均衡支撑静态和动态两种模式
    - 静态专家均衡分为dump专家激活数据、生成部署文件(pattern file)和应用部署文件三个大的步骤
+
+   ```  
+      推荐：
+      推荐使用专家动态均衡模式。
+   ```
    ### 3.2 Prerequisites
    已完成OmniPlacement的安装和启用
 
@@ -126,29 +138,27 @@
       ``` 
    - **Step 2: Run the inference service and Send request**
       - 等待请求处理完成后，立即收集dump数据
-      - dump出的数据生成在各个服务器的dump_dir内，文件夹内部会生成decoder和prefill两个文件夹，Decode节点服务器的数据在decoder文件夹内，Prefill节点服务器的数据在prefill文件夹内
-      - 把Decode节点服务器的decoder文件夹取出，每个decoder文件夹内都是一系列txt文件，所有Decoder的数据移动合并到1个文件夹内，地址标记为Decode_path
+      - dump出的数据生成在各个服务器的dump_dir内，文件夹内部会按时间戳生成文件夹，每次dump的数据会存放在对应的时间戳文件夹中。
+      - 把Decode节点0服务器的dump文件夹取出（仅在路由专家节点dump数据），每个时间戳文件夹内都是一系列txt文件，所有Decoder的数据在1个文件夹内，地址标记为Decode_path
       - 把Prefill节点服务器的prefill文件夹取出，把每个prefill文件夹修改名字，并排放到某个文件夹下面，地址我们记录为P0_path，P1_path,…
    - **Step 3: 生成静态部署文件**
       - 切换到pattern工具目录 (e.g., omni_infer/omni/accelerators/placement/utils/omni_pattern_tool/)
       - run_pipeline.sh提供了从统计数据到生成pattern到分析pattern收益的流水线脚本，具体设置请参考 https://gitee.com/omniai/omniinfer/blob/master/omni/accelerators/placement/utils/omni_pattern_tool/Readme.md
       - 一个简单的运行模式为：
       ```
-         ./run_pipeline.sh --input_txt_folders "/data/expert_activation/decode_data" --num_ranks_of_collecting_data 64 --num_ranks_target_pattern 256 --collecting_modes decode
+         ./run_pipeline.sh --input_txt_folders "/data/expert_activation/decode_data"  --num_ranks_target_pattern 256 --collecting_modes decode
       ``` 
       ```           
          参数介绍：
-         --input_txt_folders：dump数据存放的文件夹，支持多个文件夹，每个用空格分隔：“path/prfill0/prefill” “path/prfill1/prefill” 
-         --num_ranks_of_collecting_data:收集数据的die数，Decode服务器就是用所有D节点的总die数；Prefill服务器使用单个P节点的die数(典型场景设置为16)；
-         --num_ranks_target_pattern:加载pattern服务器的die数，如果dump和加载使用的服务器一样那就和上面填写一样的数字
-         --collecting_modes：decode或者prefill
+         --input_txt_folders：dump数据存放的文件夹，支持多个文件夹，每个用空格分隔：“path/prfill0/prefill” “path/prfill1/prefill” 。
+         --num_ranks_target_pattern:加载pattern服务器的die数，例如pattern运行在256 die的实例上，则设置为256。
+         --collecting_modes：decode或者prefill。
       ```
       - 默认会生成两个pattern：文件在./placement_pattern文件夹下面：重排的pattern带有rearrange字段，冗余的pattern带有redundant字段。
       ``` 
       $ ll -t placement_pattern
       -rw-r--r-- 1 root 1049089  3801216 Jun 19 09:53 placement_pattern_20250619_095310_58_redundant_layers_58_layers_64_ranks_epmaxdeploy_301_decode.npy
       -rw-r--r-- 1 root 1049089  3801216 Jun 19 09:53 placement_pattern_20250619_095310_58_rearrange_layers_58_layers_64_ranks_decode.npy
-      -rw-r--r-- 1 root 1049089   950400 Jun 19 09:38 placement_pattern_20250619_093815_58_rearrange_layers_58_layers_16_ranks_prefill.npy
       ``` 
    - **Step 4: 应用部署文件**
       - Locate and edit omni placement configuration file (e.g., /workspace/omni_infer/tests/test_config/config_p.yaml)
@@ -160,14 +170,16 @@
    - **Step 5: 重启推理服务**
       - 观察均衡表现并调优
 
-   ### 3.4 动态专家重排Configuration Steps (开发中)
+   ### 3.4 动态专家重排Configuration Steps
    - Locate and edit omni placement configuration file (e.g., `/workspace/omni_infer/tests/test_config/config_d.yaml`)
+   - Set `enable_dynamic: True`
    - Set `max_redundant_per_expert: 1`
    - Set `max_redundant_per_rank: 0`
    - 启动推理服务，观察均衡表现并调优
 
-   ### 3.5  动态专家冗余Configuration Steps (开发中)
+   ### 3.5  动态专家冗余Configuration Steps
    - Locate and edit omni placement configuration file (e.g., `/workspace/omni_infer/tests/test_config/config_d.yaml`)
+   - Set `enable_dynamic: True`
    - Set `max_redundant_per_expert: 10`
    - Set `max_redundant_per_rank: 1`
    ```           
