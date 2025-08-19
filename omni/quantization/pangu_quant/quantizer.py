@@ -23,8 +23,11 @@ from typing import Any, Dict, List, Optional
 
 from vllm.logger import logger
 
-from .w8a8 import (AscendC8KVCacheMethod, AscendW8A8FusedMoEMethod,
-                   AscendW8A8LinearMethod)
+from .w8a8 import (
+    AscendC8KVCacheMethod,
+    AscendW8A8FusedMoEMethod,
+    AscendW8A8LinearMethod,
+)
 
 CUSTOMIZED_QUANTIZER_TYPE: List[str] = []
 

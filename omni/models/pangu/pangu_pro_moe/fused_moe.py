@@ -20,13 +20,12 @@ from typing import Callable, Optional
 
 import torch
 import torch_npu
-from vllm.logger import init_logger
 
-from vllm.distributed.parallel_state import  get_ep_group
+from vllm.logger import init_logger
+from vllm.distributed.parallel_state import get_ep_group
 from vllm.model_executor.layers.fused_moe.layer import UnquantizedFusedMoEMethod
 
 logger = init_logger(__name__)
-
 
 def fused_experts_moge(
     hidden_states: torch.Tensor,

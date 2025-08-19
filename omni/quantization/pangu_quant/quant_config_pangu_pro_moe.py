@@ -21,12 +21,38 @@
 
 # import vllm_ascend.patch.worker.patch_common.patch_utils  # type: ignore[import]  # isort: skip  # noqa
 
-from typing import Callable, List, Optional, Tuple
+from types import MappingProxyType
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import torch
 from torch.library import Library
+
 from vllm import utils
 from vllm.utils import vllm_lib
+from vllm.distributed import get_tensor_model_parallel_rank
+from vllm.model_executor.layers.fused_moe import (
+    FusedMoE,
+    FusedMoEMethodBase,
+    FusedMoeWeightScaleSupported,
+)
+from vllm.model_executor.layers.linear import (
+    LinearBase,
+    LinearMethodBase,
+    RowParallelLinear,
+    UnquantizedLinearMethod,
+)
+from vllm.model_executor.layers.quantization import register_quantization_config
+from vllm.model_executor.layers.quantization.base_config import (
+    QuantizationConfig,
+    QuantizeMethodBase,
+)
+from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
+from vllm.model_executor.parameter import PerTensorScaleParameter
+from vllm.model_executor.utils import set_weight_attrs
+
+from omni.adaptors.vllm.utils import PANGU_QUANTIZATION_METHOD
+
+from .quantizer import AscendQuantizer
 
 def ascend_direct_register_custom_op(
         op_name: str,
@@ -58,31 +84,6 @@ def ascend_direct_register_custom_op(
 
 
 utils.direct_register_custom_op = ascend_direct_register_custom_op
-
-
-from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional
-
-import torch
-from vllm.distributed import get_tensor_model_parallel_rank
-from vllm.model_executor.layers.fused_moe import (FusedMoE, FusedMoEMethodBase,
-                                                  FusedMoeWeightScaleSupported)
-from vllm.model_executor.layers.linear import (LinearBase, LinearMethodBase,
-                                               RowParallelLinear,
-                                               UnquantizedLinearMethod)
-from vllm.model_executor.layers.quantization import \
-    register_quantization_config, _CUSTOMIZED_METHOD_TO_QUANT_CONFIG
-from vllm.model_executor.layers.quantization.base_config import (
-    QuantizationConfig, QuantizeMethodBase)
-from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
-from vllm.model_executor.parameter import PerTensorScaleParameter
-from vllm.model_executor.utils import set_weight_attrs
-from vllm.model_executor.layers.fused_moe.layer import UnquantizedFusedMoEMethod
-
-from .quantizer import AscendQuantizer
-from omni.adaptors.vllm.utils import PANGU_QUANTIZATION_METHOD
-
-
 
 @register_quantization_config(PANGU_QUANTIZATION_METHOD)
 class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
