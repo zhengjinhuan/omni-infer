@@ -24,7 +24,7 @@ import torch_npu
 from vllm.attention.backends.abstract import AttentionType
 
   
-from omni.models.common.layers.attention.attention import AscendAttentionState
+from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 from omni.models.pangu.pangu_pro_moe.pangu_parallel_state import get_ep_group
 from omni.models.pangu.pangu_pro_moe.fused_moe import select_experts
 
