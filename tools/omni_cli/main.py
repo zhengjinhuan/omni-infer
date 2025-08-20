@@ -122,32 +122,35 @@ def omni_cli_start(
     for host, hv in selected:
         env: Dict[str, Any] = hv.get("env", {}) or {}
         args: Dict[str, Any] = hv.get("args", {}) or {}
+        docker_name: str = hv.get("docker_name")
 
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
 
-        code_path = str(env.get("CODE_PATH") or "").strip()
-        cd_line = f'cd {_double_quotes(code_path)} || true' if code_path else "true"
-        default_log_line = ': "${LOG_DIR:=/var/log/omni}"'
-
         # Write a clean script (no leading indentation)
         with tempfile.NamedTemporaryFile(
             "w", delete=False,
+            dir="./",
             prefix=f"omni_start_{host.replace('.', '_')}_",
             suffix=".sh"
         ) as tf:
             script_path = Path(tf.name)
             tf.write("#!/usr/bin/env bash\n")
             tf.write("set -euo pipefail\n\n")
-            tf.write("# 1) Export environment variables\n")
+
+            tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
+            tf.write("source ~/.bashrc\n\n")
+
+            tf.write("# Export environment variables\n")
             tf.write(export_block + "\n\n")
-            tf.write("# 2) Default a log dir if not provided\n")
-            tf.write(default_log_line + "\n\n")
-            tf.write("# 3) Change directory if CODE_PATH is provided\n")
-            tf.write(cd_line + "\n\n")
+
+            tf.write("# Change directory to CODE_PATH\n")
+            code_path = str(env.get("CODE_PATH") or "").strip()
+            tf.write(f"cd {_double_quotes(code_path)}\n\n")
+
             tf.write("# 4) Show and exec the command\n")
-            tf.write(f'echo "[omni] Launching on {host}: {python_bin} {entry_py} {args_line}"\n')
             tf.write(f"exec {python_bin} {entry_py} {args_line}\n")
+            tf.write("EOF\n")
 
         os.chmod(script_path, 0o755)
 
