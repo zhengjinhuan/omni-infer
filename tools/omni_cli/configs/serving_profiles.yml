@@ -1,4 +1,8 @@
 p0:
+  server:
+    user: "root"
+    hosts: "7.150.10.171"
+    private_key: <private_key_path>
   env:
     MODEL_EXTRA_CFG_PATH: "/workspace/omniinfer/tests/test_config/test_config_prefill.json"
     RANKTABLE_SAVE_PATH: "/tmp/ranktable_save_path"
