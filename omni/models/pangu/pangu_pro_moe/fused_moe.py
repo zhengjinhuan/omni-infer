@@ -57,29 +57,23 @@ def fused_experts_moge(
     local_num_group = top_k // ep_size
 
     if apply_router_weight_on_input:
-        assert (topk_weights.dim() == 2
-                ), "`topk_weights` should be in shape (num_tokens, topk)"
+        assert (topk_weights.dim() == 2), "`topk_weights` should be in shape (num_tokens, topk)"
         _, topk = topk_weights.shape
-        assert (
-            topk == 1
-        ), "Only support topk=1 when `apply_router_weight_on_input` is True"
+        assert (topk == 1), "Only support topk=1 when `apply_router_weight_on_input` is True"
         hidden_states = hidden_states * topk_weights.to(hidden_states.dtype)
 
     bsz, _ = hidden_states.shape
     flatten_topk_ids = topk_ids.view(-1)
     sorted_topk_ids = torch.argsort(flatten_topk_ids.float())
     sorted_topk_ids = sorted_topk_ids.to(torch.int32)
-    sorted_hidden_states = hidden_states.index_select(
-        0, sorted_topk_ids // local_num_group)
+    sorted_hidden_states = hidden_states.index_select(0, sorted_topk_ids // local_num_group)
 
     experts_id = torch.arange(0,
                               local_num_experts,
                               dtype=topk_ids.dtype,
                               device=topk_ids.device)
-    num_tokens_per_expert = (flatten_topk_ids.unsqueeze(-1) == experts_id).to(
-        torch.float32).sum(0)
-    topk_scales = topk_weights.view(-1).index_select(
-        0, sorted_topk_ids).unsqueeze(-1)
+    num_tokens_per_expert = (flatten_topk_ids.unsqueeze(-1) == experts_id).to(torch.float32).sum(0)
+    topk_scales = topk_weights.view(-1).index_select(0, sorted_topk_ids).unsqueeze(-1)
     group_list = num_tokens_per_expert.cumsum(dim=0).to(torch.int64)
 
     w1 = w1.transpose(1, 2)
@@ -108,8 +102,7 @@ def fused_experts_moge(
 
     unsorted_topk_ids = torch.argsort(sorted_topk_ids.float()).to(torch.int32)
     unsorted_hidden_states = down_out_list.index_select(0, unsorted_topk_ids)
-    final_hidden_states = unsorted_hidden_states.reshape(
-        bsz, top_k // ep_size, -1).sum(1)
+    final_hidden_states = unsorted_hidden_states.reshape(bsz, top_k // ep_size, -1).sum(1)
 
     return final_hidden_states
 
@@ -124,8 +117,7 @@ def native_grouped_topk(
     num_expert_group = 0 if num_expert_group is None else num_expert_group
 
     num_token = topk_weights.shape[0]
-    grouped_weights = topk_weights.view(num_token, num_expert_group,
-                                        -1).max(dim=-1).values
+    grouped_weights = topk_weights.view(num_token, num_expert_group, -1).max(dim=-1).values
     topk_group_indices = torch.topk(grouped_weights.to(torch.float32),
                                     k=topk_group,
                                     dim=-1,
@@ -194,8 +186,7 @@ def select_experts(
             original_weights = topk_weights
             topk_weights = topk_weights + e_score_correction_bias.unsqueeze(0)
 
-        topk_weights = native_grouped_topk(topk_weights, num_expert_group,
-                                           topk_group)
+        topk_weights = native_grouped_topk(topk_weights, num_expert_group, topk_group)
         if e_score_correction_bias is not None:
             topk_ids = torch.topk(topk_weights.to(torch.float32),
                                   k=top_k,

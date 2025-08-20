@@ -72,13 +72,7 @@ from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.sequence import IntermediateTensors
 
-from omni.adaptors.vllm.distributed.parallel_state import (
-    init_ascend_model_parallel,
-)
-from omni.models.common.layers.attention.backend.attention import (
-    AttentionMaskBuilder,
-    AscendAttentionState,
-)
+from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
 from .fused_moe import patch_fused_moe_ops
 
@@ -146,9 +140,7 @@ class PanguProMoEMergedColumnParallelLinear(LinearBase):
             params_dtype=self.params_dtype,
             weight_loader=(self.weight_loader))
         if bias:
-            self.bias = Parameter(
-                torch.empty(self.output_size_per_partition,
-                            dtype=params_dtype))
+            self.bias = Parameter(torch.empty(self.output_size_per_partition, dtype=params_dtype))
             set_weight_attrs(self.bias, {
                 "output_dim": 0,
                 "weight_loader": self.weight_loader,
@@ -156,8 +148,7 @@ class PanguProMoEMergedColumnParallelLinear(LinearBase):
         else:
             self.register_parameter("bias", None)
 
-    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
-                      loaded_shard_id: int):
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor, loaded_shard_id: int):
         param_data = param.data
         output_dim = getattr(param, "output_dim", None)
 
@@ -170,8 +161,7 @@ class PanguProMoEMergedColumnParallelLinear(LinearBase):
             shard_size = self.output_sizes[loaded_shard_id] // tp_size
 
             is_sharded_weight = getattr(param, "is_sharded_weight", False)
-            param_data = param_data.narrow(output_dim, shard_offset,
-                                           shard_size)
+            param_data = param_data.narrow(output_dim, shard_offset, shard_size)
             start_idx = tp_rank * shard_size
             if not is_sharded_weight:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx,
@@ -255,8 +245,7 @@ class PanguProMoERowParallelLinear(LinearBase):
                              "results can lead to incorrect results")
 
         if bias:
-            self.bias = Parameter(
-                torch.empty(self.output_size, dtype=params_dtype))
+            self.bias = Parameter(torch.empty(self.output_size, dtype=params_dtype))
             set_weight_attrs(self.bias, {
                 "output_dim": 0,
                 "weight_loader": self.weight_loader,
@@ -383,8 +372,7 @@ def topk_wrapper(num_voted_experts):
         local_num_group = topk // ep_size
         experts_per_group = global_num_experts // topk
         local_group_start = get_ep_group().rank_in_group * local_num_experts
-        local_group_end = (get_ep_group().rank_in_group +
-                           1) * local_num_experts
+        local_group_end = (get_ep_group().rank_in_group + 1) * local_num_experts
         scores = F.softmax(gating_output, dim=1)
         scores = scores[..., local_group_start:local_group_end]
 
@@ -392,9 +380,7 @@ def topk_wrapper(num_voted_experts):
 
         if num_voted_experts == 8:
             # use original topk
-            topk_weights, topk_ids = torch.max(scores.view(
-                scores.shape[0], local_num_group, -1),
-                                               dim=-1)
+            topk_weights, topk_ids = torch.max(scores.view(scores.shape[0], local_num_group, -1), dim=-1)
             bias = torch.arange(0,
                                 local_num_experts,
                                 experts_per_group,
@@ -405,21 +391,15 @@ def topk_wrapper(num_voted_experts):
         else:
             group_expert_indices = torch.arange(experts_per_group,
                                                 dtype=torch.int32,
-                                                device=scores.device).view(
-                                                    1, 1, -1)
-            group_expert_offset = (torch.arange(
-                local_num_group, dtype=torch.int32, device=scores.device) *
-                                   experts_per_group).unsqueeze(0)
+                                                device=scores.device).view(1, 1, -1)
+            group_expert_offset = (torch.arange(local_num_group, dtype=torch.int32, device=scores.device) * experts_per_group).unsqueeze(0)
             expert_index_range = torch.arange(experts_per_group,
                                               dtype=torch.int32,
                                               device=scores.device)
 
-            scores_grouped = scores.view(num_tokens, local_num_group,
-                                         experts_per_group)
-            best_expert_idx = torch.argmax(scores_grouped,
-                                           dim=2)  # (num_tokens, num_groups)
-            vote_mask = (best_expert_idx.unsqueeze(-1).to(
-                torch.int32) == group_expert_indices)
+            scores_grouped = scores.view(num_tokens, local_num_group, experts_per_group)
+            best_expert_idx = torch.argmax(scores_grouped, dim=2)  # (num_tokens, num_groups)
+            vote_mask = (best_expert_idx.unsqueeze(-1).to(torch.int32) == group_expert_indices)
 
             expert_vote_freq = vote_mask.sum(dim=0)
 
@@ -427,20 +407,16 @@ def topk_wrapper(num_voted_experts):
                                            dim=1,
                                            descending=True).to(torch.int32)
             topk_experts = sorted_indices[:, :num_voted_experts]
-            keep_mask = ((
-                topk_experts.unsqueeze(-1) == expert_index_range).any(
-                    dim=1)).unsqueeze(0)
+            keep_mask = ((topk_experts.unsqueeze(-1) == expert_index_range).any(dim=1)).unsqueeze(0)
 
             masked_scores = torch.where(keep_mask, scores_grouped, 0)
 
             topk_weights, best_pos_in_group = masked_scores.max(dim=2)
             best_pos_in_group = best_pos_in_group.to(torch.int32)
-            topk_ids = (best_pos_in_group + group_expert_offset).to(
-                torch.int32)
+            topk_ids = (best_pos_in_group + group_expert_offset).to(torch.int32)
 
         flatten_topk_ids = topk_ids.view(-1)
-        router_weights = router_weights.index_select(0, flatten_topk_ids).view(
-            topk_ids.shape)
+        router_weights = router_weights.index_select(0, flatten_topk_ids).view(topk_ids.shape)
         topk_weights *= router_weights
 
         return topk_weights, topk_ids
@@ -466,8 +442,7 @@ class PanguProMoESparseMoeBlock(nn.Module):
                 f"the number of experts {config.num_experts}.")
 
         self.num_experts_per_tok = config.num_experts_per_tok
-        self.router_scale = torch.nn.Parameter(
-            torch.ones((1, self.num_experts)))
+        self.router_scale = torch.nn.Parameter(torch.ones((1, self.num_experts)))
 
         # on 300I Duo platform, we find that num_voted_experts set to 5 achieves
         # good performance without sacrifice too much accuracy. for other platform,
@@ -520,8 +495,7 @@ class PanguProMoESparseMoeBlock(nn.Module):
         global _ROUTER_SCALE
         _ROUTER_SCALE = self.router_scale
         if not use_h2p():
-            final_hidden_states = self.experts(hidden_states=hidden_states,
-                                               router_logits=router_logits)
+            final_hidden_states = self.experts(hidden_states=hidden_states, router_logits=router_logits)
         else:
             # TODO: when using h2p, we have to skip communication in vLLM
             # native FusedMoE. here we need to design a better FusedMoE
@@ -543,8 +517,7 @@ class PanguProMoESparseMoeBlock(nn.Module):
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
         if not use_h2p():
-            final_hidden_states = tensor_model_parallel_all_reduce(
-                final_hidden_states)
+            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
@@ -679,8 +652,7 @@ class PanguProMoEDecoderLayer(nn.Module):
 
         # `mlp_only_layers` in the config.
         layer_idx = extract_layer_index(prefix)
-        mlp_only_layers = ([] if not hasattr(config, "mlp_only_layers") else
-                           config.mlp_only_layers)
+        mlp_only_layers = ([] if not hasattr(config, "mlp_only_layers") else config.mlp_only_layers)
         if (layer_idx not in mlp_only_layers) and (config.num_experts > 0):
             self.mlp = PanguProMoESparseMoeBlock(
                 config=config,
@@ -696,10 +668,8 @@ class PanguProMoEDecoderLayer(nn.Module):
                 prefix=f"{prefix}.mlp",
             )
 
-        self.input_layernorm = RMSNorm(config.hidden_size,
-                                       eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size,
-                                                eps=config.rms_norm_eps)
+        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.layer_id = layer_idx    # for debug
         self.layer_name = f"{prefix}.self_attn.attn"
 
@@ -724,20 +694,17 @@ class PanguProMoEDecoderLayer(nn.Module):
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual)
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
         if use_h2p():
             if is_start_layer:
                 if need_h2p_pad:
                     residual = residual.index_select(dim=0, index=h2p_pad_idx)
-                residual = torch.tensor_split(
-                    residual, tp_size)[get_tp_group().rank_in_group]
+                residual = torch.tensor_split(residual, tp_size)[get_tp_group().rank_in_group]
             else:
                 if tp_size > 1:
                     hidden_states = get_tp_group().all_gather(hidden_states, 0)
                 if need_h2p_pad:
-                    hidden_states = hidden_states.index_select(
-                        dim=0, index=h2p_unpad_idx)
+                    hidden_states = hidden_states.index_select(dim=0, index=h2p_unpad_idx)
 
         hidden_states = self.self_attn(
             positions=positions,
@@ -748,8 +715,7 @@ class PanguProMoEDecoderLayer(nn.Module):
 
         if use_h2p():
             if need_h2p_pad:
-                hidden_states = hidden_states.index_select(dim=0,
-                                                           index=h2p_pad_idx)
+                hidden_states = hidden_states.index_select(dim=0, index=h2p_pad_idx)
             if tp_size > 1:
                 hidden_states = dist._functional_collectives.reduce_scatter_tensor(
                     hidden_states,
@@ -758,8 +724,7 @@ class PanguProMoEDecoderLayer(nn.Module):
                     group=get_tp_group().device_group)
 
         # Fully Connected
-        hidden_states, residual = self.post_attention_layernorm(
-            hidden_states, residual)
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
         if use_h2p():
             all_rank_group = get_world_group().device_group
@@ -771,9 +736,7 @@ class PanguProMoEDecoderLayer(nn.Module):
                                         dtype=hidden_states.dtype,
                                         device=hidden_states.device)
             # All-gather.
-            dist.all_gather_into_tensor(output_tensor,
-                                        hidden_states,
-                                        group=all_rank_group)
+            dist.all_gather_into_tensor(output_tensor, hidden_states, group=all_rank_group)
             hidden_states = output_tensor
 
         hidden_states = self.mlp(hidden_states, attn_metadata=attn_metadata)
@@ -815,9 +778,7 @@ class PanguProMoEModel(nn.Module):
             prefix=f"{prefix}.layers",
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.make_empty_intermediate_tensors = (
-            make_empty_intermediate_tensors_factory(
-                ["hidden_states", "residual"], config.hidden_size))
+        self.make_empty_intermediate_tensors = (make_empty_intermediate_tensors_factory(["hidden_states", "residual"], config.hidden_size))
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -862,14 +823,10 @@ class PanguProMoEModel(nn.Module):
             h2p_padded_len = (
                 tp_size - (max_tokens_across_dp % tp_size)
             ) % tp_size + max_tokens_across_dp - hidden_states.shape[0]
-            h2p_unpad_idx = torch.arange(hidden_states.shape[0],
-                                         device=hidden_states.device,
-                                         dtype=torch.int32)
+            h2p_unpad_idx = torch.arange(hidden_states.shape[0], device=hidden_states.device, dtype=torch.int32)
             h2p_pad_idx = torch.cat([
                 h2p_unpad_idx,
-                torch.zeros(h2p_padded_len,
-                            dtype=torch.int32,
-                            device=hidden_states.device)
+                torch.zeros(h2p_padded_len, dtype=torch.int32, device=hidden_states.device)
             ])
         else:
             h2p_unpad_idx = None
@@ -879,8 +836,7 @@ class PanguProMoEModel(nn.Module):
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions, hidden_states, residual,
-                kv_caches[i -
-                          self.start_layer] if kv_caches is not None else None,
+                kv_caches[i - self.start_layer] if kv_caches is not None else None,
                 attn_metadata, h2p_unpad_idx, h2p_pad_idx,
                 i == self.start_layer)
         if not get_pp_group().is_last_rank:
@@ -893,8 +849,7 @@ class PanguProMoEModel(nn.Module):
             if get_tp_group().world_size > 1:
                 hidden_states = get_tp_group().all_gather(hidden_states, 0)
             if h2p_unpad_idx.shape[0] < h2p_pad_idx.shape[0]:
-                hidden_states = hidden_states.index_select(dim=0,
-                                                           index=h2p_unpad_idx)
+                hidden_states = hidden_states.index_select(dim=0, index=h2p_unpad_idx)
         return hidden_states
 
 
@@ -922,17 +877,10 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
         logger.info(f"hf_config {config}")
         logger.info("===== Model initialization Config Done =====")
 
-        # Initialize expert parallel states
-        init_ascend_model_parallel(
-            expert_parallel_size = vllm_config.additional_config['expert_parallel_size'],
-            expert_tensor_parallel_size = vllm_config.additional_config['expert_tensor_parallel_size'],
-        )
-
         quant_config = vllm_config.quant_config
         self.config = config
         self.quant_config = quant_config
-        self.model = PanguProMoEModel(vllm_config=vllm_config,
-                                      prefix=maybe_prefix(prefix, "model"))
+        self.model = PanguProMoEModel(vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model"))
         self.lm_head = ParallelLMHead(
             config.vocab_size,
             config.hidden_size,
@@ -943,8 +891,7 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
             self.lm_head.weight = self.model.embed_tokens.weight
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = get_sampler()
-        self.make_empty_intermediate_tensors = (
-            self.model.make_empty_intermediate_tensors)
+        self.make_empty_intermediate_tensors = self.model.make_empty_intermediate_tensors
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -969,8 +916,7 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[torch.Tensor]:
-        logits = self.logits_processor(self.lm_head, hidden_states,
-                                       sampling_metadata)
+        logits = self.logits_processor(self.lm_head, hidden_states, sampling_metadata)
         return logits
 
     def sample(
@@ -1021,8 +967,7 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
                 continue
 
             if name.endswith("k_proj.kv_cache_scale"):
-                remapped_kv_scale_name = name.replace(
-                    "k_proj.kv_cache_scale", "attn.key_antiquant_scale")
+                remapped_kv_scale_name = name.replace("k_proj.kv_cache_scale", "attn.key_antiquant_scale")
                 if remapped_kv_scale_name not in params_dict:
                     logger.warning_once(
                         "Found kv scale in the checkpoint "
@@ -1034,16 +979,12 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
                 else:
                     name = remapped_kv_scale_name
                     param = params_dict[name]
-                    loaded_weight = torch.tensor_split(loaded_weight,
-                                                       tp_size,
-                                                       dim=0)[tp_rank]
-                    weight_loader = getattr(param, "weight_loader",
-                                            default_weight_loader)
+                    loaded_weight = torch.tensor_split(loaded_weight, tp_size, dim=0)[tp_rank]
+                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
 
             if name.endswith("v_proj.kv_cache_scale"):
-                remapped_kv_scale_name = name.replace(
-                    "v_proj.kv_cache_scale", "attn.value_antiquant_scale")
+                remapped_kv_scale_name = name.replace("v_proj.kv_cache_scale", "attn.value_antiquant_scale")
                 if remapped_kv_scale_name not in params_dict:
                     logger.warning_once(
                         "Found kv scale in the checkpoint "
@@ -1058,8 +999,7 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
                     loaded_weight = torch.tensor_split(loaded_weight,
                                                        tp_size,
                                                        dim=0)[tp_rank]
-                    weight_loader = getattr(param, "weight_loader",
-                                            default_weight_loader)
+                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
 
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
@@ -1115,16 +1055,14 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
                     break
                 else:
                     # Skip loading extra bias for GPTQ models.
-                    if ((name.endswith(".bias") or name.endswith("_bias"))
-                            and name not in params_dict):
+                    if ((name.endswith(".bias") or name.endswith("_bias")) and name not in params_dict):
                         continue
                     # Skip layers on other devices.
                     if is_pp_missing_parameter(name, self):
                         continue
                     # Remapping the name of FP8 kv-scale.
                     if name.endswith("kv_scale"):
-                        remapped_kv_scale_name = name.replace(
-                            ".kv_scale", ".attn.kv_scale")
+                        remapped_kv_scale_name = name.replace(".kv_scale", ".attn.kv_scale")
                         if remapped_kv_scale_name not in params_dict:
                             logger.warning_once(
                                 "Found kv scale in the checkpoint "
@@ -1136,8 +1074,7 @@ class PanguProMoEForCausalLM(nn.Module, SupportsPP):
                         else:
                             name = remapped_kv_scale_name
                     param = params_dict[name]
-                    weight_loader = getattr(param, "weight_loader",
-                                            default_weight_loader)
+                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
