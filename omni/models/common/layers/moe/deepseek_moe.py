@@ -749,6 +749,7 @@ class DeepseekMoE(nn.Module):
         STREAM_TOPK_COMPUTE = 'topk_compute'
         STREAM_SHARED_EXPERT = 'shared_expert'
         STREAM_TOPK_COMM = 'topk_comm'
+        STREAM_PREFETCH = 'prefetch'
         STREAM_INTERNODE_COMM_0 = 'internode_comm_0'
         STREAM_INTERNODE_COMM_1 = 'internode_comm_1'
         STREAM_INTERNODE_COMM_2 = 'internode_comm_2'
@@ -786,42 +787,100 @@ class DeepseekMoE(nn.Module):
 
                 topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
 
-            with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
-                if LARGE_BATCH or MEDIUM_BATCH:
-                    shared_output = self.shared_experts(hidden_states)
-                    if model_extra_config.operator_opt_config.use_prefetch:
-                        torch_npu.npu_prefetch(self.experts.w13_weight, shared_output, MAX_PREFETCH_SIZE)
-            
-            with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
-                topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
+        ###### PIPELINE ALL_GATHER STARTS
+            if LARGE_BATCH:
+                with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+                    hidden_states_dict = {"x_int8": hidden_states_int8, "pertoken_scale":pertoken_scale}
+                    shared_output = self.shared_experts(hidden_states_dict)
 
-            input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
-                round0_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
-                round0_swp = get_round_cross_group_from_list(round=0).swap(round0_swp, method="all2allv")
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
-                round1_swp = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
-                round1_swp = get_round_cross_group_from_list(round=1).swap(round1_swp, method="all2allv")
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
-                round2_swp = tng.scope.npu_wait_tensor(hidden_states_int8, round1_swp)
-                round2_swp = get_round_cross_group_from_list(round=2).swap(round2_swp, method="all2allv")
+                with tng.scope.npu_stream_switch(STREAM_PREFETCH):
+                    torch_npu.npu_prefetch(self.experts.w13_weight, shared_output, MAX_PREFETCH_SIZE)
             
-            with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
-                topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, round0_swp)
-                topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
-            round0_swp = tng.scope.npu_wait_tensor(round0_swp, input_ag)
-            round0_ag = all_gather_local(round0_swp, idx=0, dim=0)
-            round1_swp = tng.scope.npu_wait_tensor(round1_swp, round0_ag)
-            round1_ag = all_gather_local(round1_swp, idx=0, dim=0)
-            round2_swp = tng.scope.npu_wait_tensor(round2_swp, round1_ag)
-            round2_ag = all_gather_local(round2_swp, idx=0, dim=0)
-            with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
-                if SMALL_BATCH:
-                    hidden_states = tng.scope.npu_wait_tensor(hidden_states, input_ag)
-                    shared_output = self.shared_experts(hidden_states)
-                    if model_extra_config.operator_opt_config.use_prefetch:
-                        torch_npu.npu_prefetch(self.experts.w13_weight, input_ag, MAX_PREFETCH_SIZE)
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
 
+                input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
+                    round0_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
+                    round0_swp = get_round_cross_group_from_list(round=0).swap(round0_swp, method="all2allv")
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
+                    round1_swp = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
+                    round1_swp = get_round_cross_group_from_list(round=1).swap(round1_swp, method="all2allv")
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
+                    round2_swp = tng.scope.npu_wait_tensor(hidden_states_int8, round1_swp)
+                    round2_swp = get_round_cross_group_from_list(round=2).swap(round2_swp, method="all2allv")
+
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, round0_swp)
+                    topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
+
+                round0_swp = tng.scope.npu_wait_tensor(round0_swp, input_ag)
+                round0_ag = all_gather_local(round0_swp, idx=0, dim=0)
+                round1_swp = tng.scope.npu_wait_tensor(round1_swp, round0_ag)
+                round1_ag = all_gather_local(round1_swp, idx=0, dim=0)
+                round2_swp = tng.scope.npu_wait_tensor(round2_swp, round1_ag)
+                round2_ag = all_gather_local(round2_swp, idx=0, dim=0)
+
+            elif MEDIUM_BATCH:
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
+
+                input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
+                    round0_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
+                    round0_swp = get_round_cross_group_from_list(round=0).swap(round0_swp, method="all2allv")
+                    round0_ag = all_gather_local(round0_swp, idx=-1, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
+                    round1_swp = tng.scope.npu_wait_tensor(hidden_states_int8, topk_weights)
+                    round1_swp = get_round_cross_group_from_list(round=1).swap(round1_swp, method="all2allv")
+                    round1_ag = all_gather_local(round1_swp, idx=-2, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
+                    round2_swp = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
+                    round2_swp = get_round_cross_group_from_list(round=2).swap(round2_swp, method="all2allv")
+                    round2_ag = all_gather_local(round2_swp, idx=-3, dim=0)
+                
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, topk_local_all)
+                    topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
+
+                with tng.scope.npu_stream_switch(STREAM_PREFETCH):
+                    torch_npu.npu_prefetch(self.experts.w13_weight, input_ag, MAX_PREFETCH_SIZE)
+
+                with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+                    hidden_states_int8 = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
+                    hidden_states_dict = {"x_int8": hidden_states_int8, "pertoken_scale":pertoken_scale}
+                    shared_output = self.shared_experts(hidden_states_dict)
+
+            elif SMALL_BATCH:
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
+
+                input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
+                    round0_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
+                    round0_swp = get_round_cross_group_from_list(round=0).swap(round0_swp, method="all2allv")
+                    round0_ag = all_gather_local(round0_swp, idx=-1, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
+                    round1_swp = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
+                    round1_swp = get_round_cross_group_from_list(round=1).swap(round1_swp, method="all2allv")
+                    round1_ag = all_gather_local(round1_swp, idx=-2, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
+                    round2_swp = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
+                    round2_swp = get_round_cross_group_from_list(round=2).swap(round2_swp, method="all2allv")
+                    round2_ag = all_gather_local(round2_swp, idx=-3, dim=0)
+                
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, topk_local_all)
+                    topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
+
+                with tng.scope.npu_stream_switch(STREAM_PREFETCH):
+                    torch_npu.npu_prefetch(self.experts.w13_weight, input_ag, MAX_PREFETCH_SIZE)
+
+                with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+                    hidden_states_int8 = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
+                    hidden_states_dict = {"x_int8": hidden_states_int8, "pertoken_scale":pertoken_scale}
+                    shared_output = self.shared_experts(hidden_states_dict)
+            ###### PIPELINE ALL_GATHER ENDS
 
             with tng.scope.npu_stream_switch(STREAM_TOPK_COMPUTE):
                 topk_weights, topk_ids, global_pertoken_scale = torch.split(topk_all,
@@ -872,6 +931,7 @@ class DeepseekMoE(nn.Module):
                                                                             dim=-1)
             topk_ids = torch.round(topk_ids).to(torch.int32)
             global_pertoken_scale = global_pertoken_scale.squeeze(-1)
+
         if self.node_rank == 0:
             global_hidden_states = torch.cat([input_ag, round0_ag, round1_ag, round2_ag], dim=0)
         elif self.node_rank == 1:
@@ -898,13 +958,15 @@ class DeepseekMoE(nn.Module):
         elif self.node_rank == 3:
             round2, round1, round0, input_self = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
 
-        round2 = round2.to(torch.bfloat16)
         if model_extra_config.operator_opt_config.moe_multi_stream_tune:
+            ##### PIPELINE REDUCE_SCATTER STARTS
+            round2 = round2.to(torch.bfloat16)
             with tng.scope.npu_stream_switch(STREAM_TOPK_COMPUTE):
                 round1 = round1.to(torch.bfloat16)
                 round0 = round0.to(torch.bfloat16)
                 input_self = input_self.to(torch.bfloat16)
 
+            with tng.scope.npu_stream_switch(STREAM_PREFETCH):
                 if self.attn_prefetch is not None:
                     torch_npu.npu_prefetch(self.attn_prefetch.q_a_proj.weight, input_self, MAX_PREFETCH_SIZE)
                     torch_npu.npu_prefetch(self.attn_prefetch.kv_a_proj_with_mqa.weight, input_self, MAX_PREFETCH_SIZE)
@@ -912,6 +974,7 @@ class DeepseekMoE(nn.Module):
                     torch_npu.npu_prefetch(self.attn_prefetch.W_UK, input_self, MAX_PREFETCH_SIZE)
                 if kv_prefetch is not None and isinstance(kv_prefetch, Tuple) and kv_prefetch[0].numel():
                     torch_npu.npu_prefetch(kv_prefetch[0], input_self, MAX_PREFETCH_SIZE)
+
             round2_rs = reduce_scatter_local(round2, idx=0)
             round1 = tng.scope.npu_wait_tensor(round1, round2_rs)
             round1_rs = reduce_scatter_local(round1, idx=0)
@@ -925,7 +988,9 @@ class DeepseekMoE(nn.Module):
                 round1_swp = get_round_cross_group_from_list(round=1).swap(round1_rs, method="all2allv")
             with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
                 round0_swp = get_round_cross_group_from_list(round=0).swap(round0_rs, method="all2allv")
+            ##### PIPELINE REDUCE_SCATTER ENDS
         else:
+            round2 = round2.to(torch.bfloat16)
             round1 = round1.to(torch.bfloat16)
             round0 = round0.to(torch.bfloat16)
             input_self = input_self.to(torch.bfloat16)
@@ -968,7 +1033,8 @@ class DeepseekMoE(nn.Module):
             global_hidden_states = all_gather_two_stage(hidden_states_int8, idx=0, dim=0)
 
         if self.n_routed_experts is not None:
-            shared_output = self.shared_experts(hidden_states)
+            hidden_states_dict = {"x_int8": hidden_states_int8, "pertoken_scale":pertoken_scale}
+            shared_output = self.shared_experts(hidden_states_dict)
 
         router_logits, _ = self.gate.forward(hidden_states.to(torch.bfloat16))
         topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
