@@ -1,0 +1,63 @@
+- hosts: all
+  gather_facts: false
+  vars_files: [serving-profiles.yaml]
+  vars:
+    profile_family: "vllm"
+    profile_name: "deepseek"
+
+    # Select your profile
+    selected: "{{ profiles[profile_family][profile_name] }}"
+
+    # Optional global defaults/overrides (add these blocks if you want them)
+    defaults: {}
+    overrides: "{{ hostvars[inventory_hostname].profile_overrides | default({}) }}"
+
+    # Deep merge: defaults → selected → per-host overrides
+    merged: >-
+      {{
+        defaults
+        | combine(selected, recursive=True)
+        | combine(overrides, recursive=True)
+      }}
+
+    # Derive/repair a couple of envs if not provided
+    master_ip_fallback: "{{ hostvars[groups['all'][0]].ansible_host | default('127.0.0.1') }}"
+  tasks:
+    - name: Show the final env/args (sanity check)
+      debug:
+        var: merged
+
+    - name: Run inline launcher with env + args (no temp file)
+      shell: |
+        set -euo pipefail
+
+        # 1) Export env
+        {% for k, v in merged.env.items() %}
+        export {{ k }}={{ (v | string) | quote }}
+        {% endfor %}
+
+        # Fill a couple of convenient defaults if absent:
+        export MASTER_IP="${MASTER_IP:-{{ master_ip_fallback }}}"
+        export LOG_PATH="${LOG_PATH:-/var/log/vllm}"
+
+        # 2) Build CLI as an array to avoid quoting bugs
+        cmd=( {{ merged.launcher | default('python -m vllm.entrypoints.api_server') }} )
+
+        {% for k, v in merged.args.items() %}
+          {% if v is string %}
+            {% if v|length > 0 %}
+        cmd+=(--{{ k }} {{ v | quote }})
+            {% endif %}
+          {% elif v is boolean %}
+            {% if v %}
+        cmd+=(--{{ k }})
+            {% endif %}
+          {% elif v is number %}
+        cmd+=(--{{ k }} {{ v }})
+          {% endif %}
+        {% endfor %}
+
+        echo "Launching: ${cmd[*]}"
+        exec "${cmd[@]}"
+      args:
+        executable: /bin/bash
