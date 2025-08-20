@@ -22,14 +22,18 @@ import json
 import os
 from omni_cli.config_transform import transform_deployment_config
 from omni_cli.config_transform import detect_file_encoding
+from typing import Dict, Any, List, Tuple
+from pathlib import Path
+import tempfile
+import shlex
 
 def execute_command(command):
     """Execute the ansible command"""
     process = subprocess.Popen(
         command,
         shell=True,
-        stdout=None,
-        stderr=None
+        # stdout=None,
+        # stderr=None
     )
 
     return_code = process.wait()
@@ -37,6 +41,137 @@ def execute_command(command):
         print(f"Deployment failed with return code {return_code}")
     else:
         print("Deployment succeeded")
+    return return_code
+
+def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    """Flatten an Ansible-style inventory dict into [(host, hostvars)]."""
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    if not isinstance(node, dict):
+        return out
+    for h, vars_ in (node.get("hosts") or {}).items():
+        out.append((h, vars_ or {}))
+    for _g, child in (node.get("children") or {}).items():
+        out.extend(_walk_hosts(child))
+    return out
+
+def _double_quotes(s: str) -> str:
+    """Wrap value in double quotes for a safe shell arg."""
+    s = str(s)
+    s = s.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return f'"{s}"'
+
+def _build_export_block(env: Dict[str, Any]) -> str:
+    """Build a sequence of export lines."""
+    items_plain = [(k, v) for k, v in env.items() if "$" not in str(v)]
+    items_refs  = [(k, v) for k, v in env.items() if "$" in str(v)]
+
+    lines = []
+    for k, v in items_plain + items_refs:
+        if v is None:
+            v = ""
+        lines.append(f'export {k}={_double_quotes(v)}')
+    return "\n".join(lines)
+
+def _build_args_line(args: Dict[str, Any]) -> str:
+    """
+    Build a flat CLI argument string like:
+      --tp "16" --kv-transfer-config "{\"kv_connector\":\"...\",\"kv_rank\":$KV_RANK}"
+    Rules:
+      - If a value is None -> boolean-like flag (emit `--flag` only)
+      - Else -> `--flag "value"` where value is safely double-quoted
+      - Assumes caller passes kv-transfer-config as a JSON string already
+    """
+    parts = []
+    for k, v in (args or {}).items():
+        flag = f"--{k}"
+        if v is None:
+            parts.append(flag)
+        else:
+            parts.append(f"{flag} {_double_quotes(v)}")
+    return " ".join(parts)
+
+def omni_cli_start(
+    inventory_path: str = "configs/serving_profiles.yaml",
+    host_pattern: str | None = None,   # e.g., "127.0.0.1"
+    role_filter: str | None = None,    # e.g., "P" or "D"
+    python_bin: str = "python3",
+    entry_py: str = "start_api_server.py",
+    dry_run: bool = False,
+) -> None:
+    """
+    Read inventory YAML, generate a per-host bash script, and run it via:
+      ansible <host> -i <inventory> -m script -a <script_path>
+    """
+    inv_file = Path(inventory_path).expanduser().resolve()
+    with open(inv_file, "r", encoding="utf-8") as f:
+        inv = yaml.safe_load(f)
+
+    all_hosts = _walk_hosts(inv.get("all", inv))
+
+    selected: List[Tuple[str, Dict[str, Any]]] = []
+    for host, hv in all_hosts:
+        if host_pattern and host != host_pattern:
+            continue
+        if role_filter and hv.get("role") != role_filter:
+            continue
+        selected.append((host, hv))
+
+    if not selected:
+        raise RuntimeError("No matching hosts found with given filters.")
+
+    for host, hv in selected:
+        env: Dict[str, Any] = hv.get("env", {}) or {}
+        args: Dict[str, Any] = hv.get("args", {}) or {}
+
+        export_block = _build_export_block(env)
+        args_line = _build_args_line(args)
+
+        code_path = str(env.get("CODE_PATH") or "").strip()
+        cd_line = f'cd {_double_quotes(code_path)} || true' if code_path else "true"
+        default_log_line = ': "${LOG_DIR:=/var/log/omni}"'
+
+        # Write a clean script (no leading indentation)
+        with tempfile.NamedTemporaryFile(
+            "w", delete=False,
+            prefix=f"omni_start_{host.replace('.', '_')}_",
+            suffix=".sh"
+        ) as tf:
+            script_path = Path(tf.name)
+            tf.write("#!/usr/bin/env bash\n")
+            tf.write("set -euo pipefail\n\n")
+            tf.write("# 1) Export environment variables\n")
+            tf.write(export_block + "\n\n")
+            tf.write("# 2) Default a log dir if not provided\n")
+            tf.write(default_log_line + "\n\n")
+            tf.write("# 3) Change directory if CODE_PATH is provided\n")
+            tf.write(cd_line + "\n\n")
+            tf.write("# 4) Show and exec the command\n")
+            tf.write(f'echo "[omni] Launching on {host}: {python_bin} {entry_py} {args_line}"\n')
+            tf.write(f"exec {python_bin} {entry_py} {args_line}\n")
+
+        os.chmod(script_path, 0o755)
+
+        # Safely quote the ansible command line for shell=True
+        cmd = (
+            f"ansible {shlex.quote(host)} "
+            f"-i {shlex.quote(str(inv_file))} "
+            f"-m script "
+            f"-a {shlex.quote(str(script_path))}"
+        )
+
+        if dry_run:
+            print(f"\n=== DRY RUN for host {host} ===")
+            print("Script:", str(script_path))
+            print("Ansible:", cmd)
+            # keep the temp script for inspection
+        else:
+            try:
+                execute_command(cmd)
+            finally:
+                try:
+                    script_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 def start_omni_service_in_normal_mode(config_path):
     """Run the omni service in normal mode."""
@@ -163,10 +298,10 @@ def main():
         print("Start omni service.")
         if args.config_path is not None:
             print("Normal mode.")
-            start_omni_service_in_normal_mode(args.config_path)
+            omni_cli_start()
         elif args.normal:
             print("Normal mode.")
-            start_omni_service_in_normal_mode(args.normal[0])
+            omni_cli_start()
         elif args.prepare_dev:
             print("Developer mode: Environmental preparation.")
             prepare_omni_service_in_developer_mode(args.prepare_dev[0])
