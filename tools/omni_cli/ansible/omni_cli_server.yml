@@ -27,11 +27,11 @@
       debug:
         var: merged
 
-    - name: Run inline launcher with env + args (no temp file)
+    - name: Run inline launcher with env + args
       shell: |
         set -euo pipefail
 
-        # 1) Export env
+        # 1) Export ENV
         {% for k, v in merged.env.items() %}
         export {{ k }}={{ (v | string) | quote }}
         {% endfor %}
