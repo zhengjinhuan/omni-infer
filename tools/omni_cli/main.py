@@ -22,6 +22,7 @@ import json
 import os
 from omni_cli.config_transform import transform_deployment_config
 from omni_cli.config_transform import detect_file_encoding
+from omni_cli.mk_inventory_yml import add_node, rm_node
 
 def execute_command(command):
     """Execute the ansible command"""
@@ -154,7 +155,31 @@ def main():
     # FETCH_LOG command configuration
     subparsers.add_parser("fetch_log", help="Fetch logs")
 
+    # ADD_NODE command configuration
+    addnode_parser = subparsers.add_parser("add_node", help="Add a node to omni_infer_deployment.yml")
+    addnode_parser.add_argument("--role", required=True, choices=['P', 'D', 'C'], help="Node role")
+    addnode_parser.add_argument("--name", required=True, help="Node name")
+    addnode_parser.add_argument("--ansible_host", required=True, help="ansible_host")
+    addnode_parser.add_argument("--ansible_user", required=True, help="ansible_user")
+    addnode_parser.add_argument("--ansible_ssh_common_args", required=True, help="ansible_ssh_common_args")
+    addnode_parser.add_argument("--ansible_ssh_private_key_file", required=True, help="ansible_ssh_private_key_file")
+    addnode_parser.add_argument("--host_ip", help="host_ip")
+    addnode_parser.add_argument("--env_overwrite", nargs='*', help="Overwrite env variables, format KEY=VALUE")
+    addnode_parser.add_argument("--args_overwrite", nargs='*', help="Overwrite args variables, format KEY=VALUE")
+    addnode_parser.set_defaults(func=add_node)
+
+    # RM_NODE command configuration
+    rmnode_parser = subparsers.add_parser("rm_node", help="Remove a node from omni_infer_deployment.yml")
+    rmnode_parser.add_argument("--role", required=True, choices=['P', 'D', 'C'], help="Node role")
+    rmnode_parser.add_argument("--name", required=True, help="Node name to remove")
+    rmnode_parser.set_defaults(func=rm_node)
+
     args = parser.parse_args()
+
+    if hasattr(args, 'func'):
+        args.func(args)
+        return
+
     if args.command == "start" and not any([args.normal, args.prepare_dev, args.run_dev]):
         args.normal = True
 
