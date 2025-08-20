@@ -24,7 +24,7 @@ def register_model():
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
- 
+
     ModelRegistry.register_model(
         "DeepSeekMTPModel",
         "omni.models.deepseek.deepseek_mtp:DeepseekV3MTP")
@@ -32,7 +32,7 @@ def register_model():
     ModelRegistry.register_model(
         "DeepSeekMTPModelDuo",
         "omni.models.deepseek.deepseek_mtp:DeepseekV3MTPDuo")
- 
+
     ModelRegistry.register_model(
         "DeepSeekMTPModelTres",
         "omni.models.deepseek.deepseek_mtp:DeepseekV3MTPTres")
@@ -62,13 +62,17 @@ def register_model():
         "PanguProMoEForCausalLM",
         "omni.models.pangu.pangu_pro_moe.pangu_moe:PanguProMoEForCausalLM")
 
+    ModelRegistry.register_model(
+        "PanguEmbeddedForCausalLM",
+        "omni.models.pangu.pangu_dense:PanguEmbeddedForCausalLM")
+
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
         int(os.getenv("CAPTURE_MODE", default='0')) or
         int(os.getenv("REPLAY_MODE", default='0'))
     ):
         from omni.models.mock.mock import mock_model_class_factory
- 
+
         from vllm.model_executor.models.qwen2 import Qwen2ForCausalLM
         ModelRegistry.register_model(
             "Qwen2ForCausalLM",
