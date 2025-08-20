@@ -22,7 +22,7 @@ import json
 import os
 from omni_cli.config_transform import transform_deployment_config
 from omni_cli.config_transform import detect_file_encoding
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 import tempfile
 import shlex
@@ -92,8 +92,8 @@ def _build_args_line(args: Dict[str, Any]) -> str:
 
 def omni_cli_start(
     inventory_path: str = "configs/serving_profiles.yaml",
-    host_pattern: str | None = None,   # e.g., "127.0.0.1"
-    role_filter: str | None = None,    # e.g., "P" or "D"
+    host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
+    role_filter: Optional[str] = None,    # e.g., "P" or "D"
     python_bin: str = "python3",
     entry_py: str = "start_api_server.py",
     dry_run: bool = False,
