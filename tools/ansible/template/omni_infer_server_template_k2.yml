@@ -22,7 +22,7 @@
   environment:
     # Global Configuration
     LOG_PATH: "/data/log_path"
-    MODEL_PATH: "/data/models/DeepSeek-R1-w8a8-fusion"
+    MODEL_PATH: "/data/model/kimi-k2-w4a8-mtp"
     MODEL_LEN_MAX_PREFILL: "33008"
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
@@ -37,8 +37,8 @@
     SCRIPTS_PATH: "/tmp/scripts_path"
 
     #Configuration for lb_sdk in global proxy
-    PREFILL_LB_SDK: "pd_score_balance"
-    DECODE_LB_SDK: "pd_score_balance"
+    PREFILL_LB_SDK: "least_total_load"
+    DECODE_LB_SDK: "weighted_least_active"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -269,7 +269,7 @@
       )
       MODEL_EXTRA_CFG_PATH="${CODE_PATH}/omniinfer/tests/test_config/test_config_decode_k2.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 30 --no-enable-prefix-caching'
-      GPU_UTIL=0.92
+      GPU_UTIL=0.9
       ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true},"enable_omni_attn": true, "multi_rank_pull_kv": true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
