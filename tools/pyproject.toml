@@ -9,7 +9,7 @@ description = "Standalone CLI tool from Omni Infer"
 authors = [
     { name="Huawei" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "ansible>=8.0",
     "pyyaml>=6.0",
