@@ -539,10 +539,6 @@ class NPUModelRunner(GPUModelRunner):
             return get_kv_transfer_group().get_load_kv_failure_reqs()
         return None
 
-    def load_kv_cache(self, info_load_reqs) -> List[int]:
-        result = self.ems_adapter.load(info_load_reqs)
-        return result
-
     @torch.inference_mode()
     def execute_model(
         self,
