@@ -430,7 +430,7 @@ class DeepseekMLA(nn.Module):
                 prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
                 prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
 
-                if model_extra_config.parall_config.dp_size > 1:
+                if model_extra_config.parall_config.dp_size > 1 and os.getenv("ASCEND_PLATFORM", "A3") == "A2":
                     self.kv_b_proj.weight = torch.nn.Parameter(torch.cat((self.W_UK.permute(2,0,1), self.W_UV.transpose(0,1)), dim=-1) \
                                                                     .view(self.kv_lora_rank,-1).T, requires_grad=False)
                     kv = self.kv_b_proj.forward(prefill_kv_a)[0]
