@@ -16,7 +16,7 @@ def parse_node_name(name):
     return None, None
 
 def parse_remaining_args_for_set(arg, remaining_args, sections, current_section, i):
-    if arg == '--additional_config' or arg == '--extra_args':
+    if arg == '--additional-config' or arg == '--extra-args':
         extra_args_list = shlex.split(remaining_args[i+1])
         j = 0
         while j < len(extra_args_list):
@@ -36,7 +36,7 @@ def parse_remaining_args_for_set(arg, remaining_args, sections, current_section,
         sections[current_section][arg[2:]] = remaining_args[i+1]
 
 def parse_remaining_args_for_delete(arg, remaining_args, sections, current_section, i):
-    if arg == '--additional_config' or arg == '--extra_args':
+    if arg == '--additional-config' or arg == '--extra-args':
         additional_config_list = shlex.split(remaining_args[i+1])
         j = 0
         while j < len(additional_config_list):
@@ -57,7 +57,7 @@ def parse_remaining_args(is_set, remaining_args):
     if is_set:
         sections = {'env': {}, 'arg': {}}
     else:
-        sections = {'env': [], 'arg': [], 'extra_args': [], 'additional_config': []}
+        sections = {'env': [], 'arg': [], 'extra-args': [], 'additional-config': []}
     current_section = None
     seen_sections = set()
 
@@ -125,22 +125,22 @@ def delete_cfg_yml(node_name, node_id, env_list, arg_list, extra_args_list, addi
                 print("Warning: No matching configuration %s found." % key)
 
         for key in extra_args_list:
-            if key in vars_dict['args']['extra_args']:
-                del vars_dict['args']['extra_args'][key]
+            if key in vars_dict['args']['extra-args']:
+                del vars_dict['args']['extra-args'][key]
             else:
                 print("Warning: No matching configuration %s found." % key)
 
-        if vars_dict['args']['extra_args'] == {}:
-            vars_dict['args']['extra_args'] = ''
+        if vars_dict['args']['extra-args'] == {}:
+            vars_dict['args']['extra-args'] = ''
 
         for key in additional_config_list:
-            if key in vars_dict['args']['additional_config']:
-                del vars_dict['args']['additional_config'][key]
+            if key in vars_dict['args']['additional-config']:
+                del vars_dict['args']['additional-config'][key]
             else:
                 print("Warning: No matching configuration %s found." % key)
 
-        if vars_dict['args']['additional_config'] == {}:
-            vars_dict['args']['additional_config'] = ''
+        if vars_dict['args']['additional-config'] == {}:
+            vars_dict['args']['additional-config'] = ''
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
@@ -166,4 +166,4 @@ def cfg_delete_process(node_name, node_id, args, sections, deploy_path):
         return
 
     delete_cfg_yml(node_name, node_id, sections['env'], sections['arg'], \
-        sections['extra_args'], sections['additional_config'], deploy_path)
+        sections['extra-args'], sections['additional-config'], deploy_path)
