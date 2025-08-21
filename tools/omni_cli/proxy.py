@@ -83,12 +83,16 @@ def process_results(results, inventory):
 
     global_vars = inventory['all']['vars']
     for host, vars in inventory['all']['children']['C']['hosts'].items():
-        print(host)
         host_ip_val = vars.get('ansible_host', '')
         api_port_val = calculate_api_port(vars, global_vars, 'C')
-        print(inventory['all']['children']['C']['hosts'])
-        print(host_ip_val)
-        print(api_port_val)
+        docker_name = vars.get('docker_name', '')
+
+        env: Dict[str, Any] = vars.get("env", {}) or {}
+        log_path = str(env.get("LOG_PATH") or "").strip()
+
+        args: Dict[str, Any] = vars.get("args", {}) or {}
+        prefill_lb_sdk = args.get('prefill-lb-sdk', '')
+        decode_lb_sdk = args.get('decode-lb-sdk', '')
 
     with tempfile.NamedTemporaryFile(
         "w", delete=False,
@@ -97,18 +101,17 @@ def process_results(results, inventory):
         suffix=".sh") as tf:
         script_path = Path(tf.name)
         tf.write("#!/usr/bin/env bash\n")
-        docker_name = "wcd_omni_infer_proxy_c0" 
         tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
-        tf.write(f"cd /workspace/omniinfer/tools/scripts; bash global_proxy.sh \\\n\
+        tf.write(f"ps aux | grep 'nginx' | grep -v 'grep' | awk '{print $2}' | xargs kill -9; cd /workspace/omniinfer/tools/scripts; bash global_proxy.sh \\\n\
           --listen-port {api_port_val} \\\n\
           --prefill-servers-list {prefill_result} \\\n\
           --decode-servers-list {decode_result} \\\n\
-          --log-file /tmp/nginx/nginx_error.log \\\n\
+          --log-file {log_path}/nginx/nginx_error.log \\\n\
           --log-level notice \\\n\
           --core-num 4 \\\n\
           --start-core-index 16 \\\n\
-          --prefill-lb-sdk $4 \\\n\
-          --decode-lb-sdk $5\n\n")
+          --prefill-lb-sdk {prefill_lb_sdk} \\\n\
+          --decode-lb-sdk {decode_lb_sdk}\n\n")
         tf.write("EOF\n")
 
     os.chmod(script_path, 0o755)
@@ -128,13 +131,11 @@ def process_results(results, inventory):
         except Exception:
             pass
 
-inv_file = Path("./omni_infer_inventory_used_for_2P1D.yml").expanduser().resolve()
-inv = None
-with open(inv_file, "r", encoding="utf-8") as f:
-    inv = yaml.safe_load(f)
-
-result = register_values(inv)
-print(result)
-
-
-process_results(result, inv)
+def omni_run_proxy(inventory):
+    inv_file = Path(inventory).expanduser().resolve()
+    inv = None
+    with open(inv_file, "r", encoding="utf-8") as f:
+        inv = yaml.safe_load(f)
+    
+    result = register_values(inv)
+    process_results(result, inv)
