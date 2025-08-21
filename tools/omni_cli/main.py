@@ -154,11 +154,13 @@ def omni_cli_start(
 
     all_hosts = _walk_hosts(inv.get("all", inv))
 
+    if not role_filter:
+        role_filter = ["prefill", "decode"]
     selected: List[Tuple[str, Dict[str, Any]]] = []
     for host, hv in all_hosts:
         if host_pattern and host != host_pattern:
             continue
-        if role_filter and hv.get("role") != role_filter:
+        if role_filter and hv.get("env").get("ROLE") not in role_filter:
             continue
         selected.append((host, hv))
 
@@ -231,11 +233,13 @@ def omni_cli_stop(
 
     all_hosts = _walk_hosts(inv.get("all", inv))
 
+    if not role_filter:
+        role_filter = ["prefill", "decode"]
     selected: List[Tuple[str, Dict[str, Any]]] = []
     for host, hv in all_hosts:
         if host_pattern and host != host_pattern:
             continue
-        if role_filter and hv.get("role") != role_filter:
+        if role_filter and hv.get("env").get("ROLE") not in role_filter:
             continue
         selected.append((host, hv))
 
