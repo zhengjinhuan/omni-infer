@@ -245,7 +245,7 @@ def create_default_inventory_if_needed():
     """在当前目录创建默认的 servering_profiles.yml 文件（如果不存在）"""
     current_dir = Path.cwd()
     deploy_path = current_dir / "servering_profiles.yml"
-    
+
     if not deploy_path.exists():
         # 创建默认的 inventory 结构
         default_inventory = {
@@ -257,13 +257,13 @@ def create_default_inventory_if_needed():
                 }
             }
         }
-        
+
         # 写入文件
         with open(deploy_path, "w") as f:
             yaml.dump(default_inventory, f)
-        
+
         print(f"Created default inventory file at: {deploy_path}")
-    
+
     return deploy_path.resolve()
 
 def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
@@ -290,9 +290,9 @@ def run_docker_containers(
     # Load inventory
     with open(inv_file, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
-    
+
     all_hosts = _walk_hosts(inv.get("all", inv))
-    
+
     if not all_hosts:
         print("Warning: No hosts found in inventory.")
         return
@@ -323,7 +323,7 @@ def run_docker_containers(
 
     for host, hv in all_hosts:
         print(f"\nProcessing host: {host}")
-        
+
         # Determine the role (P, D, or C) based on group membership
         role = "P"  # Default to P if not specified
         if 'P' in hv.get('groups', []):
@@ -348,15 +348,15 @@ def run_docker_containers(
             raise ValueError(f"Required environment variable 'MODEL_PATH' not defined for host {host}")
         if not docker_image_id:
             raise ValueError(f"Required variable 'DOCKER_IMAGE_ID' not defined for host {host}")
-        
+
         # Create a temporary script file
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tf:
             script_path = Path(tf.name)
-            
+
             # Write the script content
             tf.write("#!/bin/bash\n")
             tf.write("set -euo pipefail\n\n")
-            
+
             # Export environment variables
             tf.write("# Export environment variables\n")
             for key, value in env.items():
@@ -383,21 +383,21 @@ def run_docker_containers(
             tf.write("\n# Execute Docker run command\n")
             tf.write("echo \"Starting container with command: $docker_cmd\"\n")
             tf.write("eval \"$docker_cmd\"\n")
-            
+
             # Print container status
             tf.write("\n# Verify container status\n")
             tf.write("docker ps -a --filter \"name=$DOCKER_NAME\"\n")
-            
+
             # Set execute permissions
             os.chmod(script_path, 0o755)
-            
+
             # Print script content in dry run mode
             if dry_run:
                 print(f"=== DRY RUN: Script for host {host} ===")
                 with open(script_path, "r") as script_file:
                     print(script_file.read())
                 print("===")
-        
+
         if not dry_run:
             try:
                 # Build ansible command
@@ -407,7 +407,7 @@ def run_docker_containers(
                     f"-m script "
                     f"-a {shlex.quote(str(script_path))}"
                 )
-                
+
                 print(f"Executing script on host {host}:")
                 execute_command(cmd)
             finally:
@@ -420,7 +420,7 @@ def run_docker_containers(
             # In dry run mode, just show the command we would run
             print(f"DRY RUN: Would execute for host {host}:")
             print(f"  ansible {host} -i {inv_file} -m script -a {script_path}")
-    
+
     print("\nAll hosts processed.")
 
 
@@ -527,9 +527,9 @@ def main():
     # ADD_NODE command configuration
     addnode_parser = subparsers.add_parser("add_node", help="Add a node to servering_profiles.yml")
     default_deploy_path = create_default_inventory_if_needed()
-    
+
     addnode_parser.add_argument(
-        "--deploy_path", 
+        "--deploy_path",
         default=str(default_deploy_path),
         help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
     )
@@ -549,7 +549,7 @@ def main():
     rmnode_parser = subparsers.add_parser("rm_node", help="Remove a node from servering_profiles.yml")
     rmnode_parser.add_argument("--role", required=True, choices=['P', 'D', 'C'], help="Node role")
     rmnode_parser.add_argument(
-        "--deploy_path", 
+        "--deploy_path",
         default=str(default_deploy_path),
         help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
     )
@@ -559,12 +559,12 @@ def main():
     # RUN_DOCKER command configuration
     docker_run_parser = subparsers.add_parser("docker_run", help="Run Docker containers based on inventory")
     docker_run_parser.add_argument(
-        "--inventory", "-i", 
+        "--inventory", "-i",
         default=str(default_deploy_path),
         help="Path to inventory file (default: omni_cli/configs/servering_profiles.yml)"
     )
     docker_run_parser.add_argument(
-        "--dry-run", 
+        "--dry-run",
         action="store_true",
         help="Dry run mode - show what would be done without executing"
     )
@@ -587,10 +587,10 @@ def main():
         print("Start omni service.")
         if args.config_path is not None:
             print("Normal mode.")
-            omni_cli_start()
+            omni_cli_start(inventory_path=default_deploy_path)
         elif args.normal:
             print("Normal mode.")
-            omni_cli_start()
+            omni_cli_start(inventory_path=default_deploy_path)
         elif args.prepare_dev:
             print("Developer mode: Environmental preparation.")
             prepare_omni_service_in_developer_mode(args.prepare_dev[0])
@@ -599,7 +599,7 @@ def main():
             run_omni_service_in_developer_mode()
     elif args.command == "stop":
         print("Stop omni service.")
-        omni_cli_stop()
+        omni_cli_stop(inventory_path=default_deploy_path)
     elif args.command == "sync_dev":
         print("Synchronize the code.")
         synchronize_code()
