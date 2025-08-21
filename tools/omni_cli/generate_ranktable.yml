@@ -21,14 +21,13 @@
 
   environment:
 
-    DOCKER_NAME_P: "wcd_omni_infer_prefill"
-    DOCKER_NAME_D: "wcd_omni_infer_decode"
+    DOCKER_NAME_P: "your_name_omni_infer_prefill"
+    DOCKER_NAME_D: "your_name_omni_infer_decode"
     SCRIPTS_PATH: "/tmp/scripts_path"
 
   vars:
     # Configure the storage path of the ranktable file.
-    #ranktable_save_path: "/tmp/ranktable_save_path"
-    ranktable_save_path: "/tmp/ranktable_save_path_test"
+    ranktable_save_path: "/tmp/ranktable_save_path"
 
     docker_exec_cmd: |
       docker exec \
