@@ -89,6 +89,11 @@ def _build_args_line(args: Dict[str, Any]) -> str:
             parts.append(f"{flag} {_double_quotes(v)}")
     return " ".join(parts)
 
+def omni_ranktable(inventory):
+    cur_dir = os.path.dirname(__file__)
+    cmd = "ansible-playbook -i " + inventory + " " + cur_dir + "/ansible/ranktable.yml"
+    os.system(cmd)
+
 def omni_cli_start(
     inventory_path: str = "omni_cli/configs/serving_profiles.yml",
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
