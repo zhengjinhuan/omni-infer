@@ -16,13 +16,11 @@
 #
 import argparse
 import subprocess
-import yaml
-import requests
 import json
-import os
 from omni_cli.config_transform import transform_deployment_config
 from omni_cli.config_transform import detect_file_encoding
 from omni_cli.mk_inventory_yml import add_node, rm_node
+from omni_cli.omni_cfg import *
 
 def execute_command(command):
     """Execute the ansible command"""
@@ -70,14 +68,6 @@ def install_packages():
     """In developer mode, copy the code and install the packages."""
     command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags 'sync_code,pip_install'"
     execute_command(command)
-
-def set_configuration(config_path):
-    """Set configuration."""
-    transform_deployment_config(config_path)
-
-def del_configuration(config_path):
-    """Delete configuration"""
-    transform_deployment_config(config_path)
 
 def inspect_configuration(config_path):
     """Inspect detailed configuration information"""
@@ -141,9 +131,11 @@ def main():
 
     # CFG command configuration
     cfg_parser = subparsers.add_parser("cfg", help="Modify configuration")
-    cfg_group = cfg_parser.add_mutually_exclusive_group()
-    cfg_group.add_argument("--set", nargs=1, metavar='config_path', help="Set configuration")
-    cfg_group.add_argument("--delete", nargs=1, metavar='config_path', help="Delete configuration")
+    cfg_group = cfg_parser.add_mutually_exclusive_group(required=True)
+    cfg_group.add_argument("--set", metavar="", help="Set configuration key-value pairs (e.g., --key value)")
+    cfg_parser.add_argument('name', nargs=1, help='Node name (e.g., prefill_0)')
+    cfg_parser.add_argument('remaining_args', nargs=argparse.REMAINDER, help='Additional optional parameters')
+    cfg_group.add_argument("--delete", metavar="", help="Delete configuration keys (e.g., --key)")
 
     # INSPECT command configuration
     inspect_parser = subparsers.add_parser("inspect", help="Inspect Configuration")
@@ -208,12 +200,14 @@ def main():
         print("Install packages.")
         install_packages()
     elif args.command == "cfg":
+        node_name, node_id = parse_node_name(args.name[0])
+        sections = parse_remaining_args(args.set, args.remaining_args)
         if args.set:
             print("Set configuration.")
-            set_configuration(args.set[0])
+            cfg_set_process(node_name, node_id, args, sections)
         elif args.delete:
             print("Delete configuration.")
-            del_configuration(args.delete[0])
+            cfg_delete_process(node_name, node_id, args, sections)
     elif args.command == "inspect":
         print("Inspect configuration.")
         inspect_configuration(args.config_path)
