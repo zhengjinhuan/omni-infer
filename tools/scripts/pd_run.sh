@@ -330,6 +330,9 @@ export TNG_HOST_COPY=1
 export AUTO_USE_UC_MEMORY=1
 export TASK_QUEUE_ENABLE=2
 
+# enable to overwrite request IDs
+export OVERWRITE_REQ_IDS=1
+
 # Print current configuration
 echo "==== Current Configuration ===="
 echo "GLOBAL_RANK_TABLE_FILE_PATH: $GLOBAL_RANK_TABLE_FILE_PATH"
