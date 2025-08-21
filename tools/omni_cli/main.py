@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from omni_cli.config_transform import transform_deployment_config
 from omni_cli.config_transform import detect_file_encoding
+from typing import Dict, Any, List, Tuple, Optional
+from pathlib import Path
+import tempfile
+import shlex
+import omni_cli.proxy
 from omni_cli.mk_inventory_yml import add_node, rm_node
 from omni_cli.omni_cfg import *
 
@@ -31,9 +36,7 @@ def execute_command(command):
     """Execute the ansible command"""
     process = subprocess.Popen(
         command,
-        shell=True,
-        stdout=None,
-        stderr=None
+        shell=True
     )
 
     return_code = process.wait()
@@ -41,6 +44,202 @@ def execute_command(command):
         print(f"Deployment failed with return code {return_code}")
     else:
         print("Deployment succeeded")
+    return return_code
+
+def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    """Flatten an Ansible-style inventory dict into [(host, hostvars)]."""
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    if not isinstance(node, dict):
+        return out
+    for h, vars_ in (node.get("hosts") or {}).items():
+        out.append((h, vars_ or {}))
+    for _g, child in (node.get("children") or {}).items():
+        out.extend(_walk_hosts(child))
+    return out
+
+def _double_quotes(s: str) -> str:
+    """Wrap value in double quotes for a safe shell arg."""
+    s = str(s)
+    s = s.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return f'"{s}"'
+
+def _build_export_block(env: Dict[str, Any]) -> str:
+    """Build a sequence of export lines."""
+    items_plain = [(k, v) for k, v in env.items() if "$" not in str(v)]
+    items_refs  = [(k, v) for k, v in env.items() if "$" in str(v)]
+
+    lines = []
+    for k, v in items_plain + items_refs:
+        if v is None:
+            v = ""
+        lines.append(f'export {k}={_double_quotes(v)}')
+    return "\n".join(lines)
+
+def _build_args_line(args: Dict[str, Any]) -> str:
+    """
+    Build a flat CLI argument string like:
+      --tp "16" --kv-transfer-config "{\"kv_connector\":\"...\",\"kv_rank\":$KV_RANK}"
+    Rules:
+      - If a value is None -> boolean-like flag (emit `--flag` only)
+      - Else -> `--flag "value"` where value is safely double-quoted
+      - Assumes caller passes kv-transfer-config as a JSON string already
+    """
+    parts = []
+    for k, v in (args or {}).items():
+        flag = f"--{k}"
+        if v is None:
+            continue
+        elif v == "":
+            parts.append(flag)
+        else:
+            parts.append(f"{flag} {_double_quotes(v)}")
+    return " ".join(parts)
+
+def omni_ranktable(inventory):
+    cur_dir = os.path.dirname(__file__)
+    cmd = "ansible-playbook -i " + inventory + " " + cur_dir + "/ansible/ranktable.yml"
+    os.system(cmd)
+
+def omni_cli_start(
+    inventory_path: str = "./serving_profiles.yml",
+    host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
+    role_filter: Optional[str] = None,    # e.g., "P" or "D"
+    python_bin: str = "python",
+    entry_py: str = "start_api_servers.py"
+) -> None:
+    """
+    Read inventory YAML, generate a per-host bash script, and run it via:
+      ansible <host> -i <inventory> -m script -a <script_path>
+    """
+    omni_cli.proxy.omni_run_proxy(inventory_path)
+    inv_file = Path(inventory_path).expanduser().resolve()
+    with open(inv_file, "r", encoding="utf-8") as f:
+        inv = yaml.safe_load(f)
+
+    all_hosts = _walk_hosts(inv.get("all", inv))
+
+    selected: List[Tuple[str, Dict[str, Any]]] = []
+    for host, hv in all_hosts:
+        if host_pattern and host != host_pattern:
+            continue
+        if role_filter and hv.get("role") != role_filter:
+            continue
+        selected.append((host, hv))
+
+    if not selected:
+        raise RuntimeError("No matching hosts found with given filters.")
+
+    for host, hv in selected:
+        env: Dict[str, Any] = hv.get("env", {}) or {}
+        args: Dict[str, Any] = hv.get("args", {}) or {}
+        docker_name: str = hv.get("docker_name")
+
+        export_block = _build_export_block(env)
+        args_line = _build_args_line(args)
+
+        with tempfile.NamedTemporaryFile(
+            "w", delete=False,
+            dir="./",
+            prefix=f"omni_start_{host.replace('.', '_')}_",
+            suffix=".sh"
+        ) as tf:
+            script_path = Path(tf.name)
+            code_path = str(env.get("CODE_PATH") or "").strip()
+            log_path = str(env.get("LOG_PATH") or "").strip()
+            tf.write("#!/usr/bin/env bash\n")
+            tf.write("set -euo pipefail\n\n")
+
+            tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
+            tf.write("source ~/.bashrc\n\n")
+
+            tf.write(f"if [ ! -d {shlex.quote(log_path)} ]; then\n")
+            tf.write(f"  mkdir -p {shlex.quote(log_path)}\n")
+            tf.write("fi\n")
+
+            tf.write("# Export environment variables\n")
+            tf.write(export_block + "\n\n")
+            tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
+
+            tf.write("# Exec the command\n")
+            tf.write(f"cd {_double_quotes(code_path)}/tools/scripts\n\n")
+            tf.write(f"{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &\n")
+            tf.write("EOF\n")
+
+        os.chmod(script_path, 0o755)
+
+        cmd = (
+            f"ansible {shlex.quote(host)} "
+            f"-i {shlex.quote(str(inv_file))} "
+            f"-m script "
+            f"-a {shlex.quote(str(script_path))}"
+        )
+
+        try:
+            execute_command(cmd)
+        finally:
+            try:
+                script_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+def omni_cli_stop(
+    inventory_path: str = "./serving_profiles.yml",
+    host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
+    role_filter: Optional[str] = None,    # e.g., "P" or "D"
+) -> None:
+    """kill python and vllm processes in the containers
+    """
+    inv_file = Path(inventory_path).expanduser().resolve()
+    with open(inv_file, "r", encoding="utf-8") as f:
+        inv = yaml.safe_load(f)
+
+    all_hosts = _walk_hosts(inv.get("all", inv))
+
+    selected: List[Tuple[str, Dict[str, Any]]] = []
+    for host, hv in all_hosts:
+        if host_pattern and host != host_pattern:
+            continue
+        if role_filter and hv.get("role") != role_filter:
+            continue
+        selected.append((host, hv))
+
+    if not selected:
+        raise RuntimeError("No matching hosts found with given filters.")
+
+    for host, hv in selected:
+        env: Dict[str, Any] = hv.get("env", {}) or {}
+        docker_name: str = hv.get("docker_name")
+
+        with tempfile.NamedTemporaryFile(
+            "w", delete=False,
+            dir="./",
+            prefix=f"omni_stop_{host.replace('.', '_')}_",
+            suffix=".sh"
+        ) as tf:
+            script_path = Path(tf.name)
+
+            tf.write("#!/usr/bin/env bash\n")
+            tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
+            tf.write("pkill -9 python || true\n")
+            tf.write("pkill -9 vllm   || true\n")
+            tf.write("EOF\n")
+        os.chmod(script_path, 0o755)
+
+        cmd = (
+            f"ansible {shlex.quote(host)} "
+            f"-i {shlex.quote(str(inv_file))} "
+            f"-m script "
+            f"-a {shlex.quote(str(script_path))}"
+        )
+
+        try:
+            execute_command(cmd)
+        finally:
+            try:
+                script_path.unlink(missing_ok=True)
+                pass
+            except Exception:
+                pass
 
 def create_default_inventory_if_needed():
     """在当前目录创建默认的 servering_profiles.yml 文件（如果不存在）"""
@@ -224,11 +423,7 @@ def run_docker_containers(
     
     print("\nAll hosts processed.")
 
-def start_omni_service_in_normal_mode(config_path):
-    """Run the omni service in normal mode."""
-    transform_deployment_config(config_path)
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags 'sync_code,pip_install,fetch_log'"
-    execute_command(command)
+
 
 def prepare_omni_service_in_developer_mode(config_path):
     """In developer mode, preparing to run the omni service."""
@@ -239,11 +434,6 @@ def prepare_omni_service_in_developer_mode(config_path):
 def run_omni_service_in_developer_mode():
     """In developer mode, running the omni service."""
     command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_server"
-    execute_command(command)
-
-def stop_omni_service():
-    """Stop the omni service."""
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags stop_server"
     execute_command(command)
 
 def synchronize_code():
@@ -397,10 +587,10 @@ def main():
         print("Start omni service.")
         if args.config_path is not None:
             print("Normal mode.")
-            start_omni_service_in_normal_mode(args.config_path)
+            omni_cli_start()
         elif args.normal:
             print("Normal mode.")
-            start_omni_service_in_normal_mode(args.normal[0])
+            omni_cli_start()
         elif args.prepare_dev:
             print("Developer mode: Environmental preparation.")
             prepare_omni_service_in_developer_mode(args.prepare_dev[0])
@@ -409,7 +599,7 @@ def main():
             run_omni_service_in_developer_mode()
     elif args.command == "stop":
         print("Stop omni service.")
-        stop_omni_service()
+        omni_cli_stop()
     elif args.command == "sync_dev":
         print("Synchronize the code.")
         synchronize_code()
