@@ -291,6 +291,9 @@ class NPUPlatform(Platform):
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
         import omni.quantization  # noqa: F401
+        from omni.adaptors.vllm.ems.ems_env import EmsEnv
+        if EmsEnv.enable_vllm_ems:
+            from omni.adaptors.vllm.patches import ems_patch
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:
