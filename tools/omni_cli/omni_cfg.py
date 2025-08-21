@@ -147,7 +147,7 @@ def delete_cfg_yml(node_name, node_id, env_list, arg_list, extra_args_list, addi
     else:
         return
 
-def cfg_set_process(node_name, node_id, args, sections):
+def cfg_set_process(node_name, node_id, args, sections, deploy_path):
     if node_name is None or node_id is None:
         print(f"错误：无效的节点名称 '{args.name[0]}'。")
         print("节点名称必须符合以下格式之一：")
@@ -155,10 +155,9 @@ def cfg_set_process(node_name, node_id, args, sections):
         print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
         return
 
-    update_cfg_yml(node_name, node_id, sections['env'], sections['arg'], \
-        f'{os.path.dirname(os.path.abspath(__file__))}/omni_infer_deployment.yml')
+    update_cfg_yml(node_name, node_id, sections['env'], sections['arg'], deploy_path)
 
-def cfg_delete_process(node_name, node_id, args, sections):
+def cfg_delete_process(node_name, node_id, args, sections, deploy_path):
     if node_name is None or node_id is None:
         print(f"错误：无效的节点名称 '{args.name[0]}'。")
         print("节点名称必须符合以下格式之一：")
@@ -166,5 +165,5 @@ def cfg_delete_process(node_name, node_id, args, sections):
         print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
         return
 
-    delete_cfg_yml(node_name, node_id, sections['env'], sections['arg'], sections['extra_args'], \
-        sections['additional_config'], f'{os.path.dirname(os.path.abspath(__file__))}/omni_infer_deployment.yml')
+    delete_cfg_yml(node_name, node_id, sections['env'], sections['arg'], \
+        sections['extra_args'], sections['additional_config'], deploy_path)

@@ -421,10 +421,10 @@ def main():
         sections = parse_remaining_args(args.set, args.remaining_args)
         if args.set:
             print("Set configuration.")
-            cfg_set_process(node_name, node_id, args, sections)
+            cfg_set_process(node_name, node_id, args, sections, default_deploy_path)
         elif args.delete:
             print("Delete configuration.")
-            cfg_delete_process(node_name, node_id, args, sections)
+            cfg_delete_process(node_name, node_id, args, sections, default_deploy_path)
     elif args.command == "inspect":
         print("Inspect configuration.")
         inspect_configuration(args.config_path)
