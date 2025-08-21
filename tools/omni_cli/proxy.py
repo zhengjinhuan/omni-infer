@@ -102,7 +102,7 @@ def process_results(results, inventory):
         script_path = Path(tf.name)
         tf.write("#!/usr/bin/env bash\n")
         tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
-        tf.write(f"ps aux | grep 'nginx' | grep -v 'grep' | awk '{print $2}' | xargs kill -9; cd /workspace/omniinfer/tools/scripts; bash global_proxy.sh \\\n\
+        tf.write(f"ps aux | grep 'nginx' | grep -v 'grep' | awk '{'print $2'}' | xargs kill -9; cd /workspace/omniinfer/tools/scripts; bash global_proxy.sh \\\n\
           --listen-port {api_port_val} \\\n\
           --prefill-servers-list {prefill_result} \\\n\
           --decode-servers-list {decode_result} \\\n\

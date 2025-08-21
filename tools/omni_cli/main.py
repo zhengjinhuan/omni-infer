@@ -26,7 +26,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 import tempfile
 import shlex
-import .proxy
+import omni_cli.proxy
 
 def execute_command(command):
     """Execute the ansible command"""
@@ -105,7 +105,7 @@ def omni_cli_start(
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
-    proxy.omni_run_proxy(inventory)
+    omni_cli.proxy.omni_run_proxy(inventory)
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inv_file, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
