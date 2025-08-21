@@ -148,8 +148,8 @@
   tasks:
     - name: generate container name.
       set_fact:
-        ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{ inventory_hostname }}"
-        ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
+        ACTUAL_DOCKER_NAME_P: "{{ docker_name }}"
+        ACTUAL_DOCKER_NAME_D: "{{ docker_name }}"
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: always
       
