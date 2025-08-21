@@ -26,6 +26,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 import tempfile
 import shlex
+import omni_cli.proxy
 
 def execute_command(command):
     """Execute the ansible command"""
@@ -90,6 +91,11 @@ def _build_args_line(args: Dict[str, Any]) -> str:
             parts.append(f"{flag} {_double_quotes(v)}")
     return " ".join(parts)
 
+def omni_ranktable(inventory):
+    cur_dir = os.path.dirname(__file__)
+    cmd = "ansible-playbook -i " + inventory + " " + cur_dir + "/ansible/ranktable.yml"
+    os.system(cmd)
+
 def omni_cli_start(
     inventory_path: str = "./serving_profiles.yml",
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
@@ -101,6 +107,7 @@ def omni_cli_start(
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
+    omni_cli.proxy.omni_run_proxy(inventory_path)
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inv_file, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
