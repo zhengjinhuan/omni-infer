@@ -45,6 +45,8 @@ class PostDrafter(EagleProposer):
         self.method = self.vllm_config.speculative_config.method
         self.mark_static = False
         self.rejection_sampler = runner.rejection_sampler
+        self.use_rejection_sampler = runner.use_rejection_sampler
+        self.topk = runner.topk
 
         # eagle proposer set dtype as int32, while we need int64
         self.input_ids = torch.zeros(self.max_num_tokens,
@@ -150,6 +152,12 @@ class PostDrafter(EagleProposer):
                         selected_indices=None if attn_state == AscendAttentionState.DecodeOnly else sample_indices,
                         mtp_layer_idx=layer_idx,
                     )
+                    if self.use_rejection_sampler:
+                        mtp_probs = torch.nn.functional.softmax(drafter_logits[last_accepted_index], dim=-1)
+                        mtp_topk_token_probs, mtp_topk_token_ids = torch.topk(mtp_probs, self.topk, dim=1)
+                        mtp_topk_token_ids = mtp_topk_token_ids.unsqueeze(1)
+                        mtp_topk_token_probs = mtp_topk_token_probs.unsqueeze(1)
+                        self.rejection_sampler.main_sampler.penalty_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, layer_idx)
                     if not is_dummy:
                         draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
                         draft_forward_tokens_list.append(draft_forward_tokens)

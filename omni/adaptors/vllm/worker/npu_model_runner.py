@@ -116,9 +116,12 @@ class NPUModelRunner(GPUModelRunner):
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
-        penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, self.device)
+        self.use_rejection_sampler = False
+        self.topk = 4
+        num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
+        penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, num_tokens_per_reqs_decode - 1, self.topk, self.device)
         if self.use_spec_decode:
-            self.rejection_sampler = SimpleSampler(AscendSamplerV1())
+            self.rejection_sampler = SimpleSampler(AscendSamplerV1(), self.use_rejection_sampler, self.topk)
             self.rejection_sampler.main_sampler.penalty_cache = penalty_cache
             self.drafter = PostDrafter(vllm_config, device, self)
         else:
@@ -146,11 +149,10 @@ class NPUModelRunner(GPUModelRunner):
                                         device="cpu",
                                         pin_memory=is_pin_memory_available())
         self.seq_lens_np = self.seq_lens_cpu.numpy()
-        num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
+        
         self.chunk_next_tokens = torch.zeros(
             self.max_num_reqs * num_tokens_per_reqs_decode, dtype= torch.int64, device=self.device
         )
-        # TODO: support arbitrary spec tokens
         self.graph_block_tables = np.zeros(
             (self.max_num_reqs * num_tokens_per_reqs_decode,
              (self.model_config.max_model_len + self.block_size - 1) // self.block_size),
