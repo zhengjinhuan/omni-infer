@@ -372,14 +372,22 @@ class Qwen2Model(nn.Module):
 
             if hidden_states_mb0_handle is not None:
                 hidden_states_mb0_handle.wait()
-            hidden_states_mb0, residual_mb0 = layer.input_layernorm.forward_with_residual(hidden_states_mb0, residual_mb0)
+            if isinstance(layer.input_layernorm, nn.Identity):
+                hidden_states_mb0 = hidden_states_mb0
+                residual_mb0 = hidden_states_mb0
+            else:
+                hidden_states_mb0, residual_mb0 = layer.input_layernorm.forward_with_residual(hidden_states_mb0, residual_mb0)
             qkv_mb0, _ = layer.self_attn.qkv_proj(hidden_states_mb0, is_prefill=True)
             q_mb0, k_mb0, v_mb0 = qkv_mb0.split([layer.self_attn.q_size, layer.self_attn.kv_size, layer.self_attn.kv_size], dim=-1)
             q_mb0, k_mb0 = layer.self_attn.rotary_emb.forward_cos_sin(q_mb0, k_mb0, cos_mb0, sin_mb0)
 
             if hidden_states_mb1_handle is not None:
                 hidden_states_mb1_handle.wait()
-            hidden_states_mb1, residual_mb1 = layer.input_layernorm.forward_with_residual(hidden_states_mb1, residual_mb1)
+            if isinstance(layer.input_layernorm, nn.Identity):
+                hidden_states_mb1 = hidden_states_mb1
+                residual_mb1 = hidden_states_mb1
+            else:
+                hidden_states_mb1, residual_mb1 = layer.input_layernorm.forward_with_residual(hidden_states_mb1, residual_mb1)
             qkv_mb1, _ = layer.self_attn.qkv_proj(hidden_states_mb1, is_prefill=True)
             q_mb1, k_mb1, v_mb1 = qkv_mb1.split([layer.self_attn.q_size, layer.self_attn.kv_size, layer.self_attn.kv_size], dim=-1)
             q_mb1, k_mb1 = layer.self_attn.rotary_emb.forward_cos_sin(q_mb1, k_mb1, cos_mb1, sin_mb1)

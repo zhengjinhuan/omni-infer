@@ -40,6 +40,10 @@ def register_model():
     ModelRegistry.register_model(
         "Qwen2ForCausalLM",
         "omni.models.qwen.qwen2:Qwen2ForCausalLM")
+    
+    ModelRegistry.register_model(
+        "EagleQwen2ForCausalLM",
+        "omni.models.qwen.qwen2_eagle:EagleQwen2ForCausalLM")
 
     ModelRegistry.register_model(
         "Qwen3ForCausalLM",
