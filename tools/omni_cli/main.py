@@ -97,7 +97,7 @@ def _build_args_line(args: Dict[str, Any]) -> str:
 
 def omni_ranktable(inventory):
     cur_dir = os.path.dirname(__file__)
-    cmd = "ansible-playbook -i " + inventory + " " + cur_dir + "/ansible/ranktable.yml"
+    cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/ansible/ranktable.yml"
     os.system(cmd)
 
 def omni_cli_start(
@@ -111,6 +111,7 @@ def omni_cli_start(
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
+    omni_ranktable(inventory_path)
     omni_cli.proxy.omni_run_proxy(inventory_path)
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inv_file, "r", encoding="utf-8") as f:
