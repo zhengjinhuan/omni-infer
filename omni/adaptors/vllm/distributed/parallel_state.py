@@ -423,7 +423,9 @@ def initialize_local_comm_group_list(backend) -> None:
         group_ranks.append(ranks)
 
     # message queue broadcaster is only used in tensor model parallel group
-    for i in range(_NUM_COMM_GROUP):
+    comm_group_per_server = 1
+    total_comm_groups = comm_group_per_server * num_local_groups + _NUM_COMM_GROUP # one group for topk and the other is redundant
+    for i in range(total_comm_groups):
         _LOCAL_COMM_LIST.append(
             init_model_parallel_group(
                 group_ranks,

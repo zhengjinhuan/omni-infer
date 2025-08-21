@@ -174,7 +174,11 @@ class NpuW8A8DynamicLinearMethod(FlashCommLinearMethodBase):
             x_transform: Optional[str] = None,
             is_prefill: Optional[bool] = True
     ) -> torch.Tensor:
-        x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
+        if isinstance(x, Dict):
+            x, x_scale = x["x_int8"], x["pertoken_scale"]
+        else:
+            x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
+
         scale_parallel = os.environ.get('SCALE_PARALLEL', '0') == '1'
         if x_transform == 'AG':
             if is_prefill or (not scale_parallel):
