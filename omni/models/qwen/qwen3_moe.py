@@ -33,7 +33,6 @@ from vllm.compilation.decorators import support_torch_compile
 from vllm.distributed import get_pp_group, get_tp_group
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -50,7 +49,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
 
 from omni.models.qwen.fused_moe import FusedMoE
 from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
-from omni.models.common.layers.layernorm import RMSNormFlashComm
+from omni.models.common.layers.layernorm import RMSNormFlashComm, RMSNorm
 from omni.models.common.layers.linear import (RowParallelFlashCommLinear, 
                                               QKVParallelFlashCommLinear)
 from omni.models.common.layers.rotary_embedding import get_rope
@@ -58,6 +57,8 @@ from omni.models.common.layers.attention.backend.attention import AscendAttentio
 
 
 logger = init_logger(__name__)
+
+SEQ_SPLIT_LENGTH = 4096
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
 
@@ -294,7 +295,16 @@ class Qwen3MoeDecoderLayer(nn.Module):
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[next(iter(attn_metadata))]
         is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
-        hidden_states = self.mlp(hidden_states, is_prefill=is_prefill)
+        if is_prefill:
+            local_length = hidden_states.shape[0]
+            hidden_states_list = hidden_states.split(SEQ_SPLIT_LENGTH)
+            hidden_states_out = []
+            for i in range(len(hidden_states_list)):
+                hidden_states = self.mlp(hidden_states_list[i], is_prefill=is_prefill)
+                hidden_states_out.append(hidden_states)
+            hidden_states = torch.cat(hidden_states_out)[:local_length]
+        else:
+            hidden_states = self.mlp(hidden_states, is_prefill=is_prefill)
         return hidden_states, residual
 
 
