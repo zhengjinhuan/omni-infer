@@ -41,7 +41,7 @@ def register_values(inventory):
         'DECODE_API_SERVER_LIST': decode_api_server_list_result
     }
 
-def process_results(results, inventory):
+def process_results(results, inventory, inv_file):
 
     prefill_result = results['PREFILL_API_SERVER_LIST']
     decode_api_servers = results['DECODE_API_SERVER_LIST']
@@ -122,4 +122,4 @@ def omni_run_proxy(inventory):
         inv = yaml.safe_load(f)
     
     result = register_values(inv)
-    process_results(result, inv)
+    process_results(result, inv, inv_file)
