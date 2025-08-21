@@ -90,5 +90,10 @@ else
     exit 1
 fi
 
+echo "Patching NPU adaptation..."
+cd "$(dirname "${BASH_SOURCE[0]}")"/../infer_engines
+bash bash_install_sglang.sh
+cd -
+
 echo "============================================="
 exit 0
