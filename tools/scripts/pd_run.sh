@@ -331,7 +331,7 @@ export AUTO_USE_UC_MEMORY=1
 export TASK_QUEUE_ENABLE=2
 
 # enable to overwrite request IDs
-export OVERWRITE_REQ_IDS=1
+export ENABLE_OVERWRITE_REQ_IDS=1
 
 # Print current configuration
 echo "==== Current Configuration ===="

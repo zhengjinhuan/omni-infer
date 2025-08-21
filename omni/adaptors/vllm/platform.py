@@ -304,7 +304,7 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
-        if os.getenv("OVERWRITE_REQ_IDS", "0") == "1":
+        if os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1":
             enable_overwrite_request_id()
         import omni.quantization  # noqa: F401
 
