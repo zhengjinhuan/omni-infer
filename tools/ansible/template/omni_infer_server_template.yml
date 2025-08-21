@@ -206,7 +206,7 @@
       pip uninstall omni_placement -y
 
       cd /workspace/omniinfer/tools/scripts
-      PROFILING_NAMELIST=/workspace/omniinfer/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -274,7 +274,7 @@
       python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd /workspace/omniinfer/tools/scripts
-      PROFILING_NAMELIST=/workspace/omniinfer/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
