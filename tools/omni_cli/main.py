@@ -31,9 +31,7 @@ def execute_command(command):
     """Execute the ansible command"""
     process = subprocess.Popen(
         command,
-        shell=True,
-        # stdout=None,
-        # stderr=None
+        shell=True
     )
 
     return_code = process.wait()
@@ -91,12 +89,11 @@ def _build_args_line(args: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 def omni_cli_start(
-    inventory_path: str = "configs/serving_profiles.yaml",
+    inventory_path: str = "omni_cli/configs/serving_profiles.yml",
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
     role_filter: Optional[str] = None,    # e.g., "P" or "D"
     python_bin: str = "python",
-    entry_py: str = "start_api_server.py",
-    dry_run: bool = False,
+    entry_py: str = "start_api_servers.py"
 ) -> None:
     """
     Read inventory YAML, generate a per-host bash script, and run it via:
@@ -152,13 +149,12 @@ def omni_cli_start(
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
 
             tf.write("# Exec the command\n")
-            tf.write(f"cd {_double_quotes(code_path)}\n\n")
+            tf.write(f"cd {_double_quotes(code_path)}/tools/scripts\n\n")
             tf.write(f"{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &\n")
             tf.write("EOF\n")
 
         os.chmod(script_path, 0o755)
 
-        # Safely quote the ansible command line for shell=True
         cmd = (
             f"ansible {shlex.quote(host)} "
             f"-i {shlex.quote(str(inv_file))} "
@@ -166,28 +162,20 @@ def omni_cli_start(
             f"-a {shlex.quote(str(script_path))}"
         )
 
-        if dry_run:
-            print(f"\n=== DRY RUN for host {host} ===")
-            print("Script:", str(script_path))
-            print("Ansible:", cmd)
-            # keep the temp script for inspection
-        else:
+        try:
+            execute_command(cmd)
+        finally:
             try:
-                execute_command(cmd)
-            finally:
-                try:
-                    script_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                script_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 def omni_cli_stop(
-    inventory_path: str = "omni_cli/configs/serving_profiles.yml",
+    inventory_path: str = "tools/omni_cli/configs/serving_profiles.yml",
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
     role_filter: Optional[str] = None,    # e.g., "P" or "D"
 ) -> None:
-    """
-    Read inventory YAML, generate a per-host bash script, and run it via:
-      ansible <host> -i <inventory> -m script -a <script_path>
+    """kill python and vllm processes in the containers
     """
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inv_file, "r", encoding="utf-8") as f:
