@@ -150,7 +150,7 @@
       set_fact:
         ACTUAL_DOCKER_NAME_P: "{{ docker_name }}"
         ACTUAL_DOCKER_NAME_D: "{{ docker_name }}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      when: "'P' in group_names or 'D' in group_names
       tags: always
       
     - name: Create a directory on the executor to store ranktable file.
