@@ -97,7 +97,7 @@ def _build_args_line(args: Dict[str, Any]) -> str:
 
 def omni_ranktable(inventory):
     cur_dir = os.path.dirname(__file__)
-    cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/ansible/ranktable.yml"
+    cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/configs/generate_ranktable.yml"
     os.system(cmd)
 
 def omni_cli_start(
