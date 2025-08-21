@@ -8,10 +8,12 @@ def parse_node_name(name):
     if not name:
         return None, None
 
-    match = re.match(r'^(prefill|decode)_(\d+)$', name)
+    match = re.match(r'^(prefill|decode|proxy)_(\d+)$', name)
     if match:
         node_type = match.group(1)[0].upper()
-        node_index = f'{match.group(1)[0].lower()}{int(match.group(2))}'
+        if match.group(1) == 'proxy':
+            node_type = 'C'
+        node_index = f'{node_type.lower()}{int(match.group(2))}'
         return node_type, node_index
     return None, None
 
