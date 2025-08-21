@@ -21,8 +21,8 @@
 
   environment:
 
-    DOCKER_NAME_P: "your_name_omni_infer_prefill"
-    DOCKER_NAME_D: "your_name_omni_infer_decode"
+    DOCKER_NAME_P: "you_name_omni_infer_prefill"
+    DOCKER_NAME_D: "you_name_omni_infer_decode"
     SCRIPTS_PATH: "/tmp/scripts_path"
 
   vars:
