@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
+import time
 from typing import Any, Optional, Tuple, Dict
 import torch
 from torch import nn
@@ -383,6 +384,13 @@ class DeepseekMLA(nn.Module):
                 epsilon=self.kv_a_layernorm.variance_epsilon,
                 cache_mode="PA_NZ",
                 is_output_kv=True) # adapter NZ
+
+            if model_extra_config.operator_opt_config.c8_calib_path is not None and dist.get_rank() == 0:
+                layer_idx = int(self.prefix.split(sep='.')[-2])
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                filename = f"{timestamp}_{layer_idx}.pth"
+                save_path = os.path.join(model_extra_config.operator_opt_config.c8_calib_path, filename)
+                torch.save(kv_a.detach().to("cpu").contiguous(), save_path)
         else:
             latent_cache = latent_cache.view(-1, latent_cache.size(-1))
             # adapt end

@@ -50,6 +50,7 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall: bool = False
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
+    c8_calib_path: str = None # 计算faquant的scale采集的kv_cache的calib地址，在test_config_prefill.json赋值
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
