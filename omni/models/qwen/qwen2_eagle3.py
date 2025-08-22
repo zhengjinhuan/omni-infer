@@ -46,6 +46,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 
+from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import QKVParallelFlashCommLinear
@@ -203,7 +204,7 @@ class Eagle3Qwen2Model(Qwen2Model):
         return None, hidden_states
 
 @support_torch_compile
-class Eagle3Qwen2ForCausalLM(Qwen2ForCausalLM):
+class Eagle3Qwen2ForCausalLM(Qwen2ForCausalLM, GraphCompileConfiguration):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         nn.Module.__init__(self)
@@ -251,8 +252,6 @@ class Eagle3Qwen2ForCausalLM(Qwen2ForCausalLM):
     def set_share_weight(self, target_model):
         self.model.full_cos = target_model.model.full_cos
         self.model.full_sin = target_model.model.full_sin
-        torch._dynamo.mark_static(self.model.full_cos)
-        torch._dynamo.mark_static(self.model.full_sin)
         self.model.embed_tokens = target_model.model.embed_tokens
         if not self.draft_id_to_target_id is None:
             base = torch.arange(self.config.draft_vocab_size, device=self.draft_id_to_target_id.device)
@@ -313,3 +312,7 @@ class Eagle3Qwen2ForCausalLM(Qwen2ForCausalLM):
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[self.model.layers[0].layer_name]
         return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
+
+    def mark_static_for_graph(self, *args, **kwargs):
+        torch._dynamo.mark_static(self.model.full_cos)
+        torch._dynamo.mark_static(self.model.full_sin)
