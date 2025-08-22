@@ -52,7 +52,7 @@ from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
 from vllm.model_executor.parameter import PerTensorScaleParameter
 from vllm.model_executor.utils import set_weight_attrs
 
-from omni.adaptors.vllm.utils import ASCEND_W8A8_STATIC
+from omni.adaptors.vllm.utils import NPU_W8A8_STATIC
 from omni.models.pangu.pangu_pro_moe.fused_moe import select_experts
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
@@ -225,7 +225,7 @@ def quant_per_tensor(in_tensor: torch.Tensor,
     return torch_npu.npu_quantize(in_tensor, input_scale, input_offset,
                                   torch.qint8, -1, function)
 
-@register_quantization_config(ASCEND_W8A8_STATIC)
+@register_quantization_config(NPU_W8A8_STATIC)
 class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
     """Config class for Ascend
     
@@ -242,7 +242,7 @@ class AscendQuantConfig_Pangu_Pro_Moe(QuantizationConfig):
 
     @classmethod
     def get_name(cls) -> str:
-        return ASCEND_W8A8_STATIC
+        return NPU_W8A8_STATIC
 
     @classmethod
     def get_supported_act_dtypes(cls) -> List[torch.dtype]:
