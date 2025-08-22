@@ -75,8 +75,8 @@ def process_results(results, inventory, inv_file):
         log_path = str(env.get("LOG_PATH") or "").strip()
 
         args: Dict[str, Any] = vars.get("args", {}) or {}
-        prefill_lb_sdk = args.get('prefill-lb-sdk', '')
-        decode_lb_sdk = args.get('decode-lb-sdk', '')
+        prefill_lb_sdk = args.get('prefill-lb-sdk', 'pd_score_balance')
+        decode_lb_sdk = args.get('decode-lb-sdk', 'pd_score_balance')
 
     with tempfile.NamedTemporaryFile(
         "w", delete=False,
