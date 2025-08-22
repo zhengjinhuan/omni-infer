@@ -388,7 +388,7 @@ class DeepseekMLA(nn.Module):
                 cache_mode="PA_NZ",
                 is_output_kv=True) # adapter NZ
 
-            if model_extra_config.operator_opt_config.c8_calib_path is not None and dist.get_rank() == 0:
+            if model_extra_config.operator_opt_config.c8_calib_path is not None and get_world_group().rank_in_group == 0:
                 layer_idx = int(self.prefix.split(sep='.')[-2])
                 timestamp = time.strftime("%Y%m%d-%H%M%S")
                 filename = f"{timestamp}_{layer_idx}.pth"
