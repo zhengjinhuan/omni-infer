@@ -285,6 +285,22 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         return
 
     update_cfg_yml(node_type, node_name, sections, deploy_path)
+    if check_model_path is True:
+        default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
+        default_cfg = get_data_from_yaml(default_cfg_path)
+        data =  get_data_from_yaml(deploy_path)
+        if data:
+            for node_type in default_cfg['profiles']['vllm']['deepseek']:
+                for node_name in data['all']['children'][node_type]['hosts']:
+                    sections = default_cfg['profiles']['vllm']['deepseek'][node_type]
+                    data['all']['children'][node_type]['hosts'][node_name].update(sections)
+            
+            with open(yml_file_path, 'w') as file:
+                yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+        else:
+            print(f"Error: The {yml_file_path} does not exist.")
+            return
+
 
 def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:

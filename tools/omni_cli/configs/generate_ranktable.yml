@@ -148,8 +148,8 @@
   tasks:
     - name: generate container name.
       set_fact:
-        ACTUAL_DOCKER_NAME_P: "{{ docker_name }}"
-        ACTUAL_DOCKER_NAME_D: "{{ docker_name }}"
+        ACTUAL_DOCKER_NAME_P: "{{ container_name }}"
+        ACTUAL_DOCKER_NAME_D: "{{ container_name }}"
       when: "'P' in group_names or 'D' in group_names"
       tags: always
       
