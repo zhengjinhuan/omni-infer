@@ -53,9 +53,11 @@ class PostDrafter(EagleProposer):
         self.positions = None
         self.hidden_states = None
         self.arange = None
-        if self.method not in ('deepseek_mtp', 'eagle'):
-            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle'), while get {self.method}.")
-    
+
+        # TODO check model type
+        if self.method not in ('deepseek_mtp', 'eagle', 'eagle3'):
+            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle', 'eagle3'), while get {self.method}.")
+
     def load_model(self, target_model: nn.Module) -> None:
         draft_model_config = \
             self.vllm_config.speculative_config.draft_model_config
@@ -96,7 +98,7 @@ class PostDrafter(EagleProposer):
             self.input_ids[logits_indices] = forward_tokens.view(-1)[last_accepted_index]
             if chunk_next_indices is not None:
                 self.input_ids[chunk_next_indices] = chunk_next_tokens
-        
+
         return sampler_output, last_accepted_index, accepted_num
 
     def prepare_dummy_input(self, input_ids):
@@ -132,11 +134,18 @@ class PostDrafter(EagleProposer):
                  first_attn_metadate = attn_metadata[self.attn_layer_names[0]]
             attn_state = first_attn_metadate.attn_state
             draft_forward_tokens_list = []
-            
+
             if self.runner.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly \
                 and (not self.mark_static):
                     torch._dynamo.mark_static(input_ids)
-                    torch._dynamo.mark_static(previous_hidden_states)
+                    if isinstance(previous_hidden_states, list):
+                        # for eagle 3
+                        for item in previous_hidden_states:
+                            torch._dynamo.mark_static(item)
+                    elif previous_hidden_states is not None:
+                        # for eagle/mtp
+                        torch._dynamo.mark_static(previous_hidden_states)
+
                     self.mark_static = True
             with set_forward_context(attn_metadata, self.vllm_config):
                 is_dummy = (last_accepted_index is None) or (sample_indices is None)
