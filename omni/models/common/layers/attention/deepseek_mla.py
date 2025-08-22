@@ -277,6 +277,9 @@ class DeepseekMLA(nn.Module):
             self.q_b_proj.weight_scale.data = self.q_b_proj.weight_scale.data.to(torch.float)
             if self.kv_a_proj_with_mqa is not None:
                 self.kv_a_proj_with_mqa.weight_scale.data = self.kv_a_proj_with_mqa.weight_scale.data.to(torch.float)
+        if model_extra_config.operator_opt_config.c8_calib_path is not None:
+            os.makedirs(model_extra_config.operator_opt_config.c8_calib_path, exist_ok=True)
+
 
     def forward(
         self,
