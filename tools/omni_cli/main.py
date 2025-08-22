@@ -183,21 +183,25 @@ def _verify_and_fix_env_vars(
                         break
     need_overwrite_inv = len(conflicts) > 0
 
-    # calculate pod num, server ip list and server offset
+    # calculate pod num, server ip list and server offset, kv rank
+    kv_rank_dict, kv_rank = {}, 0
     prefill_pod_num = 0
+    server_offset_dict, server_offset = {}, 0
+    server_ip_list_temp = []
     for host, hv in inventory['all']['children']['P']['hosts'].items():
         prefill_pod_num += 1
-    server_ip_list_temp = []
+        server_offset_dict[host] = server_offset  # for P always 0
+        kv_rank_dict[host] = kv_rank
+        kv_rank += 1
     for host, hv in inventory['all']['children']['D']['hosts'].items():
         ip = hv.get('ansible_host', '')
         if ip:
             server_ip_list_temp.append(f"{ip}")
+        server_offset_dict[host] = server_offset
+        device_count = hv.get('ascend_rt_visible_devices','').count(',')
+        server_offset += device_count + 1
+        kv_rank_dict[host] = kv_rank
     server_ip_list = ','.join(server_ip_list_temp)
-    server_offsets, count = {}, 0
-    for host, hv in inventory['all']['children']['D']['hosts'].items():
-        server_offsets[host] = count
-        num = hv.get('ascend_rt_visible_devices','').count(',')
-        count += num + 1
 
     ## update inventory
     need_overwrite_inv = False
@@ -213,10 +217,15 @@ def _verify_and_fix_env_vars(
                 hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
                 print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
         if "SERVER_OFFSETS" in hv.get("env", {}):
-            if hv.get("env", {}).get("SERVER_OFFSETS") != server_offsets[host]:
+            if hv.get("env", {}).get("SERVER_OFFSETS") != server_offset_dict[host]:
+                hv.get("env", {})["SERVER_OFFSETS"] = server_offset_dict[host]
                 need_overwrite_inv = True
-                hv.get("env", {})["SERVER_OFFSETS"] = server_offsets[host]
-                print(f"[info] host={host} SERVER_OFFSETS set to {server_offsets[host]}")
+                print(f"[info] host={host} SERVER_OFFSETS set to {server_offset_dict[host]}")
+        if "KV_RANK" in hv.get("env", {}):
+            if hv.get("env", {}).get("KV_RANK") != kv_rank_dict[host]:
+                hv.get("env", {})["KV_RANK"] = kv_rank_dict[host]
+                need_overwrite_inv = True
+                print(f"[info] host={host} KV_RANK set to {kv_rank_dict[host]}")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
@@ -281,6 +290,7 @@ def omni_cli_start(
             script_path = Path(tf.name)
             code_path = str(env.get("CODE_PATH") or "").strip()
             log_path = str(env.get("LOG_PATH") or "").strip()
+            log_path = f"{log_path}/{host.replace('.', '_')}"
             tf.write("#!/usr/bin/env bash\n")
             tf.write("set -euo pipefail\n\n")
 
