@@ -14,6 +14,8 @@
 # limitations under the License.
 # This file is a part of the vllm-ascend project.
 #
+import os
+import yaml
 import argparse
 import subprocess
 import json
