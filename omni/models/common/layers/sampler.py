@@ -775,7 +775,7 @@ class AscendTopKTopPSamplerV1(TopKTopPSampler):
             probs = logits.softmax(dim=-1, dtype=torch.float32)
             return random_sample(probs, idx, generators, self.dsa_stream)
         else:
-            logits = logits.dtype(torch.bfloat16)
+            logits = logits.type(torch.bfloat16)
             p = p.type(torch.bfloat16)
             k = k.type(torch.int32)
             q = generate_random_sequence(logits, generators, self.dsa_stream)
