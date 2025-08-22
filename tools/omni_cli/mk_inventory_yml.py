@@ -59,11 +59,11 @@ def add_node(args):
     
     # 根据角色设置容器名称前缀
     if args.role == 'P':
-        docker_name_prefix = "you_name_omni_infer_prefill"
+        container_name_prefix = "you_name_omni_infer_prefill"
     elif args.role == 'D':
-        docker_name_prefix = "you_name_omni_infer_decode"
+        container_name_prefix = "you_name_omni_infer_decode"
     elif args.role == 'C':
-        docker_name_prefix = "you_name_omni_infer_proxy"
+        container_name_prefix = "you_name_omni_infer_proxy"
     
     # 创建节点信息字典
     node = {
@@ -71,7 +71,8 @@ def add_node(args):
         'ansible_ssh_common_args': args.ansible_ssh_common_args,
         'ansible_ssh_private_key_file': args.ansible_ssh_private_key_file,
         'ansible_host': args.ansible_host,
-        'docker_name': f"{docker_name_prefix}_{args.name}"  # 设置容器名称
+        'container_name': f"{container_name_prefix}_{args.name}",  # 设置容器名称
+        'ascend_rt_visible_devices': '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15'
     }
     
     # 添加 DOCKER_IMAGE_ID
@@ -114,7 +115,7 @@ def add_node(args):
 
     hosts[args.name] = node
     save_yaml(deploy_path, deployment)
-    print(f"Node '{args.name}' added successfully to role '{args.role}' with container name '{node['docker_name']}'.")
+    print(f"Node '{args.name}' added successfully to role '{args.role}'.")
 
 def rm_node(args):
     """Remove node from servering_profiles.yml and reassign ports for the role."""

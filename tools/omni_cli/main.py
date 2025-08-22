@@ -37,6 +37,8 @@ from omni_cli.omni_cfg import parse_remaining_args
 from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
 
+_DEFAULT_DEPLOY_PATH = None
+
 def execute_command(command):
     """Execute the ansible command"""
     process = subprocess.Popen(
@@ -278,7 +280,7 @@ def omni_cli_start(
     for host, hv in selected:
         env: Dict[str, Any] = hv.get("env", {}) or {}
         args: Dict[str, Any] = hv.get("args", {}) or {}
-        docker_name: str = hv.get("docker_name")
+        container_name: str = hv.get("container_name")
 
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
@@ -296,7 +298,7 @@ def omni_cli_start(
             tf.write("#!/usr/bin/env bash\n")
             tf.write("set -euo pipefail\n\n")
 
-            tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
+            tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
             tf.write("source ~/.bashrc\n\n")
 
             tf.write(f"if [ ! -d {shlex.quote(log_path)} ]; then\n")
@@ -357,7 +359,7 @@ def omni_cli_stop(
 
     for host, hv in selected:
         env: Dict[str, Any] = hv.get("env", {}) or {}
-        docker_name: str = hv.get("docker_name")
+        container_name: str = hv.get("container_name")
 
         with tempfile.NamedTemporaryFile(
             "w", delete=False,
@@ -368,7 +370,7 @@ def omni_cli_stop(
             script_path = Path(tf.name)
 
             tf.write("#!/usr/bin/env bash\n")
-            tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
+            tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
             tf.write("pkill -9 python || true\n")
             tf.write("pkill -9 vllm   || true\n")
             tf.write("EOF\n")
@@ -390,11 +392,238 @@ def omni_cli_stop(
             except Exception:
                 pass
 
-def create_default_inventory_if_needed():
-    """在当前目录创建默认的 servering_profiles.yml 文件（如果不存在）"""
+def get_host_groups(inv_data: dict) -> Dict[str, List[str]]:
+    """构建主机到组的映射关系"""
+    host_groups = {}
+    
+    # 遍历整个 inventory 结构
+    def traverse(node, current_groups=None):
+        if current_groups is None:
+            current_groups = []
+        
+        # 处理当前节点的主机
+        hosts = node.get("hosts", {})
+        for host, host_vars in hosts.items():
+            # 合并当前组和主机自定义组
+            merged_groups = current_groups.copy()
+            if "groups" in host_vars:
+                merged_groups.extend(host_vars["groups"])
+            host_groups[host] = list(set(merged_groups))  # 去重
+    
+        # 处理子节点
+        children = node.get("children", {})
+        for child_name, child_data in children.items():
+            # 子节点继承父节点的组并添加自己的组名
+            child_groups = current_groups + [child_name]
+            traverse(child_data, child_groups)
+    
+    # 从根节点开始遍历
+    traverse(inv_data.get("all", inv_data))
+    return host_groups
+
+
+def sync_dev(
+    inventory_path: str = "omni_cli/configs/servering_profiles.yml",
+    dry_run: bool = False,
+    code_path: str = None  # 新增参数
+) -> None:
+    """
+    同步代码到所有相关主机和容器
+    """
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
+    original_playbook = os.path.join(cur_dir, "configs", "sync_code.yml")
+    
+    # 如果用户提供了自定义代码路径，创建修改后的临时 playbook
+    if code_path:
+        # 创建临时 playbook 文件
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".yml") as tf:
+            temp_playbook_path = tf.name
+            
+            # 读取原始 playbook 内容
+            with open(original_playbook, "r") as f:
+                playbook_content = f.read()
+            
+            # 在 playbook 开头添加自定义代码路径
+            modified_content = playbook_content.replace(
+                "gather_facts: yes",
+                f"gather_facts: yes\n\n  environment:\n    CODE_PATH: \"{code_path}\""
+            )
+            
+            # 写入修改后的内容
+            tf.write(modified_content)
+        
+        playbook_to_run = temp_playbook_path
+    else:
+        # 使用原始 playbook
+        print('Missing code_path')
+    
+    # 构建命令
+    cmd = f"ansible-playbook -i {inventory_path} {playbook_to_run}"
+    
+    if dry_run:
+        print(f"Dry run: would execute: {cmd}")
+        if code_path:
+            print("Modified playbook content:")
+            print(modified_content)
+    else:
+        print(f"Executing: {cmd}")
+        return_code = os.system(cmd)
+        
+        # 清理临时文件
+        if code_path:
+            try:
+                os.unlink(temp_playbook_path)
+            except:
+                pass
+        
+        if return_code == 0:
+            print("\nSync process completed.")
+        else:
+            print(f"\nSync process failed with return code {return_code}")
+
+def install_dev(
+    inventory_path: str = "omni_cli/configs/servering_profiles.yml",
+    dry_run: bool = False,
+) -> None:
+    """
+    在容器内安装代码
+    """
+    inv_file = Path(inventory_path).expanduser().resolve()
+
+    # 加载 inventory
+    with open(inv_file, "r", encoding="utf-8") as f:
+        inv = yaml.safe_load(f)
+
+    all_hosts = _walk_hosts(inv.get("all", inv))
+    host_groups = get_host_groups(inv)
+
+    if not all_hosts:
+        print("Warning: No hosts found in inventory.")
+        return
+
+    # 更新命令模板
+    docker_update_code_cmd = """
+    /bin/bash -c '. ~/.bashrc 
+    export http_proxy=http://10.155.96.5:8081
+    export https_proxy=http://10.155.96.5:8081
+    sed -i s#https://pypi.tuna.tsinghua.edu.cn/simple#https://mirrors.tools.huawei.com/pypi/simple#g /root/.config/pip/pip.conf && sed -i s#pypi.tuna.tsinghua.cn#mirrors.tools.huawei.com#g /root/.config/pip/pip.conf
+    pip install setuptools_scm
+    cd /workspace/omniinfer/infer_engines 
+    git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm 
+    bash bash_install_code.sh 
+    pip uninstall vllm -y 
+    pip uninstall omniinfer -y 
+    cd vllm 
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation 
+    cd ../../ 
+    pip install -e . --no-deps --no-build-isolation 
+    > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'
+"""
+    for host, hv in all_hosts:
+        groups = host_groups.get(host, [])
+        print(f"\nProcessing host: {host} (groups: {groups})")
+
+        # 确定角色 (P, D, 或 C)
+        role = "C"  # 默认值
+        if 'P' in groups:
+            role = "P"
+        elif 'D' in groups:
+            role = "D"
+        elif 'C' in groups:
+            role = "C"
+
+        # 只处理 P 和 D 组
+        if role not in ['P', 'D']:
+            print(f"Skipping host {host} (not in P or D group)")
+            continue
+
+        # 获取环境变量和其他主机变量
+        env = hv.get("env", {})
+        log_path = env.get("LOG_PATH")
+        container_name = hv.get("container_name")
+
+        # 检查必要变量
+        if not log_path:
+            print(f"Warning: LOG_PATH not defined for host {host}, skipping")
+            continue
+        if not container_name:
+            print(f"Warning: container_name not defined for host {host}, skipping")
+            continue
+
+        # 创建临时脚本文件
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tf:
+            script_path = Path(tf.name)
+
+            # 编写脚本内容
+            tf.write("#!/bin/bash\n")
+            tf.write("set -euo pipefail\n\n")
+
+            # 导出环境变量
+            tf.write("# Export environment variables\n")
+            for key, value in env.items():
+                tf.write(f"export {key}={shlex.quote(str(value))}\n")
+
+            # 添加角色特定变量
+            tf.write("\n# Role-specific variables\n")
+            tf.write(f"export CONTAINER_NAME={shlex.quote(container_name)}\n")
+
+            # 在容器内更新代码 - 修复命令格式
+            tf.write("\n# Update code inside container\n")
+            # 替换命令中的变量
+            update_cmd = docker_update_code_cmd.replace(
+                "${LOG_PATH}/{{ inventory_hostname }}/pip.log",
+                f"{log_path}/{host}/pip.log"
+            )
+            tf.write(f"echo \"Updating code inside container {container_name}\"\n")
+            
+            # 关键修改：使用 /bin/bash -c 正确传递命令
+            tf.write(f"docker exec {shlex.quote(container_name)} /bin/bash -c {shlex.quote(update_cmd)}\n")
+
+            # 设置执行权限
+            os.chmod(script_path, 0o755)
+
+            # 在干跑模式下打印脚本内容
+            if dry_run:
+                print(f"=== DRY RUN: Script for host {host} ===")
+                with open(script_path, "r") as script_file:
+                    print(script_file.read())
+                print("===")
+
+        if not dry_run:
+            try:
+                # 构建 ansible 命令
+                cmd = (
+                    f"ansible {shlex.quote(host)} "
+                    f"-i {shlex.quote(str(inv_file))} "
+                    f"-m script "
+                    f"-a {shlex.quote(str(script_path))}"
+                )
+                execute_command(cmd)
+            finally:
+                # 清理临时文件
+                try:
+                    script_path.unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"Warning: Failed to delete temp file: {e}")
+        else:
+            # 在干跑模式下，只显示我们会运行的命令
+            print(f"DRY RUN: Would execute for host {host}:")
+            print(f"  ansible {host} -i {inv_file} -m script -a {script_path}")
+
+    print("\nInstall process completed.")
+
+def get_default_deploy_path():
+    """获取或创建默认部署路径（仅在第一次调用时创建文件）"""
+    global _DEFAULT_DEPLOY_PATH
+    
+    # 如果已经设置过，直接返回
+    if _DEFAULT_DEPLOY_PATH is not None:
+        return _DEFAULT_DEPLOY_PATH
+    
+    # 创建默认文件并保存路径
     current_dir = Path.cwd()
     deploy_path = current_dir / "servering_profiles.yml"
-
+    
     if not deploy_path.exists():
         # 创建默认的 inventory 结构
         default_inventory = {
@@ -406,14 +635,16 @@ def create_default_inventory_if_needed():
                 }
             }
         }
-
+        
         # 写入文件
         with open(deploy_path, "w") as f:
             yaml.dump(default_inventory, f)
-
+        
         print(f"Created default inventory file at: {deploy_path}")
-
-    return deploy_path.resolve()
+    
+    # 保存为绝对路径
+    _DEFAULT_DEPLOY_PATH = deploy_path.resolve()
+    return _DEFAULT_DEPLOY_PATH
 
 def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     """Flatten an Ansible-style inventory dict into [(host, hostvars)]."""
@@ -473,15 +704,6 @@ def run_docker_containers(
     for host, hv in all_hosts:
         print(f"\nProcessing host: {host}")
 
-        # Determine the role (P, D, or C) based on group membership
-        role = "P"  # Default to P if not specified
-        if 'P' in hv.get('groups', []):
-            role = "P"
-        elif 'D' in hv.get('groups', []):
-            role = "D"
-        elif 'C' in hv.get('groups', []):
-            role = "C"
-
         # Get environment variables and other host variables
         env = hv.get("env", {})
 
@@ -513,7 +735,7 @@ def run_docker_containers(
 
             # Add role-specific variables
             tf.write("\n# Role-specific variables\n")
-            tf.write(f"export DOCKER_NAME={shlex.quote(hv.get('docker_name', ''))}\n")
+            tf.write(f"export DOCKER_NAME={shlex.quote(hv.get('container_name', ''))}\n")
             tf.write(f"export DOCKER_IMAGE_ID={shlex.quote(str(docker_image_id))}\n")  # 导出 DOCKER_IMAGE_ID
 
             # Cleanup existing container
@@ -675,7 +897,7 @@ def main():
 
     # ADD_NODE command configuration
     addnode_parser = subparsers.add_parser("add_node", help="Add a node to servering_profiles.yml")
-    default_deploy_path = create_default_inventory_if_needed()
+    default_deploy_path = get_default_deploy_path()
 
     addnode_parser.add_argument(
         "--deploy_path",
@@ -685,10 +907,10 @@ def main():
     addnode_parser.add_argument("--role", required=True, choices=['P', 'D', 'C'], help="Node role")
     addnode_parser.add_argument("--name", required=True, help="Node name")
     addnode_parser.add_argument("--ansible_host", required=True, help="ansible_host")
-    addnode_parser.add_argument("--ansible_user", required=True, help="ansible_user")
-    addnode_parser.add_argument("--ansible_ssh_common_args", required=True, help="ansible_ssh_common_args")
+    addnode_parser.add_argument("--ansible_user", default="root", help="ansible_user")
+    addnode_parser.add_argument("--ansible_ssh_common_args", default="-o StrictHostKeyChecking=no -o IdentitiesOnly=yes", help="ansible_ssh_common_args")
     addnode_parser.add_argument("--ansible_ssh_private_key_file", required=True, help="ansible_ssh_private_key_file")
-    addnode_parser.add_argument("--host_ip", help="host_ip")
+    addnode_parser.add_argument("--host_ip", help="host_ip:The default value is set to ansible_host")
     addnode_parser.add_argument("--docker_image_id", required=True, help="docker_image_id")
     addnode_parser.add_argument("--env_overwrite", nargs='*', help="Overwrite env variables, format KEY=VALUE")
     addnode_parser.add_argument("--args_overwrite", nargs='*', help="Overwrite args variables, format KEY=VALUE")
@@ -721,7 +943,42 @@ def main():
         inventory_path=args.inventory,
         dry_run=args.dry_run
     ))
+    # SYNC_DEV command configuration
+    sync_parser = subparsers.add_parser("sync_dev", help="Sync code to all instances")
+    sync_parser.add_argument(
+        "--deploy_path",
+        default=str(default_deploy_path),
+        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+    )
+    sync_parser.add_argument(
+        "--dry_run", 
+        action="store_true", 
+        help="Show what would be done without making any changes"
+    )
+    sync_parser.add_argument("--code_path", required=True, help="code_path")
 
+    sync_parser.set_defaults(func=lambda args:sync_dev(
+        inventory_path=args.deploy_path,
+        dry_run=args.dry_run,
+        code_path=args.code_path
+    ))
+    
+    # INSTALL_DEV command configuration
+    install_parser = subparsers.add_parser("install_dev", help="Install code in containers")
+    install_parser.add_argument(
+        "--deploy_path",
+        default=str(default_deploy_path),
+        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+    )
+    install_parser.add_argument(
+        "--dry_run", 
+        action="store_true", 
+        help="Show what would be done without making any changes"
+    )
+    install_parser.set_defaults(func=lambda args:install_dev(
+        inventory_path=args.deploy_path,
+        dry_run=args.dry_run
+    ))
     args = parser.parse_args()
 
     if hasattr(args, 'func'):

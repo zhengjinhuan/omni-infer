@@ -69,7 +69,7 @@ def process_results(results, inventory, inv_file):
     for host, vars in inventory['all']['children']['C']['hosts'].items():
         host_ip_val = vars.get('ansible_host', '')
         api_port_val = vars.get('env', '').get('API_PORT', '')
-        docker_name = vars.get('docker_name', '')
+        container_name = vars.get('container_name', '')
 
         env: Dict[str, Any] = vars.get("env", {}) or {}
         log_path = str(env.get("LOG_PATH") or "").strip()
@@ -85,7 +85,7 @@ def process_results(results, inventory, inv_file):
         suffix=".sh") as tf:
         script_path = Path(tf.name)
         tf.write("#!/usr/bin/env bash\n")
-        tf.write(f"docker exec -i {shlex.quote(docker_name)} bash -s <<'EOF'\n")
+        tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
         tf.write(f"ps aux | grep 'nginx' | grep -v 'grep' | awk '{'print $2'}' | xargs kill -9; cd /workspace/omniinfer/tools/scripts; bash global_proxy.sh \\\n\
           --listen-port {api_port_val} \\\n\
           --prefill-servers-list {prefill_result} \\\n\
