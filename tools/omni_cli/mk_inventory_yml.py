@@ -74,7 +74,7 @@ def add_node(args):
         'container_name': f"{container_name_prefix}_{args.name}",  # 设置容器名称
         'ascend_rt_visible_devices': '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15'
     }
-    
+
     # 添加 DOCKER_IMAGE_ID
     if hasattr(args, 'docker_image_id') and args.docker_image_id:
         node['DOCKER_IMAGE_ID'] = args.docker_image_id
@@ -82,9 +82,11 @@ def add_node(args):
     # For P/D, add host_ip
     if args.role in ['P', 'D']:
         node['host_ip'] = args.host_ip
-
-    env = default_profiles['profiles']['vllm']['deepseek']['env'].copy()
-    args_dict = default_profiles['profiles']['vllm']['deepseek']['args'].copy()
+    role_config = default_profiles['profiles']['vllm']['deepseek'].get(args.role)
+    env = role_config.get('env', {}).copy()
+    if role_config.get('args', {}):
+        args_dict = role_config.get('args', {}).copy()
+        node['args'] = args_dict
 
     # Overwrite env/args with user input if provided
     if hasattr(args, 'env_overwrite') and args.env_overwrite:
@@ -100,18 +102,12 @@ def add_node(args):
     for k in env:
         if k.endswith('PORT'):
             user_port = None
-            if hasattr(args, 'env_overwrite') and args.env_overwrite:
-                for kv in args.env_overwrite:
-                    k2, v2 = kv.split('=', 1)
-                    if k2 == k and v2.isdigit():
-                        user_port = int(v2)
             if user_port is not None:
                 env[k] = user_port
             else:
                 env[k] = env[k] + 16 * role_count + offset
-    
+
     node['env'] = env
-    node['args'] = args_dict
 
     hosts[args.name] = node
     save_yaml(deploy_path, deployment)

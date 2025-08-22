@@ -674,6 +674,7 @@ def run_docker_containers(
         inv = yaml.safe_load(f)
 
     all_hosts = _walk_hosts(inv.get("all", inv))
+    host_groups = get_host_groups(inv)  # 获取主机组信息
 
     if not all_hosts:
         print("Warning: No hosts found in inventory.")
@@ -699,72 +700,89 @@ def run_docker_containers(
         -v /etc/hccn.conf:/etc/hccn.conf \\
         -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \\
         -v $LOG_PATH:$LOG_PATH \\
-        -v $MODEL_PATH:$MODEL_PATH \\
         -v /tmp/ranktable_save_path:/tmp/ranktable_save_path \\
         -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime"""
 
     for host, hv in all_hosts:
         print(f"\nProcessing host: {host}")
+        
+        # 确定角色
+        groups = host_groups.get(host, [])
+        role = "C"  # 默认值
+        if 'P' in groups:
+            role = "P"
+        elif 'D' in groups:
+            role = "D"
+        elif 'C' in groups:
+            role = "C"
 
-        # Get environment variables and other host variables
+        # 获取环境变量和主机变量
         env = hv.get("env", {})
-
-        # Obtain Key Variables - Directly from the Host Variables
         log_path = env.get("LOG_PATH")
         model_path = env.get("MODEL_PATH")
-        docker_image_id = hv.get("DOCKER_IMAGE_ID")  # 与 env 同级
+        docker_image_id = hv.get("DOCKER_IMAGE_ID")
 
-        # Check for required variables
+        # 检查必要变量
         if not log_path:
-            raise ValueError(f"Required environment variable 'LOG_PATH' not defined for host {host}")
-        if not model_path:
-            raise ValueError(f"Required environment variable 'MODEL_PATH' not defined for host {host}")
+            print(f"Warning: LOG_PATH not defined for host {host}, skipping")
+            continue
         if not docker_image_id:
-            raise ValueError(f"Required variable 'DOCKER_IMAGE_ID' not defined for host {host}")
+            print(f"Warning: DOCKER_IMAGE_ID not defined for host {host}, skipping")
+            continue
+        
+        # 对于 P 和 D 角色，需要 MODEL_PATH
+        if role in ['P', 'D'] and not model_path:
+            print(f"Warning: MODEL_PATH not defined for host {host} (role {role}), skipping")
+            continue
 
-        # Create a temporary script file
+        # 创建临时脚本文件
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tf:
             script_path = Path(tf.name)
 
-            # Write the script content
+            # 写入脚本内容
             tf.write("#!/bin/bash\n")
             tf.write("set -euo pipefail\n\n")
 
-            # Export environment variables
+            # 导出环境变量
             tf.write("# Export environment variables\n")
             for key, value in env.items():
                 tf.write(f"export {key}={shlex.quote(str(value))}\n")
 
-            # Add role-specific variables
+            # 添加角色特定变量
             tf.write("\n# Role-specific variables\n")
             tf.write(f"export DOCKER_NAME={shlex.quote(hv.get('container_name', ''))}\n")
-            tf.write(f"export DOCKER_IMAGE_ID={shlex.quote(str(docker_image_id))}\n")  # 导出 DOCKER_IMAGE_ID
+            tf.write(f"export DOCKER_IMAGE_ID={shlex.quote(str(docker_image_id))}\n")
 
-            # Cleanup existing container
+            # 清理现有容器
             tf.write("\n# Cleanup existing container\n")
             tf.write("if docker inspect --format='{{.Name}}' \"$DOCKER_NAME\" &>/dev/null; then\n")
             tf.write("    docker stop \"$DOCKER_NAME\"\n")
             tf.write("    docker rm -f \"$DOCKER_NAME\"\n")
             tf.write("fi\n")
 
-            # Build the Docker run command
+            # 构建 Docker run 命令
             tf.write("\n# Build Docker run command\n")
             tf.write(f"docker_cmd={shlex.quote(base_docker_run_cmd)}\n")
+            
+            # 根据角色添加 MODEL_PATH 挂载
+            if role in ['P', 'D'] and model_path:
+                tf.write("docker_cmd+=\" -v $MODEL_PATH:$MODEL_PATH\"\n")
+            
             tf.write("docker_cmd+=\" -d --name $DOCKER_NAME $DOCKER_IMAGE_ID\"\n")
 
-            # Execute the command
+            # 执行命令
             tf.write("\n# Execute Docker run command\n")
             tf.write("echo \"Starting container with command: $docker_cmd\"\n")
             tf.write("eval \"$docker_cmd\"\n")
 
-            # Print container status
+            # 打印容器状态
             tf.write("\n# Verify container status\n")
             tf.write("docker ps -a --filter \"name=$DOCKER_NAME\"\n")
 
-            # Set execute permissions
+            # 设置执行权限
             os.chmod(script_path, 0o755)
 
-            # Print script content in dry run mode
+            # 在干跑模式下打印脚本内容
             if dry_run:
                 print(f"=== DRY RUN: Script for host {host} ===")
                 with open(script_path, "r") as script_file:
@@ -773,7 +791,7 @@ def run_docker_containers(
 
         if not dry_run:
             try:
-                # Build ansible command
+                # 构建 ansible 命令
                 cmd = (
                     f"ansible {shlex.quote(host)} "
                     f"-i {shlex.quote(str(inv_file))} "
@@ -784,18 +802,17 @@ def run_docker_containers(
                 print(f"Executing script on host {host}:")
                 execute_command(cmd)
             finally:
-                # Clean up temporary file
+                # 清理临时文件
                 try:
                     script_path.unlink(missing_ok=True)
                 except Exception as e:
                     print(f"Warning: Failed to delete temp file: {e}")
         else:
-            # In dry run mode, just show the command we would run
+            # 在干跑模式下，只显示我们会运行的命令
             print(f"DRY RUN: Would execute for host {host}:")
             print(f"  ansible {host} -i {inv_file} -m script -a {script_path}")
 
     print("\nAll hosts processed.")
-
 
 
 def prepare_omni_service_in_developer_mode(config_path):
@@ -914,8 +931,6 @@ def main():
     addnode_parser.add_argument("--ansible_ssh_private_key_file", required=True, help="ansible_ssh_private_key_file")
     addnode_parser.add_argument("--host_ip", help="host_ip:The default value is set to ansible_host")
     addnode_parser.add_argument("--docker_image_id", required=True, help="docker_image_id")
-    addnode_parser.add_argument("--env_overwrite", nargs='*', help="Overwrite env variables, format KEY=VALUE")
-    addnode_parser.add_argument("--args_overwrite", nargs='*', help="Overwrite args variables, format KEY=VALUE")
     addnode_parser.set_defaults(func=add_node)
 
     # RM_NODE command configuration
