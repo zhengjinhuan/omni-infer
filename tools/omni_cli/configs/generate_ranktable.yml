@@ -21,8 +21,8 @@
 
   environment:
 
-    DOCKER_NAME_P: "your_name_omni_infer_prefill"
-    DOCKER_NAME_D: "your_name_omni_infer_decode"
+    DOCKER_NAME_P: "you_name_omni_infer_prefill"
+    DOCKER_NAME_D: "you_name_omni_infer_decode"
     SCRIPTS_PATH: "/tmp/scripts_path"
 
   vars:
@@ -148,9 +148,9 @@
   tasks:
     - name: generate container name.
       set_fact:
-        ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{ inventory_hostname }}"
-        ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+        ACTUAL_DOCKER_NAME_P: "{{ docker_name }}"
+        ACTUAL_DOCKER_NAME_D: "{{ docker_name }}"
+      when: "'P' in group_names or 'D' in group_names"
       tags: always
       
     - name: Create a directory on the executor to store ranktable file.

@@ -8,15 +8,18 @@ def parse_node_name(name):
     if not name:
         return None, None
 
-    match = re.match(r'^(prefill|decode)_(\d+)$', name)
+    match = re.match(r'^([pdc](?:0|[1-9]\d*)?|all)$', name)
     if match:
-        node_type = match.group(1)[0].upper()
-        node_index = f'{match.group(1)[0].lower()}{int(match.group(2))}'
-        return node_type, node_index
+        full_match = match.group(0)
+        if full_match == 'all':
+            return full_match, None
+        else:
+            node_type = full_match[0].upper()
+            return node_type, full_match
     return None, None
 
 def parse_remaining_args_for_set(arg, remaining_args, sections, current_section, i):
-    if arg == '--additional_config' or arg == '--extra_args':
+    if arg == '--additional-config' or arg == '--extra-args':
         extra_args_list = shlex.split(remaining_args[i+1])
         j = 0
         while j < len(extra_args_list):
@@ -36,7 +39,7 @@ def parse_remaining_args_for_set(arg, remaining_args, sections, current_section,
         sections[current_section][arg[2:]] = remaining_args[i+1]
 
 def parse_remaining_args_for_delete(arg, remaining_args, sections, current_section, i):
-    if arg == '--additional_config' or arg == '--extra_args':
+    if arg == '--additional-config' or arg == '--extra-args':
         additional_config_list = shlex.split(remaining_args[i+1])
         j = 0
         while j < len(additional_config_list):
@@ -57,7 +60,7 @@ def parse_remaining_args(is_set, remaining_args):
     if is_set:
         sections = {'env': {}, 'arg': {}}
     else:
-        sections = {'env': [], 'arg': [], 'extra_args': [], 'additional_config': []}
+        sections = {'env': [], 'arg': [], 'extra-args': [], 'additional-config': []}
     current_section = None
     seen_sections = set()
 
@@ -98,72 +101,103 @@ def get_data_from_yaml(yml_file_path):
 
     return data
 
-def update_cfg_yml(node_name, node_id, env_dict, arg_dict, yml_file_path):
+def update_cfg_yml(node_type, node_name, env_dict, arg_dict, yml_file_path):
     data = get_data_from_yaml(yml_file_path)
     if data:
-        data['all']['children'][node_name]['hosts'][node_id]['env'].update(env_dict)
-        data['all']['children'][node_name]['hosts'][node_id]['args'].update(arg_dict)
-        with open(yml_file_path, 'w') as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-    else:
-        return
-
-def delete_cfg_yml(node_name, node_id, env_list, arg_list, extra_args_list, additional_config_list, yml_file_path):
-    data = get_data_from_yaml(yml_file_path)
-    if data:
-        vars_dict = data['all']['children'][node_name]['hosts'][node_id]
-        for key in env_list:
-            if key in vars_dict['env']:
-                del vars_dict['env'][key]
-            else:
-                print("Warning: No matching configuration %s found." % key)
-
-        for key in arg_list:
-            if key in vars_dict['args']:
-                del vars_dict['args'][key]
-            else:
-                print("Warning: No matching configuration %s found." % key)
-
-        for key in extra_args_list:
-            if key in vars_dict['args']['extra_args']:
-                del vars_dict['args']['extra_args'][key]
-            else:
-                print("Warning: No matching configuration %s found." % key)
-
-        if vars_dict['args']['extra_args'] == {}:
-            vars_dict['args']['extra_args'] = ''
-
-        for key in additional_config_list:
-            if key in vars_dict['args']['additional_config']:
-                del vars_dict['args']['additional_config'][key]
-            else:
-                print("Warning: No matching configuration %s found." % key)
-
-        if vars_dict['args']['additional_config'] == {}:
-            vars_dict['args']['additional_config'] = ''
+        if node_type == 'all':
+            for n_type in data['all']['children']:
+                for n_name in data['all']['children'][n_type]['hosts']:
+                    print("你已修改所有节点的配置")
+                    data['all']['children'][n_type]['hosts'][n_name]['env'].update(env_dict)
+                    data['all']['children'][n_type]['hosts'][n_name]['args'].update(arg_dict)
+        elif node_type == 'P' or node_type == 'D' or node_type == 'C':
+            for n_name in data['all']['children'][node_type]['hosts']:
+                print("你已修改 %s 组所有节点的配置" % node_type)
+                data['all']['children'][node_type]['hosts'][n_name]['env'].update(env_dict)
+                data['all']['children'][node_type]['hosts'][n_name]['args'].update(arg_dict)
+        else:
+            print("你已修改 %s 节点的配置" % n_name)
+            data['all']['children'][node_type]['hosts'][node_name]['env'].update(env_dict)
+            data['all']['children'][node_type]['hosts'][node_name]['args'].update(arg_dict)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
         return
+    
+def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, extra_args_list, additional_config_list):
+    vars_dict = data['all']['children'][node_type]['hosts'][node_name]
+    for key in env_list:
+        if key in vars_dict['env']:
+            del vars_dict['env'][key]
+        else:
+            print("Warning: No matching configuration %s found." % key)
 
-def cfg_set_process(node_name, node_id, args, sections, deploy_path):
-    if node_name is None or node_id is None:
+    for key in arg_list:
+        if key in vars_dict['args']:
+            del vars_dict['args'][key]
+        else:
+            print("Warning: No matching configuration %s found." % key)
+
+    for key in extra_args_list:
+        if key in vars_dict['args']['extra-args']:
+            del vars_dict['args']['extra-args'][key]
+        else:
+            print("Warning: No matching configuration %s found." % key)
+
+    if 'extra-args' in vars_dict['args'] and vars_dict['args']['extra-args'] == {}:
+        vars_dict['args']['extra-args'] = ''
+
+    for key in additional_config_list:
+        if key in vars_dict['args']['additional-config']:
+            del vars_dict['args']['additional-config'][key]
+        else:
+            print("Warning: No matching configuration %s found." % key)
+
+    if 'additional-config' in vars_dict['args'] and vars_dict['args']['additional-config'] == {}:
+        vars_dict['args']['additional-config'] = ''
+
+def delete_cfg_yml(node_type, node_name, env_list, arg_list, extra_args_list, additional_config_list, yml_file_path):
+    data = get_data_from_yaml(yml_file_path)
+    if data:
+        if node_type == 'all':
+            for n_type in data['all']['children']:
+                for n_name in data['all']['children'][n_type]['hosts']:
+                    print("你已删除所有节点的配置")
+                    delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, extra_args_list, \
+                        additional_config_list)
+        elif node_type == 'P' or node_type == 'D' or node_type == 'C':
+            for n_name in data['all']['children'][node_type]['hosts']:
+                print("你已删除 %s 组所有节点的配置" % node_type)
+                delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, extra_args_list, \
+                    additional_config_list)
+        else:
+            print("你已删除 %s 节点的配置" % n_name)
+            delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, extra_args_list, \
+                additional_config_list)
+
+        with open(yml_file_path, 'w') as file:
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+    else:
+        return
+
+def cfg_set_process(node_type, node_name, args, sections, deploy_path):
+    if node_type is None and node_name is None:
         print(f"错误：无效的节点名称 '{args.name[0]}'。")
         print("节点名称必须符合以下格式之一：")
         print("  - prefill_<number> (例如: prefill_0, prefiill_1, prefill_11)")
         print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
         return
 
-    update_cfg_yml(node_name, node_id, sections['env'], sections['arg'], deploy_path)
+    update_cfg_yml(node_type, node_name, sections['env'], sections['arg'], deploy_path)
 
-def cfg_delete_process(node_name, node_id, args, sections, deploy_path):
-    if node_name is None or node_id is None:
+def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
+    if node_type is None and node_name is None:
         print(f"错误：无效的节点名称 '{args.name[0]}'。")
         print("节点名称必须符合以下格式之一：")
         print("  - prefill_<number> (例如: prefill_0, prefiill_1, prefill_11)")
         print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
         return
 
-    delete_cfg_yml(node_name, node_id, sections['env'], sections['arg'], \
-        sections['extra_args'], sections['additional_config'], deploy_path)
+    delete_cfg_yml(node_type, node_name, sections['env'], sections['arg'], sections['extra-args'], \
+        sections['additional-config'], deploy_path)

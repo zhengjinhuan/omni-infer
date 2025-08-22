@@ -30,7 +30,10 @@ import tempfile
 import shlex
 import omni_cli.proxy
 from omni_cli.mk_inventory_yml import add_node, rm_node
-from omni_cli.omni_cfg import *
+from omni_cli.omni_cfg import parse_node_name
+from omni_cli.omni_cfg import parse_remaining_args
+from omni_cli.omni_cfg import cfg_set_process
+from omni_cli.omni_cfg import cfg_delete_process
 
 def execute_command(command):
     """Execute the ansible command"""
@@ -207,7 +210,7 @@ def _verify_and_fix_env_vars(
 
 def omni_ranktable(inventory):
     cur_dir = os.path.dirname(__file__)
-    cmd = "ansible-playbook -i " + inventory + " " + cur_dir + "/ansible/ranktable.yml"
+    cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/configs/generate_ranktable.yml"
     os.system(cmd)
 
 def omni_cli_start(
@@ -221,6 +224,7 @@ def omni_cli_start(
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
+    omni_ranktable(inventory_path)
     omni_cli.proxy.omni_run_proxy(inventory_path)
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inventory_path, "r", encoding="utf-8") as f:
@@ -624,14 +628,14 @@ def main():
     # CFG command configuration
     cfg_parser = subparsers.add_parser("cfg", help="Modify configuration")
     cfg_group = cfg_parser.add_mutually_exclusive_group(required=True)
-    cfg_group.add_argument("--set", metavar="", help="Set configuration key-value pairs (e.g., --key value)")
+    cfg_group.add_argument("--set", action='store_true', help="Set configuration key-value pairs (e.g., --key value)")
     cfg_parser.add_argument('name', nargs=1, help='Node name (e.g., prefill_0)')
     cfg_parser.add_argument('remaining_args', nargs=argparse.REMAINDER, help='Additional optional parameters')
-    cfg_group.add_argument("--delete", metavar="", help="Delete configuration keys (e.g., --key)")
+    cfg_group.add_argument("--delete", action='store_true', help="Delete configuration keys (e.g., --key)")
 
     # INSPECT command configuration
     inspect_parser = subparsers.add_parser("inspect", help="Inspect Configuration")
-    inspect_parser.add_argument('config_path', type=str, help='Path to the configuration file')
+    inspect_parser.add_argument('name', nargs=1, help='Node name (e.g., prefill_0)')
 
     # UPGRADE command configuration
     subparsers.add_parser("upgrade", help="Upgrade packages")
@@ -722,17 +726,18 @@ def main():
         print("Install packages.")
         install_packages()
     elif args.command == "cfg":
-        node_name, node_id = parse_node_name(args.name[0])
+        node_type, node_name = parse_node_name(args.name[0])
         sections = parse_remaining_args(args.set, args.remaining_args)
         if args.set:
             print("Set configuration.")
-            cfg_set_process(node_name, node_id, args, sections, default_deploy_path)
+            cfg_set_process(node_type, node_name, args, sections, default_deploy_path)
         elif args.delete:
             print("Delete configuration.")
-            cfg_delete_process(node_name, node_id, args, sections, default_deploy_path)
+            cfg_delete_process(node_type, node_name, args, sections, default_deploy_path)
     elif args.command == "inspect":
         print("Inspect configuration.")
-        inspect_configuration(args.config_path)
+        print(args.name[0])
+        node_type, node_name = parse_node_name(args.name[0])
     elif args.command == "upgrade":
         print("Upgrade packages")
         upgrade_packages()

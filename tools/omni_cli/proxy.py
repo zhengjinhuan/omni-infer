@@ -5,29 +5,14 @@ import tempfile
 import os
 import shlex
 
-def calculate_api_port(host_vars, global_vars, group_key):
-    node_rank = host_vars.get('node_rank', 0)
-    kv_rank = host_vars.get('kv_rank', 0)
-    if group_key == 'C':
-        return global_vars['proxy_port'] + node_rank
-    if group_key == 'P':
-        port_offset = global_vars['port_offset'][group_key]
-        return global_vars['base_api_port'] + port_offset + kv_rank
-    if group_key == 'D':
-        port_offset = global_vars['port_offset'][group_key]
-        return global_vars['base_api_port'] + port_offset + node_rank
-
-
 def register_values(inventory):
-    global_vars = inventory['all']['vars']
-    
     # calculate PREFILL_API_SERVER_LIST
     prefill_api_server_list = []
     
     for host, vars in inventory['all']['children']['P']['hosts'].items():
         ansible_host_val = vars.get('ansible_host', '')
         host_ip_val = vars.get('ansible_host', '')
-        api_port_val = calculate_api_port(vars, global_vars, 'P')
+        api_port_val = vars.get('env', '').get('API_PORT', '')
         
         if ansible_host_val and host_ip_val and ansible_host_val == host_ip_val:
             entry = f"{ansible_host_val}:{api_port_val}"
@@ -41,7 +26,7 @@ def register_values(inventory):
     
     for host, vars in inventory['all']['children']['D']['hosts'].items():
         ip = vars.get('ansible_host', '')
-        api_port_val = calculate_api_port(vars, global_vars, 'D')
+        api_port_val = vars.get('env', '').get('API_PORT', '')
         num = vars.get('ascend_rt_visible_devices', '').count(',') + 1 
         
         if ip:
@@ -56,7 +41,7 @@ def register_values(inventory):
         'DECODE_API_SERVER_LIST': decode_api_server_list_result
     }
 
-def process_results(results, inventory):
+def process_results(results, inventory, inv_file):
 
     prefill_result = results['PREFILL_API_SERVER_LIST']
     decode_api_servers = results['DECODE_API_SERVER_LIST']
@@ -81,18 +66,17 @@ def process_results(results, inventory):
                 decode_result += f",{ip}:{port}"
             port += 1
 
-    global_vars = inventory['all']['vars']
     for host, vars in inventory['all']['children']['C']['hosts'].items():
         host_ip_val = vars.get('ansible_host', '')
-        api_port_val = calculate_api_port(vars, global_vars, 'C')
+        api_port_val = vars.get('env', '').get('API_PORT', '')
         docker_name = vars.get('docker_name', '')
 
         env: Dict[str, Any] = vars.get("env", {}) or {}
         log_path = str(env.get("LOG_PATH") or "").strip()
 
         args: Dict[str, Any] = vars.get("args", {}) or {}
-        prefill_lb_sdk = args.get('prefill-lb-sdk', '')
-        decode_lb_sdk = args.get('decode-lb-sdk', '')
+        prefill_lb_sdk = args.get('prefill-lb-sdk', 'pd_score_balance')
+        decode_lb_sdk = args.get('decode-lb-sdk', 'pd_score_balance')
 
     with tempfile.NamedTemporaryFile(
         "w", delete=False,
@@ -138,4 +122,4 @@ def omni_run_proxy(inventory):
         inv = yaml.safe_load(f)
     
     result = register_values(inv)
-    process_results(result, inv)
+    process_results(result, inv, inv_file)
