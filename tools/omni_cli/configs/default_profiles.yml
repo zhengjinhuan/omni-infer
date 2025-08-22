@@ -240,5 +240,7 @@ profiles:
             no-enable-prefix-caching: ""
 
       C:
-       env: null
+       env:
+        LOG_PATH: "/tmp/omni_logs"
+        CODE_PATH: "/workspace/omniinfer"
        args: null

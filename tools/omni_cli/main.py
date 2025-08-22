@@ -280,6 +280,11 @@ def omni_cli_start(
         args: Dict[str, Any] = hv.get("args", {}) or {}
         docker_name: str = hv.get("docker_name")
 
+        code_path = str(env.get("CODE_PATH") or "").strip()
+        log_path = str(env.get("LOG_PATH") or "").strip()
+        log_path = f"{log_path}/{host.replace('.', '_')}"
+        env["LOG_PATH"] = log_path
+
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
 
@@ -290,9 +295,6 @@ def omni_cli_start(
             suffix=".sh"
         ) as tf:
             script_path = Path(tf.name)
-            code_path = str(env.get("CODE_PATH") or "").strip()
-            log_path = str(env.get("LOG_PATH") or "").strip()
-            log_path = f"{log_path}/{host.replace('.', '_')}"
             tf.write("#!/usr/bin/env bash\n")
             tf.write("set -euo pipefail\n\n")
 
