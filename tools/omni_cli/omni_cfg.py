@@ -107,13 +107,16 @@ def update_cfg_yml(node_type, node_name, env_dict, arg_dict, yml_file_path):
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
+                    print("你已修改所有节点的配置")
                     data['all']['children'][n_type]['hosts'][n_name]['env'].update(env_dict)
                     data['all']['children'][n_type]['hosts'][n_name]['args'].update(arg_dict)
         elif node_type == 'P' or node_type == 'D' or node_type == 'C':
             for n_name in data['all']['children'][node_type]['hosts']:
+                print("你已修改 %s 组所有节点的配置" % node_type)
                 data['all']['children'][node_type]['hosts'][n_name]['env'].update(env_dict)
                 data['all']['children'][node_type]['hosts'][n_name]['args'].update(arg_dict)
         else:
+            print("你已修改 %s 节点的配置" % n_name)
             data['all']['children'][node_type]['hosts'][node_name]['env'].update(env_dict)
             data['all']['children'][node_type]['hosts'][node_name]['args'].update(arg_dict)
 
@@ -160,13 +163,16 @@ def delete_cfg_yml(node_type, node_name, env_list, arg_list, extra_args_list, ad
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
+                    print("你已删除所有节点的配置")
                     delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, extra_args_list, \
                         additional_config_list)
         elif node_type == 'P' or node_type == 'D' or node_type == 'C':
             for n_name in data['all']['children'][node_type]['hosts']:
+                print("你已删除 %s 组所有节点的配置" % node_type)
                 delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, extra_args_list, \
                     additional_config_list)
         else:
+            print("你已删除 %s 节点的配置" % n_name)
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, extra_args_list, \
                 additional_config_list)
 

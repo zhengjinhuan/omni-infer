@@ -78,6 +78,33 @@ def _build_export_block(env: Dict[str, Any]) -> str:
         lines.append(f'export {k}={_double_quotes(v)}')
     return "\n".join(lines)
 
+def _build_json_args(cfg: Dict[str, Any]) -> str:
+    """Turn a dict into a JSON-like string"""
+    parts: List[str] = []
+    for k, v in cfg.items():
+        key = json.dumps(str(k))  # always quoted JSON key
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("$"):              # let shell expand
+                parts.append(f"{key}:{s}")
+            else:                              # normal JSON string
+                parts.append(f"{key}:{json.dumps(s)}")
+        elif isinstance(v, (int, float)):
+            parts.append(f"{key}:{v}")
+        else:
+            parts.append(f"{key}:{json.dumps(v)}")
+    return "{" + ", ".join(parts) + "}"
+
+def _build_string_args(extra_args: dict) -> str:
+    """Convert extra-args dict to CLI string"""
+    parts = []
+    for k, v in extra_args.items():
+        if v == "":
+            parts.append(f"--{k}")
+        else:
+            parts.append(f"--{k} {v}")
+    return " ".join(parts)
+
 def _build_args_line(args: Dict[str, Any]) -> str:
     """
     Build a flat CLI argument string like:
@@ -94,13 +121,22 @@ def _build_args_line(args: Dict[str, Any]) -> str:
             continue
         elif v == "":
             parts.append(flag)
+        elif k == "kv-transfer-config" and isinstance(v, dict):
+            inline = _build_json_args(v)
+            parts.append(f"{flag} {_double_quotes(inline)}")
+        elif k == "extra-args" and isinstance(v, dict):
+            inline = _build_string_args(v)
+            parts.append(f"{flag} {_double_quotes(inline)}")
+        elif k == "additional-config" and isinstance(v, dict):
+            inline = _build_json_args(v)
+            parts.append(f"{flag} {_double_quotes(inline)}")
         else:
             parts.append(f"{flag} {_double_quotes(v)}")
     return " ".join(parts)
 
 def omni_ranktable(inventory):
     cur_dir = os.path.dirname(__file__)
-    cmd = "ansible-playbook -i " + inventory + " " + cur_dir + "/ansible/ranktable.yml"
+    cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/configs/generate_ranktable.yml"
     os.system(cmd)
 
 def omni_cli_start(
@@ -114,6 +150,7 @@ def omni_cli_start(
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
+    omni_ranktable(inventory_path)
     omni_cli.proxy.omni_run_proxy(inventory_path)
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inv_file, "r", encoding="utf-8") as f:
@@ -121,11 +158,13 @@ def omni_cli_start(
 
     all_hosts = _walk_hosts(inv.get("all", inv))
 
+    if not role_filter:
+        role_filter = ["prefill", "decode"]
     selected: List[Tuple[str, Dict[str, Any]]] = []
     for host, hv in all_hosts:
         if host_pattern and host != host_pattern:
             continue
-        if role_filter and hv.get("role") != role_filter:
+        if role_filter and hv.get("env").get("ROLE") not in role_filter:
             continue
         selected.append((host, hv))
 
@@ -198,11 +237,13 @@ def omni_cli_stop(
 
     all_hosts = _walk_hosts(inv.get("all", inv))
 
+    if not role_filter:
+        role_filter = ["prefill", "decode"]
     selected: List[Tuple[str, Dict[str, Any]]] = []
     for host, hv in all_hosts:
         if host_pattern and host != host_pattern:
             continue
-        if role_filter and hv.get("role") != role_filter:
+        if role_filter and hv.get("env").get("ROLE") not in role_filter:
             continue
         selected.append((host, hv))
 
