@@ -291,7 +291,7 @@ class DeepseekMoE(nn.Module):
                 self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
                 self.is_init_gate = True
             if attn_metadata is None or attn_metadata.prefill is not None:
-                if self.is_A2:
+                if self.is_A2 and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
                     return self.forward_prefill_a2(hidden_states, residual, attn_metadata)
                 else:
                     return self._forward_prefill_norm(hidden_states, residual, attn_metadata)

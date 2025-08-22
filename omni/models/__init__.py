@@ -4,6 +4,7 @@
 from omni.adaptors.vllm.patches import model_patch 
 from vllm import ModelRegistry
 import os
+from omni.models.common.config.model_config import model_extra_config
 
 import os
 if os.getenv("PROFILING_NAMELIST", None):
@@ -13,10 +14,11 @@ if os.getenv("PROFILING_NAMELIST", None):
 
 def register_model():
     is_A2 = os.getenv("ASCEND_PLATFORM", "A3")=="A2"
+    all2all = model_extra_config.operator_opt_config.prefill_moe_all_to_all
     ModelRegistry.register_model(
         "DeepseekV2ForCausalLM",
         "omni.models.deepseek.deepseek_v2:CustomDeepseekV2ForCausalLM")
-    if is_A2:
+    if is_A2 and not all2all:
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3_a2:DeepseekV3ForCausalLM")
@@ -81,7 +83,7 @@ def register_model():
         ModelRegistry.register_model(
             "Qwen2ForCausalLM",
             mock_model_class_factory(Qwen2ForCausalLM))
-        if is_A2:   
+        if is_A2 and not all2all:
             from omni.models.deepseek.deepseek_v3_a2 import DeepseekV3ForCausalLM
         else:
             from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM
