@@ -311,7 +311,9 @@ def omni_cli_start(
 
             tf.write("# Exec the command\n")
             tf.write(f"cd {_double_quotes(code_path)}/tools/scripts\n\n")
+            tf.write(f'echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log\n\n')
             tf.write(f"{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &\n")
+            tf.write(f'echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log\n')
             tf.write("EOF\n")
 
         os.chmod(script_path, 0o755)
