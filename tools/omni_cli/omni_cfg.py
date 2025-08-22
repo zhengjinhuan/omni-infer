@@ -18,9 +18,11 @@ def parse_node_name(name):
             return node_type, full_match
     return None, None
 
-def parse_remaining_args_for_set(arg, remaining_args, sections, current_section, i):
-    if arg == '--additional-config' or arg == '--extra-args':
-        extra_args_list = shlex.split(remaining_args[i+1])
+def parse_remaining_args_for_set(arg, remaining_args, sections, i):
+    if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config']:
+        if i + 2 >= len(remaining_args):
+            raise ValueError(f"Missing value for key: '{remaining_args[i+1]}'")
+        extra_args_list = shlex.split(remaining_args[i+2])
         j = 0
         while j < len(extra_args_list):
             extra_arg = extra_args_list[j]
@@ -28,63 +30,34 @@ def parse_remaining_args_for_set(arg, remaining_args, sections, current_section,
                 raise ValueError(f"Invalid key format: '{extra_arg}'. Keys must start with '--'")
             elif (j + 1 < len(extra_args_list) and extra_args_list[j+1].startswith('--')) or \
                 j + 1 == len(extra_args_list):
-                sections.setdefault(current_section, {}).setdefault(arg[2:], {})[extra_arg[2:]] = ''
+                sections.setdefault(arg, {}).setdefault(arg[2:], {})[extra_arg[2:]] = ''
                 j += 1
             elif j + 1 < len(extra_args_list) and not extra_args_list[j+1].startswith('--'):
-                sections.setdefault(current_section, {}).setdefault(arg[2:], {})[extra_arg[2:]] = extra_args_list[j+1]
+                sections.setdefault(arg, {}).setdefault(arg[2:], {})[extra_arg[2:]] = extra_args_list[j+1]
                 j += 2
-    elif i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
-        raise ValueError(f"Missing value for key: '{arg}'")
+    elif i + 2 >= len(remaining_args) or remaining_args[i+2].startswith('--'):
+        raise ValueError(f"Missing value for key: '{remaining_args[i+1]}'")
     else:
-        sections[current_section][arg[2:]] = remaining_args[i+1]
+        sections[arg][remaining_args[i+1][2:]] = remaining_args[i+2]
 
-def parse_remaining_args_for_delete(arg, remaining_args, sections, current_section, i):
-    if arg == '--additional-config' or arg == '--extra-args':
-        additional_config_list = shlex.split(remaining_args[i+1])
+def parse_remaining_args_for_delete(arg, remaining_args, sections, i):
+    if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config']:
+        if i + 2 >= len(remaining_args):
+            raise ValueError(f"Missing value for key: '{remaining_args[i+1]}'")
+        additional_config_list = shlex.split(remaining_args[i+2])
         j = 0
         while j < len(additional_config_list):
             additional_config = additional_config_list[j]
             if not additional_config.startswith('--'):
                 raise ValueError(f"Invalid key format: '{additional_config}'. Keys must start with '--'")
             else:
-                sections[arg[2:]].append(additional_config[2:])
+                sections[remaining_args[i+1][2:]].append(additional_config[2:])
                 j += 1
         i += 1
     else:
-        sections[current_section].append(arg[2:])
+        sections[arg].append(remaining_args[i+1][2:])
 
     return i
-
-def parse_remaining_args(is_set, remaining_args):
-    """Resolve the remaining parameters."""
-    if is_set:
-        sections = {'env': {}, 'arg': {}}
-    else:
-        sections = {'env': [], 'arg': [], 'extra-args': [], 'additional-config': []}
-    current_section = None
-    seen_sections = set()
-
-    i = 0
-    while i < len(remaining_args):
-        arg = remaining_args[i]
-        if arg in ['env', 'arg']:
-            if arg in seen_sections:
-                raise ValueError(f"Duplicate section keyword '{arg}'")
-            seen_sections.add(arg)
-            current_section = arg
-        else:
-            if current_section is None:
-                raise ValueError(f"Unexpected argument '{arg}' before any section keyword (env/arg)")
-            if not arg.startswith('--'):
-                raise ValueError(f"Invalid key format: '{arg}'. Keys must start with '--'")
-            if is_set:
-                parse_remaining_args_for_set(arg, remaining_args, sections, current_section, i)
-                i += 1
-            else:
-                i = parse_remaining_args_for_delete(arg, remaining_args, sections, current_section, i)
-        i += 1
-
-    return sections
 
 def get_data_from_yaml(yml_file_path):
     try:
@@ -101,31 +74,119 @@ def get_data_from_yaml(yml_file_path):
 
     return data
 
-def update_cfg_yml(node_type, node_name, env_dict, arg_dict, yml_file_path):
+def update_container_name(node_type, node_name, container_name_prefix, yml_file_path):
+    data = get_data_from_yaml(yml_file_path)
+    if data:
+        if node_type == 'all':
+            for n_type in data['all']['children']:
+                for n_name in data['all']['dhildren']['n_type']['hosts']:
+                    data['all']['dhildren']['n_type']['hosts'][n_name]['container_name'] = \
+                        f'{container_name_prefix}_{n_name}'
+        elif node_type == 'P' or node_type == 'D' or node_type == 'C':
+            for n_name in data['all']['children'][node_type]['hosts']:
+                data['all']['children'][node_type]['hosts'][n_name]['container_name'] = \
+                    f'{container_name_prefix}_{n_name}'
+        else:
+            data['all']['children'][node_type]['hosts'][node_name]['container_name'] = \
+                    f'{container_name_prefix}_{node_name}'
+        
+        with open(yml_file_path, 'w') as file:
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+    else:
+        print(f"Error: The {yml_file_path} does not exist.")
+        return
+
+def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_path):
+    """Resolve the remaining parameters."""
+    if is_set:
+        sections = {'env': {}, 'arg': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
+            'EXECUTOR_CODE_PATH': '', 'container_name': ''}
+    else:
+        sections = {'env': [], 'arg': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
+            'EXECUTOR_CODE_PATH': '', 'container_name': '', 'extra-args': [], 'additional-config': [], \
+            'kv-transfer-config': []}
+    seen_sections = set()
+
+    i = 0
+    while i < len(remaining_args):
+        arg = remaining_args[i]
+        if arg in sections.keys()[:1]:
+            if arg in seen_sections:
+                raise ValueError(f"Duplicate section keyword '{arg}'")
+            seen_sections.add(arg)
+            if i + 1 >= len(remaining_args) or not remaining_args[i+1].startswith('--'):
+                raise ValueError(f"Missing value for key: '{arg}'")
+            elif remaining_args[i+1][2:] not in sections.keys()[2:]:
+                if is_set:
+                    parse_remaining_args_for_set(arg, remaining_args, sections, i)
+                    i += 3
+                else:
+                    i = parse_remaining_args_for_delete(arg, remaining_args, sections, i)
+                    i += 2
+            else:
+                raise ValueError(f"Unexpected argument '{remaining_args[i+1]}' after (env/arg)")
+        elif arg[2:] in sections.keys()[2:5]:
+            if arg in seen_sections:
+                raise ValueError(f"Duplicate section keyword '{arg}'")
+            seen_sections.add(arg)
+            if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
+                raise ValueError(f"Missing value for key: '{arg}'")
+            if is_set:
+                sections[arg[2:]] = remaining_args[i+1]
+            else:
+                sections[arg[2:]] = True
+        elif arg[2:] == 'container_name_prefix':
+            print("请注意你正在通过容器名前缀设置容器名。")
+            if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
+                raise ValueError(f"Missing value for key: '{arg}'")
+            if is_set:
+                update_container_name(node_type, node_name, remaining_args[i+1], yml_file_path)
+            else:
+                raise ValueError(f"Unexpected key {arg[2:]}")
+        else:
+            raise ValueError(f"Unexpected key {arg[2:]}")
+
+    return sections
+
+def check_model_path(data, node_type, node_name):
+    model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
+    if model_path == '' or model_path is None:
+        print("Error: The model_path is not configured. Please set the configuration.")
+        return False
+
+    return True
+
+def update_cfg_yml(node_type, node_name, sections, yml_file_path):
     data = get_data_from_yaml(yml_file_path)
     if data:
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     print("你已修改所有节点的配置")
-                    data['all']['children'][n_type]['hosts'][n_name]['env'].update(env_dict)
-                    data['all']['children'][n_type]['hosts'][n_name]['args'].update(arg_dict)
+                    data['all']['children'][n_type]['hosts'][n_name].update(sections)
+                    if check_model_path(data, n_type, n_name) is not True:
+                        return
         elif node_type == 'P' or node_type == 'D' or node_type == 'C':
             for n_name in data['all']['children'][node_type]['hosts']:
                 print("你已修改 %s 组所有节点的配置" % node_type)
-                data['all']['children'][node_type]['hosts'][n_name]['env'].update(env_dict)
-                data['all']['children'][node_type]['hosts'][n_name]['args'].update(arg_dict)
+                data['all']['children'][node_type]['hosts'][n_name].update(sections)
+                if check_model_path(data, node_type, n_name) is not True:
+                    return
         else:
             print("你已修改 %s 节点的配置" % n_name)
-            data['all']['children'][node_type]['hosts'][node_name]['env'].update(env_dict)
-            data['all']['children'][node_type]['hosts'][node_name]['args'].update(arg_dict)
+            data['all']['children'][node_type]['hosts'][node_name].update(sections)
+            if check_model_path(data, node_type, node_name) is not True:
+                return
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
+        print(f"Error: There is no data in {yml_file_path}.")
         return
     
-def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, extra_args_list, additional_config_list):
+def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
+    ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, additional_config_list, \
+    kv_transfer_config_list):
     vars_dict = data['all']['children'][node_type]['hosts'][node_name]
     for key in env_list:
         if key in vars_dict['env']:
@@ -138,6 +199,18 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, extr
             del vars_dict['args'][key]
         else:
             print("Warning: No matching configuration %s found." % key)
+
+    if DOCKER_IMAGE_ID and 'DOCKER_IMAGE_ID' in vars_dict:
+        del vars_dict['DOCKER_IMAGE_ID']
+
+    if ascend_rt_visible_devices and 'ascend_rt_visible_devices' in vars_dict:
+        del vars_dict['ascend_rt_visible_devices']
+
+    if EXECUTOR_CODE_PATH and 'EXECUTOR_CODE_PATH' in vars_dict:
+        del vars_dict['EXECUTOR_CODE_PATH']
+
+    if container_name and 'container_name' in vars_dict:
+        del vars_dict['container_name']
 
     for key in extra_args_list:
         if key in vars_dict['args']['extra-args']:
@@ -157,28 +230,50 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, extr
     if 'additional-config' in vars_dict['args'] and vars_dict['args']['additional-config'] == {}:
         vars_dict['args']['additional-config'] = ''
 
-def delete_cfg_yml(node_type, node_name, env_list, arg_list, extra_args_list, additional_config_list, yml_file_path):
+    for key in kv_transfer_config_list:
+        if key in vars_dict['args']['kv-transfer-config']:
+            del vars_dict['args']['kv-transfer-config'][key]
+        else:
+            print("Warning: No matching configuration %s found." % key)
+
+    if 'kv-transfer-config' in vars_dict['args'] and vars_dict['args']['kv-transfer-config'] == {}:
+        vars_dict['args']['kv-transfer-config'] = ''
+
+def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
+    env_list = sections['env']
+    arg_list = sections['arg']
+    DOCKER_IMAGE_ID = sections['DOCKER_IMAGE_ID']
+    ascend_rt_visible_devices = sections['ascend_rt_visible_devices']
+    EXECUTOR_CODE_PATH = sections['EXECUTOR_CODE_PATH']
+    container_name = sections['container_name']
+    extra_args_list = sections['extra-args']
+    additional_config_list = sections['additional-config']
+    kv_transfer_config_list = sections['kv-transfer-config']
     data = get_data_from_yaml(yml_file_path)
     if data:
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     print("你已删除所有节点的配置")
-                    delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, extra_args_list, \
-                        additional_config_list)
+                    delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
+                        ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                        additional_config_list, kv_transfer_config_list)
         elif node_type == 'P' or node_type == 'D' or node_type == 'C':
             for n_name in data['all']['children'][node_type]['hosts']:
                 print("你已删除 %s 组所有节点的配置" % node_type)
-                delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, extra_args_list, \
-                    additional_config_list)
+                delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
+                    ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                    additional_config_list, kv_transfer_config_list)
         else:
             print("你已删除 %s 节点的配置" % n_name)
-            delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, extra_args_list, \
-                additional_config_list)
+            delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
+                ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                additional_config_list, kv_transfer_config_list)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
+        print(f"Error: There is no data in {yml_file_path}.")
         return
 
 def cfg_set_process(node_type, node_name, args, sections, deploy_path):
@@ -189,7 +284,7 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
         return
 
-    update_cfg_yml(node_type, node_name, sections['env'], sections['arg'], deploy_path)
+    update_cfg_yml(node_type, node_name, sections, deploy_path)
 
 def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
@@ -199,5 +294,4 @@ def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
         print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
         return
 
-    delete_cfg_yml(node_type, node_name, sections['env'], sections['arg'], sections['extra-args'], \
-        sections['additional-config'], deploy_path)
+    delete_cfg_yml(node_type, node_name, sections, deploy_path)

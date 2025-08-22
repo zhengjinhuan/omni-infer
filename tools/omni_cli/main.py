@@ -652,7 +652,7 @@ def main():
         install_packages()
     elif args.command == "cfg":
         node_type, node_name = parse_node_name(args.name[0])
-        sections = parse_remaining_args(args.set, args.remaining_args)
+        sections = parse_remaining_args(node_type, node_name, args.set, args.remaining_args, default_deploy_path)
         if args.set:
             print("Set configuration.")
             cfg_set_process(node_type, node_name, args, sections, default_deploy_path)
@@ -669,7 +669,6 @@ def main():
     elif args.command == "fetch_log":
         print("Fetch logs")
         fetch_logs()
-
 
 if __name__ == "__main__":
     main()
