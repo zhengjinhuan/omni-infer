@@ -190,9 +190,11 @@ def _verify_and_fix_env_vars(
     prefill_pod_num = 0
     server_offset_dict, server_offset = {}, 0
     server_ip_list_temp = []
+    host_ip_dict = {}
     for host, hv in inventory['all']['children']['P']['hosts'].items():
         prefill_pod_num += 1
         server_offset_dict[host] = server_offset  # for P always 0
+        host_ip_dict[host] = hv.get('host_ip', None)
         kv_rank_dict[host] = kv_rank
         kv_rank += 1
     for host, hv in inventory['all']['children']['D']['hosts'].items():
@@ -202,6 +204,7 @@ def _verify_and_fix_env_vars(
         server_offset_dict[host] = server_offset
         device_count = hv.get('ascend_rt_visible_devices','').count(',')
         server_offset += device_count + 1
+        host_ip_dict[host] = hv.get('host_ip', None)
         kv_rank_dict[host] = kv_rank
     server_ip_list = ','.join(server_ip_list_temp)
 
@@ -220,16 +223,22 @@ def _verify_and_fix_env_vars(
                 print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
         if "SERVER_OFFSET" in hv.get("env", {}):
             server_offset = server_offset_dict.get(host, None)
-            if server_offset and hv.get("env", {}).get("SERVER_OFFSET") != server_offset:
+            if server_offset is not None and hv.get("env", {}).get("SERVER_OFFSET") != server_offset:
                 hv.get("env", {})["SERVER_OFFSET"] = server_offset
                 need_overwrite_inv = True
                 print(f"[info] host={host} SERVER_OFFSET set to {server_offset}")
         if "KV_RANK" in hv.get("env", {}):
             kv_rank = kv_rank_dict.get(host, None)
-            if kv_rank and hv.get("env", {}).get("KV_RANK") != kv_rank:
+            if kv_rank is not None and hv.get("env", {}).get("KV_RANK") != kv_rank:
                 hv.get("env", {})["KV_RANK"] = kv_rank
                 need_overwrite_inv = True
                 print(f"[info] host={host} KV_RANK set to {kv_rank}")
+        if "HOST_IP" in hv.get("env", {}):
+            host_ip = host_ip_dict.get(host, None)
+            if host_ip is not None and hv.get("env", {}).get("HOST_IP") != host_ip:
+                hv.get("env", {})["HOST_IP"] = host_ip
+                need_overwrite_inv = True
+                print(f"[info] host={host} HOST_IP set to {host_ip}")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
