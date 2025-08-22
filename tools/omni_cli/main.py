@@ -131,6 +131,80 @@ def _build_args_line(args: Dict[str, Any]) -> str:
             parts.append(f"{flag} {_double_quotes(v)}")
     return " ".join(parts)
 
+def _verify_and_fix_env_vars(
+    inventory: Dict[str, Any],
+    inventory_path: str = None,
+) -> List[str]:
+    """
+    Detect port conflicts per machine (same IP). If conflicts found, bump by `offset` repeatedly until unique.
+    """
+
+    port_vars = ["API_PORT", "MASTER_PORT", "VLLM_LLMDATADIST_ZMQ_PORT"]
+    offset: int = 16
+    all_hosts = _walk_hosts(inventory.get("all", inventory))  # {host: {vars}}
+
+    # group by IP
+    ip_to_hosts = {}
+    for host, hv in all_hosts:
+        env = hv.get("env", {}) or {}
+        ip = hv.get("ansible_host", {})
+        ip_to_hosts.setdefault(ip, []).append((host, env))
+
+    # per IP, ensure uniqueness for each monitored port var
+    for ip, items in ip_to_hosts.items():
+        for pv in port_vars:
+            used_ports: Dict[int, str] = {}  # port -> host that currently holds it
+
+            conflicts = []
+            # identify conflicts
+            for host, env in items:
+                port = int(env.get(pv)) if pv in env and str(env.get(pv)).isdigit() else None
+                if port is None:
+                    print(f"[warn] host={host} has no ansible_host; skipped.")
+                    continue
+                if port in used_ports:
+                    conflicts.append((host, env, port))
+                else:
+                    used_ports[port] = host
+
+            # resolve conflicts by bumping with `offset` until free
+            for host, env, original_port in conflicts:
+                new_port = original_port
+                while True:
+                    new_port += offset
+                    if new_port not in used_ports:
+                        env[pv] = str(new_port)
+                        used_ports[new_port] = host
+                        print(f"[fix] ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
+                        break
+
+    # calculate pod num and server list
+    prefill_pod_num = 0
+    for host, hv in inventory['all']['children']['P']['hosts'].items():
+        prefill_pod_num += 1
+    server_ip_list_temp = []
+    for host, hv in inventory['all']['children']['D']['hosts'].items():
+        ip = hv.get('ansible_host', '')
+        if ip:
+            server_ip_list_temp.append(f"{ip}")
+    server_ip_list = ','.join(server_ip_list_temp)
+
+    ## update inventory
+    for host, hv in all_hosts:
+        if "PREFILL_POD_NUM" in hv.get("env", {}):
+            hv.get("env", {})["PREFILL_POD_NUM"] = prefill_pod_num
+            print(f"[info] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
+        if "SERVER_IP_LIST" in hv.get("env", {}):
+            hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
+            print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
+
+    if len(conflicts) > 0 and inventory_path:
+        with open(inventory_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(inventory, f, default_flow_style=False, sort_keys=False)
+    print(f"[info] inventory written back to {inventory_path}")
+
+
+
 def omni_ranktable(inventory):
     cur_dir = os.path.dirname(__file__)
     cmd = "ansible-playbook -i " + inventory + " " + cur_dir + "/ansible/ranktable.yml"
@@ -149,9 +223,10 @@ def omni_cli_start(
     """
     omni_cli.proxy.omni_run_proxy(inventory_path)
     inv_file = Path(inventory_path).expanduser().resolve()
-    with open(inv_file, "r", encoding="utf-8") as f:
+    with open(inventory_path, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
 
+    _verify_and_fix_env_vars(inv, inv_file)
     all_hosts = _walk_hosts(inv.get("all", inv))
 
     if not role_filter:
