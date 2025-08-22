@@ -47,8 +47,7 @@ def execute_command(command):
     return_code = process.wait()
     if return_code != 0:
         print(f"Deployment failed with return code {return_code}")
-    else:
-        print("Deployment succeeded")
+
     return return_code
 
 def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
@@ -182,8 +181,9 @@ def _verify_and_fix_env_vars(
                         used_ports[new_port] = host
                         print(f"[fix] ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
                         break
+    need_overwrite_inv = len(conflicts) > 0
 
-    # calculate pod num and server list
+    # calculate pod num, server ip list and server offset
     prefill_pod_num = 0
     for host, hv in inventory['all']['children']['P']['hosts'].items():
         prefill_pod_num += 1
@@ -193,23 +193,32 @@ def _verify_and_fix_env_vars(
         if ip:
             server_ip_list_temp.append(f"{ip}")
     server_ip_list = ','.join(server_ip_list_temp)
-    need_overwrite_port = len(conflicts) > 0
+    server_offsets, count = {}, 0
+    for host, hv in inventory['all']['children']['D']['hosts'].items():
+        server_offsets[host] = count
+        num = hv.get('ascend_rt_visible_devices','').count(',')
+        count += num + 1
 
     ## update inventory
-    need_overwrite_pod = False
+    need_overwrite_inv = False
     for host, hv in all_hosts:
         if "PREFILL_POD_NUM" in hv.get("env", {}):
             if hv.get("env", {}).get("PREFILL_POD_NUM") != prefill_pod_num:
-                need_overwrite_pod = True
+                need_overwrite_inv = True
                 hv.get("env", {})["PREFILL_POD_NUM"] = prefill_pod_num
                 print(f"[info] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
-                need_overwrite_pod = True
+                need_overwrite_inv = True
                 hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
                 print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
+        if "SERVER_OFFSETS" in hv.get("env", {}):
+            if hv.get("env", {}).get("SERVER_OFFSETS") != server_offsets[host]:
+                need_overwrite_inv = True
+                hv.get("env", {})["SERVER_OFFSETS"] = server_offsets[host]
+                print(f"[info] host={host} SERVER_OFFSETS set to {server_offsets[host]}")
 
-    if need_overwrite_port or need_overwrite_pod:
+    if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(inventory, f, default_flow_style=False, sort_keys=False)
         print(f"[info] inventory written back to {inventory_path}")
