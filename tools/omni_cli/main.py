@@ -217,15 +217,17 @@ def _verify_and_fix_env_vars(
                 hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
                 print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
         if "SERVER_OFFSETS" in hv.get("env", {}):
-            if hv.get("env", {}).get("SERVER_OFFSETS") != server_offset_dict[host]:
-                hv.get("env", {})["SERVER_OFFSETS"] = server_offset_dict[host]
+            server_offset = server_offset_dict.get(host, None)
+            if server_offset and hv.get("env", {}).get("SERVER_OFFSETS") != server_offset:
+                hv.get("env", {})["SERVER_OFFSETS"] = server_offset
                 need_overwrite_inv = True
-                print(f"[info] host={host} SERVER_OFFSETS set to {server_offset_dict[host]}")
+                print(f"[info] host={host} SERVER_OFFSETS set to {server_offset}")
         if "KV_RANK" in hv.get("env", {}):
-            if hv.get("env", {}).get("KV_RANK") != kv_rank_dict[host]:
-                hv.get("env", {})["KV_RANK"] = kv_rank_dict[host]
+            kv_rank = kv_rank_dict.get(host, None)
+            if kv_rank and hv.get("env", {}).get("KV_RANK") != kv_rank:
+                hv.get("env", {})["KV_RANK"] = kv_rank
                 need_overwrite_inv = True
-                print(f"[info] host={host} KV_RANK set to {kv_rank_dict[host]}")
+                print(f"[info] host={host} KV_RANK set to {kv_rank}")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
