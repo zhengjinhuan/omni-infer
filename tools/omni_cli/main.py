@@ -193,20 +193,26 @@ def _verify_and_fix_env_vars(
         if ip:
             server_ip_list_temp.append(f"{ip}")
     server_ip_list = ','.join(server_ip_list_temp)
+    need_overwrite_port = len(conflicts) > 0
 
     ## update inventory
+    need_overwrite_pod = False
     for host, hv in all_hosts:
         if "PREFILL_POD_NUM" in hv.get("env", {}):
-            hv.get("env", {})["PREFILL_POD_NUM"] = prefill_pod_num
-            print(f"[info] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
+            if hv.get("env", {}).get("PREFILL_POD_NUM") != prefill_pod_num:
+                need_overwrite_pod = True
+                hv.get("env", {})["PREFILL_POD_NUM"] = prefill_pod_num
+                print(f"[info] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
-            hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
-            print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
+            if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
+                need_overwrite_pod = True
+                hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
+                print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
 
-    if len(conflicts) > 0 and inventory_path:
+    if need_overwrite_port or need_overwrite_pod:
         with open(inventory_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(inventory, f, default_flow_style=False, sort_keys=False)
-    print(f"[info] inventory written back to {inventory_path}")
+        print(f"[info] inventory written back to {inventory_path}")
 
 
 
@@ -227,14 +233,15 @@ def omni_cli_start(
       ansible <host> -i <inventory> -m script -a <script_path>
     """
     omni_ranktable(inventory_path)
-    omni_cli.proxy.omni_run_proxy(inventory_path)
+
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inventory_path, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
-
     _verify_and_fix_env_vars(inv, inv_file)
-    all_hosts = _walk_hosts(inv.get("all", inv))
 
+    omni_cli.proxy.omni_run_proxy(inventory_path)
+
+    all_hosts = _walk_hosts(inv.get("all", inv))
     if not role_filter:
         role_filter = ["prefill", "decode"]
     selected: List[Tuple[str, Dict[str, Any]]] = []
