@@ -3,8 +3,6 @@ import os
 import re
 import shlex
 
-NODE_INIT = {}
-
 def get_data_from_yaml(yml_file_path):
     try:
         with open(yml_file_path, 'r') as file:
@@ -14,15 +12,6 @@ def get_data_from_yaml(yml_file_path):
         return None
 
     return data
-
-def get_node_name(deploy_path):
-    data = get_data_from_yaml(deploy_path)
-    if data:
-        for node_type in data['all']['children']:
-            for node_name in data['all']['children'][node_type]['hosts']:
-                NODE_INIT[node_name] = False
-    else:
-        raise ValueError(f"There is no data in {deploy_path}")
 
 def parse_node_name(name):
     """Parse node name, return node type and index"""
@@ -137,14 +126,17 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                 raise ValueError(f"Missing value for key: '{arg}'")
             if is_set:
                 sections[arg[2:]] = remaining_args[i+1]
+                i += 2
             else:
                 sections[arg[2:]] = True
+                i += 1
         elif arg[2:] == 'container_name_prefix':
             print("请注意你正在通过容器名前缀设置容器名。")
             if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
                 raise ValueError(f"Missing value for key: '{arg}'")
             if is_set:
                 update_container_name(node_type, node_name, remaining_args[i+1], yml_file_path)
+                i += 1
             else:
                 raise ValueError(f"Unexpected key {arg}")
         else:
@@ -152,13 +144,32 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
 
     return sections
 
-def check_model_path(data, node_type, node_name):
+def first_check_model_path(default_cfg_path, sections, data, node_type, node_name):
+    if node_type == 'C':
+        return True
+    model_path = data['profiles']['vllm']['deepseek'][node_type]['env']['MODEL_PATH']
+    if model_path == '' or model_path is None:
+        if 'MODEL_PATH' in sections['env']:
+            return True
+        else:
+            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
+            return False
+
+    data['profiles']['vllm']['deepseek'][node_type]['env']['MODEL_PATH'] = ""
+    with open(default_cfg_path , 'w') as file:
+        yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+    return True
+
+def second_check_model_path(sections, data, node_type, node_name):
     if node_type == 'C':
         return True
     model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
     if model_path == '' or model_path is None:
-        print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
-        return False
+        if 'MODEL_PATH' in sections['env']:
+            return True
+        else:
+            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
+            return False
 
     return True
 
@@ -171,26 +182,24 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
                     for key, value in sections.items():
                         if value != '' and value != {} and key in data['all']['children'][n_type]['hosts'][n_name]:
                             data['all']['children'][n_type]['hosts'][n_name][key].update(sections[key])
-                    if check_model_path(data, n_type, n_name) is not True:
+                    if second_check_model_path(sections, data, n_type, n_name) is not True:
                         return
             print("你已修改所有节点的配置")
-        elif node_type == 'P' or node_type == 'D' or node_type == 'C':
+        elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
                 for key, value in sections.items():
                     if value != '' and value != {} and key in data['all']['children'][node_type]['hosts'][n_name]:
                         data['all']['children'][node_type]['hosts'][n_name][key].update(sections[key])
-                if check_model_path(data, node_type, n_name) is not True:
+                if second_check_model_path(sections, data, node_type, n_name) is not True:
                     return
             print("你已修改 %s 组所有节点的配置" % node_type)
         else:
             for key, value in sections.items():
-                if node_name not in list(NODE_INIT.keys()):
-                    raise ValueError(f"There is no {node_name}")
                 if value != '' and value != {} and key in data['all']['children'][node_type]['hosts'][node_name]:
                     data['all']['children'][node_type]['hosts'][node_name][key].update(sections[key])
-            if check_model_path(data, node_type, node_name) is not True:
+            if second_check_model_path(sections, data, node_type, node_name) is not True:
                 return
-            print("你已修改 %s 节点的配置" % n_name)
+            print("你已修改 %s 节点的配置" % node_name)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
@@ -297,23 +306,33 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         print("  - prefill_<number> (例如: prefill_0, prefiill_1, prefill_11)")
         print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
         return
-
-    update_cfg_yml(node_type, node_name, sections, deploy_path)
+    
     default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
     default_cfg = get_data_from_yaml(default_cfg_path)
     data =  get_data_from_yaml(deploy_path)
     if data:
-        for node_type in default_cfg['profiles']['vllm']['deepseek']:
-            for node_name in data['all']['children'][node_type]['hosts']:
-                if check_model_path(data, node_type, node_name) is True and NODE_INIT[node_name] is False:
-                    sections = default_cfg['profiles']['vllm']['deepseek'][node_type]
-                    data['all']['children'][node_type]['hosts'][node_name].update(sections)
-                    NODE_INIT[node_name] = True
+        if node_type == 'all':
+            for n_type in default_cfg['profiles']['vllm']['deepseek']:
+                for n_name in data['all']['children'][n_type]['hosts']:
+                    if first_check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is True:
+                        sections_bak = default_cfg['profiles']['vllm']['deepseek'][n_type]
+                        data['all']['children'][n_type]['hosts'][n_name].update(sections_bak)
+        elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
+            for n_name in data['all']['children'][node_type]['hosts']:
+                if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is True:
+                    sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
+                    data['all']['children'][node_type]['hosts'][n_name].update(sections_bak)
+        else:
+            if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is True:
+                sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
+                data['all']['children'][node_type]['hosts'][node_name].update(sections_bak)
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
         raise ValueError(f"There is no data in {deploy_path}")
         return
+
+    update_cfg_yml(node_type, node_name, sections, deploy_path)
 
 def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
