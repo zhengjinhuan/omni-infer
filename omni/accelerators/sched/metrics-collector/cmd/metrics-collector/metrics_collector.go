@@ -6,8 +6,8 @@ import (
 	"flag"
 	"github.com/gin-gonic/gin"
 	"log"
-	"metrics_collector/pkg/metrics-collector"
-	"metrics_collector/pkg/metrics-collector/logger"
+	"metrics-collector/pkg/metrics-collector"
+	"metrics-collector/pkg/metrics-collector/logger"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,11 +36,11 @@ func main() {
 
 	// 定义参数变量
 	var (
-		metricsServeIpAndPort = flag.String("metrics_collector_server", "",
+		metricsServerIpAndPort = flag.String("metrics_collector_server", "",
 			"metric collector server ip and port")
-		schedulerServerslist = flag.String("scheduler_server", "",
+		schedulerServersList = flag.String("scheduler_server", "",
 			"scheduler server ip and port")
-		prefillServerslist = flag.String("prefill_servers_list", "",
+		prefillServersList = flag.String("prefill_servers_list", "",
 			"prefill servers ip and port list, eg: ip1:port1,ip2:port2")
 		decodeServersList = flag.String("decode_servers_list", "",
 			"decode servers ip and port list, eg: ip1:port1,ip2:port2")
@@ -49,17 +49,17 @@ func main() {
 	)
 
 	// 解析参数
-	flag.parse()
+	flag.Parse()
 	// 检查合法性
-	if !isValidIPPortList(*metricsServeIpAndPort) {
+	if !isValidIPPortList(*metricsServerIpAndPort) {
 		logger.Logger().Errorf("metrics_collector_server 配置格式错误")
 		os.Exit(1)
 	}
-	if !isValidIPPortList(*schedulerServerslist) {
+	if !isValidIPPortList(*schedulerServersList) {
 		logger.Logger().Errorf("scheduler_server 配置格式错误")
 		os.Exit(1)
 	}
-	if !isValidIPPortList(*prefillServerslist) {
+	if !isValidIPPortList(*prefillServersList) {
 		logger.Logger().Errorf("prefill_servers_list 配置格式错误")
 		os.Exit(1)
 	}
@@ -68,7 +68,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	instances, err := initInstance(*schedulerServerslist, *prefillServerslist, *decodeServersList)
+	instances, err := initInstance(*schedulerServersList, *prefillServersList, *decodeServersList)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -78,22 +78,22 @@ func main() {
 		os.Exit(1)
 	}
 	engine := gin.New()
-	engine.GET("/metrics", collector.HandleMetricsReuquest)
-	metrics_server_port := strings.split(*metrics_server_ip_and_port, ":")[1]
+	engine.GET("/metrics", collector.HandleMetricsRequest)
+	metricsServerPort := strings.Split(*metricsServerIpAndPort, ":")[1]
 	server := &http.Server{
-		Addr:    ":" + metrics_server_port,
+		Addr:    ":" + metricsServerPort,
 		Handler: engine,
 	}
 
 	go func() {
 		logger.Logger().Info("start http server: http://localhost:" + metricsServerPort)
-		if err := server.ListenAndServer(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Logger().Errorf("http server error: %v", err.Error())
 		}
 	}()
 
-	sigChan := make(chan os.signal, 1)
-	signal.Notify(SigChan, syscall.SIGINT, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), collectInterval)
@@ -122,12 +122,12 @@ func initInstance(schedulerServersIpAndPort string, prefillServersList string, d
 		Port: schedulerServerPort,
 	})
 
-	prefillServers = strings.Split(prefillServersList, ",")
+	prefillServers := strings.Split(prefillServersList, ",")
 	for _, prefillNodeInfo := range prefillServers {
 		prefillIpPort := strings.Split(prefillNodeInfo, ":")
 		prefillPort, err := strconv.Atoi(prefillIpPort[1])
 		if err != nil {
-			logger.Logger().Errorf("prefill端口转换整型数据类型失败（%s）: %v\n", prefill_ip_port[1], err.Error())
+			logger.Logger().Errorf("prefill端口转换整型数据类型失败（%s）: %v\n", prefillIpPort[1], err.Error())
 			return nil, err
 		}
 		instances = append(instances, metrics_collector.Instance{
@@ -142,7 +142,7 @@ func initInstance(schedulerServersIpAndPort string, prefillServersList string, d
 		decodeIpPort := strings.Split(decodeNodeInfo, ":")
 		decodePort, err := strconv.Atoi(decodeIpPort[1])
 		if err != nil {
-			logger.Logger().Errorf("decode端口转换整型数据类型失败（%s）: %v\n", decode_ip_port[1], err.Error())
+			logger.Logger().Errorf("decode端口转换整型数据类型失败（%s）: %v\n", decodeIpPort[1], err.Error())
 			return nil, err
 		}
 		instances = append(instances, metrics_collector.Instance{
@@ -152,6 +152,6 @@ func initInstance(schedulerServersIpAndPort string, prefillServersList string, d
 		})
 	}
 
-	logger.Logger().Info("%v", instances)
+	logger.Logger().Infof("%v", instances)
 	return instances, nil
 }
