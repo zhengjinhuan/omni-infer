@@ -173,6 +173,13 @@ def second_check_model_path(sections, data, node_type, node_name):
 
     return True
 
+def updata_dict(sections, data):
+    for modify_key, modify_values in sections.items():
+        if isinstance(modify_values, dict):
+            updata_dict(modify_values, data[modify_key])
+        else:
+            data[modify_key] = modify_values
+
 def update_cfg_yml(node_type, node_name, sections, yml_file_path):
     data = get_data_from_yaml(yml_file_path)
     filtered_sections = {k: v for k, v in sections.items() if v not in ['', None, {}]}
@@ -180,18 +187,18 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
-                    data['all']['children'][n_type]['hosts'][n_name].update(filtered_sections)
+                    updata_dict(filtered_sections, data['all']['children'][n_type]['hosts'][n_name])
                     if second_check_model_path(filtered_sections, data, n_type, n_name) is not True:
                         return
             print("你已修改所有节点的配置")
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
-                data['all']['children'][node_type]['hosts'][n_name].update(filtered_sections)
+                updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][n_name])
                 if second_check_model_path(filtered_sections, data, node_type, n_name) is not True:
                     return
             print("你已修改 %s 组所有节点的配置" % node_type)
         else:
-            data['all']['children'][node_type]['hosts'][node_name].update(filtered_sections)
+            updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][node_name])
             if second_check_model_path(filtered_sections, data, node_type, node_name) is not True:
                 return
             print("你已修改 %s 节点的配置" % node_name)
@@ -312,18 +319,18 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
                     if first_check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is False:
                         return
                     sections_bak = default_cfg['profiles']['vllm']['deepseek'][n_type]
-                    data['all']['children'][n_type]['hosts'][n_name].update(sections_bak)
+                    updata_dict(sections_bak, data['all']['children'][n_type]['hosts'][n_name])
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
                 if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is False:
                     return
                 sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-                data['all']['children'][node_type]['hosts'][n_name].update(sections_bak)
+                updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][n_name])
         else:
             if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is False:
                 return
             sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-            data['all']['children'][node_type]['hosts'][node_name].update(sections_bak)
+            updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
