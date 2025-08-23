@@ -123,7 +123,7 @@ func (h *CustomHistogram) Describe(ch chan<- *prometheus.Desc) {
 	ch <- h.desc
 }
 
-// TODO Collect方法中通过prometheus.NewDesc动态创建Desc实例，但未在Describe方法中预先注册。prometheus要求所有Metric的Desc必须在Describe阶段注册，否则Collect阶段生成的Metric将被忽略。应将Desc实例在结构体中缓存，并在Describe和Collect中复用同一实例。
+// TODO Collect方法中通过prometheus.NewDesc动态创建Desc实例，但未在Describe方法中预先注册。Prometheus要求所有Metric的Desc必须在Describe阶段注册，否则Collect阶段生成的Metric将被忽略。应将Desc实例在结构体中缓存，并在Describe和Collect中复用同一实例。
 func (h *CustomHistogram) Collect(ch chan<- prometheus.Metric) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

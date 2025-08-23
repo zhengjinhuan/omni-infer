@@ -282,7 +282,7 @@ func (c *Collector) recordMetrics(instance *Instance, metrics string) {
 		return
 	}
 
-	// 这里可以优化逻辑， 从我们需要的指标筛选
+	// 这里可以优化逻辑，从我们需要的指标筛选
 	for name, m := range metricFamilies {
 		for _, metric := range m.GetMetric() {
 			// 新添加label标签，当前是两个：
@@ -331,6 +331,7 @@ func (c *Collector) AggregateMetrics() {
 			continue
 		}
 	}
+
 }
 
 func (c *Collector) isMetricRegistered(metricsName string) bool {
@@ -348,7 +349,7 @@ func (c *Collector) isMetricRegistered(metricsName string) bool {
 
 // 自动注册
 func (c *Collector) registerDiscoveredMetrics(m *dto.MetricFamily, labels []string, metricsName string) {
-	// 指标一级map只有在这里会被写，其他地方都是读。 二级map例如*promethues.GaugeVec内部已有加锁
+	// 指标一级map只有在这里会被写，其他地方都是读。 二级map例如*prometheus.GaugeVec内部已有加锁
 	c.mapMutex.Lock()
 	defer c.mapMutex.Unlock()
 	// 检查指标是否已经注册
@@ -454,7 +455,7 @@ func registerHistogramMetrics(c *Collector, m *dto.MetricFamily, labels []string
 		if metric.Histogram != nil {
 			for _, bucket := range metric.Histogram.GetBucket() {
 				upperBound := bucket.GetUpperBound()
-				// 过滤+Inf边界， 因为他不是真的bucket边界
+				// 过滤+Inf边界，因为他不是真的bucket边界
 				if !math.IsInf(upperBound, 1) {
 					buckets = append(buckets, upperBound)
 				}
@@ -479,7 +480,7 @@ func registerHistogramMetrics(c *Collector, m *dto.MetricFamily, labels []string
 	aggHistogram := createHistogramVec(metricsName, *m.Help, labels)
 	err = c.aggRegistry.Register(aggHistogram)
 	if err != nil {
-		logger.Logger().Errorf("fail to register aggregated metrics %s, error %s", metricsName, err.Error())
+		logger.Logger().Errorf("fail to register aggregated metrics %s error %s", metricsName, err.Error())
 		return
 	}
 	c.aggregatedHistogramMetrics[metricsName] = aggHistogram
@@ -487,7 +488,7 @@ func registerHistogramMetrics(c *Collector, m *dto.MetricFamily, labels []string
 
 func registerUnionMetrics(c *Collector, metricsName string, metrics prometheus.Collector) bool {
 	if op, ok := c.metricsConfig.metricOperation[metricsName]; ok {
-		// 对于组合的metrics指标， 不需要创建聚合指标对象， 复用从各个实例获取的指标列表
+		// 对于组合的metrics指标，不需要创建聚合指标对象， 复用从各个实例获取的指标列表
 		if op == "union" {
 			err := c.aggRegistry.Register(metrics)
 			if err != nil {
@@ -531,7 +532,7 @@ func createHistogramVec(metricsName string, help string, labels []string) *Custo
 
 func StopMetricsCollector() {
 	if metricChan != nil {
-		logger.Logger().Infof("stop metrics collector")
+		logger.Logger().Infof("Stop metrics collector")
 		close(metricChan)
 	}
 }

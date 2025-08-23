@@ -13,7 +13,7 @@ type IntegratedConfiguration struct {
 	// metrics名称: 如vllm:num_requests_running
 	MetricsName string `yaml:"metric_name" validate:"required"`
 	// 作用于的实例: prefill, decode, scheduler, api_server等
-	ActingInstance string `yaml:"acting_instance" validate:"required,oneof=prefill decode scheduler api_server option"`  
+	ActingInstance string `yaml:"acting_instance" validate:"required,oneof=prefill decode scheduler api_server option"`
 	// 操作类型: sum, union, histogram_combine
 	Operation string `yaml:"operation" validate:"required,oneof=sum union histogram_combine"`
 	// metrics类型: gauge counter histogram
@@ -47,7 +47,7 @@ func loadMetricsYamlConfig(yamlPath string) (*MetricsConfig, error) {
 
 	// 初始化验证器
 	validate := validator.New()
-	// 自定义校验: 检查配置是否合法 & metric_name是否重复
+	// 自定义校验:检查配置是否合法 & metric_name是否重复
 	metricNames := make(map[string]bool)
 	for i, configuration := range config.Configurations {
 		if err := validate.Struct(configuration); err != nil {
@@ -57,7 +57,7 @@ func loadMetricsYamlConfig(yamlPath string) (*MetricsConfig, error) {
 		if metricNames[configuration.MetricsName] {
 			// 发现重复的metric_name
 			return nil, fmt.Errorf("metrics yaml 配置非法："+
-					"第%d个metric的metric_name=%s已重复出现", i+1, configuration.MetricsName)
+				"第%d个metric的metric_name=%s已重复出现", i+1, configuration.MetricsName)
 		}
 		metricNames[configuration.MetricsName] = true
 	}

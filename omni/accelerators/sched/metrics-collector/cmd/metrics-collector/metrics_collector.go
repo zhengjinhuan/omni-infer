@@ -26,7 +26,7 @@ func isValidIPPortList(s string) bool {
 	//    - localhost：直接匹配字符串"localhost"
 	// 2. 端口部分：1-65535之间的整数
 	// 3. 整体：以IP:端口开头，后续可跟逗号+IP:端口，允许0个或多个
-	const pattern = `^(localhost|(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0):([1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])(,(localhost|(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0):([1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])))*$`
+	const pattern = `^(localhost|(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)):([1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])(,(localhost|(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9][0-9]?|0)):([1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))*$`
 	// 编译正则表达式
 	re := regexp.MustCompile(pattern)
 	return re.MatchString(s)
@@ -38,7 +38,7 @@ func main() {
 	var (
 		metricsServerIpAndPort = flag.String("metrics_collector_server", "",
 			"metric collector server ip and port")
-		schedulerServersList = flag.String("scheduler_server", "",
+		schedulerServerIpAndPort = flag.String("scheduler_server", "",
 			"scheduler server ip and port")
 		prefillServersList = flag.String("prefill_servers_list", "",
 			"prefill servers ip and port list, eg: ip1:port1,ip2:port2")
@@ -55,7 +55,7 @@ func main() {
 		logger.Logger().Errorf("metrics_collector_server 配置格式错误")
 		os.Exit(1)
 	}
-	if !isValidIPPortList(*schedulerServersList) {
+	if !isValidIPPortList(*schedulerServerIpAndPort) {
 		logger.Logger().Errorf("scheduler_server 配置格式错误")
 		os.Exit(1)
 	}
@@ -68,7 +68,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	instances, err := initInstance(*schedulerServersList, *prefillServersList, *decodeServersList)
+	instances, err := initInstance(*schedulerServerIpAndPort, *prefillServersList, *decodeServersList)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -106,11 +106,11 @@ func main() {
 	logger.Logger().Info("server shutdown successfully")
 }
 
-func initInstance(schedulerServersIpAndPort string, prefillServersList string, decodeServersList string) ([]metrics_collector.Instance, error) {
+func initInstance(schedulerServerIpAndPort string, prefillServersList string, decodeServersList string) ([]metrics_collector.Instance, error) {
 	instances := make([]metrics_collector.Instance, 0)
 
-	schedulerServerIp := strings.Split(schedulerServersIpAndPort, ":")[0]
-	schedulerServerPortString := strings.Split(schedulerServersIpAndPort, ":")[1]
+	schedulerServerIp := strings.Split(schedulerServerIpAndPort, ":")[0]
+	schedulerServerPortString := strings.Split(schedulerServerIpAndPort, ":")[1]
 	schedulerServerPort, err := strconv.Atoi(schedulerServerPortString)
 	if err != nil {
 		logger.Logger().Errorf("scheduler server端口转换整型数据类型失败（%s）: %v\n", schedulerServerPortString, err.Error())
@@ -135,6 +135,7 @@ func initInstance(schedulerServersIpAndPort string, prefillServersList string, d
 			IP:   prefillIpPort[0],
 			Port: prefillPort,
 		})
+		
 	}
 
 	decodeServers := strings.Split(decodeServersList, ",")

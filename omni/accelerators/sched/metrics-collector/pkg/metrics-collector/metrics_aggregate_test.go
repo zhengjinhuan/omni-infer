@@ -82,7 +82,7 @@ func TestFilterCustomLabels(t *testing.T) {
 	t.Run("SrcContainsInstanceAndRole", func(t *testing.T) {
 		src := prometheus.Labels{
 			"instance": "localhost:9090",
-			"role":     "alertManager",
+			"role":     "alertmanager",
 			"job":      "prometheus",
 		}
 		dst := filterCustomLabels(src)
@@ -205,7 +205,7 @@ func TestFilterTargetLabels(t *testing.T) {
 		t.Errorf("Expected %d labels, got %d", len(src)-3, len(dst))
 	}
 
-	// 测试用例4：源标签中所有标签都需要
+	// 测试用例4：源标签中所有标签都需要过滤
 	src = prometheus.Labels{
 		"instance": "localhost:9090",
 		"role":     "server",
