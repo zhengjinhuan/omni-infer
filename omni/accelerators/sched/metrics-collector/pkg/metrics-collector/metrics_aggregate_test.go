@@ -1,10 +1,9 @@
 package metrics_collector
 
 import (
+	"github.com/prometheus/client_golang/prometheus"
 	"reflect"
 	"testing"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestOptionForRequestSuccess(t *testing.T) {
@@ -46,7 +45,7 @@ func TestOptionForRequestSuccess(t *testing.T) {
 			instanceRole: "prefill",
 			metricsName:  "vllm:request_success_total",
 			targetLabel:  map[string]string{"finished_reason": "abort"},
-			want:         true,
+			want:         True,
 		},
 		{
 			name:         "instanceRole is decode and finished_reason is stop",
@@ -54,7 +53,7 @@ func TestOptionForRequestSuccess(t *testing.T) {
 			instanceRole: "decode",
 			metricsName:  "vllm:request_success_total",
 			targetLabel:  map[string]string{"finished_reason": "stop"},
-			want:         true,
+			want:         True,
 		},
 	}
 
@@ -95,7 +94,7 @@ func TestFilterCustomLabels(t *testing.T) {
 	})
 
 	// 测试用例3：当src中不包含"instance"和"role"时，返回的dst应与src相同
-	t.Run("SrcNotContainsInstanceAndRole", func(t *testing.T) {
+	t.Run("SrcNotContainsInstanceAndRole", func(t *testing.T){
 		src := prometheus.Labels{
 			"job": "prometheus",
 			"env": "production",
@@ -116,10 +115,10 @@ func TestIsEmptyInstance(t *testing.T) {
 		}
 	}
 
-	// test case 2: instance is not an empty instance
+	// Test case 2: instance is not an empty instance
 	{
 		// Assuming Instance has a field named 'Field'
-		instance := Instance{Role: "prefill"}
+		instance := Instance{Role: "Prefill"}
 		if isEmptyInstance(instance) {
 			t.Errorf("Expected false, got true")
 		}
@@ -190,7 +189,7 @@ func TestFilterTargetLabels(t *testing.T) {
 	}
 	dst = filterTargetLabels(src)
 	if len(dst) != len(src)-1 {
-		t.Errorf("Expected %d labels, got %d", len(src)-1, len(dst))
+		t.Errorf("Expected %d labels, got %d", len(src) - 1, len(dst))
 	}
 
 	// 测试用例3：源标签中有多个需要过滤的标签
@@ -205,7 +204,7 @@ func TestFilterTargetLabels(t *testing.T) {
 		t.Errorf("Expected %d labels, got %d", len(src)-3, len(dst))
 	}
 
-	// 测试用例4：源标签中所有需要过滤的标签
+	// 测试用例4：源标签中所有标签都需要
 	src = prometheus.Labels{
 		"instance": "localhost:9090",
 		"role":     "server",
@@ -272,7 +271,7 @@ func TestLabelsMatch(t *testing.T) {
 		}
 	}
 
-	// 测试用例5：当目标标签的键在全标签中存在，且值匹配，但全标签有额外键值对时，应返回true
+	// 测试用例5：当目标标签的键在全标签中存在，且值匹配，但全标签有额外的键值对时，应返回true
 	{
 		fullLabels := prometheus.Labels{
 			"key1": "value1",
