@@ -74,8 +74,8 @@ def update_container_name(node_type, node_name, container_name_prefix, yml_file_
     if data:
         if node_type == 'all':
             for n_type in data['all']['children']:
-                for n_name in data['all']['dhildren']['n_type']['hosts']:
-                    data['all']['dhildren']['n_type']['hosts'][n_name]['container_name'] = \
+                for n_name in data['all']['children'][n_type]['hosts']:
+                    data['all']['children'][n_type]['hosts'][n_name]['container_name'] = \
                         f'{container_name_prefix}_{n_name}'
         elif node_type == 'P' or node_type == 'D' or node_type == 'C':
             for n_name in data['all']['children'][node_type]['hosts']:
@@ -152,8 +152,7 @@ def first_check_model_path(default_cfg_path, sections, data, node_type, node_nam
         if 'MODEL_PATH' in sections['env']:
             return True
         else:
-            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
-            return False
+            raise ValueError(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
 
     data['profiles']['vllm']['deepseek'][node_type]['env']['MODEL_PATH'] = ""
     with open(default_cfg_path , 'w') as file:
@@ -165,39 +164,33 @@ def second_check_model_path(sections, data, node_type, node_name):
         return True
     model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
     if model_path == '' or model_path is None:
-        if 'MODEL_PATH' in sections['env']:
+        if 'env' in sections and 'MODEL_PATH' in sections['env']:
             return True
         else:
-            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
-            return False
+            raise ValueError(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
 
     return True
 
 def update_cfg_yml(node_type, node_name, sections, yml_file_path):
     data = get_data_from_yaml(yml_file_path)
+    filtered_sections = {k: v for k, v in sections.items() if v not in ['', None, {}]}
     if data:
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
-                    for key, value in sections.items():
-                        if value != '' and value != {} and key in data['all']['children'][n_type]['hosts'][n_name]:
-                            data['all']['children'][n_type]['hosts'][n_name][key].update(sections[key])
-                    if second_check_model_path(sections, data, n_type, n_name) is not True:
+                    data['all']['children'][n_type]['hosts'][n_name].update(filtered_sections)
+                    if second_check_model_path(filtered_sections, data, n_type, n_name) is not True:
                         return
             print("你已修改所有节点的配置")
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
-                for key, value in sections.items():
-                    if value != '' and value != {} and key in data['all']['children'][node_type]['hosts'][n_name]:
-                        data['all']['children'][node_type]['hosts'][n_name][key].update(sections[key])
-                if second_check_model_path(sections, data, node_type, n_name) is not True:
+                data['all']['children'][node_type]['hosts'][n_name].update(filtered_sections)
+                if second_check_model_path(filtered_sections, data, node_type, n_name) is not True:
                     return
             print("你已修改 %s 组所有节点的配置" % node_type)
         else:
-            for key, value in sections.items():
-                if value != '' and value != {} and key in data['all']['children'][node_type]['hosts'][node_name]:
-                    data['all']['children'][node_type]['hosts'][node_name][key].update(sections[key])
-            if second_check_model_path(sections, data, node_type, node_name) is not True:
+            data['all']['children'][node_type]['hosts'][node_name].update(filtered_sections)
+            if second_check_model_path(filtered_sections, data, node_type, node_name) is not True:
                 return
             print("你已修改 %s 节点的配置" % node_name)
 
