@@ -6,10 +6,10 @@ import (
 )
 
 type Log struct {
-		Info	func(msg string)
-		Infof   func(format string, args ...interface{})
-		Error   func(msg string)
-		Errorf  func(format string, args ...interface{})
+	Info   func(msg string)
+	Infof  func(format string, args ...interface{})
+	Error  func(msg string)
+	Errorf func(format string, args ...interface{})
 }
 
 var logger *Log
@@ -17,7 +17,7 @@ var logger *Log
 func InitLogger() {
 	if logger == nil {
 		logger = &Log{
-			Info:	Info,
+			Info:   Info,
 			Infof:  Infof,
 			Error:  Error,
 			Errorf: Errorf,

@@ -15,10 +15,10 @@ type CustomHistogramData struct {
 }
 
 type CustomHistogram struct {
-	mu          sync.Mutex
-	data        map[string]*CustomHistogramData
-	opts        prometheus.HistogramOpts
-	labelNames  []string
+	mu         sync.Mutex
+	data       map[string]*CustomHistogramData
+	opts       prometheus.HistogramOpts
+	labelNames []string
 	// 缓存的 Desc 实例
 	desc *prometheus.Desc
 }
@@ -31,15 +31,15 @@ type HistogramData struct {
 
 func NewCustomHistogram(opts prometheus.HistogramOpts, labelNames []string) *CustomHistogram {
 	return &CustomHistogram{
-		data:          make(map[string]*CustomHistogramData),
-		opts:          opts,
-		labelNames:    labelNames,
+		data:       make(map[string]*CustomHistogramData),
+		opts:       opts,
+		labelNames: labelNames,
 		desc: prometheus.NewDesc(
 			opts.Name,
 			opts.Help,
 			labelNames,
-			opts.ConstLabels
-		)
+			opts.ConstLabels,
+		),
 	}
 }
 
@@ -51,13 +51,13 @@ func (h *CustomHistogram) SetHistogramData(labels prometheus.Labels, data *Histo
 
 	// 尝试直接把值设置进去
 	h.data[labelKeys] = &CustomHistogramData{
-		SampleCount:  data.SampleCount,
-		SampleSum:    data.SampleSum,
-		Buckets:      make(map[float64]uint64),
-		LastUpdate:   time.Now(),
+		SampleCount: data.SampleCount,
+		SampleSum:   data.SampleSum,
+		Buckets:     make(map[float64]uint64),
+		LastUpdate:  time.Now(),
 	}
 
-	// 处理bucket中的信息
+	//处理bucket中的信息
 	for k, v := range data.Buckets {
 		h.data[labelKeys].Buckets[k] = v
 	}
@@ -67,7 +67,7 @@ func (h *CustomHistogram) GetHistogramData(labels prometheus.Labels) *CustomHist
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	labelkeys := h.createLabelKey(labels)
+	labelKeys := h.createLabelKey(labels)
 	if v, ok := h.data[labelKeys]; ok {
 		return v
 	}
@@ -120,9 +120,10 @@ func (h *CustomHistogram) parseLabelKey(labelKey string) prometheus.Labels {
 // Describe 实现Prometheus的Collector接口
 func (h *CustomHistogram) Describe(ch chan<- *prometheus.Desc) {
 	// 注册 Desc
-	ch <- des
+	ch <- h.desc
 }
 
+// TODO Collect方法中通过prometheus.NewDesc动态创建Desc实例，但未在Describe方法中预先注册。prometheus要求所有Metric的Desc必须在Describe阶段注册，否则Collect阶段生成的Metric将被忽略。应将Desc实例在结构体中缓存，并在Describe和Collect中复用同一实例。
 func (h *CustomHistogram) Collect(ch chan<- prometheus.Metric) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

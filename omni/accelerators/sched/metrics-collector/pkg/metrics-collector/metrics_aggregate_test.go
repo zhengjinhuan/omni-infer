@@ -58,18 +58,18 @@ func TestOptionForRequestSuccess(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, fun(t *testing.T)) {
-			got := optionForRequestSuccess(tt.role, tt.instanceRole, tt,metricsName, tt.targetLabel)
+		t.Run(tt.name, func(t *testing.T) {
+			got := optionForRequestSuccess(tt.role, tt.instanceRole, tt.metricsName, tt.targetLabel)
 			if got != tt.want {
 				t.Errorf("optionForRequestSuccess() = %v, want %v", got, tt.want)
 			}
-		}
+		})
 	}
 }
 
-func TestFilterCustomLabels(t *testing.t) {
+func TestFilterCustomLabels(t *testing.T) {
 	// 测试用例1：当src为空时，返回的dst也应为空
-	t.Run("EmptySrc", func(t *testing.T){
+	t.Run("EmptySrc", func(t *testing.T) {
 		src := prometheus.Labels{}
 		dst := filterCustomLabels(src)
 		if len(dst) != 0 {
@@ -78,7 +78,7 @@ func TestFilterCustomLabels(t *testing.t) {
 	})
 
 	// 测试用例2：当src中包含"instance"和"role"时，返回的dst不应包含这两个标签
-	t.Run("SrcContainsInstanceAndRole", func(t *testing.T){
+	t.Run("SrcContainsInstanceAndRole", func(t *testing.T) {
 		src := prometheus.Labels{
 			"instance": "localhost:9090",
 			"role":     "alertmanager",
@@ -86,7 +86,7 @@ func TestFilterCustomLabels(t *testing.t) {
 		}
 		dst := filterCustomLabels(src)
 		expected := prometheus.Labels{
-			"job":      "prometheus",
+			"job": "prometheus",
 		}
 		if !reflect.DeepEqual(dst, expected) {
 			t.Errorf("Expected dst to be %v, but got %v", expected, dst)
@@ -97,7 +97,7 @@ func TestFilterCustomLabels(t *testing.t) {
 	t.Run("SrcNotContainsInstanceAndRole", func(t *testing.T){
 		src := prometheus.Labels{
 			"job": "prometheus",
-			"env": "profuction"
+			"env": "production",
 		}
 		dst := filterCustomLabels(src)
 		if !reflect.DeepEqual(dst, src) {
@@ -115,10 +115,10 @@ func TestIsEmptyInstance(t *testing.T) {
 		}
 	}
 
-	// test case 2: instance is not an empty instance
+	// Test case 2: instance is not an empty instance
 	{
 		// Assuming Instance has a field named 'Field'
-		instance := Instance{Role: "prefill"}
+		instance := Instance{Role: "Prefill"}
 		if isEmptyInstance(instance) {
 			t.Errorf("Expected false, got true")
 		}
@@ -147,7 +147,7 @@ func TestGetTargetLabels(t *testing.T) {
 	if len(labels) != 0 {
 		t.Errorf("Expected an empty list, but got %v", labels)
 	}
-	
+
 	// 测试用例3：当实例列表中存在"prefill"或"decode"角色的实例时，应返回非空列表
 	instances = []Instance{
 		{
@@ -188,7 +188,7 @@ func TestFilterTargetLabels(t *testing.T) {
 		"instance": "localhost:9090",
 	}
 	dst = filterTargetLabels(src)
-	if len(dst) != len(src) - 1 {
+	if len(dst) != len(src)-1 {
 		t.Errorf("Expected %d labels, got %d", len(src) - 1, len(dst))
 	}
 
@@ -204,7 +204,7 @@ func TestFilterTargetLabels(t *testing.T) {
 		t.Errorf("Expected %d labels, got %d", len(src)-3, len(dst))
 	}
 
-	// 测试用例4：源标签中所有需要过滤的标签
+	// 测试用例4：源标签中所有标签都需要
 	src = prometheus.Labels{
 		"instance": "localhost:9090",
 		"role":     "server",
@@ -216,7 +216,7 @@ func TestFilterTargetLabels(t *testing.T) {
 	}
 }
 
-func TestlabelsMatch(t *testing.T) {
+func TestLabelsMatch(t *testing.T) {
 	// 测试用例1：当目标标签是空的时候，无论全标签是什么，都应该返回true
 	{
 		fullLabels := prometheus.Labels{
@@ -271,7 +271,7 @@ func TestlabelsMatch(t *testing.T) {
 		}
 	}
 
-	// 测试用例5：当目标标签的键在全标签中存在，且值匹配，但全标签有额外键值对时，应返回true
+	// 测试用例5：当目标标签的键在全标签中存在，且值匹配，但全标签有额外的键值对时，应返回true
 	{
 		fullLabels := prometheus.Labels{
 			"key1": "value1",

@@ -19,7 +19,7 @@ func initStaticMap() {
 	}
 }
 
-func GetStaticMap() map[string]string {
+func getStaticMap() map[string]string {
 	initOnce.Do(initStaticMap)
 	return staticMap
 }
@@ -27,14 +27,14 @@ func GetStaticMap() map[string]string {
 // 收集时需要增加的labels来区分各个不同的实例
 var collectLabels = []string{"role", "instance"}
 
-func getCollectorLabels(isAgg bool) []string {
+func getCollectLabels() []string {
 	return collectLabels
 }
 
 func getRealMetricsName(metricsName string) string {
 	// 是从route server获取到的metrics
 	if strings.HasPrefix(metricsName, "rs:") {
-		name, ok := GetStaticMap()[metricsName]
+		name, ok := getStaticMap()[metricsName]
 		if !ok {
 			return ""
 		}

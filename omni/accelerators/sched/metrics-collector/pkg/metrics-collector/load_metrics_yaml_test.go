@@ -11,7 +11,7 @@ func TestLoadMetricsYamlConfig(t *testing.T) {
 	if err != nil { 
 		t.Fatal(err) 
 	}
-	defer tmpfile.closr()           // 关闭临时文件
+	defer tmpfile.close()           // 关闭临时文件
 	defer os.Remove(tmpfile.Name()) // 删除临时文件
 
 	// 写入测试数据
@@ -41,11 +41,11 @@ func TestLoadMetricsYamlConfig(t *testing.T) {
 	}
 	if len(config.Configurations) != 2 {
 		t.Errorf("Expected 2 configurations, got %d", len(config.Configurations))
-	  }
-	  if config.Configurations[0].MetricsName != "metric1" {
-		t.Errorf("Expected metric1, got %s", len(config.Configurations[0].MetricsName))
-	  }
-	  if config.Configurations[1].Operation != "union" {
-		t.Errorf("Expected union, got %s", len(config.Configurations[1].MetricsName))
-	  }
+	}
+	if config.Configurations[0].MetricsName != "metric1" {
+		t.Errorf("Expected metric1, got %s", config.Configurations[0].MetricsName)
+	}
+	if config.Configurations[1].Operation != "union" {
+		t.Errorf("Expected union, got %s", config.Configurations[1].Operation)
+	}
 }
