@@ -1,4 +1,4 @@
-from omni.adaptors.sglang.models.common.layers.moe.token_dispatcher.deepep import (
+from omni.adaptors.sglang.layers.moe.token_dispatcher.deepep import (
     DeepEPConfig,
     DeepEPDispatcher,
     DeepEPLLOutput,

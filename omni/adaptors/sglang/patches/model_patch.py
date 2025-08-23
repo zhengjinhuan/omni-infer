@@ -4,7 +4,7 @@
 def patch_dp_attention():
 
     from sglang.srt.layers import dp_attention
-    from omni.adaptors.sglang.models.common.layers.dp_attention import (
+    from omni.adaptors.sglang.layers.dp_attention import (
         dp_scatter,
         DPPaddingMode,
         dp_gather_partial,
@@ -46,7 +46,7 @@ def patch_dp_attention():
 def patch_token_dispatcher():
 
     from sglang.srt.layers.moe import token_dispatcher
-    from omni.adaptors.sglang.models.common.layers.moe.token_dispatcher import (
+    from omni.adaptors.sglang.layers.moe.token_dispatcher import (
         DeepEPDispatcher,
     )
 

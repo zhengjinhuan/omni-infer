@@ -33,7 +33,7 @@ index caae7b0f6..6455d4e35 100644
  import os
  import sys
  
-+import omni.adaptors.sglang.model_patch
++import omni.adaptors.sglang.patches.model_patch
  from sglang.srt.entrypoints.http_server import launch_server
  from sglang.srt.server_args import prepare_server_args
  from sglang.srt.utils import kill_process_tree
@@ -109,7 +109,7 @@ index 19977012a..b4018fb31 100644
  from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
  from sglang.srt.layers.quantization.w8a8_fp8 import W8A8Fp8Config
 -from sglang.srt.layers.quantization.w8a8_int8 import W8A8Int8Config
-+from omni.adaptors.sglang.models.common.layers.quantization.w8a8_int8 import W8A8Int8Config
++from omni.adaptors.sglang.layers.quantization.w8a8_int8 import W8A8Int8Config
  
  if TYPE_CHECKING:
      from sglang.srt.layers.moe.topk import TopKOutput
@@ -164,7 +164,7 @@ index 76b9e1a01..2bafd6f27 100644
      port_args: PortArgs,
      pipe_writer,
  ):
-+    import omni.adaptors.sglang.model_patch
++    import omni.adaptors.sglang.patches.model_patch
      setproctitle.setproctitle("sglang::data_parallel_controller")
      configure_logger(server_args)
      parent_process = psutil.Process().parent()
@@ -216,7 +216,7 @@ index 5d2204c3f..e84d35013 100644
  # ==============================================================================
  """A scheduler that manages a tensor parallel GPU worker."""
  
-+import omni.adaptors.sglang.model_patch
++import omni.adaptors.sglang.patches.model_patch
  import faulthandler
  import logging
  import os
@@ -224,7 +224,7 @@ index 5d2204c3f..e84d35013 100644
      pipe_writer,
      balance_meta: Optional[DPBalanceMeta] = None,
  ):
-+    import omni.adaptors.sglang.model_patch
++    import omni.adaptors.sglang.patches.model_patch
      # Generate the prefix
      prefix = ""
      if dp_rank is not None:
@@ -474,7 +474,7 @@ index 923482d72..79e3de599 100644
  
              return AscendAttnBackend(self)
 +        elif self.server_args.attention_backend == "npumla":
-+            from omni.adaptors.sglang.models.common.layers.attention.npumla_backend import NpuMLABackend
++            from omni.adaptors.sglang.layers.attention.npumla_backend import NpuMLABackend
 +
 +            return NpuMLABackend(self)
          elif backend_str == "triton":
@@ -513,7 +513,7 @@ index f81d3c76e..e5c50528c 100644
  
 -ModelRegistry = _ModelRegistry(import_model_classes())
 +tmp_ = _ModelRegistry(import_model_classes())
-+module = importlib.import_module("omni.adaptors.sglang.models.deepseek.deepseek_v2")
++module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v2")
 +tmp_.models["DeepseekV3ForCausalLM"] = module.EntryClass
 +ModelRegistry = tmp_
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
