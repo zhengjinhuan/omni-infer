@@ -302,7 +302,8 @@ def omni_cli_start(
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
     role_filter: Optional[str] = None,    # e.g., "P" or "D"
     python_bin: str = "python",
-    entry_py: str = "start_api_servers.py"
+    entry_py: str = "start_api_servers.py",
+    skip_verify_config: bool = False
 ) -> None:
     """
     Read inventory YAML, generate a per-host bash script, and run it via:
@@ -313,7 +314,8 @@ def omni_cli_start(
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inventory_path, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
-    _verify_and_fix_env_vars(inv, inv_file)
+    if not skip_verify_config:
+        _verify_and_fix_env_vars(inv, inv_file)
 
     omni_cli.proxy.omni_run_proxy(inventory_path)
 
@@ -976,6 +978,7 @@ def main():
         default=None,
         help='Start in normal mode with config file'
     )
+    start_parser.add_argument("--skip-verify-config", action="store_true", help="Skip verification of config")
     start_group = start_parser.add_mutually_exclusive_group()
     start_group.add_argument(
         "--normal",
@@ -1108,10 +1111,10 @@ def main():
         print("Start omni service.")
         if args.config_path is not None:
             print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path)
+            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config)
         elif args.normal:
             print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path)
+            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config)
         elif args.prepare_dev:
             print("Developer mode: Environmental preparation.")
             prepare_omni_service_in_developer_mode(args.prepare_dev[0])
