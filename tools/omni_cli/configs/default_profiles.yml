@@ -102,6 +102,7 @@ profiles:
           tp: 16
           served-model-name: "deepseek"
           log-dir: "$LOG_PATH"
+          enable-mtp: ""
           kv-transfer-config:
             kv_connector: "AscendHcclConnectorV1"
             kv_buffer_device: "npu"
@@ -242,7 +243,7 @@ profiles:
        env:
         LOG_PATH: "/tmp/omni_logs"
         CODE_PATH: "/workspace/omniinfer"
-        API_PORT: 9200
+        API_PORT: 7000
         ROLE: "proxy"
        args:
          prefill-lb-sdk: pd_score_balance
