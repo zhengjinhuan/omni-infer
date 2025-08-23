@@ -191,21 +191,35 @@ def _verify_and_fix_env_vars(
     server_offset_dict, server_offset = {}, 0
     server_ip_list_temp = []
     host_ip_dict = {}
+    num_server_dict, num_dp_dict_p, num_dp_dict_d = {}, {}, {}
+    total_dp_d = 0
     for host, hv in inventory['all']['children']['P']['hosts'].items():
         prefill_pod_num += 1
         server_offset_dict[host] = server_offset  # for P always 0
         host_ip_dict[host] = hv.get('host_ip', None)
         kv_rank_dict[host] = kv_rank
         kv_rank += 1
+        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
+        tp = hv.get('args', {}).get('tp', 16)
+        num_server_dict[host] = device_count // tp
+        num_dp_dict_p[host] = device_count // tp
     for host, hv in inventory['all']['children']['D']['hosts'].items():
         ip = hv.get('ansible_host', '')
         if ip:
             server_ip_list_temp.append(f"{ip}")
         server_offset_dict[host] = server_offset
-        device_count = hv.get('ascend_rt_visible_devices','').count(',')
-        server_offset += device_count + 1
+        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
+        server_offset += device_count
         host_ip_dict[host] = hv.get('host_ip', None)
         kv_rank_dict[host] = kv_rank
+        tp = hv.get('args', {}).get('tp', 1)
+        num_server_dict[host] = device_count // tp
+        total_dp_d += device_count // tp
+        num_dp_dict_d[host] = total_dp_d
+
+    # update num_dp_dict
+    num_dp_dict_d = {k: total_dp_d for k in num_dp_dict_d.keys()}
+    num_dp_dict = {**num_dp_dict_p, **num_dp_dict_d}
     server_ip_list = ','.join(server_ip_list_temp)
 
     ## update inventory
@@ -239,6 +253,18 @@ def _verify_and_fix_env_vars(
                 hv.get("env", {})["HOST_IP"] = host_ip
                 need_overwrite_inv = True
                 print(f"[info] host={host} HOST_IP set to {host_ip}")
+        if "num-servers" in hv.get("args", {}):
+            num_server = num_server_dict.get(host, None)
+            if num_server is not None and hv.get("args", {}).get("num-servers") != num_server:
+                hv.get("args", {})["num-servers"] = num_server
+                need_overwrite_inv = True
+                print(f"[info] host={host} num-servers set to {num_server}")
+        if "num-dp" in hv.get("args", {}):
+            num_dp = num_dp_dict.get(host, None)
+            if num_dp is not None and hv.get("args", {}).get("num-dp") != num_dp:
+                hv.get("args", {})["num-dp"] = num_dp
+                need_overwrite_inv = True
+                print(f"[info] host={host} num-dp set to {num_dp}")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
