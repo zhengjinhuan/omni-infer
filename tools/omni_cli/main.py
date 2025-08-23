@@ -193,29 +193,37 @@ def _verify_and_fix_env_vars(
     host_ip_dict = {}
     num_server_dict, num_dp_dict_p, num_dp_dict_d = {}, {}, {}
     total_dp_d = 0
+    master_port_p_dict, master_port_d_dict = {}, {}
     for host, hv in inventory['all']['children']['P']['hosts'].items():
-        prefill_pod_num += 1
-        server_offset_dict[host] = server_offset  # for P always 0
-        host_ip_dict[host] = hv.get('host_ip', None)
-        kv_rank_dict[host] = kv_rank
-        kv_rank += 1
+        ip = hv.get('ansible_host', None)
+        host_ip = hv.get('host_ip', None)
         device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
         tp = int(hv.get('args', {}).get('tp', 16))
+        prefill_pod_num += 1
+        server_offset_dict[host] = server_offset  # for P always 0
+        host_ip_dict[host] = host_ip
+        kv_rank_dict[host] = kv_rank
+        kv_rank += 1
         num_server_dict[host] = device_count // tp
         num_dp_dict_p[host] = device_count // tp
+        if host_ip is not None and ip == host_ip:
+            master_port_p_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
     for host, hv in inventory['all']['children']['D']['hosts'].items():
-        ip = hv.get('ansible_host', '')
+        ip = hv.get('ansible_host', None)
+        host_ip = hv.get('host_ip', None)
+        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
+        tp = int(hv.get('args', {}).get('tp', 1))
         if ip:
             server_ip_list_temp.append(f"{ip}")
         server_offset_dict[host] = server_offset
-        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
         server_offset += device_count
-        host_ip_dict[host] = hv.get('host_ip', None)
+        host_ip_dict[host] = host_ip
         kv_rank_dict[host] = kv_rank
-        tp = int(hv.get('args', {}).get('tp', 1))
         num_server_dict[host] = device_count // tp
         total_dp_d += device_count // tp
         num_dp_dict_d[host] = total_dp_d
+        if host_ip is not None and ip == host_ip:
+            master_port_d_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
 
     # update num_dp_dict
     num_dp_dict_d = {k: total_dp_d for k in num_dp_dict_d.keys()}
@@ -265,6 +273,16 @@ def _verify_and_fix_env_vars(
                 hv.get("args", {})["num-dp"] = num_dp
                 need_overwrite_inv = True
                 print(f"[info] host={host} num-dp set to {num_dp}")
+        # set master port same as host_ip's master port
+        if "MASTER_PORT" in hv.get("env", {}):
+            role = hv.get("env", {}).get("ROLE", None)
+            master_port_dict = master_port_p_dict if role == "P" else master_port_d_dict
+            if role:
+                master_port = master_port_dict.get(host_ip, None)
+                if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
+                    hv.get("env", {})["MASTER_PORT"] = master_port
+                    need_overwrite_inv = True
+                    print(f"[info] host={host} MASTER_PORT set to {master_port}")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
@@ -502,7 +520,7 @@ def sync_dev(
     # Create temporary script file
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tf:
         script_path = tf.name
-        
+
         # Write script header
         tf.write("#!/bin/bash\n\n")
         tf.write(f"CODE_SRC=\"{code_path}\"\n\n")
@@ -512,19 +530,19 @@ def sync_dev(
             host_vars = all_hosts.get(host, {})
             # Get actual connection address for the host
             host_addr = host_vars.get("ansible_host", host)
-            
+
             # Get SSH key path (if exists)
             ssh_private_key = host_vars.get("ansible_ssh_private_key_file", "")
             ssh_user = host_vars.get("ansible_user", "")
-            
+
             # Build SSH command prefixes
             ssh_prefix = "ssh"
             rsync_prefix = "rsync -avz --delete"
-            
+
             if ssh_private_key:
                 ssh_prefix = f"ssh -i {ssh_private_key}"
                 rsync_prefix = f"rsync -avz --delete -e 'ssh -i {ssh_private_key}'"
-            
+
             if ssh_user:
                 ssh_prefix = f"{ssh_prefix} -l {ssh_user}"
                 rsync_prefix = f"{rsync_prefix} -e 'ssh -l {ssh_user}'"
@@ -533,10 +551,10 @@ def sync_dev(
 
             tf.write(f"echo \"Creating directory on {host}\"\n")
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\"\n\n")
-            
+
             tf.write(f"echo \"Syncing code to {host}\"\n")
             tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/\n\n")
-        
+
             # Handle docker cp for all hosts that need it
             container_name = host_vars.get("container_name", "")
             if container_name:
@@ -594,20 +612,20 @@ def install_dev(
 
     # Update command templates
     docker_update_code_cmd = """
-    /bin/bash -c '. ~/.bashrc 
+    /bin/bash -c '. ~/.bashrc
     export http_proxy=http://10.155.96.5:8081
     export https_proxy=http://10.155.96.5:8081
     sed -i s#https://pypi.tuna.tsinghua.edu.cn/simple#https://mirrors.tools.huawei.com/pypi/simple#g /root/.config/pip/pip.conf && sed -i s#pypi.tuna.tsinghua.cn#mirrors.tools.huawei.com#g /root/.config/pip/pip.conf
     pip install setuptools_scm
-    cd /workspace/omniinfer/infer_engines 
-    git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm 
-    bash bash_install_code.sh 
-    pip uninstall vllm -y 
-    pip uninstall omniinfer -y 
-    cd vllm 
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation 
-    cd ../../ 
-    pip install -e . --no-deps --no-build-isolation 
+    cd /workspace/omniinfer/infer_engines
+    git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm
+    bash bash_install_code.sh
+    pip uninstall vllm -y
+    pip uninstall omniinfer -y
+    cd vllm
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation
+    cd ../../
+    pip install -e . --no-deps --no-build-isolation
     > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'
 """
     for host, hv in all_hosts:
@@ -702,15 +720,15 @@ def install_dev(
 def get_default_deploy_path():
     """Get or create the default deployment path (file is created only on first call)"""
     global _DEFAULT_DEPLOY_PATH
-    
+
     # Return immediately if already set
     if _DEFAULT_DEPLOY_PATH is not None:
         return _DEFAULT_DEPLOY_PATH
-    
+
     # Create default file and save path
     current_dir = Path.cwd()
     deploy_path = current_dir / "servering_profiles.yml"
-    
+
     if not deploy_path.exists():
         # Create default inventory structure
         default_inventory = {
@@ -722,13 +740,13 @@ def get_default_deploy_path():
                 }
             }
         }
-        
+
         # Write to file
         with open(deploy_path, "w") as f:
             yaml.dump(default_inventory, f)
-        
+
         print(f"Created default inventory file at: {deploy_path}")
-    
+
     # Save as absolute path
     _DEFAULT_DEPLOY_PATH = deploy_path.resolve()
     return _DEFAULT_DEPLOY_PATH
@@ -852,7 +870,7 @@ def run_docker_containers(
             # Add MODEL_PATH mount for P and D roles
             if role in ['P', 'D'] and model_path:
                 tf.write("docker_cmd+=\" -v $MODEL_PATH:$MODEL_PATH\"\n")
-            
+
             tf.write("docker_cmd+=\" -d --name $DOCKER_NAME $DOCKER_IMAGE_ID\"\n")
 
             # Execute command
@@ -1047,8 +1065,8 @@ def main():
         help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
     )
     sync_parser.add_argument(
-        "--dry_run", 
-        action="store_true", 
+        "--dry_run",
+        action="store_true",
         help="Show what would be done without making any changes"
     )
     sync_parser.add_argument("--code_path", required=True, help="code_path")
