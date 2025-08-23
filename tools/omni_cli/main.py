@@ -383,6 +383,10 @@ def omni_cli_start(
 
         try:
             execute_command(cmd)
+            for host, vars in inv['all']['children']['C']['hosts'].items():
+                print("\nServer is available at: http://" + vars.get('ansible_host', '') \
+                    + ":" + str(vars.get('env').get('API_PORT', '')))
+                print("\n\n")
         finally:
             try:
                 script_path.unlink(missing_ok=True)
