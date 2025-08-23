@@ -2,19 +2,20 @@ package metrics_collector
 
 import (
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	dto "github.com/prometheus/client_model/go"
-	"github.com/prometheus/common/expfmt"
-	"metrics-collector/pkg/metrics-collector/logger"
 	"io"
-	"math"	
+	"math"
+	"metrics-collector/pkg/metrics-collector/logger"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
 )
 
 var metricChan chan struct{}
@@ -67,7 +68,7 @@ func generateLabelKey(labels prometheus.Labels) string {
 
 // 获取指定指标在该instances上的所有标签信息
 func (i *Instance) getInstanceLabelsForMetrics(metricsName string) []prometheus.Labels {
-	var allLabels = []prometheus.Labels
+	var allLabels []prometheus.Labels
 	if labels, exists := i.MetricsLabels[metricsName]; exists {
 		for _, label := range labels {
 			allLabels = append(allLabels, label)
@@ -124,7 +125,7 @@ func NewMetricsCollector(instances []Instance, yamlPath string) (*Collector, err
 			collectEnable: false,
 			registry:      registry,
 			aggRegistry:   aggRegistry,
-		}
+		}, err
 	}
 
 	// 各个实例指标初始化
@@ -143,7 +144,7 @@ func NewMetricsCollector(instances []Instance, yamlPath string) (*Collector, err
 
 	metricChan = make(chan struct{})
 	interval := metricsConfig.MetricsCollectInterval
-	
+
 	metricsCollector := &Collector{
 		mapMutex:      sync.RWMutex{},
 		collectEnable: true,
@@ -201,7 +202,7 @@ func (c *Collector) runMetricsCollectLoop() {
 	go func() {
 		logger.Logger().Infof("start server to collect metrics")
 		ticker := time.NewTicker(c.interval)
-		defer ticker.stop()
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
@@ -310,7 +311,7 @@ func (c *Collector) recordMetrics(instance *Instance, metrics string) {
 			switch m.GetType() {
 			case dto.MetricType_GAUGE:
 				recordGaugeMetrics(c, name, labels, metric)
-			case dto.MetricTppe_COUNTER:
+			case dto.MetricType_COUNTER:
 				recordCounterMetrics(c, name, labels, metric)
 			case dto.MetricType_HISTOGRAM:
 				recordHistogramMetrics(c, name, labels, metric)
@@ -321,7 +322,7 @@ func (c *Collector) recordMetrics(instance *Instance, metrics string) {
 	}
 }
 
-func (c *collector) AggregateMetrics() {
+func (c *Collector) AggregateMetrics() {
 	// 汇聚Gauge指标
 	for _, cfg := range c.metricsConfig.Configurations {
 		err := processMetricsAccordingConfiguration(cfg, c)
@@ -357,9 +358,9 @@ func (c *Collector) registerDiscoveredMetrics(m *dto.MetricFamily, labels []stri
 	switch m.GetType() {
 	case dto.MetricType_GAUGE:
 		registerGaugeMetrics(c, m, labels, metricsName)
-	case dto.MetricTpye_COUNTER:
+	case dto.MetricType_COUNTER:
 		registerCounterMetrics(c, m, labels, metricsName)
-	case doc.MetricType_HISTOGRAM:
+	case dto.MetricType_HISTOGRAM:
 		registerHistogramMetrics(c, m, labels, metricsName)
 	}
 }

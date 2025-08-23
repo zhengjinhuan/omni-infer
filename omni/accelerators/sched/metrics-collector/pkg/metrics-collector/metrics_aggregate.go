@@ -2,10 +2,11 @@ package metrics_collector
 
 import (
 	"fmt"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"reflect"
 	"strings"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // 对目标metrics数据执行histogram combine操作
@@ -269,7 +270,7 @@ func setAggCounterValue(c *Collector, name string, labels prometheus.Labels, val
 
 // Counter指标写入普罗
 func writeToCounterMetrics(counterMetrics map[string]*prometheus.CounterVec, name string, labels prometheus.Labels,
-	value float64){
+	value float64) {
 	if counter, ok := counterMetrics[name]; ok && value >= 0 {
 		counterInstance := counter.With(labels)
 		counterMetrics := &dto.Metric{}
