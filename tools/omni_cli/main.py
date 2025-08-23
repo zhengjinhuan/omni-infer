@@ -1067,7 +1067,7 @@ def main():
         help="Dry run mode - show what would be done without executing"
     )
     run_docker_parser.set_defaults(func=lambda args: run_docker_containers(
-        inventory_path=args.inventory,
+        inventory_path=str(default_deploy_path),
         dry_run=args.dry_run
     ))
     # SYNC_DEV command configuration

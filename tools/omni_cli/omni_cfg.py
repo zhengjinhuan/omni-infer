@@ -152,7 +152,8 @@ def first_check_model_path(default_cfg_path, sections, data, node_type, node_nam
         if 'MODEL_PATH' in sections['env']:
             return True
         else:
-            raise ValueError(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
+            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
+            return False
 
     data['profiles']['vllm']['deepseek'][node_type]['env']['MODEL_PATH'] = ""
     with open(default_cfg_path , 'w') as file:
@@ -167,7 +168,8 @@ def second_check_model_path(sections, data, node_type, node_name):
         if 'env' in sections and 'MODEL_PATH' in sections['env']:
             return True
         else:
-            raise ValueError(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
+            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
+            return False
 
     return True
 
@@ -307,18 +309,21 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         if node_type == 'all':
             for n_type in default_cfg['profiles']['vllm']['deepseek']:
                 for n_name in data['all']['children'][n_type]['hosts']:
-                    if first_check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is True:
-                        sections_bak = default_cfg['profiles']['vllm']['deepseek'][n_type]
-                        data['all']['children'][n_type]['hosts'][n_name].update(sections_bak)
+                    if first_check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is False:
+                        return
+                    sections_bak = default_cfg['profiles']['vllm']['deepseek'][n_type]
+                    data['all']['children'][n_type]['hosts'][n_name].update(sections_bak)
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
-                if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is True:
-                    sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-                    data['all']['children'][node_type]['hosts'][n_name].update(sections_bak)
-        else:
-            if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is True:
+                if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is False:
+                    return
                 sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-                data['all']['children'][node_type]['hosts'][node_name].update(sections_bak)
+                data['all']['children'][node_type]['hosts'][n_name].update(sections_bak)
+        else:
+            if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is False:
+                return
+            sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
+            data['all']['children'][node_type]['hosts'][node_name].update(sections_bak)
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
