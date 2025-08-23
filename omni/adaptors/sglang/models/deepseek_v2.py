@@ -60,7 +60,7 @@ from sglang.srt.layers.linear import (
     RowParallelLinear,
 )
 from sglang.srt.layers.logits_processor import LogitsProcessor
-from omni.adaptors.sglang.models.common.layers.moe.ep_moe.layer import (
+from omni.adaptors.sglang.layers.moe.ep_moe.layer import (
     DeepEPMoE,
     NpuDeepEPMoE,
     get_moe_impl_class,
