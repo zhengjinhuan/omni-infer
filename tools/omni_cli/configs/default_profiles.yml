@@ -134,13 +134,12 @@ profiles:
           MODEL_LEN_MAX_DECODE: 16384
 
           LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
-          ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           MODEL_PATH: ""
           AUTO_USE_UC_MEMORY: 1
 
           SERVER_IP_LIST: ""  # decode server ip list
           SERVER_OFFSET: 0
-          PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+          DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           VLLM_WORKER_MULTIPROC_METHOD: fork
           GLOO_SOCKET_IFNAME: enp23s0f3
           TP_SOCKET_IFNAME: enp23s0f3
@@ -232,7 +231,7 @@ profiles:
             kv_parallel_size: $((PREFILL_POD_NUM + 1))
           gpu-util: "0.92"
           additional-config:
-            graph_model_compile_config: '{"level":1}'
+            graph_model_compile_config: {"level":1}
           extra-args:
             enable-expert-parallel: ""
             disable-log-requests: ""
