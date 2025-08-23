@@ -307,6 +307,9 @@ class NPUPlatform(Platform):
         if os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1":
             enable_overwrite_request_id()
         import omni.quantization  # noqa: F401
+        from omni.adaptors.vllm.ems.ems_env import EmsEnv
+        if EmsEnv.enable_vllm_ems:
+            from omni.adaptors.vllm.patches import ems_patch
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:
