@@ -1025,18 +1025,18 @@ def main():
     rmnode_parser.set_defaults(func=rm_node)
 
     # RUN_DOCKER command configuration
-    docker_run_parser = subparsers.add_parser("docker_run", help="Run Docker containers based on inventory")
-    docker_run_parser.add_argument(
+    run_docker_parser = subparsers.add_parser("run_docker", help="Run Docker containers based on inventory")
+    run_docker_parser.add_argument(
         "--inventory", "-i",
         default=str(default_deploy_path),
         help="Path to inventory file (default: omni_cli/configs/servering_profiles.yml)"
     )
-    docker_run_parser.add_argument(
+    run_docker_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Dry run mode - show what would be done without executing"
     )
-    docker_run_parser.set_defaults(func=lambda args: run_docker_containers(
+    run_docker_parser.set_defaults(func=lambda args: run_docker_containers(
         inventory_path=args.inventory,
         dry_run=args.dry_run
     ))
