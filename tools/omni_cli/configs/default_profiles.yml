@@ -243,4 +243,6 @@ profiles:
         LOG_PATH: "/tmp/omni_logs"
         CODE_PATH: "/workspace/omniinfer"
         API_PORT: 9200
-       args: null
+       args: 
+         prefill-lb-sdk: pd_score_balance
+         decode-lb-sdk: pd_score_balance
