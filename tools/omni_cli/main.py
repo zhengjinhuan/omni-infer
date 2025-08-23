@@ -36,6 +36,7 @@ from omni_cli.omni_cfg import parse_node_name
 from omni_cli.omni_cfg import parse_remaining_args
 from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
+from omni_cli.omni_cfg import get_node_name
 
 _DEFAULT_DEPLOY_PATH = None
 
@@ -1041,6 +1042,7 @@ def main():
         print("Install packages.")
         install_packages()
     elif args.command == "cfg":
+        get_node_name(default_deploy_path)
         node_type, node_name = parse_node_name(args.name[0])
         sections = parse_remaining_args(node_type, node_name, args.set, args.remaining_args, default_deploy_path)
         if args.set:
