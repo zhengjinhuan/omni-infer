@@ -38,7 +38,6 @@ from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
 from omni_cli.omni_cfg import get_node_name
 
-_DEFAULT_DEPLOY_PATH = None
 
 def execute_command(command):
     """Execute the ansible command"""
@@ -472,7 +471,7 @@ def get_host_groups(inv_data: dict) -> Dict[str, List[str]]:
             merged_groups = current_groups.copy()
             if "groups" in host_vars:
                 merged_groups.extend(host_vars["groups"])
-            host_groups[host] = list(set(merged_groups))  # 去重
+            host_groups[host] = list(set(merged_groups))
 
         # Handle child nodes
         children = node.get("children", {})
@@ -724,39 +723,35 @@ def install_dev(
 
     print("\nInstall process completed.")
 
-def get_default_deploy_path():
+def get_default_deploy_path(current_cmd):
     """Get or create the default deployment path (file is created only on first call)"""
-    global _DEFAULT_DEPLOY_PATH
-
-    # Return immediately if already set
-    if _DEFAULT_DEPLOY_PATH is not None:
-        return _DEFAULT_DEPLOY_PATH
-
     # Create default file and save path
     current_dir = Path.cwd()
     deploy_path = current_dir / "servering_profiles.yml"
 
     if not deploy_path.exists():
         # Create default inventory structure
-        default_inventory = {
-            "all": {
-                "children": {
-                    "P": {"hosts": {}},
-                    "D": {"hosts": {}},
-                    "C": {"hosts": {}}
+        if current_cmd == 'add_node':
+            default_inventory = {
+                "all": {
+                    "children": {
+                        "P": {"hosts": {}},
+                        "D": {"hosts": {}},
+                        "C": {"hosts": {}}
+                    }
                 }
             }
-        }
 
-        # Write to file
-        with open(deploy_path, "w") as f:
-            yaml.dump(default_inventory, f)
+            # Write to file
+            with open(deploy_path, "w") as f:
+                yaml.dump(default_inventory, f)
 
-        print(f"Created default inventory file at: {deploy_path}")
-
+            print(f"Created default inventory file at: {deploy_path}")
+        else:
+            raise "servering_profiles.yml not found, please confirm the workspace or reinitialize using add_node"
     # Save as absolute path
-    _DEFAULT_DEPLOY_PATH = deploy_path.resolve()
-    return _DEFAULT_DEPLOY_PATH
+    deploy_path = deploy_path.resolve()
+    return deploy_path
 
 def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     """Flatten an Ansible-style inventory dict into [(host, hostvars)]."""
@@ -1021,7 +1016,7 @@ def main():
 
     # ADD_NODE command configuration
     addnode_parser = subparsers.add_parser("add_node", help="Add a node to servering_profiles.yml")
-    default_deploy_path = get_default_deploy_path()
+    default_deploy_path = ''
 
     addnode_parser.add_argument(
         "--deploy_path",
@@ -1103,6 +1098,7 @@ def main():
     ))
     args = parser.parse_args()
 
+    args.deploy_path = get_default_deploy_path(args.command)
     if hasattr(args, 'func'):
         args.func(args)
         return
