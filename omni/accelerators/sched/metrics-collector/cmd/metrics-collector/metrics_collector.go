@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"github.com/gin-gonic/gin"
 	"log"
 	"metrics-collector/pkg/metrics-collector"
 	"metrics-collector/pkg/metrics-collector/logger"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // 验证IP:端口,IP:端口格式的正则表达式
@@ -135,7 +136,7 @@ func initInstance(schedulerServerIpAndPort string, prefillServersList string, de
 			IP:   prefillIpPort[0],
 			Port: prefillPort,
 		})
-		
+
 	}
 
 	decodeServers := strings.Split(decodeServersList, ",")

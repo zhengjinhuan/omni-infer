@@ -8,7 +8,7 @@ import (
 func TestLoadMetricsYamlConfig(t *testing.T) {
 	// 创建临时文件
 	tmpfile, err := os.CreateTemp("", "testfile")
-	if err != nil { 
+	if err != nil {
 		t.Fatal(err)
 	}
 	defer tmpfile.Close()           // 关闭临时文件
@@ -16,14 +16,14 @@ func TestLoadMetricsYamlConfig(t *testing.T) {
 
 	// 写入测试数据
 	_, err = tmpfile.Write([]byte(`configurations:
-	- metric_name: metric1
-	  acting_instance: prefill
-	  operation: sum
-	  type: Gauge
-	- metric_name: metric2
-	  acting_instance: decode
-	  operation: union
-	  type: Counter`))
+  - metric_name: metric1
+    acting_instance: prefill
+    operation: sum
+    type: Gauge
+  - metric_name: metric2
+    acting_instance: decode
+    operation: union
+    type: Counter`))
 	if err != nil {
 		t.Fatal(err)
 	}
