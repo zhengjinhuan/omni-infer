@@ -3,6 +3,27 @@ import os
 import re
 import shlex
 
+NODE_INIT = {}
+
+def get_data_from_yaml(yml_file_path):
+    try:
+        with open(yml_file_path, 'r') as file:
+            data = yaml.safe_load(file)
+    except FileNotFoundError:
+        print("Error: The %s file is not exist." % yml_file_path)
+        return None
+
+    return data
+
+def get_node_name(deploy_path):
+    data = get_data_from_yaml(deploy_path)
+    if data:
+        for node_type in data['all']['children']:
+            for node_name in data['all']['children'][node_type]['hosts']:
+                NODE_INIT[node_name] = False
+    else:
+        raise ValueError(f"There is no data in {deploy_path}")
+
 def parse_node_name(name):
     """Parse node name, return node type and index"""
     if not name:
@@ -59,21 +80,6 @@ def parse_remaining_args_for_delete(arg, remaining_args, sections, i):
 
     return i
 
-def get_data_from_yaml(yml_file_path):
-    try:
-        with open(yml_file_path, 'r') as file:
-            data = yaml.safe_load(file)
-    except FileNotFoundError:
-        print("Error: The %s file is not exist." % yml_file_path)
-        return None
-
-    if 'all' not in data or 'children' not in data['all']:
-        print("Error: The %s file structure does not meet expectations, missing the 'all.children' section." \
-            % yml_file_path)
-        return None
-
-    return data
-
 def update_container_name(node_type, node_name, container_name_prefix, yml_file_path):
     data = get_data_from_yaml(yml_file_path)
     if data:
@@ -93,30 +99,28 @@ def update_container_name(node_type, node_name, container_name_prefix, yml_file_
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
-        print(f"Error: The {yml_file_path} does not exist.")
+        raise ValueError(f"There is no data in {yml_file_path}")
         return
 
 def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_path):
     """Resolve the remaining parameters."""
     if is_set:
-        sections = {'env': {}, 'arg': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
-            'EXECUTOR_CODE_PATH': '', 'container_name': ''}
+        sections = {'env': {}, 'args': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', 'container_name': ''}
     else:
-        sections = {'env': [], 'arg': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
-            'EXECUTOR_CODE_PATH': '', 'container_name': '', 'extra-args': [], 'additional-config': [], \
-            'kv-transfer-config': []}
+        sections = {'env': [], 'args': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
+            'container_name': '', 'extra-args': [], 'additional-config': [], 'kv-transfer-config': []}
     seen_sections = set()
 
     i = 0
     while i < len(remaining_args):
         arg = remaining_args[i]
-        if arg in sections.keys()[:1]:
+        if arg in list(sections.keys())[:2]:
             if arg in seen_sections:
                 raise ValueError(f"Duplicate section keyword '{arg}'")
             seen_sections.add(arg)
             if i + 1 >= len(remaining_args) or not remaining_args[i+1].startswith('--'):
                 raise ValueError(f"Missing value for key: '{arg}'")
-            elif remaining_args[i+1][2:] not in sections.keys()[2:]:
+            elif remaining_args[i+1][2:] not in list(sections.keys())[2:]:
                 if is_set:
                     parse_remaining_args_for_set(arg, remaining_args, sections, i)
                     i += 3
@@ -125,7 +129,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                     i += 2
             else:
                 raise ValueError(f"Unexpected argument '{remaining_args[i+1]}' after (env/arg)")
-        elif arg[2:] in sections.keys()[2:5]:
+        elif arg[2:] in list(sections.keys())[2:6]:
             if arg in seen_sections:
                 raise ValueError(f"Duplicate section keyword '{arg}'")
             seen_sections.add(arg)
@@ -142,16 +146,18 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
             if is_set:
                 update_container_name(node_type, node_name, remaining_args[i+1], yml_file_path)
             else:
-                raise ValueError(f"Unexpected key {arg[2:]}")
+                raise ValueError(f"Unexpected key {arg}")
         else:
-            raise ValueError(f"Unexpected key {arg[2:]}")
+            raise ValueError(f"Unexpected key {arg}")
 
     return sections
 
 def check_model_path(data, node_type, node_name):
+    if node_type == 'C':
+        return True
     model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
     if model_path == '' or model_path is None:
-        print("Error: The model_path is not configured. Please set the configuration.")
+        print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
         return False
 
     return True
@@ -162,21 +168,29 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
-                    print("你已修改所有节点的配置")
-                    data['all']['children'][n_type]['hosts'][n_name].update(sections)
+                    for key, value in sections.items():
+                        if value != '' and value != {} and key in data['all']['children'][n_type]['hosts'][n_name]:
+                            data['all']['children'][n_type]['hosts'][n_name][key].update(sections[key])
                     if check_model_path(data, n_type, n_name) is not True:
                         return
+            print("你已修改所有节点的配置")
         elif node_type == 'P' or node_type == 'D' or node_type == 'C':
             for n_name in data['all']['children'][node_type]['hosts']:
-                print("你已修改 %s 组所有节点的配置" % node_type)
-                data['all']['children'][node_type]['hosts'][n_name].update(sections)
+                for key, value in sections.items():
+                    if value != '' and value != {} and key in data['all']['children'][node_type]['hosts'][n_name]:
+                        data['all']['children'][node_type]['hosts'][n_name][key].update(sections[key])
                 if check_model_path(data, node_type, n_name) is not True:
                     return
+            print("你已修改 %s 组所有节点的配置" % node_type)
         else:
-            print("你已修改 %s 节点的配置" % n_name)
-            data['all']['children'][node_type]['hosts'][node_name].update(sections)
+            for key, value in sections.items():
+                if node_name not in list(NODE_INIT.keys()):
+                    raise ValueError(f"There is no {node_name}")
+                if value != '' and value != {} and key in data['all']['children'][node_type]['hosts'][node_name]:
+                    data['all']['children'][node_type]['hosts'][node_name][key].update(sections[key])
             if check_model_path(data, node_type, node_name) is not True:
                 return
+            print("你已修改 %s 节点的配置" % n_name)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
@@ -285,22 +299,21 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         return
 
     update_cfg_yml(node_type, node_name, sections, deploy_path)
-    if check_model_path is True:
-        default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
-        default_cfg = get_data_from_yaml(default_cfg_path)
-        data =  get_data_from_yaml(deploy_path)
-        if data:
-            for node_type in default_cfg['profiles']['vllm']['deepseek']:
-                for node_name in data['all']['children'][node_type]['hosts']:
+    default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
+    default_cfg = get_data_from_yaml(default_cfg_path)
+    data =  get_data_from_yaml(deploy_path)
+    if data:
+        for node_type in default_cfg['profiles']['vllm']['deepseek']:
+            for node_name in data['all']['children'][node_type]['hosts']:
+                if check_model_path(data, node_type, node_name) is True and NODE_INIT[node_name] is False:
                     sections = default_cfg['profiles']['vllm']['deepseek'][node_type]
                     data['all']['children'][node_type]['hosts'][node_name].update(sections)
-            
-            with open(yml_file_path, 'w') as file:
-                yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-        else:
-            print(f"Error: The {yml_file_path} does not exist.")
-            return
-
+                    NODE_INIT[node_name] = True
+        with open(deploy_path , 'w') as file:
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+    else:
+        raise ValueError(f"There is no data in {deploy_path}")
+        return
 
 def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:

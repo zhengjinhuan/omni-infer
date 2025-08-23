@@ -36,6 +36,7 @@ from omni_cli.omni_cfg import parse_node_name
 from omni_cli.omni_cfg import parse_remaining_args
 from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
+from omni_cli.omni_cfg import get_node_name
 
 _DEFAULT_DEPLOY_PATH = None
 
@@ -1042,18 +1043,18 @@ def main():
     rmnode_parser.set_defaults(func=rm_node)
 
     # RUN_DOCKER command configuration
-    docker_run_parser = subparsers.add_parser("docker_run", help="Run Docker containers based on inventory")
-    docker_run_parser.add_argument(
+    run_docker_parser = subparsers.add_parser("run_docker", help="Run Docker containers based on inventory")
+    run_docker_parser.add_argument(
         "--inventory", "-i",
         default=str(default_deploy_path),
         help="Path to inventory file (default: omni_cli/configs/servering_profiles.yml)"
     )
-    docker_run_parser.add_argument(
+    run_docker_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Dry run mode - show what would be done without executing"
     )
-    docker_run_parser.set_defaults(func=lambda args: run_docker_containers(
+    run_docker_parser.set_defaults(func=lambda args: run_docker_containers(
         inventory_path=args.inventory,
         dry_run=args.dry_run
     ))
@@ -1127,6 +1128,7 @@ def main():
         print("Install packages.")
         install_packages()
     elif args.command == "cfg":
+        get_node_name(default_deploy_path)
         node_type, node_name = parse_node_name(args.name[0])
         sections = parse_remaining_args(node_type, node_name, args.set, args.remaining_args, default_deploy_path)
         if args.set:
