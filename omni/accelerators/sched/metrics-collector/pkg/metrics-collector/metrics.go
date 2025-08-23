@@ -1,20 +1,21 @@
 package metrics_collector
 
 import (
+	"strings"
 	"sync"
 )
 
 var (
-	staticMap map[string][string]
+	staticMap map[string]string
 	initOnce  sync.Once
 )
 
-// 需要从RouterServer中获取的指标名称和vLLM原生的指标名称对照
+// 需要从RouteServer中获取的指标名称和vLLM原生的指标名称的对照
 func initStaticMap() {
 	staticMap = map[string]string{
-		"rs:time_to_first_token_sec":  "vllm:time_to_first_token_seconds"
-		"rs:time_per_output_token_ms": "vllm:time_per_output_token_seconds"
-		"rs:request_total_time_secs":  "vllm:e2e_request_latency_seconds"
+		"rs:time_to_first_token_sec":  "vllm:time_to_first_token_seconds",
+		"rs:time_per_output_token_ms": "vllm:time_per_output_token_seconds",
+		"rs:request_total_time_secs":  "vllm:e2e_request_latency_seconds",
 	}
 }
 
@@ -23,12 +24,21 @@ func GetStaticMap() map[string]string {
 	return staticMap
 }
 
-var vLLMLabels = []string{"model_name", "engine"}
-var CollectLabels = []string{"role", "instance", "engine", "model_name"}
+// 收集时需要增加的labels来区分各个不同的实例
+var collectLabels = []string{"role", "instance"}
 
-func getMetricsLabels(isAgg bool) []string {
-	if isAgg { 
-		return vLLMLabels
+func getCollectorLabels(isAgg bool) []string {
+	return collectLabels
+}
+
+func getRealMetricsName(metricsName string) string {
+	// 是从route server获取到的metrics
+	if strings.HasPrefix(metricsName, "rs:") {
+		name, ok := GetStaticMap()[metricsName]
+		if !ok {
+			return ""
+		}
+		return name
 	}
-	return CollectLabels
+	return metricsName
 }

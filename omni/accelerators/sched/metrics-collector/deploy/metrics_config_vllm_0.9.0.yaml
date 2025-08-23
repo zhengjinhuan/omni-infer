@@ -1,3 +1,5 @@
+metrics_collect_interval: 5
+metrics_request_timeout: 10
 configurations:
 - metric_name: "vllm:num_requests_running"
   acting_instance: "api_server"
@@ -19,7 +21,7 @@ configurations:
   operation: "sum"
   type: "Counter"
 
-- metric_name: "vllm:gpu_prefix_hits_total"
+- metric_name: "vllm:gpu_prefix_cache_hits_total"
   acting_instance: "prefill"
   operation: "sum"
   type: "Counter"
@@ -39,7 +41,7 @@ configurations:
   operation: "sum"
   type: "Counter"
 
-- metric_name: "vllm:request_seccess_total"
+- metric_name: "vllm:request_success_total"
   acting_instance: "option"
   operation: "sum"
   type: "Counter"
@@ -112,7 +114,7 @@ configurations:
 - metric_name: "vllm:lora_requests_info"
   acting_instance: "api_server"
   operation: "union"
-  type: "Histogram"
+  type: "Gauge"
 
 - metric_name: "vllm:spec_decode_num_drafts_total"
   acting_instance: "decode"
