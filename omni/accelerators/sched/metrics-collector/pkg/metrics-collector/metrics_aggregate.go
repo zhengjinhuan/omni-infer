@@ -2,7 +2,7 @@ package metrics_collector
 
 import (
 	"fmt"
-	"github.com/premetheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"reflect"
 	"strings"
@@ -37,16 +37,16 @@ func combineHistogramMetrics(c *Collector, MetricsName string, role string) erro
 	if len(labels) > 0 {
 		// 获取到目标数据写入普罗
 		c.aggregateHistogramMetrics[MetricsName].SetHistogramData(labels, &HistogramData{
-			SampleCount:  sampleCount,
-			SampleSum:    sampleSum,
-			Buckets:      buckets,
+			SampleCount: sampleCount,
+			SampleSum:   sampleSum,
+			Buckets:     buckets,
 		})
 	}
 	return nil
 }
 
 // 对目标metrics执行sum操作
-fun sumMetrics(c *Collector, MetricsName string, metricsType string, role string) error {
+func sumMetrics(c *Collector, MetricsName string, metricsType string, role string) error {
 	if metricsType == "Gauge" {
 		err := sumGaugeMetrics(c, MetricsName, role)
 		if err != nil {

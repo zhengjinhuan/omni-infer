@@ -11,9 +11,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unicode"
+
+	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
 )
 
 var metricsChan chan struct{}
@@ -64,8 +68,8 @@ func generateLabelKey(labels prometheus.Labels) string {
 }
 
 // 获取指定指标在该instances上的所有标签信息
-func (i Instance) getInstanceLabelsForMetrics(metricsName string) []promethues.Labels {
-	var allLabels = []promethues.Labels
+func (i Instance) getInstanceLabelsForMetrics(metricsName string) []prometheus.Labels {
+	var allLabels = []prometheus.Labels
 	if labels, exists := i.MetricsLabels[metricsName]; exists {
 		for _, label := range labels {
 			allLabels = append(allLabels, label)
@@ -78,14 +82,14 @@ type Collector struct {
 	mapMutex                   sync.Mutex
 	collectEnable              bool
 	instance                   []Instance
-	registry                   *promethues.Registry
-	aggRegistry                *promethues.Registry
+	registry                   *prometheus.Registry
+	aggRegistry                *prometheus.Registry
 	interval                   time.Duration
-	gaugeMetrics               map[string]*promethues.GuageVec
-	counterMetrics             map[string]*promethues.CounterVec
+	gaugeMetrics               map[string]*prometheus.GaugeVec
+	counterMetrics             map[string]*prometheus.CounterVec
 	histogramMetrics           map[string]*CustomHistogram
-	aggregatedGaugeMetrics     map[string]*promethues.GuageVec
-	aggregatedCounterMetrics   map[string]*promethues.CounterVec
+	aggregatedGaugeMetrics     map[string]*prometheus.GaugeVec
+	aggregatedCounterMetrics   map[string]*prometheus.CounterVec
 	aggregatedHistogramMetrics map[string]*CustomHistogram
 	metricsConfig              MetricsConfig
 }
@@ -112,8 +116,8 @@ func SetRunningFun(customizeRunning func() bool) {
 func MetricsCollector(instances []Instance, interval time.Duration, yamlPath string) (*Collector, error) {
 	logger.InitLogger()
 	logger.Logger().Infof("interval time is %d", interval)
-	registry := promethues.NewRegistry()
-	aggRegistry := promethues.NewRegistry()
+	registry := prometheus.NewRegistry()
+	aggRegistry := prometheus.NewRegistry()
 
 	metricsConfig, err := loadMetricsYamlConfig(yamlPath)
 	if err != nil {
@@ -122,13 +126,13 @@ func MetricsCollector(instances []Instance, interval time.Duration, yamlPath str
 	}
 
 	// 各个实例指标初始化
-	gaugeMetrics := make(map[string]*promethues.GuageVec)
-	counterMetrics := make(map[string]*promethues.CounterVec)
+	gaugeMetrics := make(map[string]*prometheus.GuageVec)
+	counterMetrics := make(map[string]*prometheus.CounterVec)
 	histogramMetrics := make(map[string]*CustomHistogram)
 
 	// 聚合指标初始化
-	aggregatedGaugeMetrics := make(map[string]*promethues.GuageVec)
-	aggregatedCounterMetrics := make(map[string]*promethues.CounterVec)
+	aggregatedGaugeMetrics := make(map[string]*prometheus.GuageVec)
+	aggregatedCounterMetrics := make(map[string]*prometheus.CounterVec)
 	aggregatedHistogramMetrics := make(map[string]*CustomHistogram)
 
 	for i := range instances {
@@ -165,7 +169,7 @@ func MetricsCollector(instances []Instance, interval time.Duration, yamlPath str
 func (c *Collector) HandlerMetricsRequest(ctx *gin.Context) {
 	// 检查URL参数
 	detailEnabled := ctx.Query("detailEnabled")
-	var registry *promethues.Registry
+	var registry *prometheus.Registry
 
 	if strings.ToLower(detailEnabled) == "true" {
 		// 返回原始指标
@@ -175,7 +179,7 @@ func (c *Collector) HandlerMetricsRequest(ctx *gin.Context) {
 		registry = c.aggRegistry
 	}
 
-	// 使用promethues的HTTP处理器输出指标
+	// 使用prometheus的HTTP处理器输出指标
 	handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 	handler.ServeHTTP(ctx.Writer, ctx.Request)
 	c.runMetricsCollectLoop()
@@ -280,7 +284,7 @@ func (c *Collector) recordMetrics(instance *Instance, metrics string) {
 			// 新添加label标签， 当前是两个：
 			// 1. role 角色： Prefill， Decode
 			// 2. instance 当前默认是实例的ip
-			labels := promethues.Labels{
+			labels := prometheus.Labels{
 				"role":     instance.Role,
 				"instance": fmt.Sprintf("%s:%d", instance.IP, instance.Port),
 			}
@@ -329,7 +333,7 @@ func (c *Collector) isMetricsRegistered(metricsName string) bool {
 
 // 自动注册
 func (c *Collector) registerDiscoveredMetrics(m *dto.MetricFamily, labels []string, metricsName string) {
-	// 指标一级map只有在这里会被写，其他地方都是读。 二级map例如*promethues.GaugeVec内部以后加锁
+	// 指标一级map只有在这里会被写，其他地方都是读。 二级map例如*prometheus.GaugeVec内部以后加锁
 	c.mapMutex.Lock()
 	defer c.mapMutex.Unlock()
 	// 检查指标是否已经注册
@@ -346,14 +350,14 @@ func (c *Collector) registerDiscoveredMetrics(m *dto.MetricFamily, labels []stri
 	}
 }
 
-func recordGaugeMetrics(c *Collector, name string, labels promethues.Labels, metrics *dto.Metric) {
+func recordGaugeMetrics(c *Collector, name string, labels prometheus.Labels, metrics *dto.Metric) {
 	if gauge, ok := c.gaugeMetrics[name]; ok && metrics.Gauge != nil {
 		gauge.With(labels).Set(metric.GetGauge().GetValue())
 	}
 }
 
-func recordHistogramMetrics(c *Collector, name string, labels promethues.Labels, metrics *dto.Metric) {
-	if metric.Histogram != nil && c.histogramMetrics[name] != nil {
+func recordHistogramMetrics(c *Collector, name string, labels prometheus.Labels, metrics *dto.Metric) {
+	if metrics.Histogram != nil && c.histogramMetrics[name] != nil {
 		// 原有histogram不支持直接赋值，需要自定义一个histogram来计算
 		his := metrics.Histogram
 		sampleCount := his.GetSampleCount()
@@ -363,13 +367,13 @@ func recordHistogramMetrics(c *Collector, name string, labels promethues.Labels,
 		hisData := &HistogramData{
 			SampleCount: sampleCount,
 			SampleSum:   sampleSum,
-			Buckets:     make(map[float64]unit64),
+			Buckets:     make(map[float64]uint64),
 		}
 		for _, bucket := range buckets {
 			hisData.Buckets[bucket.GetUpperBound()] = bucket.GetCumulativeCount()
 		}
 
-		if customHist, ok := c.histogramMetrics[name]; ok && metric.Histogram != nil {
+		if customHist, ok := c.histogramMetrics[name]; ok && metrics.Histogram != nil {
 			customHist.SetHistogramData(labels, hisData)
 		}
 	}
@@ -466,7 +470,7 @@ func registerHistogramMetrics(c *Collector, m *dto.MetricFamily, labels []string
 	c.aggregatedHistogramMetrics[metricsName] = aggHistogram
 }
 
-func registerUnionMetrics(c *Collector, metricsName string, metrics promethues.Labels) bool {
+func registerUnionMetrics(c *Collector, metricsName string, metrics prometheus.Labels) bool {
 	if op, ok := c.metricsConfig.metricOperation[metricsName]; ok {
 		// 对于组合的metrics指标， 不需要创建聚合指标对象， 服用从各个实例获取的指标列表
 		if op == "union" {
@@ -480,7 +484,7 @@ func registerUnionMetrics(c *Collector, metricsName string, metrics promethues.L
 	return false
 }
 
-func createNewGaugeVec(metricsName string, help string, labels []string) *promethues.GaugeVec {
+func createNewGaugeVec(metricsName string, help string, labels []string) *prometheus.GaugeVec {
 	return prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: metricsName,
@@ -490,7 +494,7 @@ func createNewGaugeVec(metricsName string, help string, labels []string) *promet
 	)
 }
 
-func createNewCounterVec(metricsName string, help string, labels []string) *promethues.CounterVec {
+func createNewCounterVec(metricsName string, help string, labels []string) *prometheus.CounterVec {
 	return prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricsName,
