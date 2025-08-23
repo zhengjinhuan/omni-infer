@@ -1099,6 +1099,7 @@ def main():
     args = parser.parse_args()
 
     args.deploy_path = get_default_deploy_path(args.command)
+    default_deploy_path = args.deploy_path
     if hasattr(args, 'func'):
         args.func(args)
         return
