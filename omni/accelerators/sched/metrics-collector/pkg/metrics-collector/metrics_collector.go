@@ -27,18 +27,18 @@ type Instance struct {
 	MetricsLabels map[string]map[string]prometheus.Labels
 }
 
-// 更新instance已经手机的标签信息
+// 更新instance已经收集的标签信息
 func (i *Instance) updateInstanceLabels(name string, labels prometheus.Labels) {
 	// 如果该指标没有被记录，初始化一个
 	if i.MetricsLabels[name] == nil {
 		i.MetricsLabels[name] = make(map[string]prometheus.Labels)
 	}
 
-	// 生成标签， 快速去重
+	// 生成标签，快速去重
 	labelKey := generateLabelKey(labels)
 
-	// 检查标签是否存在， 避免重复
-	if _, exists := i.MetricsLabels[name][labelKey]; !exists {
+	// 检查标签是否存在，避免重复
+	if _, exists := i.MetricsLabels[name][labelKey]; exists {
 		return
 	}
 
@@ -159,14 +159,14 @@ func NewMetricsCollector(instances []Instance, yamlPath string) (*Collector, err
 		gaugeMetrics:     gaugeMetrics,
 		counterMetrics:   counterMetrics,
 		histogramMetrics: histogramMetrics,
-		// 汇聚数据
+		// 聚合数据
 		aggregatedGaugeMetrics:     aggregatedGaugeMetrics,
 		aggregatedCounterMetrics:   aggregatedCounterMetrics,
 		aggregatedHistogramMetrics: aggregatedHistogramMetrics,
-		// 聚合配置
+		// 汇聚配置
 		metricsConfig: *metricsConfig,
 	}
-	logger.Logger().Infof("init metrics collector successful and interval time is %d  seconds", interval)
+	logger.Logger().Infof("init metrics collector successful and interval time is %d seconds", interval)
 	metricsCollector.runMetricsCollectLoop()
 	return metricsCollector, nil
 }
