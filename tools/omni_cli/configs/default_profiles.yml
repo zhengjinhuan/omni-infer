@@ -91,8 +91,8 @@ profiles:
           # CPU_AFFINITY_CONF: 1,npu0:0-1,npu1:40-41,npu2:80-81,npu3:120-121,npu4:160-161,npu5:200-201,npu6:240-241,npu7:280-281
 
         args:
-          num-servers: null
-          num-dp: null
+          num-servers: 1
+          num-dp: 1
           server-offset: "$SERVER_OFFSET"
           model-path: "$MODEL_PATH"
           master-ip: "$HOST_IP"
@@ -134,13 +134,12 @@ profiles:
           MODEL_LEN_MAX_DECODE: 16384
 
           LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
-          ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           MODEL_PATH: ""
           AUTO_USE_UC_MEMORY: 1
 
           SERVER_IP_LIST: ""  # decode server ip list
           SERVER_OFFSET: 0
-          PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+          DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           VLLM_WORKER_MULTIPROC_METHOD: fork
           GLOO_SOCKET_IFNAME: enp23s0f3
           TP_SOCKET_IFNAME: enp23s0f3
@@ -211,15 +210,15 @@ profiles:
           # CPU_AFFINITY_CONF: 1,npu0:0-1,npu1:40-41,npu2:80-81,npu3:120-121,npu4:160-161,npu5:200-201,npu6:240-241,npu7:280-281
 
         args:
-          num-servers: "16"
-          num-dp: ""
+          num-servers: 16
+          num-dp: 32
           server-offset: "$SERVER_OFFSET"
           model-path: "$MODEL_PATH"
           master-ip: "$HOST_IP"
           max-model-len: "$MODEL_LEN_MAX_DECODE"
           master-port: "$MASTER_PORT"
           base-api-port: "$API_PORT"
-          tp: "1"
+          tp: 1
           served-model-name: "deepseek"
           log-dir: "$LOG_PATH"
           enable-mtp: ""
@@ -232,7 +231,7 @@ profiles:
             kv_parallel_size: $((PREFILL_POD_NUM + 1))
           gpu-util: "0.92"
           additional-config:
-            graph_model_compile_config: '{"level":1}'
+            graph_model_compile_config: {"level":1}
           extra-args:
             enable-expert-parallel: ""
             disable-log-requests: ""
