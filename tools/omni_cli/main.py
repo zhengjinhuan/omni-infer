@@ -144,7 +144,7 @@ def _verify_and_fix_env_vars(
     """
     Detect port conflicts per machine (same IP). If conflicts found, bump by `offset` repeatedly until unique.
     """
-
+    print("[info] verifying and fixing environment variables...")
     port_vars = ["API_PORT", "MASTER_PORT", "VLLM_LLMDATADIST_ZMQ_PORT"]
     offset: int = 16
     all_hosts = _walk_hosts(inventory.get("all", inventory))  # {host: {vars}}
@@ -166,7 +166,10 @@ def _verify_and_fix_env_vars(
             for host, env in items:
                 port = int(env.get(pv)) if pv in env and str(env.get(pv)).isdigit() else None
                 if port is None:
-                    print(f"[warn] host={host} has no {pv}; skipped.")
+                    if env.get("ROLE", None) in ["prefill", "decode"]:
+                        print(f"[warn] host={host} has no {pv}; skipped.")
+                    elif env.get("ROLE", None) in ["proxy"] and pv == "API_PORT":
+                        print(f"[warn] host={host} has no {pv} (proxy port); please fix manually.")
                     continue
                 if port in used_ports:
                     conflicts.append((host, env, port))
@@ -277,8 +280,10 @@ def _verify_and_fix_env_vars(
         if "MASTER_PORT" in hv.get("env", {}):
             role = hv.get("env", {}).get("ROLE", None)
             master_port_dict = master_port_p_dict if role == "P" else master_port_d_dict
-            if role:
+            if role == "prefill" or role == "decode":
                 master_port = master_port_dict.get(host_ip, None)
+                if master_port is None:
+                    print(f"[Warning] host={host} with master ip={host_ip} can not find MASTER_PORT")
                 if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
                     hv.get("env", {})["MASTER_PORT"] = master_port
                     need_overwrite_inv = True
@@ -288,6 +293,8 @@ def _verify_and_fix_env_vars(
         with open(inventory_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(inventory, f, default_flow_style=False, sort_keys=False)
         print(f"[info] inventory written back to {inventory_path}")
+    else:
+        print(f"[info] inventory at {inventory_path} has passed verification")
 
 
 
