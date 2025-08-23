@@ -11,7 +11,7 @@
 #include <float.h>
 #include <math.h>
 #include <ngx_atomic.h>
-#include "jsmn.h"
+#include "../../../modules/ngx_http_prefill_module/jsmn.h"
 
 #define DEFAULT_BATCH_SIZE 16
 #define MAX_PEERS          512
