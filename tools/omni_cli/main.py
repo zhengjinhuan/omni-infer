@@ -200,7 +200,7 @@ def _verify_and_fix_env_vars(
         kv_rank_dict[host] = kv_rank
         kv_rank += 1
         device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
-        tp = hv.get('args', {}).get('tp', 16)
+        tp = int(hv.get('args', {}).get('tp', 16))
         num_server_dict[host] = device_count // tp
         num_dp_dict_p[host] = device_count // tp
     for host, hv in inventory['all']['children']['D']['hosts'].items():
@@ -212,7 +212,7 @@ def _verify_and_fix_env_vars(
         server_offset += device_count
         host_ip_dict[host] = hv.get('host_ip', None)
         kv_rank_dict[host] = kv_rank
-        tp = hv.get('args', {}).get('tp', 1)
+        tp = int(hv.get('args', {}).get('tp', 1))
         num_server_dict[host] = device_count // tp
         total_dp_d += device_count // tp
         num_dp_dict_d[host] = total_dp_d
