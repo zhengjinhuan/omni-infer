@@ -74,8 +74,8 @@ def update_container_name(node_type, node_name, container_name_prefix, yml_file_
     if data:
         if node_type == 'all':
             for n_type in data['all']['children']:
-                for n_name in data['all']['dhildren']['n_type']['hosts']:
-                    data['all']['dhildren']['n_type']['hosts'][n_name]['container_name'] = \
+                for n_name in data['all']['children'][n_type]['hosts']:
+                    data['all']['children'][n_type]['hosts'][n_name]['container_name'] = \
                         f'{container_name_prefix}_{n_name}'
         elif node_type == 'P' or node_type == 'D' or node_type == 'C':
             for n_name in data['all']['children'][node_type]['hosts']:
