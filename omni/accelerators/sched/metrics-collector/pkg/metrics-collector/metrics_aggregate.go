@@ -2,41 +2,42 @@ package metrics_collector
 
 import (
 	"fmt"
-	"github.com/premetheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"reflect"
 	"strings"
 )
 
 // 对目标metrics数据执行histogram combine操作
-func combineHistogramMetrics(c *Collector, MetricsName string, role string) error {
-	SampleCount := uint64(0)
-	SampleSum := 0.0
-	buckets := make[map[float64]uint64]
+func combineHistogramMetrics(c *Collector, metricsName string, role string) error {
+	sampleCount := uint64(0)
+	sampleSum := 0.0
+	buckets := make(map[float64]uint64)
 	var labels = prometheus.Labels{}
 
 	for _, instance := range c.instances {
 		// 实例身份需要为目标身份才会被统计， 注： api_server包括所有的P、D实例
 		if strings.ToLower(instance.Role) == role || (role == "api_server" && strings.ToLower(instance.Role) != "scheduler") {
-			metrics := c.histogramMetrics[MetricsName]
-			allLabels := instance.getInstanceLabelsForMetrics(MetricsName)
+			metrics := c.histogramMetrics[metricsName]
+			allLabels := instance.getInstanceLabelsForMetrics(metricsName)
 			for _, label := range allLabels {
 				if len(labels) == 0 {
 					labels = filterCustomLabels(label)
 					labels["engine"] = "All"
 				}
 				histogramData := metrics.GetHistogramData(label)
-				SampleCount += histogramData.SampleCount
-				SampleSum += histogramData.SampleSum
+				sampleCount += histogramData.SampleCount
+				sampleSum += histogramData.SampleSum
 				for upperBound, count := range histogramData.Buckets {
 					buckets[upperBound] += count
 				}
 			}
 		}
 	}
+
 	if len(labels) > 0 {
-		// 获取到目标数据写入普罗
-		c.aggregateHistogramMetrics[MetricsName].SetHistogramData(labels, &HistogramData{
+		// 获取到目标数据则写入普罗
+		c.aggregatedHistogramMetrics[metricsName].SetHistogramData(labels, &HistogramData{
 			SampleCount:  sampleCount,
 			SampleSum:    sampleSum,
 			Buckets:      buckets,
@@ -46,14 +47,14 @@ func combineHistogramMetrics(c *Collector, MetricsName string, role string) erro
 }
 
 // 对目标metrics执行sum操作
-fun sumMetrics(c *Collector, MetricsName string, metricsType string, role string) error {
+func sumMetrics(c *Collector, metricsName string, metricsType string, role string) error {
 	if metricsType == "Gauge" {
-		err := sumGaugeMetrics(c, MetricsName, role)
+		err := sumGaugeMetrics(c, metricsName, role)
 		if err != nil {
 			return err
 		}
 	} else if metricsType == "Counter" {
-		err := sunCounterMetrics(c, MetricsName, role)
+		err := sumCounterMetrics(c, metricsName, role)
 		if err != nil {
 			return err
 		}
@@ -86,7 +87,7 @@ func sumGaugeMetrics(c * Collector, metricsName string, role string) error {
 
 	if len(labels) > 0 {
 		// 获取到目标数据则写入普罗
-		c.aggregateHistogramMetrics[metricsName].With(labels).Set(gaugeCount)
+		c.aggregatedGaugeMetrics[metricsName].With(labels).Set(gaugeCount)
 	}
 	return nil
 }
@@ -95,25 +96,25 @@ func sumGaugeMetrics(c * Collector, metricsName string, role string) error {
 func sumCounterMetrics(c *Collector, metricsName string, role string) error {
 	metrics := c.counterMetrics[metricsName]
 
-	tragetLabels := getTargetLabels(c.instance, metricsName)
+	targetLabels := getTargetLabels(c.instances, metricsName)
 
-	for _, tragetLabel := range tragetLabels {
+	for _, targetLabel := range targetLabels {
 		var labels = prometheus.Labels{}
 		counterCount := float64(0)
 
-		for _, instance := c.instances {
+		for _, instance := range c.instances {
 			// 实例身份需要为目标身份才会被统计， 注： api_server包括所有的P、D实例
 			if strings.ToLower(instance.Role) == role ||
 			(role == "api_server" && strings.ToLower(instance.Role) != "scheduler") ||
-			optionForRequestSuccess(role, strings.ToLower(instance.Role), metricsName, tragetLabel) {
+			optionForRequestSuccess(role, strings.ToLower(instance.Role), metricsName, targetLabel) {
 				allLabels := instance.getInstanceLabelsForMetrics(metricsName)
 				for _, label := range allLabels {
-					if !labelsMatch(label, tragetLabel) {
+					if !labelsMatch(label, targetLabel) {
 						continue
 					}
 					if len(labels) == 0 {
 						labels = filterCustomLabels(label)
-						labels["engien"] = "All"
+						labels["enginen"] = "All"
 					}
 					value := getMetricsValueFromSpecificLabels(label, metrics)
 					counterCount += value
@@ -129,8 +130,8 @@ func sumCounterMetrics(c *Collector, metricsName string, role string) error {
 }
 
 // 针对vllm:request_success_total指标的特殊处理
-func optionForRequestSuccess(role string, instanceRole string, metricsName string, tragetLabel prometheus.Labels) bool {
-	if role == "option" {
+func optionForRequestSuccess(role string, instanceRole string, metricsName string, targetLabel prometheus.Labels) bool {
+	if role != "option" {
 		return false
 	}
 	if metricsName != "vllm:request_success_total" {
@@ -138,25 +139,25 @@ func optionForRequestSuccess(role string, instanceRole string, metricsName strin
 	}
 
 	// finished_reason="abort" -> 统计P+D
-	if labelsMatch(tragetLabel, prometheus.Labels{"finished_reason": "abort"}) && instanceRole != "scheduler" {
+	if labelsMatch(targetLabel, prometheus.Labels{"finished_reason": "abort"}) && instanceRole != "scheduler" {
 		return true
 	}
 
 	// finished_reason="length" -> 统计P+D
-	if labelsMatch(tragetLabel, premetheus.Labels{"finished_reason": "length"}) && instanceRole != "scheduler" {
+	if labelsMatch(targetLabel, prometheus.Labels{"finished_reason": "length"}) && instanceRole != "scheduler" {
 		return true
 	}
 
 	// finished_reason="stop" -> 统计D
-	if labelsMatch(tragetLabel, premetheus.Labels{"finished_reason": "stop"}) && instanceRole != "decode" {
+	if labelsMatch(targetLabel, prometheus.Labels{"finished_reason": "stop"}) && instanceRole == "decode" {
 		return true
 	}
 
 	return false
 }
 
-// 过滤自定义label，还原为初始label
-// 注：默认认为instance、role为自定义后加入label，需要剔除
+// 过滤自定义label, 还原为初始label
+// 注：默认认为instance、role为自定义的后加入label, 需要剔除
 func filterCustomLabels(src prometheus.Labels) prometheus.Labels {
 	dst := prometheus.Labels{}
 	for k, v := range src {
@@ -173,7 +174,7 @@ func isEmptyInstance(instance Instance) bool {
 }
 
 // 获取需要进行筛选的目标指标
-// 默认认为instance、role、engine为需要过滤掉的变量label，剩下的label则为目标label
+// 注：默认认为instance、role、engine为需要过滤掉的变量label，剩下的label则为目标label
 func getTargetLabels(instances []Instance, metricsName string) []prometheus.Labels {
 	var apiServerInstance Instance
 	labelsList := make([]prometheus.Labels, 0)
@@ -191,13 +192,13 @@ func getTargetLabels(instances []Instance, metricsName string) []prometheus.Labe
 
 	allLabels := apiServerInstance.getInstanceLabelsForMetrics(metricsName)
 	for _, label := range allLabels {
-		tragetLabel := filterCustomLabels(label)
-		labelsList = append(labelsList, tragetLabel)
+		targetLabel := filterTargetLabels(label)
+		labelsList = append(labelsList, targetLabel)
 	}
 	return labelsList
 }
 
-func filterCustomLabels(src prometheus.Labels) prometheus.Labels {
+func filterTargetLabels(src prometheus.Labels) prometheus.Labels {
 	dst := prometheus.Labels{}
 
 	for k, v := range src {
@@ -210,8 +211,8 @@ func filterCustomLabels(src prometheus.Labels) prometheus.Labels {
 }
 
 // 判断目标label是否包含在给定的label中
-func labelsMatch(fullLabels, tragetLabels prometheus.Labels) bool {
-	for key, value := range tragetLabels {
+func labelsMatch(fullLabels, targetLabels prometheus.Labels) bool {
+	for key, value := range targetLabels {
 		if fullLabelValue, exists := fullLabels[key]; !exists || fullLabelValue != value{
 			return false
 		}
@@ -220,8 +221,8 @@ func labelsMatch(fullLabels, tragetLabels prometheus.Labels) bool {
 }
 
 // 通过labels获取对应的metrics值
-func getMetricsValueFromSpecificLabels(labels prometheus.Labels, sourceMetricsVec interface{}) float64 {
-	switch metricVec := sourceMetricsVec.(type) {
+func getMetricsValueFromSpecificLabels(labels prometheus.Labels, sourceMetricVec interface{}) float64 {
+	switch metricVec := sourceMetricVec.(type) {
 	case *prometheus.GaugeVec:
 		gaugeMetrics := metricVec.With(labels)
 		metric := &dto.Metric{}
@@ -233,7 +234,7 @@ func getMetricsValueFromSpecificLabels(labels prometheus.Labels, sourceMetricsVe
 	case *prometheus.CounterVec:
 		counterMetrics := metricVec.With(labels)
 		metric := &dto.Metric{}
-		err := gaugeMetrics.Write(metric)
+		err := CounterMetrics.Write(metric)
 		if err == nil && metric.Counter != nil {
 			value := metric.Counter.GetValue()
 			return value
@@ -260,13 +261,13 @@ func setCounterValue(c *Collector, name string, labels prometheus.Labels, value 
 }
 
 // 设置融合之后的Counter类型数据的值
-func setCounterValue(c *Collector, name string, labels prometheus.Labels, value float64) {
+func setAggCounterValue(c *Collector, name string, labels prometheus.Labels, value float64) {
 	writeToCounterMetrics(c.aggregatedCounterMetrics, name, labels, value)
 }
 
 // Counter指标写入普罗
-func writeToCounterMetrics(counterMetrics map[string]*prometheus.CounterVec, name string, labels prometheus.Labels,
-value float64){
+func writeToCounterMetrics(counterMetrics map[string]*prometheus.CounterVec, name string, labels prometheus.Labels, 
+	value float64){
 	if counter, ok := counterMetrics[name]; ok && value >= 0 {
 		counterInstance := counter.With(labels)
 		counterMetrics := &dto.Metric{}

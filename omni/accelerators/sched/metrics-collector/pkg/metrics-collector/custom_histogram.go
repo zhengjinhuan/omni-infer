@@ -11,14 +11,16 @@ type CustomHistogramData struct {
 	SampleCount uint64
 	SampleSum   float64
 	Buckets     map[float64]uint64
-	LastUpdate  time.time
+	LastUpdate  time.Time
 }
 
 type CustomHistogram struct {
-	mu          sysc.Mutex
+	mu          sync.Mutex
 	data        map[string]*CustomHistogramData
 	opts        prometheus.HistogramOpts
 	labelNames  []string
+	// 缓存的 Desc 实例
+	desc *prometheus.Desc
 }
 
 type HistogramData struct {
@@ -32,6 +34,12 @@ func NewCustomHistogram(opts prometheus.HistogramOpts, labelNames []string) *Cus
 		data:          make(map[string]*CustomHistogramData),
 		opts:          opts,
 		labelNames:    labelNames,
+		desc: prometheus.NewDesc(
+			opts.Name,
+			opts.Help,
+			labelNames,
+			opts.ConstLabels
+		)
 	}
 }
 
@@ -39,10 +47,10 @@ func (h *CustomHistogram) SetHistogramData(labels prometheus.Labels, data *Histo
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	labelkeys := h.createLabelKey(labels)
+	labelKeys := h.createLabelKey(labels)
 
 	// 尝试直接把值设置进去
-	h.data[labelkeys] = &CustomHistogramData{
+	h.data[labelKeys] = &CustomHistogramData{
 		SampleCount:  data.SampleCount,
 		SampleSum:    data.SampleSum,
 		Buckets:      make(map[float64]uint64),
@@ -51,7 +59,7 @@ func (h *CustomHistogram) SetHistogramData(labels prometheus.Labels, data *Histo
 
 	// 处理bucket中的信息
 	for k, v := range data.Buckets {
-		h.data[labelkeys].Buckets[k] = v
+		h.data[labelKeys].Buckets[k] = v
 	}
 }
 
@@ -60,7 +68,9 @@ func (h *CustomHistogram) GetHistogramData(labels prometheus.Labels) *CustomHist
 	defer h.mu.Unlock()
 
 	labelkeys := h.createLabelKey(labels)
-	if v, ok := h.data[labelkeys]; ok { return v}
+	if v, ok := h.data[labelKeys]; ok {
+		return v
+	}
 	return nil
 }
 
@@ -90,8 +100,8 @@ func (h *CustomHistogram) createLabelKey(labels prometheus.Labels) string {
 func (h *CustomHistogram) parseLabelKey(labelKey string) prometheus.Labels {
 	labels := prometheus.Labels{}
 
-	// 标签示例：engine="0",le="0.001",model_name="deepseek"
-	parts := string.Split(labelKeym ",")
+	// 标签示例: engine="0",le="0.001",model_name="deepseek"
+	parts := strings.Split(labelKey, ",")
 	for _, part := range parts {
 		if strings.Contains(part, "=") {
 			kv := strings.SplitN(part, "=", 2)
@@ -107,42 +117,29 @@ func (h *CustomHistogram) parseLabelKey(labelKey string) prometheus.Labels {
 	return labels
 }
 
-// Describe 实现Promethues的collector接口
+// Describe 实现Prometheus的Collector接口
 func (h *CustomHistogram) Describe(ch chan<- *prometheus.Desc) {
-	des := prometheus.NewDesc(
-		h.opts.Name,
-		h.opts.Help,
-		h.labelNames,
-		h.opts.ConstLabels,
-	)
+	// 注册 Desc
 	ch <- des
 }
 
 func (h *CustomHistogram) Collect(ch chan<- prometheus.Metric) {
 	h.mu.Lock()
-	def h.mu.Unlock()
+	defer h.mu.Unlock()
 
 	for labelKey, data := range h.data {
 		labels := h.parseLabelKey(labelKey)
 
 		promMetric := prometheus.MustNewConstHistogram(
-			prometheus.NewDesc(h.opts.Name, h.opts.Help, h.labelNames, h.opts.ConstLabels),
+			h.desc,
 			data.SampleCount,
 			data.SampleSum,
-			h.convertBuckets(data.Buckets),
+			data.Buckets,
 			h.parseLabelValue(labels)...,
 		)
 
 		ch <- promMetric
 	}
-}
-
-func (h *CustomHistogram) convertBuckets(buckets map[float64]uint64) map[float64]uint64 {
-	result := make(map[float64]uint64)
-	for upperBound, cumulativeCount := range buckets {
-		result[upperBound] = cumulativeCount
-	}
-	return result
 }
 
 func (h *CustomHistogram) parseLabelValue(labels prometheus.Labels) []string {

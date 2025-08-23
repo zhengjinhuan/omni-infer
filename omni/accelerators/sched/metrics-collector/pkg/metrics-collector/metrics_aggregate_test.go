@@ -1,7 +1,7 @@
-package metrice_collector
+package metrics_collector
 
 import (
-	"github.com/promethues/client_golang/promethues"
+	"github.com/prometheus/client_golang/prometheus"
 	"reflect"
 	"testing"
 )
@@ -18,7 +18,7 @@ func TestOptionForRequestSuccess(t *testing.T) {
 		{
 			name:         "role is not option",
 			role:         "api_server",
-			instanceRole: "scheuduler",
+			instanceRole: "scheduler",
 			metricsName:  "vllm:request_success_total",
 			targetLabel:  map[string]string{"finished_reason": "abort"},
 			want:         false,
@@ -26,7 +26,7 @@ func TestOptionForRequestSuccess(t *testing.T) {
 		{
 			name:         "metricsName is not vllm:request_success_total",
 			role:         "option",
-			instanceRole: "scheuduler",
+			instanceRole: "scheduler",
 			metricsName:  "not_vllm:request_success_total",
 			targetLabel:  map[string]string{"finished_reason": "abort"},
 			want:         false,
@@ -34,7 +34,7 @@ func TestOptionForRequestSuccess(t *testing.T) {
 		{
 			name:         "instanceRole is scheduler and finished_reason is abort",
 			role:         "option",
-			instanceRole: "scheuduler",
+			instanceRole: "scheduler",
 			metricsName:  "vllm:request_success_total",
 			targetLabel:  map[string]string{"finished_reason": "abort"},
 			want:         false,
@@ -52,7 +52,7 @@ func TestOptionForRequestSuccess(t *testing.T) {
 			role:         "option",
 			instanceRole: "decode",
 			metricsName:  "vllm:request_success_total",
-			targetLabel:  map[string]string{"finished_reason": "abort"},
+			targetLabel:  map[string]string{"finished_reason": "stop"},
 			want:         True,
 		},
 	}
@@ -68,9 +68,9 @@ func TestOptionForRequestSuccess(t *testing.T) {
 }
 
 func TestFilterCustomLabels(t *testing.t) {
-	// 测试用力1：当src为空时，返回的dst也应为空
+	// 测试用例1：当src为空时，返回的dst也应为空
 	t.Run("EmptySrc", func(t *testing.T){
-		src := promethues.Labels{}
+		src := prometheus.Labels{}
 		dst := filterCustomLabels(src)
 		if len(dst) != 0 {
 			t.Errorf("Expected dst to be empty, but got %v", dst)
@@ -79,14 +79,14 @@ func TestFilterCustomLabels(t *testing.t) {
 
 	// 测试用例2：当src中包含"instance"和"role"时，返回的dst不应包含这两个标签
 	t.Run("SrcContainsInstanceAndRole", func(t *testing.T){
-		src := promethues.Labels{
+		src := prometheus.Labels{
 			"instance": "localhost:9090",
 			"role":     "alertmanager",
-			"job":      "promethues",
+			"job":      "prometheus",
 		}
 		dst := filterCustomLabels(src)
-		expected := promethues.Labels{
-			"job":      "promethues",
+		expected := prometheus.Labels{
+			"job":      "prometheus",
 		}
 		if !reflect.DeepEqual(dst, expected) {
 			t.Errorf("Expected dst to be %v, but got %v", expected, dst)
@@ -95,12 +95,12 @@ func TestFilterCustomLabels(t *testing.t) {
 
 	// 测试用例3：当src中不包含"instance"和"role"时，返回的dst应与src相同
 	t.Run("SrcNotContainsInstanceAndRole", func(t *testing.T){
-		src := promethues.Labels{
-			"job": "promethues",
+		src := prometheus.Labels{
+			"job": "prometheus",
 			"env": "profuction"
 		}
 		dst := filterCustomLabels(src)
-		if !reflect.DeepEqual(dst, expected) {
+		if !reflect.DeepEqual(dst, src) {
 			t.Errorf("Expected dst to be %v, but got %v", src, dst)
 		}
 	})
@@ -111,21 +111,21 @@ func TestIsEmptyInstance(t *testing.T) {
 	{
 		instance := Instance{}
 		if !isEmptyInstance(instance) {
-			t.Errorf("Expected true, go false")
+			t.Errorf("Expected true, got false")
 		}
 	}
 
 	// test case 2: instance is not an empty instance
 	{
-		// Assuming Instance has a field name "Field"
+		// Assuming Instance has a field named 'Field'
 		instance := Instance{Role: "prefill"}
 		if isEmptyInstance(instance) {
-			t.Errorf(Expected false, got true)
+			t.Errorf("Expected false, got true")
 		}
 	}
 }
 
-func TestGetTargetLabels(t testing.T) {
+func TestGetTargetLabels(t *testing.T) {
 	// 测试用例1：当实例列表为空时，应返回空列表
 	var instances []Instance
 	metricsName := "testMetrics"
@@ -134,61 +134,83 @@ func TestGetTargetLabels(t testing.T) {
 		t.Errorf("Expected an empty list, but got %v", labels)
 	}
 
-	// 测试用例2：当实例列表中没有"prefill"和"decode"角色实例时，应返回空列表
+	// 测试用例2：当实例列表中没有"prefill"或"decode"角色的实例时，应返回空列表
 	instances = []Instance{
 		{
 			Role: "role1",
 		},
 		{
-			Role: "role2"
+			Role: "role2",
 		},
 	}
 	labels = getTargetLabels(instances, metricsName)
 	if len(labels) != 0 {
 		t.Errorf("Expected an empty list, but got %v", labels)
 	}
+	
+	// 测试用例3：当实例列表中存在"prefill"或"decode"角色的实例时，应返回非空列表
+	instances = []Instance{
+		{
+			Role: "Decode",
+			MetricsLabels: map[string]map[string]prometheus.Labels{
+				"testMetrics": {
+					"engine=31|finished_reason=abort|instance=127.0.0.1:9116|model_name=deepseek|role=decode": {
+						"engine":          "31",
+						"instance":        "127.0.0.1:9116",
+						"model_name":      "deepseek",
+						"decode":          "decode",
+						"finished_reason": "abort",
+					},
+				},
+			},
+		},
+	}
+	labels = getTargetLabels(instances, metricsName)
+	if len(labels) == 0 {
+		t.Errorf("Expected a non-empty list, but got %v", labels)
+	}
 }
 
 func TestFilterTargetLabels(t *testing.T) {
 	// 测试用例1：源标签中没有需要过滤的标签
-	src := promethues.Labels{
-		"job": "promethues",
-		"env": "profuction",
+	src := prometheus.Labels{
+		"job": "prometheus",
+		"env": "production",
 	}
-	dst := filterCustomLabels(src)
+	dst := filterTargetLabels(src)
 	if len(dst) != len(src) {
 		t.Errorf("Expected %d labels, got %d", len(src), len(dst))
 	}
 
 	// 测试用例2：源标签中有一个需要过滤的标签
-	src := promethues.Labels{
-		"job":      "promethues",
+	src = prometheus.Labels{
+		"job":      "prometheus",
 		"instance": "localhost:9090",
 	}
-	dst := filterCustomLabels(src)
+	dst = filterTargetLabels(src)
 	if len(dst) != len(src) - 1 {
 		t.Errorf("Expected %d labels, got %d", len(src) - 1, len(dst))
 	}
 
 	// 测试用例3：源标签中有多个需要过滤的标签
-	src := promethues.Labels{
-		"job":      "promethues",
+	src = prometheus.Labels{
+		"job":      "prometheus",
 		"instance": "localhost:9090",
 		"role":     "server",
 		"engine":   "docker",
 	}
-	dst := filterCustomLabels(src)
+	dst = filterTargetLabels(src)
 	if len(dst) != len(src)-3 {
 		t.Errorf("Expected %d labels, got %d", len(src)-3, len(dst))
 	}
 
 	// 测试用例4：源标签中所有需要过滤的标签
-	src := promethues.Labels{
+	src = prometheus.Labels{
 		"instance": "localhost:9090",
 		"role":     "server",
 		"engine":   "docker",
 	}
-	dst := filterCustomLabels(src)
+	dst = filterTargetLabels(src)
 	if len(dst) != 0 {
 		t.Errorf("Expected %d labels, got %d", 0, len(dst))
 	}
@@ -197,69 +219,69 @@ func TestFilterTargetLabels(t *testing.T) {
 func TestlabelsMatch(t *testing.T) {
 	// 测试用例1：当目标标签是空的时候，无论全标签是什么，都应该返回true
 	{
-		fullLabels := promethues.Labels{
+		fullLabels := prometheus.Labels{
 			"key1": "value1",
 			"key2": "value2",
 		}
-		targetLabels := promethues.Labels{}
-		if !labelsMatch(fullLabels, targetLabel) {
+		targetLabels := prometheus.Labels{}
+		if !labelsMatch(fullLabels, targetLabels) {
 			t.Errorf("Want true, got false")
 		}
 	}
 
 	// 测试用例2：当目标标签的键在全标签中不存在时，应返回false
 	{
-		fullLabels := promethues.Labels{
+		fullLabels := prometheus.Labels{
 			"key1": "value1",
 			"key2": "value2",
 		}
-		targetLabels := promethues.Labels{
-			"key3": "value3"
+		targetLabels := prometheus.Labels{
+			"key3": "value3",
 		}
-		if labelsMatch(fullLabels, targetLabel) {
+		if labelsMatch(fullLabels, targetLabels) {
 			t.Errorf("Want false, got true")
 		}
 	}
 
 	// 测试用例3：当目标标签的键在全标签中存在，但值不匹配时，应返回false
 	{
-		fullLabels := promethues.Labels{
+		fullLabels := prometheus.Labels{
 			"key1": "value1",
 			"key2": "value2",
 		}
-		targetLabels := promethues.Labels{
-			"key1": "value3"
+		targetLabels := prometheus.Labels{
+			"key1": "value3",
 		}
-		if labelsMatch(fullLabels, targetLabel) {
+		if labelsMatch(fullLabels, targetLabels) {
 			t.Errorf("Want false, got true")
 		}
 	}
 
 	// 测试用例4：当目标标签的键在全标签中存在，且值匹配时，应返回true
 	{
-		fullLabels := promethues.Labels{
+		fullLabels := prometheus.Labels{
 			"key1": "value1",
 			"key2": "value2",
 		}
-		targetLabels := promethues.Labels{
-			"key1": "value1"
+		targetLabels := prometheus.Labels{
+			"key1": "value1",
 		}
-		if !labelsMatch(fullLabels, targetLabel) {
+		if !labelsMatch(fullLabels, targetLabels) {
 			t.Errorf("Want true, got false")
 		}
 	}
 
 	// 测试用例5：当目标标签的键在全标签中存在，且值匹配，但全标签有额外键值对时，应返回true
 	{
-		fullLabels := promethues.Labels{
+		fullLabels := prometheus.Labels{
 			"key1": "value1",
 			"key2": "value2",
 			"key3": "value3",
 		}
-		targetLabels := promethues.Labels{
-			"key1": "value1"
+		targetLabels := prometheus.Labels{
+			"key1": "value1",
 		}
-		if !labelsMatch(fullLabels, targetLabel) {
+		if !labelsMatch(fullLabels, targetLabels) {
 			t.Errorf("Want true, got false")
 		}
 	}
