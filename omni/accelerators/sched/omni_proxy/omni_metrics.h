@@ -4,6 +4,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <omni_tokenizer.h>
 
 #define NUM_PREFILL_BATCH_METRICS_HIS 10
 #define NUM_DECODE_BATCH_METRICS_HIS 10
@@ -61,6 +62,7 @@ typedef struct omni_request_s
     uint16_t prefill_upstream_endpoint_idx;
     uint16_t decode_upstream_endpoint_idx;
     omni_request_metrics_t metrics;
+    omni_tokenizer_request tokenizer_req;
 } omni_req_t;
 
 typedef struct omni_request_pool_s
@@ -142,6 +144,7 @@ typedef struct omni_global_state_s
     ngx_shmtx_t shmtx;
     ngx_shmtx_sh_t lock;
 
+    int has_tokenizer;
     omni_proxy_pd_policy_t pd_policy;
 
     omni_request_pool_t request_pool;

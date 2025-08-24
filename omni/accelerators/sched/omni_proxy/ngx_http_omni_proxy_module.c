@@ -5,6 +5,8 @@
 #include <omni_pd_body_rewrite.h>
 #include <omni_scheduler.h>
 #include <omni_utils.h>
+#include <omni_tokenizer.h>
+#include <stdbool.h>
 
 ngx_module_t ngx_http_omni_proxy_module;
 
@@ -80,6 +82,18 @@ static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
     return omni_get_req_ctx(r)->req;
 }
 
+static void omni_proxy_post_tokenized(omni_req_t *req)
+{
+    omni_phase_transition_all(req, 0, PHASE_PREFILL_WAITING_SCHEDULE);
+    req->metrics.time_enter_wait_prefill = ngx_current_msec;
+
+    if (g_state->pd_policy == PD_PARALLEL)
+    {
+        omni_add_req_to_group(req->slot_index, &local_state.groups[PHASE_DECODE_WAITING_SCHEDULE]);
+        req->metrics.time_enter_wait_decode = ngx_current_msec;
+    }
+}
+
 static void omni_proxy_req_body_handler(ngx_http_request_t *r)
 {
     omni_req_t *req = omni_get_req(r);
@@ -91,14 +105,23 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
 
     req->metrics.prompt_num_tokens = ctx->origin_body_tokens_size;
 
-    omni_phase_transition_all(req, 0, PHASE_PREFILL_WAITING_SCHEDULE);
-    req->metrics.time_enter_wait_prefill = ngx_current_msec;
-
-    if (g_state->pd_policy == PD_PARALLEL)
+    if (!g_state->has_tokenizer)
     {
-        omni_add_req_to_group(req->slot_index, &local_state.groups[PHASE_DECODE_WAITING_SCHEDULE]);
-        req->metrics.time_enter_wait_decode = ngx_current_msec;
+        omni_proxy_post_tokenized(req);
+        return;
     }
+
+    req->tokenizer_req.input_data = ctx->origin_body_data;
+    req->tokenizer_req.input_len = ctx->origin_body_data_size;
+
+    // Chat template expansion buffer
+    req->tokenizer_req.prompt_buf_size = req->tokenizer_req.input_len + 512;
+    req->tokenizer_req.prompt = ngx_palloc(r->pool, req->tokenizer_req.prompt_buf_size);
+
+    req->tokenizer_req.input_ids_buf_size = req->tokenizer_req.prompt_buf_size;
+    req->tokenizer_req.input_ids = ngx_palloc(r->pool, sizeof(int) * req->tokenizer_req.input_ids_buf_size);
+
+    omni_tokenizer_worker_submit(&local_state.tokenize_worker, req->slot_index);
 }
 
 static void omni_proxy_remove_req_from_groups(omni_req_t *req)
@@ -117,7 +140,8 @@ static void omni_proxy_remove_req_from_groups(omni_req_t *req)
         {
             g_state->prefill_states[req->prefill_upstream_endpoint_idx].num_running--;
         }
-        else if (phase == PHASE_DECODING)
+
+        if (phase == PHASE_DECODING)
         {
             g_state->decode_states[req->decode_upstream_endpoint_idx].num_running--;
         }
@@ -1129,7 +1153,7 @@ static void omni_proxy_timer_handler(ngx_event_t *ev)
 
     ngx_add_timer(&local_state.omni_proxy_timer_event, TIMER_INTERVAL);
 
-    print_summary();
+    // print_summary();
 }
 
 static void omni_proxy_init_req_groups(omni_req_group_t groups[])
@@ -1394,6 +1418,99 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
     return ngx_http_omni_init_upstreams(cf);
 }
 
+static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
+{
+    ngx_omni_tokenize_worker_t *worker = ev->data;
+    uint32_t slot_id;
+    ssize_t nread;
+
+    while ((nread = read(worker->resp_pipe[OMNI_PIPE_READ], &slot_id, sizeof(slot_id))) > 0)
+    {
+        ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Tokenize done for%u\n", slot_id);
+        omni_req_t *req = omni_id_to_req(slot_id);
+        if (req != NULL)
+        {
+            ngx_log_error(NGX_LOG_DEBUG, ev->log, 0,
+                          "Tokenizer completed for slot: %ui, prompt: %s",
+                          slot_id, req->tokenizer_req.prompt);
+
+            req->metrics.time_tokenized = ngx_current_msec;
+            printf("Tokenize %ld, time taken:%lu\n", req->tokenizer_req.input_len, ngx_current_msec - req->metrics.time_contents_received);
+            omni_proxy_post_tokenized(req);
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_DEBUG, ev->log, 0,
+                          "Receive illegal slot id from tokenizer thread: %u",
+                          slot_id);
+        }
+    }
+
+    if (nread == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ev->log, ngx_errno,
+                      "Error reading from response pipe");
+        exit(-1);
+    }
+}
+
+static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
+{
+    u_char *model_path_str;
+    ngx_connection_t *c;
+
+    model_path_str = (u_char *)"/root/nginx-1.26.0/omni_proxy/deepseek";
+    local_state.tokenize_worker.model_path.len = ngx_strlen(model_path_str);
+    local_state.tokenize_worker.model_path.data = model_path_str;
+
+    if (omni_tokenizer_worker_init(cycle, &local_state.tokenize_worker) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "Failed to initialize tokenizer worker");
+        return NGX_ERROR;
+    }
+
+    c = ngx_get_connection(local_state.tokenize_worker.resp_pipe[OMNI_PIPE_READ], cycle->log);
+    if (c == NULL)
+    {
+        omni_tokenizer_worker_exit(&local_state.tokenize_worker);
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "Failed to get connection for response pipe");
+        return NGX_ERROR;
+    }
+
+    if (ngx_nonblocking(local_state.tokenize_worker.resp_pipe[OMNI_PIPE_READ]) == -1)
+    {
+        ngx_free_connection(c);
+        omni_tokenizer_worker_exit(&local_state.tokenize_worker);
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "Failed to set response pipe non-blocking");
+        return NGX_ERROR;
+    }
+
+    c->read->handler = ngx_omni_tokenizer_pipe_handler;
+    c->read->data = &local_state.tokenize_worker;
+    c->read->log = cycle->log;
+
+    if (ngx_add_conn(c) != NGX_OK)
+    {
+        ngx_free_connection(c);
+        omni_tokenizer_worker_exit(&local_state.tokenize_worker);
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "Failed to add response pipe connection to event loop");
+        return NGX_ERROR;
+    }
+
+    local_state.tokenize_worker.resp_connection = c;
+
+    ngx_log_error(NGX_LOG_INFO, cycle->log, 0,
+                  "Omni proxy process initialized with tokenizer worker, model: %s",
+                  model_path_str);
+
+    g_state->has_tokenizer = true;
+    return NGX_OK;
+}
+
 static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
 {
     local_state.pid = ngx_pid;
@@ -1402,6 +1519,17 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
     local_state.omni_proxy_timer_event.handler = omni_proxy_timer_handler;
     local_state.omni_proxy_timer_event.log = cycle->log;
     local_state.omni_proxy_timer_event.data = NULL;
+
+    if (omni_proxy_init_tokenizer_worker(cycle) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "Failed to initialize tokenizer worker");
+        return NGX_ERROR;
+    }
+
+    ngx_log_error(NGX_LOG_INFO, cycle->log, 0,
+                  "Omni proxy process initialized with tokenizer worker, model: %V",
+                  &local_state.tokenize_worker.model_path);
 
     omni_register_worker(g_state, &g_state->shmtx);
 
@@ -1418,6 +1546,16 @@ static void omni_proxy_exit_process(ngx_cycle_t *cycle)
     {
         ngx_del_timer(&local_state.omni_proxy_timer_event);
     }
+
+    if (local_state.tokenize_worker.resp_connection != NULL)
+    {
+        ngx_del_conn(local_state.tokenize_worker.resp_connection, 0);
+        ngx_free_connection(local_state.tokenize_worker.resp_connection);
+    }
+
+    omni_tokenizer_worker_exit(&local_state.tokenize_worker);
+    ngx_log_error(NGX_LOG_INFO, cycle->log, 0,
+                  "Omni proxy process exited, tokenizer worker cleaned up");
 }
 
 static char *omni_proxy_init_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)

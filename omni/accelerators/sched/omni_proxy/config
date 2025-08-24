@@ -11,10 +11,35 @@ ngx_module_name=ngx_http_omni_proxy_module
 ngx_module_srcs="$ngx_addon_dir/ngx_http_omni_proxy_module.c \
                  $ngx_addon_dir/omni_pd_body_rewrite.c \
                  $ngx_addon_dir/omni_scheduler.c \
-                 $ngx_addon_dir/omni_utils.c"
+                 $ngx_addon_dir/omni_utils.c \
+                 $ngx_addon_dir/omni_tokenizer.c \
+                 $ngx_addon_dir/omni_tokenizer_worker.c"
 
 # Include directories for the module
 ngx_module_incs="$ngx_addon_dir"
+
+detect_python_config() {
+    if command -v python3-config >/dev/null 2>&1; then
+        PYTHON_INCLUDES=$(python3-config --includes)
+        PYTHON_LDFLAGS=$(python3-config --ldflags --embed 2>/dev/null || python3-config --ldflags)
+    elif command -v pkg-config >/dev/null 2>&1; then
+        PYTHON_INCLUDES=$(pkg-config --cflags python3)
+        PYTHON_LDFLAGS=$(pkg-config --libs python3)
+    else
+        PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.8")
+        PYTHON_INCLUDES="-I/usr/include/python$PYTHON_VERSION"
+        PYTHON_LDFLAGS="-lpython$PYTHON_VERSION"
+    fi
+    
+    echo "$PYTHON_INCLUDES $PYTHON_LDFLAGS"
+}
+
+PYTHON_FLAGS=$(detect_python_config)
+
+CFLAGS="$CFLAGS $PYTHON_FLAGS"
+ngx_module_libs="$ngx_module_libs $PYTHON_FLAGS"
+
+CFLAGS="$CFLAGS -Wno-unused-function -Wno-unused-variable"
 
 # This sources NGINX's auto/module script to register the module
 . auto/module
