@@ -10,13 +10,15 @@
 #include <assert.h>
 #include <ngx_atomic.h>
 #include <omni_metrics.h>
+#include <omni_tokenizer_worker.h>
 
 typedef struct omni_worker_local_state_s
 {
     pid_t pid;
     uint32_t num_prefill_endpoints;
     uint32_t num_decode_endpoints;
-    ngx_shmtx_t g_shmtx;
+
+    ngx_omni_tokenize_worker_t tokenize_worker;
     ngx_event_t omni_proxy_timer_event;
     ngx_http_output_body_filter_pt ngx_http_next_body_filter;
     omni_req_group_t groups[PHASE_MAX];
