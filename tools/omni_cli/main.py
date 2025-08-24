@@ -967,13 +967,7 @@ def main():
         metavar='config_path',
         help="Start in normal mode (default) with config file"
     )
-    start_group.add_argument(
-        "--prepare_dev",
-        nargs=1,
-        metavar='config_path',
-        help="Start in developer mode with config file: Environmental preparation"
-    )
-    start_group.add_argument("--run_dev", action="store_true", help="Start in developer mode: Start the service")
+    start_group.add_argument("--run_dev", action="store_true", help="Start in developer mode: Start the service, without ranktable and proxy")
 
     # STOP command configuration
     subparsers.add_parser("stop", help="Stop the omni service")
@@ -1086,7 +1080,7 @@ def main():
         args.func(args)
         return
 
-    if args.command == "start" and not any([args.normal, args.prepare_dev, args.run_dev]):
+    if args.command == "start" and not any([args.normal, args.run_dev]):
         args.normal = True
 
     # Command processing logic
@@ -1098,7 +1092,7 @@ def main():
         elif args.normal:
             print("Normal mode.")
             omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=False)
-        elif args.prepare_dev:
+        elif args.run_dev:
             print("Developer mode: Environmental preparation.")
             omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=True)
     elif args.command == "stop":
