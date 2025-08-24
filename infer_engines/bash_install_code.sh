@@ -22,3 +22,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/chunk_prefill_enable.patch
 git apply --whitespace=nowarn $PATCH_ROOT/scheduler_abort_kv_loading_failure_request.patch
 git apply --whitespace=nowarn $PATCH_ROOT/tfas_patch_request.patch
 git apply --whitespace=nowarn $PATCH_ROOT/prometheus_dp_logging.patch
+git apply --whitespace=nowarn $PATCH_ROOT/swap_kv_cache.patch
