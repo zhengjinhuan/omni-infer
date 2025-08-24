@@ -144,33 +144,23 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
 
     return sections
 
-def first_check_model_path(default_cfg_path, sections, data, node_type, node_name):
+def check_model_path(default_cfg_path, sections, data, node_type, node_name):
     if node_type == 'C':
         return True
-    model_path = data['profiles']['vllm']['deepseek'][node_type]['env']['MODEL_PATH']
-    if model_path == '' or model_path is None:
+    if 'model_path_used' not in data:
         if 'MODEL_PATH' in sections['env']:
-            return True
+            data['model_path_used'] = sections['env']['MODEL_PATH']
+            data['profiles']['vllm'][data['model_path_used']][node_type]['env']['MODEL_PATH'] = sections['env']['MODEL_PATH']
         else:
             print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
             return False
+    else:
+        if 'MODEL_PATH' in sections['env']:
+            data['model_path_used'] = sections['env']['MODEL_PATH']
+            data['profiles']['vllm'][data['model_path_used']][node_type]['env']['MODEL_PATH'] = sections['env']['MODEL_PATH']
 
-    data['profiles']['vllm']['deepseek'][node_type]['env']['MODEL_PATH'] = ""
     with open(default_cfg_path , 'w') as file:
         yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-    return True
-
-def second_check_model_path(sections, data, node_type, node_name):
-    if node_type == 'C':
-        return True
-    model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
-    if model_path == '' or model_path is None:
-        if 'env' in sections and 'MODEL_PATH' in sections['env']:
-            return True
-        else:
-            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
-            return False
-
     return True
 
 def updata_dict(sections, data):
@@ -188,19 +178,13 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     updata_dict(filtered_sections, data['all']['children'][n_type]['hosts'][n_name])
-                    if second_check_model_path(filtered_sections, data, n_type, n_name) is not True:
-                        return
             print("你已修改所有节点的配置")
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
                 updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][n_name])
-                if second_check_model_path(filtered_sections, data, node_type, n_name) is not True:
-                    return
             print("你已修改 %s 组所有节点的配置" % node_type)
         else:
             updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][node_name])
-            if second_check_model_path(filtered_sections, data, node_type, node_name) is not True:
-                return
             print("你已修改 %s 节点的配置" % node_name)
 
         with open(yml_file_path, 'w') as file:
@@ -264,6 +248,17 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
     if 'kv-transfer-config' in vars_dict['args'] and vars_dict['args']['kv-transfer-config'] == {}:
         vars_dict['args']['kv-transfer-config'] = ''
 
+def delete_model_path(sections):
+    default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
+    default_cfg = get_data_from_yaml(default_cfg_path)
+
+    if 'MODEL_PATH' in sections['env']:
+        if 'model_path_used' not in default_cfg:
+            print("键 'MODEL_PATH' 不存在，无需删除")
+            return
+
+        del default_cfg['model_path_used']
+
 def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     env_list = sections['env']
     arg_list = sections['arg']
@@ -274,6 +269,7 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     extra_args_list = sections['extra-args']
     additional_config_list = sections['additional-config']
     kv_transfer_config_list = sections['kv-transfer-config']
+    delete_model_path(sections)
     data = get_data_from_yaml(yml_file_path)
     if data:
         if node_type == 'all':
@@ -316,21 +312,24 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         if node_type == 'all':
             for n_type in default_cfg['profiles']['vllm']['deepseek']:
                 for n_name in data['all']['children'][n_type]['hosts']:
-                    if first_check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is False:
+                    if check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is False:
                         return
-                    sections_bak = default_cfg['profiles']['vllm']['deepseek'][n_type]
-                    updata_dict(sections_bak, data['all']['children'][n_type]['hosts'][n_name])
+                    if 'MODEL_PATH' in sections['env']:
+                        sections_bak = default_cfg['profiles']['vllm'][data['model_path_used']][n_type]
+                        updata_dict(sections_bak, data['all']['children'][n_type]['hosts'][n_name])
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
-                if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is False:
+                if check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is False:
                     return
-                sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-                updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][n_name])
+                if 'MODEL_PATH' in sections['env']:
+                    sections_bak = default_cfg['profiles']['vllm'][data['model_path_used']][node_type]
+                    updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][n_name])
         else:
-            if first_check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is False:
+            if check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is False:
                 return
-            sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-            updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
+            if 'MODEL_PATH' in sections['env']:
+                sections_bak = default_cfg['profiles']['vllm'][data['model_path_used']][node_type]
+                updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
