@@ -309,13 +309,15 @@ def omni_cli_start(
     role_filter: Optional[str] = None,    # e.g., "P" or "D"
     python_bin: str = "python",
     entry_py: str = "start_api_servers.py",
-    skip_verify_config: bool = False
+    skip_verify_config: bool = False,
+    dev: bool = False
 ) -> None:
     """
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
-    omni_ranktable(inventory_path)
+    if not dev:
+        omni_ranktable(inventory_path)
 
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inventory_path, "r", encoding="utf-8") as f:
@@ -323,7 +325,8 @@ def omni_cli_start(
     if not skip_verify_config:
         _verify_and_fix_env_vars(inv, inv_file)
 
-    omni_cli.proxy.omni_run_proxy(inventory_path)
+    if not dev:
+        omni_cli.proxy.omni_run_proxy(inventory_path)
 
     all_hosts = _walk_hosts(inv.get("all", inv))
     if not role_filter:
@@ -922,27 +925,6 @@ def run_docker_containers(
 
     print("\nAll hosts processed.")
 
-def prepare_omni_service_in_developer_mode(config_path):
-    """In developer mode, preparing to run the omni service."""
-    transform_deployment_config(config_path)
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --skip-tags 'sync_code,pip_install,run_server,fetch_log'"
-    execute_command(command)
-
-def run_omni_service_in_developer_mode():
-    """In developer mode, running the omni service."""
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags run_server"
-    execute_command(command)
-
-def synchronize_code():
-    """In developer mode, copy the code from the execution machine to the target machine container."""
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags sync_code"
-    execute_command(command)
-
-def install_packages():
-    """In developer mode, copy the code and install the packages."""
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags 'sync_code,pip_install'"
-    execute_command(command)
-
 def inspect_configuration(config_path):
     """Inspect detailed configuration information"""
     encoding = detect_file_encoding(config_path)
@@ -958,13 +940,11 @@ def inspect_configuration(config_path):
 
 def upgrade_packages():
     """Install the latest wheel package"""
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags pip_install"
-    execute_command(command)
+    print("Under development")
 
-def fetch_logs():
+def collect_logs():
     """Fetch logs"""
-    command = f"ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags fetch_log"
-    execute_command(command)
+    print("Under development")
 
 def main():
     # Create main argument parser with description
@@ -1014,7 +994,7 @@ def main():
     subparsers.add_parser("upgrade", help="Upgrade packages")
 
     # FETCH_LOG command configuration
-    subparsers.add_parser("fetch_log", help="Fetch logs")
+    subparsers.add_parser("collect_log", help="Collect logs")
 
     # ADD_NODE command configuration
     addnode_parser = subparsers.add_parser("add_node", help="Add a node to servering_profiles.yml")
@@ -1114,25 +1094,16 @@ def main():
         print("Start omni service.")
         if args.config_path is not None:
             print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config)
+            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=False)
         elif args.normal:
             print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config)
+            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=False)
         elif args.prepare_dev:
             print("Developer mode: Environmental preparation.")
-            prepare_omni_service_in_developer_mode(args.prepare_dev[0])
-        elif args.run_dev:
-            print("Developer mode: Start the service.")
-            run_omni_service_in_developer_mode()
+            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=True)
     elif args.command == "stop":
         print("Stop omni service.")
         omni_cli_stop(inventory_path=default_deploy_path)
-    elif args.command == "sync_dev":
-        print("Synchronize the code.")
-        synchronize_code()
-    elif args.command == "install_dev":
-        print("Install packages.")
-        install_packages()
     elif args.command == "cfg":
         node_type, node_name = parse_node_name(args.name[0])
         sections = parse_remaining_args(node_type, node_name, args.set, args.remaining_args, default_deploy_path)
@@ -1148,9 +1119,9 @@ def main():
     elif args.command == "upgrade":
         print("Upgrade packages")
         upgrade_packages()
-    elif args.command == "fetch_log":
+    elif args.command == "collect_log":
         print("Fetch logs")
-        fetch_logs()
+        collect_logs()
 
 if __name__ == "__main__":
     main()
