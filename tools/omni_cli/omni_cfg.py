@@ -136,7 +136,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                 raise ValueError(f"Missing value for key: '{arg}'")
             if is_set:
                 update_container_name(node_type, node_name, remaining_args[i+1], yml_file_path)
-                i += 1
+                i += 2
             else:
                 raise ValueError(f"Unexpected key {arg}")
         else:
