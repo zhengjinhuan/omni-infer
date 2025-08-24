@@ -925,19 +925,6 @@ def run_docker_containers(
 
     print("\nAll hosts processed.")
 
-def inspect_configuration(config_path):
-    """Inspect detailed configuration information"""
-    encoding = detect_file_encoding(config_path)
-    with open(config_path, 'r', encoding=encoding) as file:
-        data = json.load(file)
-
-    print(json.dumps(
-        data,
-        indent=4,
-        sort_keys=True,
-        ensure_ascii=False
-    ))
-
 def upgrade_packages():
     """Install the latest wheel package"""
     print("Under development")
