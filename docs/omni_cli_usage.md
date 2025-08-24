@@ -15,16 +15,17 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 1. 添加节点
    
    ```bash
-   omni_cli add_node --role P --name p0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 使用镜像
-   omni_cli add_node --role D --name d0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 使用镜像
-   omni_cli add_node --role D --name d1 --host_ip 本机IP --master_ip 主D节点IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 使用镜像
+   omni_cli add_node --role P --name p0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
+   omni_cli add_node --role D --name d0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
+   omni_cli add_node --role D --name d1 --host_ip 本机IP --master_ip 主D节点IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
    ```
 
 2. 修改配置
+
    omni_cli具有推断配置的功能。因为不同模型、不同场景参数差别巨大，需要先配置模型路径，omni_cli依据路径名称推断模型，并提供部分场景默认配置。
    
    ```bash
-   # 配置所有节点，支持按照Role、节点名称分别配置，参见下文omni_cfg详细介绍???
+   # 配置所有节点，支持按照Role、节点名称分别配置，参见下文omni_cli cfg详细介绍
    omni_cli cfg --set all env --MODEL_PATH 模型路径
    omni_cli cfg --set all env --LOG_PATH 日志路径
    omni_cli cfg --set all --container_name 容器名称
