@@ -3,8 +3,7 @@
 ## 安装
 
 ```bash
-cd omniinfer/tools      # 无wheel包，源码安装
-python -m build --wheel # 无wheel包，源码安装
+cd omniinfer/tools; python -m build --wheel      # 无wheel包，源码安装
 pip install omni_cli***.wheel --force-reinstall --no-build-isolation --no-deps
 ```
 
