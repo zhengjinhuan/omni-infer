@@ -129,6 +129,19 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 
 1. omni_cli cfg
 
+   功能：修改或者删除节点的环境变量和参数。可以对所有节点或者某组节点批量修改或删除配置，也可以只针对某个节点修改或删除配置。
+
+   使用示例：
+   ```bash
+   omni_cli cfg --set all env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
+   omni_cli cfg --set p env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
+   omni_cli cfg --set p0 env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
+
+   omni_cli cfg --delete all env --MODEL_PATH
+   omni_cli cfg --delete p env --MODEL_PATH
+   omni_cli cfg --delete p0 env --MODEL_PATH
+   ```
+
 2. omni_cli inspect
 
    功能：根据名称，输出该节点所有配置信息
