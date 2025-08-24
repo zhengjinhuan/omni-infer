@@ -778,10 +778,6 @@ def run_docker_containers(
     inventory_path: str = "omni_cli/configs/servering_profiles.yml",
     dry_run: bool = False,
 ) -> None:
-    """
-    Run Docker containers for all hosts in inventory using variables from inventory.
-    Generates and executes temporary scripts for each host.
-    """
     inv_file = Path(inventory_path).expanduser().resolve()
 
     # Load inventory
@@ -795,7 +791,7 @@ def run_docker_containers(
         print("Warning: No hosts found in inventory.")
         return
 
-    # Base Docker command template
+    # Base Docker command template without LOG_PATH or MODEL_PATH
     base_docker_run_cmd = """docker run -it --shm-size=500g \\
         --net=host \\
         --privileged=true \\
@@ -805,7 +801,6 @@ def run_docker_containers(
         --device=/dev/hisi_hdc \\
         --device=/dev/devmm_svm \\
         --entrypoint=bash \\
-        -v /data:/data \\
         -v /tmp:/tmp \\
         -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
         -v /usr/local/dcmi:/usr/local/dcmi \\
@@ -814,13 +809,12 @@ def run_docker_containers(
         -v /usr/local/sbin:/usr/local/sbin \\
         -v /etc/hccn.conf:/etc/hccn.conf \\
         -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \\
-        -v $LOG_PATH:$LOG_PATH \\
         -v /tmp/ranktable_save_path:/tmp/ranktable_save_path \\
         -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime"""
 
     for host, hv in all_hosts:
         print(f"\nProcessing host: {host}")
-
+  
         # Determine role
         groups = host_groups.get(host, [])
         role = "C"
@@ -836,6 +830,7 @@ def run_docker_containers(
         log_path = env.get("LOG_PATH")
         model_path = env.get("MODEL_PATH")
         docker_image_id = hv.get("DOCKER_IMAGE_ID")
+        container_name = hv.get("container_name", f"omni_container_{host}")
 
         # Check required variables
         if not log_path:
@@ -863,27 +858,25 @@ def run_docker_containers(
             for key, value in env.items():
                 tf.write(f"export {key}={shlex.quote(str(value))}\n")
 
-            # Add role-specific variables
-            tf.write("\n# Role-specific variables\n")
-            tf.write(f"export DOCKER_NAME={shlex.quote(hv.get('container_name', ''))}\n")
-            tf.write(f"export DOCKER_IMAGE_ID={shlex.quote(str(docker_image_id))}\n")
-
             # Clean up existing container
             tf.write("\n# Cleanup existing container\n")
-            tf.write("if docker inspect --format='{{.Name}}' \"$DOCKER_NAME\" &>/dev/null; then\n")
-            tf.write("    docker stop \"$DOCKER_NAME\"\n")
-            tf.write("    docker rm -f \"$DOCKER_NAME\"\n")
+            tf.write(f"if docker inspect --format='{{{{.Name}}}}' {shlex.quote(container_name)} &>/dev/null; then\n")
+            tf.write(f"    docker stop {shlex.quote(container_name)}\n")
+            tf.write(f"    docker rm -f {shlex.quote(container_name)}\n")
             tf.write("fi\n")
 
-            # Build Docker run command
+            # Build Docker run command with actual paths
             tf.write("\n# Build Docker run command\n")
             tf.write(f"docker_cmd={shlex.quote(base_docker_run_cmd)}\n")
 
+            # Add LOG_PATH mount with actual path
+            tf.write(f"docker_cmd+=\" -v {shlex.quote(log_path)}:{shlex.quote(log_path)}\"\n")
+
             # Add MODEL_PATH mount for P and D roles
             if role in ['P', 'D'] and model_path:
-                tf.write("docker_cmd+=\" -v $MODEL_PATH:$MODEL_PATH\"\n")
-
-            tf.write("docker_cmd+=\" -d --name $DOCKER_NAME $DOCKER_IMAGE_ID\"\n")
+                tf.write(f"docker_cmd+=\" -v {shlex.quote(model_path)}:{shlex.quote(model_path)}\"\n")
+            
+            tf.write(f"docker_cmd+=\" -d --name {shlex.quote(container_name)} {shlex.quote(docker_image_id)}\"\n")
 
             # Execute command
             tf.write("\n# Execute Docker run command\n")
@@ -892,7 +885,7 @@ def run_docker_containers(
 
             # Print container status
             tf.write("\n# Verify container status\n")
-            tf.write("docker ps -a --filter \"name=$DOCKER_NAME\"\n")
+            tf.write(f"docker ps -a --filter \"name={shlex.quote(container_name)}\"\n")
 
             # Set execution permissions
             os.chmod(script_path, 0o755)
@@ -928,7 +921,6 @@ def run_docker_containers(
             print(f"  ansible {host} -i {inv_file} -m script -a {script_path}")
 
     print("\nAll hosts processed.")
-
 
 def prepare_omni_service_in_developer_mode(config_path):
     """In developer mode, preparing to run the omni service."""
