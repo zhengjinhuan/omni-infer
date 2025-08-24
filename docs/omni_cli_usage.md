@@ -203,10 +203,9 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    
     使用示例：
    
-   ```bash
+   ``` bash
    omni_cli upgrade --omni_package XXXXX.whl  --vllm_package XXXXX.whl --proxy_package XXXXX.rpm
-   ``` 
-
+   ```
 
 2. omni_cli collect_log
 
