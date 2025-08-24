@@ -328,20 +328,20 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
                     if check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is False:
                         return
                     if 'MODEL_PATH' in sections['env']:
-                        sections_bak = default_cfg['profiles']['vllm'][data['model_path_used']][n_type]
+                        sections_bak = default_cfg['profiles']['vllm'][default_cfg['model_path_used']][n_type]
                         updata_dict(sections_bak, data['all']['children'][n_type]['hosts'][n_name])
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
                 if check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is False:
                     return
                 if 'MODEL_PATH' in sections['env']:
-                    sections_bak = default_cfg['profiles']['vllm'][data['model_path_used']][node_type]
+                    sections_bak = default_cfg['profiles']['vllm'][default_cfg['model_path_used']][node_type]
                     updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][n_name])
         else:
             if check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is False:
                 return
             if 'MODEL_PATH' in sections['env']:
-                sections_bak = default_cfg['profiles']['vllm'][data['model_path_used']][node_type]
+                sections_bak = default_cfg['profiles']['vllm'][default_cfg['model_path_used']][node_type]
                 updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
