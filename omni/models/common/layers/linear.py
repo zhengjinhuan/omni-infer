@@ -899,11 +899,9 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
-        weight_data = layer.weight.data.t().contiguous()
+        weight_data = torch_npu.npu_format_cast(layer.weight.data.t().contiguous(), 29)
         layer.weight.data = weight_data
         set_weight_attrs(layer.weight, {"is_weight_transposed": True})
-        # weight_data = torch_npu.npu_format_cast(layer.weight.data.t().contiguous(), 29)
-        # layer.weight = torch.nn.Parameter(weight_data, requires_grad=False)
 
     def apply(self,
               layer: torch.nn.Module,
@@ -1019,7 +1017,7 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
-            param.data = param.data.t().contiguous()
+            param.data = torch_npu.npu_format_cast(param.data.t().contiguous(), 29)
 
     def forward(self, input_, reduce_type="AR", x_transform=None):
         input_parallel = input_
@@ -1116,7 +1114,7 @@ class ColumnParallelFlashCommLinear(FlashCommLinearBase):
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
-            param.data = param.data.t().contiguous()
+            param.data = torch_npu.npu_format_cast(param.data.t().contiguous(), 29)
 
     def forward(self, input_, x_transform=None, is_prefill=True):
         bias = self.bias if not self.skip_bias_add else None
@@ -1225,7 +1223,7 @@ class QKVParallelFlashCommLinear(ColumnParallelFlashCommLinear):
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
-            param.data = param.data.t().contiguous()
+            param.data = torch_npu.npu_format_cast(param.data.t().contiguous(), 29)
 
 class MergedColumnParallelFlashCommLinear(ColumnParallelFlashCommLinear):
 
@@ -1280,4 +1278,4 @@ class MergedColumnParallelFlashCommLinear(ColumnParallelFlashCommLinear):
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
-            param.data = param.data.t().contiguous()
+            param.data = torch_npu.npu_format_cast(param.data.t().contiguous(), 29)

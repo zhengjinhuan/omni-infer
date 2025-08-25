@@ -34,11 +34,9 @@ from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
 from vllm.compilation.decorators import support_torch_compile
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
-from vllm.logger import logger
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
@@ -60,6 +58,9 @@ from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVPara
 from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
 from omni.models.common.layers.fused_mlp import FusedMLP
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+
+# if use weight nz, this config must be True
+torch.npu.config.allow_internal_format = True
 
 
 class Qwen3MLP(FusedMLP):
@@ -147,8 +148,8 @@ class Qwen3Attention(nn.Module):
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.attn")
-        self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
+        self.q_norm = RMSNormFlashComm(self.head_dim, eps=rms_norm_eps)
+        self.k_norm = RMSNormFlashComm(self.head_dim, eps=rms_norm_eps)
 
     def forward(
         self,

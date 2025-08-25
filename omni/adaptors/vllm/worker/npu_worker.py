@@ -18,8 +18,8 @@
 #
 
 import gc
-from typing import Dict, List, Optional
-
+from typing import List, Optional
+import os
 import torch
 import torch.nn as nn
 import torch_npu
@@ -29,14 +29,13 @@ from vllm.config import VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce,
-                              get_world_group,
-                              get_dp_group)
+                              get_world_group)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import logger
 from vllm.model_executor import set_random_seed
 from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, GiB_bytes
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
+from vllm.v1.kv_cache_interface import (KVCacheConfig,
                                         KVCacheSpec)
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.worker.worker_base import WorkerBase
@@ -44,15 +43,10 @@ from vllm.platforms import current_platform
 from vllm.lora.request import LoRARequest
 
 from omni.adaptors.vllm.platform import NPUPlatform
-# from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.adaptors.vllm.utils import (
     check_torchair_cache_exists, check_block_num_cache_exist, read_block_num_from_file, write_block_num_to_file, delete_torchair_cache_file, clear_var
 )
-
-import vllm.envs as envs
-import os
-import ray
 from omni.models.common.config.model_config import model_extra_config
 
 
@@ -81,6 +75,7 @@ class NPUWorker(WorkerBase):
 
         if envs.VLLM_ENABLE_V1_MULTIPROCESSING:
             if envs.VLLM_USE_RAY_SPMD_WORKER:
+                import ray
                 dp_size = vllm_config.parallel_config.data_parallel_size
                 node_count = len(ray.nodes())
                 dp_rank_size = int(dp_size / node_count)
@@ -98,11 +93,6 @@ class NPUWorker(WorkerBase):
                             rank=rank,
                             distributed_init_method=distributed_init_method,
                             is_driver_worker=is_driver_worker)
-        # Try to import mindie_turbo to accelerate vLLM inference.
-        # try_register_lib(
-        #     "mindie_turbo",
-        #     "MindIE Turbo is installed. vLLM inference will be accelerated with MindIE Turbo."
-        # )
         if self.cache_config.cache_dtype == "auto":
             self.cache_dtype = self.model_config.dtype
         else:
@@ -279,6 +269,7 @@ class NPUWorker(WorkerBase):
 
     def load_model(self) -> None:
         if NPUPlatform.is_sleep_mode_available():
+            from omni.adaptors.vllm.npu_mem_pool import NpuMemAllocator
             allocator = NpuMemAllocator.get_instance()
             assert allocator.get_current_usage() == 0, (
                 "Sleep mode can only be "
@@ -306,6 +297,7 @@ class NPUWorker(WorkerBase):
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Allocate NPU KV cache with the specified kv_cache_config."""
         if NPUPlatform.is_sleep_mode_available():
+            from omni.adaptors.vllm.npu_mem_pool import NpuMemAllocator
             allocator = NpuMemAllocator.get_instance()
             context = allocator.use_memory_pool(tag="kv_cache")
         else:

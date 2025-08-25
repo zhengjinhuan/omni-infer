@@ -19,7 +19,6 @@ from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear
 )
-from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.distributed.communication_op import (
     tensor_model_parallel_all_gather)
 from vllm.distributed.parallel_state import (
