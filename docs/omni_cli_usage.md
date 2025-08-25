@@ -148,6 +148,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli cfg --set p env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
    omni_cli cfg --set p args --num-servers 32
    omni_cli cfg --set p args --extra-args '--max-num-batched-tokens 30000 --max-num-seqs 32'
+   omni_cli cfg --set p args --additional-config '--graph_model_compile_config level:1'
    omni_cli cfg --set p --container_name_prefix docker_name
    omni_cli cfg --set p --container_name docker_name
    omni_cli cfg --set p --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily
@@ -157,6 +158,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli cfg --set p0 env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
    omni_cli cfg --set p0 args --num-servers 32
    omni_cli cfg --set p0 args --extra-args '--max-num-batched-tokens 30000 --max-num-seqs 32'
+   omni_cli cfg --set p0 args --additional-config '--graph_model_compile_config level:1'
    omni_cli cfg --set p0 --container_name_prefix docker_name
    omni_cli cfg --set p0 --container_name docker_name
    omni_cli cfg --set p0 --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily
@@ -166,6 +168,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli cfg --delete all env --MODEL_PATH
    omni_cli cfg --delete all args --num-servers
    omni_cli cfg --delete all args --extra-args '--max-num-batched-tokens --max-num-seqs'
+   omni_cli cfg --delete all args --additional-config '--graph_model_compile_config'
    omni_cli cfg --delete all --container_name
    omni_cli cfg --delete all --DOCKER_IMAGE_ID
    omni_cli cfg --delete all --ascend_rt_visible_devices
@@ -174,6 +177,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli cfg --delete p env --MODEL_PATH
    omni_cli cfg --delete p args --num-servers
    omni_cli cfg --delete p args --extra-args '--max-num-batched-tokens --max-num-seqs'
+   omni_cli cfg --delete p args --additional-config '--graph_model_compile_config'
    omni_cli cfg --delete p --container_name
    omni_cli cfg --delete p --DOCKER_IMAGE_ID
    omni_cli cfg --delete p --ascend_rt_visible_devices
@@ -182,6 +186,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli cfg --delete p0 env --MODEL_PATH
    omni_cli cfg --delete p0 args --num-servers
    omni_cli cfg --delete p0 args --extra-args '--max-num-batched-tokens --max-num-seqs'
+   omni_cli cfg --delete p0 args --additional-config '--graph_model_compile_config'
    omni_cli cfg --delete p0 --container_name
    omni_cli cfg --delete p0 --DOCKER_IMAGE_ID
    omni_cli cfg --delete p0 --ascend_rt_visible_devices
