@@ -777,6 +777,35 @@ def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
         out.extend(_walk_hosts(child))
     return out
 
+def print_node_list(inventory_path: str) -> None:
+    """
+    Print the current node list including role, name, and IP address.
+    
+    Args:
+        inventory_path: Path to the inventory YAML file
+    """
+    inv_file = Path(inventory_path).expanduser().resolve()
+    with open(inv_file, "r", encoding="utf-8") as f:
+        inv = yaml.safe_load(f)
+    
+    children = inv.get("all", {}).get("children", {})
+    
+    print(f"{'Role':<5} | {'Name':<5} | {'IP Address':<15}")
+    print("-" * 30)
+    
+    for role, role_data in children.items():
+        if role not in ["C", "D", "P"]:
+            continue
+            
+        hosts = role_data.get("hosts", {})
+        
+        for host_name, host_data in hosts.items():
+            ip_address = host_data.get("ansible_host", "N/A")
+            
+            print(f"{role:<5} | {host_name:<5} | {ip_address:<15}")
+    
+    print("-" * 30)
+
 def run_docker_containers(
     inventory_path: str = "omni_cli/configs/servering_profiles.yml",
     dry_run: bool = False,
@@ -937,6 +966,7 @@ def main():
     # Create main argument parser with description
     parser = argparse.ArgumentParser(description="Omni Inference Service Management")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    default_deploy_path = ''
 
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
@@ -977,10 +1007,18 @@ def main():
     # FETCH_LOG command configuration
     subparsers.add_parser("collect_log", help="Collect logs")
 
+    # LS command configuration
+    ls_parser = subparsers.add_parser("ls", help="Print the node list")
+    ls_parser.add_argument(
+        "--deploy_path",
+        default=str(default_deploy_path),
+        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+    )
+    ls_parser.set_defaults(func=lambda args:print_node_list(
+        inventory_path=args.deploy_path
+    ))
     # ADD_NODE command configuration
     addnode_parser = subparsers.add_parser("add_node", help="Add a node to servering_profiles.yml")
-    default_deploy_path = ''
-
     addnode_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
@@ -1012,7 +1050,7 @@ def main():
     run_docker_parser.add_argument(
         "--inventory", "-i",
         default=str(default_deploy_path),
-        help="Path to inventory file (default: omni_cli/configs/servering_profiles.yml)"
+        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
     )
     run_docker_parser.add_argument(
         "--dry-run",
