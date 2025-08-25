@@ -316,6 +316,11 @@ def omni_cli_start(
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
+    if not inventory_path:
+        print("[ERROR] Inventory path is required.")
+        return
+    else:
+        print("[INFO] Use inventory at:", inventory_path)
     if not dev:
         omni_ranktable(inventory_path)
 
@@ -498,11 +503,11 @@ def get_host_groups(inv_data: dict) -> Dict[str, List[str]]:
     return host_groups
 
 def sync_dev(
-    inventory_path: str = "omni_cli/configs/servering_profiles.yml",
+    inventory_path,
     dry_run: bool = False,
     code_path: str = None
 ) -> None:
-    """Sync code to all relevant hosts and containers"""
+    """Sync code to all relevant hosts and containers with minimal output"""
     if not code_path:
         print("Error: code_path is required")
         return
@@ -544,6 +549,24 @@ def sync_dev(
         tf.write("#!/bin/bash\n\n")
         tf.write(f"CODE_SRC=\"{code_path}\"\n\n")
 
+        # Add progress indicator function
+        tf.write("""
+# Function to show progress spinner
+show_spinner() {
+    local pid=$!
+    local delay=0.1
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c] " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\\b\\b\\b\\b\\b"
+    done
+    printf "    \\b\\b\\b\\b"
+}
+""")
+
         # Create directories and sync code to all target hosts
         for host in all_target_hosts:
             host_vars = all_hosts.get(host, {})
@@ -556,31 +579,34 @@ def sync_dev(
 
             # Build SSH command prefixes
             ssh_prefix = "ssh"
-            rsync_prefix = "rsync -avz --delete"
+            rsync_prefix = "rsync -avz --quiet --delete"
 
             if ssh_private_key:
                 ssh_prefix = f"ssh -i {ssh_private_key}"
-                rsync_prefix = f"rsync -avz --delete -e 'ssh -i {ssh_private_key}'"
+                rsync_prefix = f"rsync -avz --quiet --delete -e 'ssh -i {ssh_private_key}'"
 
             if ssh_user:
                 ssh_prefix = f"{ssh_prefix} -l {ssh_user}"
                 rsync_prefix = f"{rsync_prefix} -e 'ssh -l {ssh_user}'"
                 if ssh_private_key:
-                    rsync_prefix = f"rsync -avz --delete -e 'ssh -i {ssh_private_key} -l {ssh_user}'"
+                    rsync_prefix = f"rsync -avz --quiet --delete -e 'ssh -i {ssh_private_key} -l {ssh_user}'"
 
-            tf.write(f"echo \"Creating directory on {host}\"\n")
-            tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\"\n\n")
+            tf.write(f"echo \"[INFO] Creating directory on {host}\"\n")
+            tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
-            tf.write(f"echo \"Syncing code to {host}\"\n")
-            tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/\n\n")
+            tf.write(f"echo \"[INFO] Syncing code to {host}\"\n")
+            tf.write(f"echo -n \"  Progress: \"\n")
+            tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/ & show_spinner\n")
+            tf.write(f"echo \" Done\"\n\n")
 
             # Handle docker cp for all hosts that need it
             container_name = host_vars.get("container_name", "")
             if container_name:
-                tf.write(f"echo \"Copying code to container on {host}\"\n")
-                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\"\n\n")
+                tf.write(f"echo \"[INFO] Copying code to container on {host}\"\n")
+                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\" >/dev/null 2>&1\n")
+                tf.write(f"echo \"  Container copy completed\"\n\n")
             else:
-                print(f"Missing container_name for host {host}")
+                tf.write(f"echo \"[WARN] Missing container_name for host {host}\"\n\n")
 
     # Set script execution permissions
     os.chmod(script_path, 0o755)
@@ -591,18 +617,32 @@ def sync_dev(
         with open(script_path, 'r') as f:
             print(f.read())
     else:
-        print("Executing sync script...")
+        print("Starting sync process...")
         try:
-            result = subprocess.run([script_path], capture_output=True, text=True, check=True)
-            print("Script output:")
-            print(result.stdout)
-            if result.stderr:
-                print("Script errors:")
-                print(result.stderr)
-            print("\nSync process completed.")
-        except subprocess.CalledProcessError as e:
-            print(f"Sync process failed with return code {e.returncode}")
-            print(f"Error output: {e.stderr}")
+            # Execute the script and capture output
+            process = subprocess.Popen(
+                [script_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            # Print output in real-time
+            for line in process.stdout:
+                print(line, end='')
+
+            # Wait for process to complete
+            process.wait()
+
+            if process.returncode == 0:
+                print("\nSync process completed successfully.")
+            else:
+                print(f"\nSync process failed with return code {process.returncode}")
+                print("Error output:")
+                for line in process.stderr:
+                    print(line, end='')
+        except Exception as e:
+            print(f"Error during sync process: {e}")
         finally:
             # Clean up temporary file
             try:
@@ -777,6 +817,35 @@ def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
         out.extend(_walk_hosts(child))
     return out
 
+def print_node_list(inventory_path: str) -> None:
+    """
+    Print the current node list including role, name, and IP address.
+
+    Args:
+        inventory_path: Path to the inventory YAML file
+    """
+    inv_file = Path(inventory_path).expanduser().resolve()
+    with open(inv_file, "r", encoding="utf-8") as f:
+        inv = yaml.safe_load(f)
+
+    children = inv.get("all", {}).get("children", {})
+
+    print(f"{'Role':<5} | {'Name':<5} | {'IP Address':<15}")
+    print("-" * 30)
+
+    for role, role_data in children.items():
+        if role not in ["C", "D", "P"]:
+            continue
+
+        hosts = role_data.get("hosts", {})
+
+        for host_name, host_data in hosts.items():
+            ip_address = host_data.get("ansible_host", "N/A")
+
+            print(f"{role:<5} | {host_name:<5} | {ip_address:<15}")
+
+    print("-" * 30)
+
 def run_docker_containers(
     inventory_path: str = "omni_cli/configs/servering_profiles.yml",
     dry_run: bool = False,
@@ -817,7 +886,7 @@ def run_docker_containers(
 
     for host, hv in all_hosts:
         print(f"\nProcessing host: {host}")
-  
+
         # Determine role
         groups = host_groups.get(host, [])
         role = "C"
@@ -878,7 +947,7 @@ def run_docker_containers(
             # Add MODEL_PATH mount for P and D roles
             if role in ['P', 'D'] and model_path:
                 tf.write(f"docker_cmd+=\" -v {shlex.quote(model_path)}:{shlex.quote(model_path)}\"\n")
-            
+
             tf.write(f"docker_cmd+=\" -d --name {shlex.quote(container_name)} {shlex.quote(docker_image_id)}\"\n")
 
             # Execute command
@@ -937,6 +1006,7 @@ def main():
     # Create main argument parser with description
     parser = argparse.ArgumentParser(description="Omni Inference Service Management")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    default_deploy_path = ''
 
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
@@ -977,10 +1047,18 @@ def main():
     # FETCH_LOG command configuration
     subparsers.add_parser("collect_log", help="Collect logs")
 
+    # LS command configuration
+    ls_parser = subparsers.add_parser("ls", help="Print the node list")
+    ls_parser.add_argument(
+        "--deploy_path",
+        default=str(default_deploy_path),
+        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+    )
+    ls_parser.set_defaults(func=lambda args:print_node_list(
+        inventory_path=args.deploy_path
+    ))
     # ADD_NODE command configuration
     addnode_parser = subparsers.add_parser("add_node", help="Add a node to servering_profiles.yml")
-    default_deploy_path = ''
-
     addnode_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
@@ -1012,7 +1090,7 @@ def main():
     run_docker_parser.add_argument(
         "--inventory", "-i",
         default=str(default_deploy_path),
-        help="Path to inventory file (default: omni_cli/configs/servering_profiles.yml)"
+        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
     )
     run_docker_parser.add_argument(
         "--dry-run",
@@ -1069,21 +1147,18 @@ def main():
 
     if args.command == "start" and not any([args.normal, args.run_dev]):
         args.normal = True
+    if args.config_path is None:
+        args.config_path = default_deploy_path
 
-    # Command processing logic
     if args.command == "start":
-        print("Start omni service.")
-        if args.config_path is not None:
-            print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=False)
-        elif args.normal:
-            print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=False)
+        if args.normal:
+            print("[INFO] Starting omni service in Normal mode...")
+            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=False)
         elif args.run_dev:
-            print("Developer mode: Environmental preparation.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=True)
+            print("[INFO] Starting omni service in Developer mode...")
+            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=True)
     elif args.command == "stop":
-        print("Stop omni service.")
+        print("[INFO] Stopping omni service...")
         omni_cli_stop(inventory_path=default_deploy_path)
     elif args.command == "cfg":
         node_type, node_name = parse_node_name(args.name[0])
