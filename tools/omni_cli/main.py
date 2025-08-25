@@ -48,7 +48,7 @@ def execute_command(command):
 
     return_code = process.wait()
     if return_code != 0:
-        print(f"Deployment failed with return code {return_code}")
+        print(f"[ERROR] Deployment failed with return code {return_code}")
 
     return return_code
 
@@ -144,7 +144,7 @@ def _verify_and_fix_env_vars(
     """
     Detect port conflicts per machine (same IP). If conflicts found, bump by `offset` repeatedly until unique.
     """
-    print("[info] verifying and fixing environment variables...")
+    print("[INFO] verifying and fixing environment variables...")
     port_vars = ["API_PORT", "MASTER_PORT", "VLLM_LLMDATADIST_ZMQ_PORT"]
     offset: int = 16
     all_hosts = _walk_hosts(inventory.get("all", inventory))  # {host: {vars}}
@@ -167,9 +167,9 @@ def _verify_and_fix_env_vars(
                 port = int(env.get(pv)) if pv in env and str(env.get(pv)).isdigit() else None
                 if port is None:
                     if env.get("ROLE", None) in ["prefill", "decode"]:
-                        print(f"[warn] host={host} has no {pv}; skipped.")
+                        print(f"[WARNING] host={host} has no {pv}; skipped.")
                     elif env.get("ROLE", None) in ["proxy"] and pv == "API_PORT":
-                        print(f"[warn] host={host} has no {pv} (proxy port); please fix manually.")
+                        print(f"[WARNING] host={host} has no {pv} (proxy port); please fix manually.")
                     continue
                 if port in used_ports:
                     conflicts.append((host, env, port))
@@ -184,7 +184,7 @@ def _verify_and_fix_env_vars(
                     if new_port not in used_ports:
                         env[pv] = str(new_port)
                         used_ports[new_port] = host
-                        print(f"[fix] ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
+                        print(f"[WARNING] ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
                         break
     need_overwrite_inv = len(conflicts) > 0
 
@@ -240,42 +240,42 @@ def _verify_and_fix_env_vars(
             if hv.get("env", {}).get("PREFILL_POD_NUM") != prefill_pod_num:
                 need_overwrite_inv = True
                 hv.get("env", {})["PREFILL_POD_NUM"] = prefill_pod_num
-                print(f"[info] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
+                print(f"[INFO] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
                 need_overwrite_inv = True
                 hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
-                print(f"[info] host={host} SERVER_IP_LIST set to {server_ip_list}")
+                print(f"[INFO] host={host} SERVER_IP_LIST set to {server_ip_list}")
         if "SERVER_OFFSET" in hv.get("env", {}):
             server_offset = server_offset_dict.get(host, None)
             if server_offset is not None and hv.get("env", {}).get("SERVER_OFFSET") != server_offset:
                 hv.get("env", {})["SERVER_OFFSET"] = server_offset
                 need_overwrite_inv = True
-                print(f"[info] host={host} SERVER_OFFSET set to {server_offset}")
+                print(f"[INFO] host={host} SERVER_OFFSET set to {server_offset}")
         if "KV_RANK" in hv.get("env", {}):
             kv_rank = kv_rank_dict.get(host, None)
             if kv_rank is not None and hv.get("env", {}).get("KV_RANK") != kv_rank:
                 hv.get("env", {})["KV_RANK"] = kv_rank
                 need_overwrite_inv = True
-                print(f"[info] host={host} KV_RANK set to {kv_rank}")
+                print(f"[INFO] host={host} KV_RANK set to {kv_rank}")
         if "HOST_IP" in hv.get("env", {}):
             host_ip = host_ip_dict.get(host, None)
             if host_ip is not None and hv.get("env", {}).get("HOST_IP") != host_ip:
                 hv.get("env", {})["HOST_IP"] = host_ip
                 need_overwrite_inv = True
-                print(f"[info] host={host} HOST_IP set to {host_ip}")
+                print(f"[INFO] host={host} HOST_IP set to {host_ip}")
         if "num-servers" in hv.get("args", {}):
             num_server = num_server_dict.get(host, None)
             if num_server is not None and hv.get("args", {}).get("num-servers") != num_server:
                 hv.get("args", {})["num-servers"] = num_server
                 need_overwrite_inv = True
-                print(f"[info] host={host} num-servers set to {num_server}")
+                print(f"[INFO] host={host} num-servers set to {num_server}")
         if "num-dp" in hv.get("args", {}):
             num_dp = num_dp_dict.get(host, None)
             if num_dp is not None and hv.get("args", {}).get("num-dp") != num_dp:
                 hv.get("args", {})["num-dp"] = num_dp
                 need_overwrite_inv = True
-                print(f"[info] host={host} num-dp set to {num_dp}")
+                print(f"[INFO] host={host} num-dp set to {num_dp}")
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
             role = hv.get("env", {}).get("ROLE", None)
@@ -283,18 +283,18 @@ def _verify_and_fix_env_vars(
             if role == "prefill" or role == "decode":
                 master_port = master_port_dict.get(host_ip, None)
                 if master_port is None:
-                    print(f"[Warning] host={host} with master ip={host_ip} can not find MASTER_PORT")
+                    print(f"[WARNING] host={host} with master ip={host_ip} can not find MASTER_PORT")
                 if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
                     hv.get("env", {})["MASTER_PORT"] = master_port
                     need_overwrite_inv = True
-                    print(f"[info] host={host} MASTER_PORT set to {master_port}")
+                    print(f"[INFO] host={host} MASTER_PORT set to {master_port}")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(inventory, f, default_flow_style=False, sort_keys=False)
-        print(f"[info] inventory written back to {inventory_path}")
+        print(f"[INFO] inventory written back to {inventory_path}")
     else:
-        print(f"[info] inventory at {inventory_path} has passed verification")
+        print(f"[INFO] inventory at {inventory_path} has passed verification")
 
 
 
@@ -509,7 +509,7 @@ def sync_dev(
 ) -> None:
     """Sync code to all relevant hosts and containers with minimal output"""
     if not code_path:
-        print("Error: code_path is required")
+        print("[ERROR] code_path is required")
         return
 
     # Read inventory file
@@ -720,10 +720,10 @@ def install_dev(
 
         # Check the necessary variables
         if not log_path:
-            print(f"Warning: LOG_PATH not defined for host {host}, skipping")
+            print(f"[WARNING] LOG_PATH not defined for host {host}, skipping")
             continue
         if not container_name:
-            print(f"Warning: container_name not defined for host {host}, skipping")
+            print(f"[WARNING] container_name not defined for host {host}, skipping")
             continue
 
         # Create a temporary script file
@@ -807,7 +807,7 @@ def get_default_deploy_path(current_cmd):
             with open(deploy_path, "w") as f:
                 yaml.dump(default_inventory, f)
 
-            print(f"Created default inventory file at: {deploy_path}")
+            print(f"[INFO] Created default inventory file at: {deploy_path}")
         else:
             raise FileNotFoundError("server_profiles.yml not found, please confirm the workspace or reinitialize using add_node")
     # Save as absolute path
@@ -868,7 +868,7 @@ def run_docker_containers(
     host_groups = get_host_groups(inv)
 
     if not all_hosts:
-        print("Warning: No hosts found in inventory.")
+        print("[WARNING] No hosts found in inventory.")
         return
 
     # Base Docker command template without LOG_PATH or MODEL_PATH
@@ -914,15 +914,15 @@ def run_docker_containers(
 
         # Check required variables
         if not log_path:
-            print(f"Warning: LOG_PATH not defined for host {host}, skipping")
+            print(f"[WARNING] LOG_PATH not defined for host {host}, skipping")
             continue
         if not docker_image_id:
-            print(f"Warning: DOCKER_IMAGE_ID not defined for host {host}, skipping")
+            print(f"[WARNING] DOCKER_IMAGE_ID not defined for host {host}, skipping")
             continue
 
         # For P and D roles, MODEL_PATH is required
         if role in ['P', 'D'] and not model_path:
-            print(f"Warning: MODEL_PATH not defined for host {host} (role {role}), skipping")
+            print(f"[WARNING] MODEL_PATH not defined for host {host} (role {role}), skipping")
             continue
 
         # Create temporary script file
@@ -994,7 +994,7 @@ def run_docker_containers(
                 try:
                     script_path.unlink(missing_ok=True)
                 except Exception as e:
-                    print(f"Warning: Failed to delete temp file: {e}")
+                    print(f"[WARNING] Failed to delete temp file: {e}")
         else:
             # In dry-run mode, just show what command would be executed
             print(f"DRY RUN: Would execute for host {host}:")
