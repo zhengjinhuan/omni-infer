@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 from vllm.utils import is_pin_memory_available
+
+
 class PenaltyCache:
     def __init__(self, num_req, vocab_size, num_tokens, topk, device):
         self.cached_req_ids = None
