@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <omni_tokenizer.h>
+#include <omni_zmq_handler.h>
 
 #define NUM_PREFILL_BATCH_METRICS_HIS 10
 #define NUM_DECODE_BATCH_METRICS_HIS 10
@@ -121,15 +122,20 @@ typedef struct omni_upstream_prefill_s
     uint32_t last_scheduled_time;
     uint32_t expected_next_schedule_time;
     omni_batch_metrics_his_t his;
+    omni_zmq_handler_t kv_handler;
 } omni_upstream_prefill_t;
 
 typedef struct omni_upstream_decode_s
 {
     uint32_t index;
+    char name[UPSTREAM_NAME_MAX];
+    char ip[UPSTREAM_IP_MAX];
+    int port;
     uint32_t num_running;
     uint32_t generated_tokens;
     uint32_t expected_next_schedule_time;
     omni_batch_metrics_his_t his;
+    omni_zmq_handler_t kv_handler;
 } omni_upstream_decode_t;
 
 typedef enum omni_proxy_pd_policy_s
