@@ -576,12 +576,10 @@ class NPUModelRunner(GPUModelRunner):
         graph_pad_size = None
         sampled_tokens = None
         sample_indices = None
+        spec_tokens_tensor = None
 
         # cached return values
-        cached_sampled_token_ids = []
-        cached_spec_token = []
-        cached_logprobs = []
-        cached_prompt_logprobs_dict = []
+        cached_sampled_token_ids = None
         finished_sending = set()
         accepted_num = 0
         finished_recving = set()
@@ -597,7 +595,7 @@ class NPUModelRunner(GPUModelRunner):
                 attn_metadata, graph_pad_size, sample_indices, positions = self._prepare_inputs(scheduler_output)
             else:
                 attn_metadata, positions = self._simple_prepare_inputs(attn_metadata, positions,
-                        sampled_tokens, cached_spec_token[-1], accepted_num)
+                        sampled_tokens, spec_tokens_tensor, accepted_num)
             hidden_states, raw_hidden_states, input_ids, temp_finished_sending, temp_finished_recving = self._execute_model(scheduler_output,
                                                    attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
 
@@ -706,21 +704,14 @@ class NPUModelRunner(GPUModelRunner):
                     self.input_batch.vocab_size,
                 )
             sampled_tokens = sampled_token_ids
-            spec_token_ids: list[list[int]] = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
-
-            # Mask out the sampled tokens that should not be sampled.
-            for i in discard_sampled_tokens_req_indices:
-                valid_sampled_token_ids[i].clear()
-                if spec_token_ids is not None:
-                    spec_token_ids[i].clear()
             # Clear KVConnector state after all KVs are generated.
             if has_kv_transfer_group():
                 get_kv_transfer_group().clear_connector_metadata()
 
-            cached_sampled_token_ids.append(valid_sampled_token_ids)
-            cached_spec_token.append(spec_tokens_tensor)
-            cached_logprobs.append(logprobs_lists)
-            cached_prompt_logprobs_dict.append({})
+            if cached_sampled_token_ids is None:
+                cached_sampled_token_ids = valid_sampled_token_ids
+            else:
+                _ = [x.extend(y) for x, y in zip(cached_sampled_token_ids, valid_sampled_token_ids)]
 
             cost_upd_states = start_1 - start
             cost_proc_reqs = start_2 - start_1
@@ -731,9 +722,14 @@ class NPUModelRunner(GPUModelRunner):
             cost_output = time.time() - start_6
             cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_output
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
-        return_spec_token = [None] * (self.total_step - 1)
-        return_spec_token.append(spec_token_ids)
 
+        spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
+
+        # Mask out the sampled tokens that should not be sampled.
+        for i in discard_sampled_tokens_req_indices:
+            cached_sampled_token_ids[i].clear()
+            if spec_token_tensor is not None:
+                spec_token_ids[i].clear()
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.async_save(scheduler_output)
 
@@ -741,9 +737,9 @@ class NPUModelRunner(GPUModelRunner):
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
             sampled_token_ids=cached_sampled_token_ids,
-            spec_token_ids=return_spec_token,
-            logprobs=cached_logprobs,
-            prompt_logprobs_dict=cached_prompt_logprobs_dict,
+            spec_token_ids=spec_token_ids,
+            logprobs=logprobs_lists,
+            prompt_logprobs_dict={},
             finished_sending=finished_sending,
             finished_recving=finished_recving,
             loading_kv_failure=loading_kv_failure,
