@@ -72,6 +72,7 @@ static ngx_uint_t ngx_http_pd_score_shm_size = 0;
 static ngx_uint_t ngx_http_pd_score_max_num_seqs_P = 0;
 static ngx_uint_t ngx_http_pd_score_max_num_seqs_D = 0;
 static ngx_uint_t max_predict_reqs = 4;
+static ngx_uint_t LPT_max_min_thres = 1;
 static ngx_http_output_body_filter_pt ngx_http_next_body_filter = NULL;
 
 static void *ngx_http_pd_score_create_main_conf(ngx_conf_t *cf);
@@ -399,7 +400,7 @@ ngx_http_pd_score_prefill_strategy(ngx_http_request_t *r,
     ngx_http_upstream_rr_peer_data_t *rrp;
     ngx_http_pd_score_peer_data_t *pdata;
     ngx_uint_t chosen = 0, i, n;
-    ngx_uint_t min_load, peer_load;
+    ngx_uint_t min_load, min_load_idx, min_req, min_req_idx;
     ngx_slab_pool_t *shpool;
     ngx_time_t *tp = ngx_timeofday();
     ngx_uint_t now = tp->sec * 1000 + tp->msec;
@@ -416,15 +417,27 @@ ngx_http_pd_score_prefill_strategy(ngx_http_request_t *r,
 
     ngx_shmtx_lock(&shpool->mutex);
     min_load = NGX_MAX_INT_T_VALUE;
-    chosen = 0;
+    min_load_idx = NGX_CONF_UNSET_UINT;
+    min_req = NGX_MAX_INT_T_VALUE;
+    min_req_idx = NGX_CONF_UNSET_UINT;
 
     for (i = 0; i < n; i++) {
-        peer_load = pd_shm->peers_P[i].total_request_length + r->request_length;
-        if (peer_load < min_load) {
-            min_load = peer_load;
-            chosen = i;
+        if (pd_shm->peers_P[i].total_request_length < min_load
+            && pd_shm->peers_P[i].active_requests < ngx_http_pd_score_max_num_seqs_P) {
+            min_load = pd_shm->peers_P[i].total_request_length;
+            min_load_idx = i;
+        }
+        if (pd_shm->peers_P[i].active_requests < min_req) {
+            min_req = pd_shm->peers_P[i].active_requests;
+            min_req_idx = i;
         }
     }
+    if (min_load_idx != NGX_CONF_UNSET_UINT) {
+        chosen = min_load_idx;
+    } else {
+        chosen = min_req_idx;
+    }
+
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                   "[PDScore-PREFILL] request(len=%ui) assigned to peer #%ui",
                   (ngx_uint_t)r->request_length, chosen);
@@ -479,6 +492,8 @@ ngx_http_pd_score_decode_strategy(ngx_http_request_t *r,
     ngx_http_upstream_rr_peer_data_t *rrp;
     ngx_http_pd_score_peer_data_t *pdata;
     ngx_uint_t chosen = 0, i, n;
+    ngx_uint_t min_req, min_req_idx, max_req, max_req_idx, peer_req;
+    ngx_uint_t min_load, min_load_idx;
     ngx_slab_pool_t *shpool;
 
     if (ngx_http_upstream_init_round_robin_peer(r, uscf) != NGX_OK) {
@@ -495,72 +510,97 @@ ngx_http_pd_score_decode_strategy(ngx_http_request_t *r,
 
     ngx_shmtx_lock(&shpool->mutex);
 
-    ngx_uint_t *filtered_req_lengths = ngx_pcalloc(r->pool, sizeof(ngx_uint_t) * (max_predict_reqs + 1));
-    if (filtered_req_lengths == NULL) {
-        ngx_shmtx_unlock(&shpool->mutex);
-        return NGX_ERROR;
-    }
-
-    ngx_uint_t filtered_count = pd_shm->total_active_request_count < max_predict_reqs ?
-                                pd_shm->total_active_request_count : max_predict_reqs;
-    ngx_uint_t j = 0;
-    ngx_queue_t *q = ngx_queue_head(&pd_shm->running_requests_P);
-    for (j = 0; j < filtered_count; j++) {
-        filtered_req_lengths[j] = ((ngx_http_pd_score_run_req_node_t *)q)->request_length;
-        q = ngx_queue_next(q);
-    }
-    filtered_req_lengths[filtered_count] = (ngx_uint_t)r->request_length;
-    qsort(filtered_req_lengths, filtered_count + 1, sizeof(ngx_uint_t), cmp_desc);
-    for (j = 0; j < filtered_count + 1; j++) {
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "sorted filtered_req_lengths[%ui]: %ui", j,
-                      filtered_req_lengths[j]);
-    }
-
-    ngx_uint_t *peer_loads = ngx_pcalloc(r->pool, sizeof(ngx_uint_t) * n);
-    if (peer_loads == NULL) {
-        ngx_shmtx_unlock(&shpool->mutex);
-        return NGX_ERROR;
-    }
+    min_req = NGX_MAX_INT_T_VALUE;
+    min_req_idx = NGX_CONF_UNSET_UINT;
+    max_req = 0;
+    max_req_idx = NGX_CONF_UNSET_UINT;
 
     for (i = 0; i < n; i++) {
-        peer_loads[i] = pd_shm->peers_D[i].total_decode_num * 4;
-    }
-
-    chosen = 0;
-
-    for (i = 0; i < filtered_count + 1; i++) {
-        ngx_uint_t min_load = NGX_MAX_INT_T_VALUE;
-        ngx_uint_t min_load_bak = NGX_MAX_INT_T_VALUE;
-        ngx_uint_t min_peer = NGX_CONF_UNSET_UINT;
-        ngx_uint_t min_peer_bak = NGX_CONF_UNSET_UINT;
-        for (ngx_uint_t j = 0; j < n; j++) {
-            if (peer_loads[j] < min_load && pd_shm->peers_D[j].active_requests < ngx_http_pd_score_max_num_seqs_D) {
-                min_load = peer_loads[j];
-                min_peer = j;
-            }
-            if (peer_loads[j] < min_load_bak) {
-                min_load_bak = peer_loads[j];
-                min_peer_bak = j;
-            }
+        peer_req = pd_shm->peers_D[i].active_requests;
+        if (peer_req < min_req) {
+            min_req = peer_req;
+            min_req_idx = i;
         }
-        if (min_peer != NGX_CONF_UNSET_UINT) {
-            peer_loads[min_peer] += filtered_req_lengths[i];
-        } else {
-            min_peer = min_peer_bak;
-            peer_loads[min_peer_bak] += filtered_req_lengths[i];
-        }
-
-        ngx_log_error(
-            NGX_LOG_INFO, r->connection->log, 0,
-            "[PDScore-DECODE-LPT] predict simul req.%ui dispatched to %ui", i,
-            min_peer);
-        if (filtered_req_lengths[i] == (ngx_uint_t)r->request_length) {
-            chosen = min_peer;
-            break;
+        if (peer_req > max_req) {
+            max_req = peer_req;
+            max_req_idx = i;
         }
     }
 
+    // apply LPT if max_req - min_req <= threshold and there is at least one peer with fewer than max_num_seqs_D active requests
+    if (min_req < ngx_http_pd_score_max_num_seqs_D &&  max_req - min_req <= LPT_max_min_thres) {
+        ngx_uint_t filtered_count = pd_shm->total_active_request_count < max_predict_reqs ?
+                                    pd_shm->total_active_request_count : max_predict_reqs;
+
+        ngx_uint_t *filtered_req_lengths = ngx_pcalloc(r->pool, sizeof(ngx_uint_t) * (filtered_count + 1));
+        if (filtered_req_lengths == NULL) {
+            ngx_shmtx_unlock(&shpool->mutex);
+            return NGX_ERROR;
+        }
+
+        ngx_uint_t j = 0;
+        ngx_queue_t *q = ngx_queue_head(&pd_shm->running_requests_P);
+        for (j = 0; j < filtered_count; j++) {
+            filtered_req_lengths[j] = ((ngx_http_pd_score_run_req_node_t *)q)->request_length;
+            q = ngx_queue_next(q);
+        }
+        filtered_req_lengths[filtered_count] = (ngx_uint_t)r->request_length;
+        qsort(filtered_req_lengths, filtered_count + 1, sizeof(ngx_uint_t), cmp_desc);
+        for (j = 0; j < filtered_count + 1; j++) {
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                        "sorted filtered_req_lengths[%ui]: %ui", j,
+                        filtered_req_lengths[j]);
+        }
+
+        ngx_uint_t *peer_loads = ngx_pcalloc(r->pool, sizeof(ngx_uint_t) * n);
+        ngx_uint_t *peer_reqs = ngx_pcalloc(r->pool, sizeof(ngx_uint_t) * n);
+        if (peer_loads == NULL || peer_reqs == NULL) {
+            ngx_shmtx_unlock(&shpool->mutex);
+            return NGX_ERROR;
+        }
+
+        for (i = 0; i < n; i++) {
+            peer_loads[i] = pd_shm->peers_D[i].total_decode_num * 4;
+            peer_reqs[i] = pd_shm->peers_D[i].active_requests;
+        }
+
+        chosen = 0;
+
+        for (i = 0; i < filtered_count + 1; i++) {
+            min_load = NGX_MAX_INT_T_VALUE;
+            min_load_idx = NGX_CONF_UNSET_UINT;
+            min_req = NGX_MAX_INT_T_VALUE;
+            min_req_idx = NGX_CONF_UNSET_UINT;
+            for (j = 0; j < n; j++) {
+                if (peer_loads[j] < min_load && pd_shm->peers_D[j].active_requests < ngx_http_pd_score_max_num_seqs_D) {
+                    min_load = peer_loads[j];
+                    min_load_idx = j;
+                }
+                if (peer_reqs[j] < min_req) {
+                    min_req = peer_reqs[j];
+                    min_req_idx = j;
+                }
+            }
+            if (min_load_idx != NGX_CONF_UNSET_UINT) {
+                chosen = min_load_idx;
+            } else {
+                chosen = min_req_idx;
+            }
+
+            peer_loads[chosen] += filtered_req_lengths[i];
+            peer_reqs[chosen] += 1;
+            ngx_log_error(
+                NGX_LOG_INFO, r->connection->log, 0,
+                "[PDScore-DECODE-LPT] simulate assigning reqs round %ui: req_len=%ui to peer #%ui",
+                i, filtered_req_lengths[i], chosen);
+            if (filtered_req_lengths[i] == (ngx_uint_t)r->request_length) {
+                break;
+            }
+        }
+    } else {
+        chosen = min_req_idx;
+    }
+    
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                   "[PDScore-DECODE-LPT] request(len=%ui) assigned to peer #%ui",
                   (ngx_uint_t)r->request_length, chosen);
