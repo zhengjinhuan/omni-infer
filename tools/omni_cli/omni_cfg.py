@@ -175,7 +175,11 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
 def check_model_path(sections, data, node_type, node_name):
     if node_type == 'C':
         return True
-    if 'MODEL_PATH' not in data['all']['children'][node_type]['hosts'][node_name]['env']:
+    
+    model_path_is_none = 'MODEL_PATH' in data['all']['children'][node_type]['hosts'][node_name]['env'] and \
+        (data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == '' or \
+        data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == None)
+    if 'MODEL_PATH' not in data['all']['children'][node_type]['hosts'][node_name]['env'] or model_path_is_none:
         if 'MODEL_PATH' in sections['env']:
             if 'deepseek' in sections['env']['MODEL_PATH'].lower() or 'qwen' in sections['env']['MODEL_PATH'].lower():
                 return True
@@ -195,7 +199,7 @@ def check_model_path(sections, data, node_type, node_name):
 
 def updata_dict(sections, data):
     for modify_key, modify_values in sections.items():
-        if isinstance(modify_values, dict):
+        if isinstance(modify_values, dict) and modify_key in data:
             updata_dict(modify_values, data[modify_key])
         else:
             data[modify_key] = modify_values
