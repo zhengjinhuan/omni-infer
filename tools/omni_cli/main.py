@@ -279,7 +279,7 @@ def _verify_and_fix_env_vars(
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
             role = hv.get("env", {}).get("ROLE", None)
-            master_port_dict = master_port_p_dict if role == "P" else master_port_d_dict
+            master_port_dict = master_port_p_dict if role == "prefill" else master_port_d_dict
             if role == "prefill" or role == "decode":
                 master_port = master_port_dict.get(host_ip, None)
                 if master_port is None:
@@ -615,16 +615,16 @@ show_spinner() {
             tf.write(f"echo \"[INFO] Creating code directory \'{code_path}\' on {host}\"\n")
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
-            tf.write(f"echo \"[INFO] Syncing code from executor from {code_path} => {host}:{code_path} \"\n")
-            tf.write(f"echo -n \"[INFO]  Progress: \"\n")
+            tf.write(f"echo \"[INFO] Syncing code from executor from \'{code_path}/omniinfer/\' to \'{host}:{code_path}/omniinfer/\' \"\n")
+            tf.write(f"echo -n \"[INFO] Progress: \"\n")
             tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/ & show_spinner\n")
-            tf.write(f"echo \"[INFO] Done\"\n\n")
+            tf.write(f"echo \"Done\"\n\n")
 
             # Handle docker cp for all hosts that need it
             container_name = host_vars.get("container_name", "")
             if container_name:
                 tf.write(f"echo \"[INFO] Docker cp code to container on {host}, from {code_path}/omniinfer to {container_name}:/workspace/\"\n")
-                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer => {container_name}:/workspace/\" >/dev/null 2>&1\n")
+                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\" >/dev/null 2>&1\n")
                 tf.write(f"echo \"[INFO] Container copy completed\"\n\n")
             else:
                 tf.write(f"echo \"[WARN] Missing container_name for host {host}\"\n\n")
