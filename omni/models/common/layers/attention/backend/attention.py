@@ -276,6 +276,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                 self._num_decode_tokens, block_table)
             kv_index = None
         elif USE_TND_PA:
+            kv_index = None
             if graph_pad_size > 0:
                 padding = torch.tensor([graph_pad_size], dtype=query_lens.dtype, device=query_lens.device)
                 query_lens = torch.cat([query_lens, padding], dim=0).to(self.runner.device)
