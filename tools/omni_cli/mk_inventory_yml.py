@@ -23,7 +23,7 @@ def add_node(args):
 
     # Validate default profiles structure
     if not default_profiles or 'profiles' not in default_profiles or 'vllm' not in default_profiles['profiles']:
-        print("Error: default_profiles.yml not found or invalid.")
+        print("[ERROR] default_profiles.yml not found or invalid.")
         return
 
     # Load or create deployment file
@@ -40,12 +40,12 @@ def add_node(args):
 
     # Validate C node addition (only one allowed)
     if args.role == 'C' and hosts:
-        print("Error: Only one C node allowed.")
+        print("[ERROR] Only one C node allowed.")
         return
 
     # Check for duplicate node name
     if args.name in hosts:
-        print(f"Error: Node name '{args.name}' already exists in role '{args.role}'.")
+        print(f"[ERROR] Node name '{args.name}' already exists in role '{args.role}'.")
         return
 
     # Calculate port offset based on role and existing nodes
@@ -57,7 +57,7 @@ def add_node(args):
     elif args.role == 'C':
         offset = 200
     else:
-        print("Error: role must be P, D, or C.")
+        print("[ERROR] role must be P, D, or C.")
         return
 
     # Set master IP if not provided
@@ -112,7 +112,7 @@ def add_node(args):
     # Add node to hosts and save deployment
     hosts[args.name] = node
     save_yaml(deploy_path, deployment)
-    print(f"Node '{args.name}' added successfully to role '{args.role}'.")
+    print(f"[INFO] Node '{args.name}' added successfully to role '{args.role}'.")
 
 def rm_node(args):
     """Remove node from server_profiles.yml and reassign ports for the role"""
@@ -122,12 +122,12 @@ def rm_node(args):
 
     # Validate deployment structure
     if 'all' not in deployment or 'children' not in deployment['all'] or args.role not in deployment['all']['children']:
-        print(f"Error: Role '{args.role}' not found.")
+        print(f"[ERROR] Role '{args.role}' not found.")
         return
 
     hosts = deployment['all']['children'][args.role]['hosts']
     if args.name not in hosts:
-        print(f"Error: Node '{args.name}' not found in role '{args.role}'.")
+        print(f"[ERROR] Node '{args.name}' not found in role '{args.role}'.")
         return
 
     # Remove node
@@ -162,4 +162,4 @@ def rm_node(args):
 
     # Save updated deployment
     save_yaml(deploy_path, deployment)
-    print(f"Node '{args.name}' removed from role '{args.role}'. Ports reassigned.")
+    print(f"[INFO] Node '{args.name}' removed from role '{args.role}'. Ports reassigned.")
