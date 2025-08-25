@@ -92,6 +92,8 @@ def _build_json_args(cfg: Dict[str, Any]) -> str:
                 parts.append(f"{key}:{s}")
             else:                              # normal JSON string
                 parts.append(f"{key}:{json.dumps(s)}")
+        elif isinstance(v, bool):
+            parts.append(f"{key}:{json.dumps(v)}")
         elif isinstance(v, (int, float)):
             parts.append(f"{key}:{v}")
         else:
@@ -279,7 +281,7 @@ def _verify_and_fix_env_vars(
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
             role = hv.get("env", {}).get("ROLE", None)
-            master_port_dict = master_port_p_dict if role == "P" else master_port_d_dict
+            master_port_dict = master_port_p_dict if role == "prefill" else master_port_d_dict
             if role == "prefill" or role == "decode":
                 master_port = master_port_dict.get(host_ip, None)
                 if master_port is None:
@@ -672,7 +674,7 @@ show_spinner() {
                 pass
 
 def install_dev(
-    inventory_path: str = "omni_cli/configs/server_profiles.yml",
+    inventory_path,
     dry_run: bool = False,
 ) -> None:
     """Install code inside container"""
@@ -868,7 +870,7 @@ def print_node_list(inventory_path: str) -> None:
     print("-" * 30)
 
 def run_docker_containers(
-    inventory_path: str = "omni_cli/configs/server_profiles.yml",
+    inventory_path,
     dry_run: bool = False,
 ) -> None:
     inv_file = Path(inventory_path).expanduser().resolve()
