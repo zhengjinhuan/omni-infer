@@ -238,13 +238,13 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if key in vars_dict['env']:
             del vars_dict['env'][key]
         else:
-            print("[WARNING] No matching configuration %s found." % key)
+            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
 
     for key in arg_list:
         if key in vars_dict['args']:
             del vars_dict['args'][key]
         else:
-            print("[WARNING] No matching configuration %s found." % key)
+            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
 
     if DOCKER_IMAGE_ID and 'DOCKER_IMAGE_ID' in vars_dict:
         del vars_dict['DOCKER_IMAGE_ID']
@@ -259,7 +259,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if 'extra-args' in vars_dict['args'] and key in vars_dict['args']['extra-args']:
             del vars_dict['args']['extra-args'][key]
         else:
-            print("[WARNING] No matching configuration %s found." % key)
+            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
 
     if 'extra-args' in vars_dict['args'] and vars_dict['args']['extra-args'] == {}:
         vars_dict['args']['extra-args'] = ''
@@ -268,7 +268,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if 'additional-config' in vars_dict['args'] and key in vars_dict['args']['additional-config']:
             del vars_dict['args']['additional-config'][key]
         else:
-            print("[WARNING] No matching configuration %s found." % key)
+            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
 
     if 'additional-config' in vars_dict['args'] and vars_dict['args']['additional-config'] == {}:
         vars_dict['args']['additional-config'] = ''
@@ -277,7 +277,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if key in vars_dict['args']['kv-transfer-config']:
             del vars_dict['args']['kv-transfer-config'][key]
         else:
-            print("[WARNING] No matching configuration %s found." % key)
+            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
 
     if 'kv-transfer-config' in vars_dict['args'] and vars_dict['args']['kv-transfer-config'] == {}:
         vars_dict['args']['kv-transfer-config'] = ''
@@ -314,13 +314,13 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
                     delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                         ascend_rt_visible_devices, container_name, extra_args_list, \
                         additional_config_list, kv_transfer_config_list)
-                    print("[INFO] You have deleted the configuration of all nodes")
+            print("[INFO] You have deleted the configuration of all nodes")
         elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                     ascend_rt_visible_devices, container_name, extra_args_list, \
                     additional_config_list, kv_transfer_config_list)
-                print("[INFO] You have deleted the configuration of all nodes in group %s" % node_type)
+            print("[INFO] You have deleted the configuration of all nodes in group %s" % node_type)
         else:
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                 ascend_rt_visible_devices, container_name, extra_args_list, \
