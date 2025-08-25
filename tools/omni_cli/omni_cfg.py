@@ -289,7 +289,7 @@ def delete_model_path(sections):
 
 def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     env_list = sections['env']
-    arg_list = sections['arg']
+    arg_list = sections['args']
     DOCKER_IMAGE_ID = sections['DOCKER_IMAGE_ID']
     ascend_rt_visible_devices = sections['ascend_rt_visible_devices']
     EXECUTOR_CODE_PATH = sections['EXECUTOR_CODE_PATH']
