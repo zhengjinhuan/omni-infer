@@ -279,7 +279,7 @@ def _verify_and_fix_env_vars(
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
             role = hv.get("env", {}).get("ROLE", None)
-            master_port_dict = master_port_p_dict if role == "P" else master_port_d_dict
+            master_port_dict = master_port_p_dict if role == "prefill" else master_port_d_dict
             if role == "prefill" or role == "decode":
                 master_port = master_port_dict.get(host_ip, None)
                 if master_port is None:
