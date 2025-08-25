@@ -1172,19 +1172,19 @@ def main():
         node_type, node_name = parse_node_name(args.name[0])
         sections = parse_remaining_args(node_type, node_name, args.set, args.remaining_args, default_deploy_path)
         if args.set:
-            print("Set configuration.")
+            print("[INFO] Set configuration.")
             cfg_set_process(node_type, node_name, args, sections, default_deploy_path)
         elif args.delete:
-            print("Delete configuration.")
+            print("[INFO] Delete configuration.")
             cfg_delete_process(node_type, node_name, args, sections, default_deploy_path)
     elif args.command == "inspect":
-        print("Inspect configuration.")
+        print("[INFO] Inspect configuration.")
         print_node_config(default_deploy_path, args.name[0])
     elif args.command == "upgrade":
-        print("Upgrade packages")
+        print("[INFO] Upgrade packages")
         upgrade_packages()
     elif args.command == "collect_log":
-        print("Fetch logs")
+        print("[INFO] Fetch logs")
         collect_logs()
 
 if __name__ == "__main__":
