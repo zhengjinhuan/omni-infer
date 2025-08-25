@@ -90,8 +90,7 @@ class NPUCompilationConfig:
 
     def update_gear_options(self, vllm_config: VllmConfig):
         max_num_reqs = vllm_config.scheduler_config.max_num_seqs
-        use_spec_decode = False if not vllm_config.speculative_config else (
-                    vllm_config.speculative_config.method == "deepseek_mtp")
+        use_spec_decode = vllm_config.speculative_config is not None
         max_batch_size = max_num_reqs if not use_spec_decode else max_num_reqs * (1 + vllm_config.speculative_config.num_speculative_tokens)
         if not self.decode_gear_list:
             self.decode_gear_list = [max_batch_size]

@@ -315,6 +315,8 @@ class Qwen2Model(nn.Module):
         else:
             self.norm = PPMissingLayer()
 
+        self.aux_hidden_state_layers = tuple()
+
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
@@ -343,9 +345,9 @@ class Qwen2Model(nn.Module):
 
         attn_metadata = get_forward_context().attn_metadata
         if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache and self.tp_size > 1:
-            hidden_states, residual = self.forward_layers_prefill_microbatch_tp8_allreduce(positions, hidden_states, residual, kv_caches, cos, sin)
+            hidden_states, residual, aux_hidden_states = self.forward_layers_prefill_microbatch_tp8_allreduce(positions, hidden_states, residual, kv_caches, cos, sin)
         else:
-            hidden_states, residual = self.forward_layers(positions, hidden_states, residual, kv_caches, cos, sin)
+            hidden_states, residual, aux_hidden_states = self.forward_layers(positions, hidden_states, residual, kv_caches, cos, sin)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
@@ -353,8 +355,11 @@ class Qwen2Model(nn.Module):
                 "residual": residual
             })
         hidden_states, _ = self.norm(hidden_states, residual, y_transform=None)
+        if len(aux_hidden_states) > 0:
+            return aux_hidden_states, hidden_states # to meet order of raw_hidden_states and hidden_states
         return hidden_states
 
+    # there is a prefill forward for eagle3 in qwen2_eagle3.py
     def forward_layers_prefill_microbatch_tp8_allreduce(self, positions, hidden_states, residual, kv_caches, cos, sin):
         n_tokens = hidden_states.shape[0]
         if n_tokens % 2 == 0:
@@ -367,22 +372,33 @@ class Qwen2Model(nn.Module):
         cos_mb0, cos_mb1 = torch.split(cos, split_sizes)
         sin_mb0, sin_mb1 = torch.split(sin, split_sizes)
         hidden_states_mb0_handle, hidden_states_mb1_handle = None, None
+        aux_hidden_states = [] # for eagle 3
         for layer_idx in range(self.start_layer, self.end_layer):
             layer = self.layers[layer_idx]
+            if layer_idx in self.aux_hidden_state_layers:
+                aux_hidden_states.append(torch.cat([hidden_states_mb0 + residual_mb0, hidden_states_mb1 + residual_mb1], dim=0))
 
             if hidden_states_mb0_handle is not None:
                 hidden_states_mb0_handle.wait()
-            hidden_states_mb0, residual_mb0 = layer.input_layernorm.forward_with_residual(hidden_states_mb0, residual_mb0)
+            if isinstance(layer.input_layernorm, nn.Identity):
+                hidden_states_mb0 = hidden_states_mb0
+                residual_mb0 = hidden_states_mb0
+            else:
+                hidden_states_mb0, residual_mb0 = layer.input_layernorm.forward_with_residual(hidden_states_mb0, residual_mb0)
             qkv_mb0, _ = layer.self_attn.qkv_proj(hidden_states_mb0, is_prefill=True)
             q_mb0, k_mb0, v_mb0 = qkv_mb0.split([layer.self_attn.q_size, layer.self_attn.kv_size, layer.self_attn.kv_size], dim=-1)
-            q_mb0, k_mb0 = layer.self_attn.rotary_emb.forward_cos_sin(q_mb0, k_mb0, cos_mb0, sin_mb0)
+            q_mb0, k_mb0 = layer.self_attn.rotary_emb.forward(None, q_mb0, k_mb0, cos_mb0, sin_mb0)#change func forward_cos_sin to func forward
 
             if hidden_states_mb1_handle is not None:
                 hidden_states_mb1_handle.wait()
-            hidden_states_mb1, residual_mb1 = layer.input_layernorm.forward_with_residual(hidden_states_mb1, residual_mb1)
+            if isinstance(layer.input_layernorm, nn.Identity):
+                hidden_states_mb1 = hidden_states_mb1
+                residual_mb1 = hidden_states_mb1
+            else:
+                hidden_states_mb1, residual_mb1 = layer.input_layernorm.forward_with_residual(hidden_states_mb1, residual_mb1)
             qkv_mb1, _ = layer.self_attn.qkv_proj(hidden_states_mb1, is_prefill=True)
             q_mb1, k_mb1, v_mb1 = qkv_mb1.split([layer.self_attn.q_size, layer.self_attn.kv_size, layer.self_attn.kv_size], dim=-1)
-            q_mb1, k_mb1 = layer.self_attn.rotary_emb.forward_cos_sin(q_mb1, k_mb1, cos_mb1, sin_mb1)
+            q_mb1, k_mb1 = layer.self_attn.rotary_emb.forward(None, q_mb1, k_mb1, cos_mb1, sin_mb1)#change func forward_cos_sin to func forward
 
             q = torch.cat([q_mb0, q_mb1])
             k = torch.cat([k_mb0, k_mb1])
@@ -411,10 +427,13 @@ class Qwen2Model(nn.Module):
         hidden_states_mb1_handle.wait()
         hidden_states = torch.cat([hidden_states_mb0, hidden_states_mb1])
         residual = torch.cat([residual_mb0, residual_mb1])
-        return hidden_states, residual
+        return hidden_states, residual, aux_hidden_states
 
     def forward_layers(self, positions, hidden_states, residual, kv_caches, cos, sin):
+        aux_hidden_states = [] # for eagle 3
         for layer_idx in range(self.start_layer, self.end_layer):
+            if layer_idx in self.aux_hidden_state_layers:
+                aux_hidden_states.append(hidden_states + residual)
             layer = self.layers[layer_idx]
             hidden_states, residual = layer(
                 positions,
@@ -423,7 +442,7 @@ class Qwen2Model(nn.Module):
                 kv_caches[layer_idx] if kv_caches is not None else None,
                 cos, sin
             )
-        return hidden_states, residual
+        return hidden_states, residual, aux_hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:
@@ -526,6 +545,13 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors)
+
+    def set_aux_hidden_state_layers(self, layers: tuple[int]) -> None:
+        self.model.aux_hidden_state_layers = layers
+
+    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int]:
+        num_layers = len(self.model.layers)
+        return (2, num_layers // 2, num_layers - 3)
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)

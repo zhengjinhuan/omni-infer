@@ -24,7 +24,7 @@ Set the corresponding environment variable to a YAML config file:
 Export the path to the namelist configuration:
 
 ```bash
-export PROFILING_NAMELIST={project_root}/omni_infer/omni/adaptors/vllm/patches/profiler_patches/assets/omnilogger_namelist.yml
+export PROFILING_NAMELIST={project_root}/omni_infer/omni/tools/profiler/assets/omnilogger_namelist.yml
 ```
 
 By default, logs are saved to `/tmp/trace_output_directory`.

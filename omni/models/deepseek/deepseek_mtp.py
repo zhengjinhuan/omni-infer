@@ -25,8 +25,9 @@ from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
+from omni.models.common.config.model_config import model_extra_config
 
-if os.getenv("ASCEND_PLATFORM", "A3")=="A2":
+if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
     from .deepseek_v3_a2 import DeepseekDecoderLayer
 else:
     from .deepseek_v3 import DeepseekDecoderLayer
@@ -37,7 +38,6 @@ from omni.models.common.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding
 )
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
-from omni.models.common.config.model_config import model_extra_config
 
 class SharedHead(nn.Module):
 

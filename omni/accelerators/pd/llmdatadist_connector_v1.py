@@ -62,6 +62,7 @@ class ReqMeta:
     remote_cluster_id: str
     spec_token_ids: Optional[list[int]]
     remote_dp_rank: Optional[int]
+    remote_request_id: Optional[str]
 
 @dataclass
 class ReqMetaPrefill:
@@ -86,6 +87,7 @@ class DatadistConnectorMetadata(KVConnectorMetadata):
             remote_cluster_id=kv_transfer_params["remote_cluster_id"],
             spec_token_ids=kv_transfer_params["spec_token_ids"],
             remote_dp_rank=kv_transfer_params.get("remote_dp_rank", 0),
+            remote_request_id=kv_transfer_params.get("remote_request_id", None),
         )
 
 class DatadistConnectorMetadataPrefill(KVConnectorMetadata):
@@ -267,7 +269,8 @@ class PrefillConnectorScheduler:
             remote_cluster_id=self.cluster_id_start,
             remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}",
             spec_token_ids=spec_token_ids,
-            remote_dp_rank=self.vllm_config.parallel_config.data_parallel_rank
+            remote_dp_rank=self.vllm_config.parallel_config.data_parallel_rank,
+            remote_request_id=request.request_id
         )
 
 
@@ -519,7 +522,7 @@ class DecodeConnectorWorker:
             # Write thread name and native_id to file
             dump_thread_to_file(self.thread_on_fast_path_req, thread_name, thread_dump_path)
 
-        if self.vllm_config.parallel_config.tensor_parallel_size > 1:
+        if self.multi_thread_pull_kv and self.vllm_config.parallel_config.tensor_parallel_size > 1:
             self.tp_sync_path = f"ipc:///tmp/tp-sync-dp{self.vllm_config.parallel_config.data_parallel_rank}"
             if get_tensor_model_parallel_rank() == 0:
                 self.input_socket = self.ctx.socket(zmq.constants.PULL)
@@ -539,6 +542,7 @@ class DecodeConnectorWorker:
                 if self.input_socket.poll(timeout=10) > 0:
                     data = self.input_socket.recv_json()
                     request_id = data.get("request_id")
+                    remote_request_id = data.get("remote_request_id")
                     remote_host_ip = data.get("remote_host_ip")
                     # if request_id not in dict, set to 0, else do nothing
                     self.tp_sync_req_dict.setdefault(request_id, 0)
@@ -546,7 +550,7 @@ class DecodeConnectorWorker:
                     logger.debug(f"{request_id} finish pull kv {self.tp_sync_req_dict[request_id]} times.")
                     if self.tp_sync_req_dict[request_id] == self.vllm_config.parallel_config.tensor_parallel_size:
                         self.tp_sync_req_dict.pop(request_id)
-                        self._send_pulled_kv_req_list(remote_host_ip, [request_id])
+                        self._send_pulled_kv_req_list(remote_host_ip, [remote_request_id])
                         with self._transfer_lock:
                             self._recving_transfers.append(request_id)
             except Exception as e:
@@ -714,6 +718,7 @@ class DecodeConnectorWorker:
                     if len_local_blocks > 0:
                         task = {
                             'request_id': req_id,
+                            'remote_request_id': meta.remote_request_id,
                             'dst_cluster_id': cluster_id,
                             'local_block_ids': local_blocks,
                             'remote_block_ids': remote_blocks,
@@ -724,6 +729,7 @@ class DecodeConnectorWorker:
             elif self.multi_thread_pull_kv:
                 task = {
                     'request_id': req_id,
+                    'remote_request_id': meta.remote_request_id,
                     'dst_cluster_id': cluster_ids[0],
                     'local_block_ids': meta.local_block_ids,
                     'remote_block_ids': meta.remote_block_ids,
@@ -739,6 +745,7 @@ class DecodeConnectorWorker:
                     remote_block_ids=meta.remote_block_ids,
                     dst_cluster_id=cluster_ids[0],
                     request_id=req_id,
+                    remote_request_id=meta.remote_request_id,
                     remote_host_ip=meta.remote_host,
                 )
                 futures.append(future)
@@ -753,6 +760,7 @@ class DecodeConnectorWorker:
         remote_block_ids: list[int],
         dst_cluster_id: str,
         request_id: str,
+        remote_request_id: str,
         remote_host_ip: str,
     ):
         start = time.time()
@@ -760,13 +768,27 @@ class DecodeConnectorWorker:
 
         if self.vllm_config.parallel_config.tensor_parallel_size == 1:
             # tp=1, send to prefill tp rank0 directly.
-            self._send_pulled_kv_req_list(remote_host_ip, [request_id])
+            self._send_pulled_kv_req_list(remote_host_ip, [remote_request_id])
             with self._transfer_lock:
                 self._recving_transfers.append(request_id)
         else:
-            # tp>1, send to decode to rank0 firstly.
-            self._send_pulled_kv_req_list(self.tp_sync_path, dict(request_id=request_id, remote_host_ip=remote_host_ip))
-
+            if self.multi_thread_pull_kv:
+                # tp>1, send to decode to rank0 firstly.
+                self._send_pulled_kv_req_list(
+                    self.tp_sync_path,
+                    {
+                        "request_id": request_id,
+                        "remote_request_id": remote_request_id,
+                        "remote_host_ip": remote_host_ip
+                    }
+                )
+            else:
+                torch.distributed.barrier(group=get_tp_group().cpu_group)
+                if get_tensor_model_parallel_rank() == 0:
+                    self._send_pulled_kv_req_list(remote_host_ip, [remote_request_id])
+                with self._transfer_lock:
+                    self._recving_transfers.append(request_id)
+        logger.debug(f" ***** read block, req_id:{request_id}, local_block_ids:{local_block_ids}, remote_block_ids:{remote_block_ids}")
         cost = time.time() - start
         logger.info(f" ***** read block, req_id:{request_id}, cost:{cost:.6f}")
 

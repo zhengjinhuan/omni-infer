@@ -34,7 +34,6 @@
     DOCKER_NAME_D: "you_name_omni_infer_decode"
     DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
-    ASCEND_TOOLKIT_HOME: "/usr/local/Ascend/latest"
 
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "pd_score_balance"
@@ -183,6 +182,15 @@
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+      unset https_proxy
+      unset http_proxy
+      unset proxy
+      
+      # ems env adapter
+      # export ENABLE_VLLM_EMS=0
+      # export EMS_STORE_LOCAL=1
+      # export MODEL_ID=cc_kvstore@_@ds_default_ns_001
+      # export ACCELERATE_ID=cc_kvstore@_@ds_default_ns_001
 
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
         export MASTER_NODE_IP=$HOST_IP
@@ -204,7 +212,7 @@
       pip uninstall omni_placement -y
 
       cd /workspace/omniinfer/tools/scripts
-      PROFILING_NAMELIST=/workspace/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -262,14 +270,17 @@
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-
+      unset https_proxy
+      unset http_proxy
+      unset proxy
+      
       # install omni_placement
       pip uninstall omni_placement -y
       
       python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd /workspace/omniinfer/tools/scripts
-      PROFILING_NAMELIST=/workspace/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -402,7 +413,6 @@
       -e NNODES=$NNODES
       -e NODE_RANK=$NODE_RANK
       -e NODE_IP_LIST=$NODE_IP_LIST
-      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME 
       -d $DOCKER_NAME_P
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
@@ -422,7 +432,6 @@
       -e SOCKET_IFNAME=$SOCKET_IFNAME
       -e NUM_SERVERS=$NUM_SERVERS
       -e HOST=$HOST
-      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME 
       -d $DOCKER_NAME_D
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
 
@@ -435,8 +444,8 @@
 
     docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
     docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . && cd ../../ && pip install -e . && pip uninstall numpy -y && pip install numpy==1.26 > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
 
   tasks:
     - name: generate container name.
@@ -1064,14 +1073,14 @@
     
     - name: Ensure bind_cpu.sh is executable
       file:
-        path: ${CODE_PATH}/v0.3.0/omniinfer/tools/scripts/bind_cpu.sh
+        path: ${CODE_PATH}/omniinfer/tools/scripts/bind_cpu.sh
         mode: "0755"
       become: yes
       tags:
         - proc_bind
     
     - name: Prefill cpu_pin
-      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c /workspace/tools/scripts/bind_cpu.sh"
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c /workspace/omniinfer/tools/scripts/bind_cpu.sh"
       environment:
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
         SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
@@ -1082,7 +1091,7 @@
         - proc_bind
     
     - name: Decode cpu_pin
-      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c /workspace/tools/scripts/bind_cpu.sh"
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c /workspace/omniinfer/tools/scripts/bind_cpu.sh"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
         SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"

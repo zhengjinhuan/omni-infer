@@ -51,9 +51,8 @@ from omni.models.common.layers.npu_penalty_cache import PenaltyCache
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
+from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
-
-MTP_METHOD_NAME = "deepseek_mtp"
 
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
@@ -178,6 +177,10 @@ class NPUModelRunner(GPUModelRunner):
         self.arange_npu = torch.arange(max(self.max_num_reqs + 1, self.max_model_len, self.max_num_tokens),
                                        dtype=torch.int64,
                                        device=self.device)
+        #init ems adapters
+        if EmsEnv.enable_vllm_ems:
+            from omni.adaptors.vllm.ems.ems_adapter import EmsAdapter
+            self.ems_adapter = EmsAdapter(vllm_config=vllm_config)
 
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
@@ -505,6 +508,7 @@ class NPUModelRunner(GPUModelRunner):
             raw_hidden_states, hidden_states = forward_results
         else:
             hidden_states = forward_results
+            raw_hidden_states = forward_results
         start_ret = time.time()
         cost_before_fc = start_fc - start_before_f
         cost_fc = start_ret - start_fc
@@ -530,6 +534,10 @@ class NPUModelRunner(GPUModelRunner):
         output.loading_kv_failure = loading_kv_failure
         return output
 
+    def load_kv_cache(self, info_load_reqs) -> List[int]:
+        result = self.ems_adapter.load(info_load_reqs)
+        return result
+
     @staticmethod
     def get_loading_kv_failure_req_ids() -> Optional[set[str]]:
         if has_kv_transfer_group():
@@ -543,6 +551,10 @@ class NPUModelRunner(GPUModelRunner):
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, IntermediateTensors]:
         start = time.time()
+
+        if EmsEnv.enable_vllm_ems:
+            self.ems_adapter.sync_save_event()
+
         # Update KVConnector with the KVConnector metadata forward().
         self._update_states(scheduler_output)
 
@@ -663,7 +675,7 @@ class NPUModelRunner(GPUModelRunner):
             if not self.use_spec_decode:
                 # Speculative decoding is not enabled.
                 spec_tokens_tensor = None
-            elif self.speculative_config.method == MTP_METHOD_NAME:
+            else:
                 spec_tokens_tensor = self.drafter.propose(
                     num_tokens=input_ids.numel(),
                     positions=positions,
@@ -673,8 +685,6 @@ class NPUModelRunner(GPUModelRunner):
                     last_accepted_index=last_accepted_index,
                     sample_indices=sample_indices,
                 )
-            else:
-                raise ValueError(f"Speculative method {self.speculative_config.method} is not supported in this version.")
 
             # NOTE: NPU -> CPU Sync happens here.
             # Move as many CPU operations as possible before this sync point.
@@ -722,6 +732,10 @@ class NPUModelRunner(GPUModelRunner):
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
         return_spec_token = [None] * (self.total_step - 1)
         return_spec_token.append(spec_token_ids)
+
+        if EmsEnv.enable_vllm_ems:
+            self.ems_adapter.async_save(scheduler_output)
+
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
@@ -768,6 +782,7 @@ class NPUModelRunner(GPUModelRunner):
                     raw_hidden_states, hidden_states = forward_results
                 else:
                     hidden_states = forward_results
+                    raw_hidden_states = forward_results
                 if self.use_spec_decode: 
                     self.drafter.propose(
                         num_tokens=num_tokens,
@@ -832,6 +847,7 @@ class NPUModelRunner(GPUModelRunner):
                 raw_hidden_states, hidden_states = forward_results
             else:
                 hidden_states = forward_results
+                raw_hidden_states = forward_results
             if self.use_spec_decode:
                 self.drafter.prepare_dummy_input(input_ids)
                 self.drafter.propose(
@@ -930,12 +946,14 @@ class NPUModelRunner(GPUModelRunner):
         if has_kv_transfer_group():
             get_kv_transfer_group().register_kv_caches(kv_caches)
 
+        if EmsEnv.enable_vllm_ems:
+            self.ems_adapter.bind_kvcaches(self.kv_caches)
+
     def capture_model(self) -> None:
         if self.enable_torchair_graph_mode:
             decode_gear_list = self.decode_gear_list
             graph_num = len(decode_gear_list)
-            use_spec_decode = False if not self.vllm_config.speculative_config else (
-                    self.vllm_config.speculative_config.method == MTP_METHOD_NAME)
+            use_spec_decode = self.vllm_config.speculative_config is not None
             base_time = 4
             min_time = base_time * graph_num
             max_time = 2 * base_time * graph_num

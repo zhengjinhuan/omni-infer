@@ -568,6 +568,49 @@ function nginx_set_location_openai_compatible_refactor() {
     mv "${nginx_conf_file}.tmp" "$nginx_conf_file"
 }
 
+function nginx_set_location_metrics() {
+    local nginx_conf_file="$1"
+
+    local location_block="
+        # match /metrics for metrics endpoint
+        location /metrics {
+            proxy_pass http://metrics_servers;
+            proxy_http_version 1.1;
+            proxy_set_header Connection \"Keep-Alive\";
+        }"
+    
+    awk -v block="$location_block" '
+    BEGIN { in_server=0; brace_depth=0; inserted=0 }
+    {
+        # Detect entering server block
+        if ($0 ~ /^[[:space:]]*server[[:space:]]*{/) {
+            in_server=1
+            brace_depth=1
+            print
+            next
+        }
+        # Inside server block
+        if (in_server) {
+            # Count braces to track nesting
+            brace_depth += gsub(/{/, "{")
+            brace_depth -= gsub(/}/, "}")
+            # If at top level and see closing }, insert block before it
+            if (brace_depth == 0 && !inserted) {
+                print block
+                inserted=1
+                in_server=0
+            }
+            print
+            next
+        }
+        print
+    }
+    ' "${nginx_conf_file}" > "${nginx_conf_file}.tmp"
+
+    # Move back
+    mv "${nginx_conf_file}.tmp" "$nginx_conf_file"
+}
+
 function nginx_set_load_modules() {
     local nginx_conf_file="$1"
     local prefill_lb_sdk="$2"
@@ -645,6 +688,7 @@ function nginx_configuration() {
     local log_level="$8"
     local prefill_lb_sdk="$9"
     local decode_lb_sdk="${10}"
+    local metrics_servers_list="${11}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
@@ -658,7 +702,13 @@ function nginx_configuration() {
     nginx_set_reuseport $nginx_conf_file
     nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers" true "$decode_lb_sdk"
     nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false "$prefill_lb_sdk"
+    if [[ -n "$metrics_servers_list" ]]; then
+        nginx_set_upstream $nginx_conf_file $metrics_servers_list "metrics_servers" false ""
+    fi
     nginx_set_location_openai_compatible $nginx_conf_file
+    if [[ -n "$metrics_servers_list" ]]; then
+        nginx_set_location_metrics $nginx_conf_file
+    fi
     nginx_set_load_modules $nginx_conf_file $prefill_lb_sdk $decode_lb_sdk
 }
 
@@ -673,6 +723,7 @@ function nginx_configuration_refactor() {
     local log_level="$8"
     local prefill_lb_sdk="$9"
     local decode_lb_sdk="${10}"
+    local metrics_servers_list="${11}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
@@ -685,7 +736,13 @@ function nginx_configuration_refactor() {
     nginx_set_listen_port $nginx_conf_file $listen_port
     nginx_set_reuseport $nginx_conf_file
     nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false ""
+    if [[ -n "$metrics_servers_list" ]]; then
+        nginx_set_upstream $nginx_conf_file $metrics_servers_list "metrics_servers" false ""
+    fi
     nginx_set_location_openai_compatible_refactor $nginx_conf_file $prefill_servers_list $decode_servers_list "$prefill_lb_sdk" "$decode_lb_sdk"
+    if [[ -n "$metrics_servers_list" ]]; then
+        nginx_set_location_metrics $nginx_conf_file
+    fi
     nginx_set_load_modules_framework $nginx_conf_file
 }
 
@@ -728,6 +785,7 @@ core_num="4"
 listen_port="8080"
 prefill_servers_list=""
 decode_servers_list=""
+metrics_servers_list=""
 stop=false
 rollback=false
 dry_run=false
@@ -747,6 +805,7 @@ print_help() {
     echo "  --listen-port <PORT>,   -p <PORT>          Listening port"
     echo "  --prefill-servers-list <list>              Comma-separated backend servers for prefill (required to start proxy)"
     echo "  --decode-servers-list <list>               Comma-separated backend servers for decode (required to start proxy)"
+    echo "  --metrics-servers-list <list>              Comma-separated backend servers for metrics (optional)"
     echo "  --client-body-buffer-size <size>           Set client_body_buffer_size (default: 1024K)"
     echo "  --log-file <path>,      -l <path>          Log file path"
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
@@ -764,6 +823,7 @@ print_help() {
     echo "    $0 --listen-port 8080 \\"
     echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
     echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
+    echo "       --metrics-servers-list 127.0.0.1:9090 \\"
     echo "       --client-body-buffer-size 256K \\"
     echo "       --log-file /var/log/proxy.log --log-level info"
     echo ""
@@ -812,6 +872,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --decode-servers-list)
             decode_servers_list="$2"
+            shift 2
+            ;;
+        --metrics-servers-list)
+            metrics_servers_list="$2"
             shift 2
             ;;
         --prefill-lb-sdk)
@@ -888,9 +952,9 @@ function do_start() {
     # TODO: Currently only sglang is supported in the refactor implementation.
     # vllm support will be added later.
     if [ "$engine_type" = "vllm" ]; then
-        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk"
+        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list"
     elif [ "$engine_type" = "sglang" ]; then
-        nginx_configuration_refactor "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"  "$prefill_lb_sdk" "$decode_lb_sdk"
+        nginx_configuration_refactor "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"  "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list"
     fi
     if [ "$dry_run" = true ]; then
         echo "Dry run complete. Configuration generated at $nginx_conf_file."

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
+import time
 from typing import Any, Optional, Tuple, Dict
 import torch
 from torch import nn
@@ -271,11 +272,14 @@ class DeepseekMLA(nn.Module):
                 self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * self.tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
                 torch._dynamo.mark_static(self.norm_res[batch_size])
                 torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
-        if model_extra_config.operator_opt_config.use_mlaprolog:
+        if self.quant_symbol and model_extra_config.operator_opt_config.use_mlaprolog:
             self.q_a_proj.weight_scale.data = self.q_a_proj.weight_scale.data.to(torch.float)
             self.q_b_proj.weight_scale.data = self.q_b_proj.weight_scale.data.to(torch.float)
             if self.kv_a_proj_with_mqa is not None:
                 self.kv_a_proj_with_mqa.weight_scale.data = self.kv_a_proj_with_mqa.weight_scale.data.to(torch.float)
+        if model_extra_config.operator_opt_config.c8_calib_path is not None:
+            os.makedirs(model_extra_config.operator_opt_config.c8_calib_path, exist_ok=True)
+
 
     def forward(
         self,
@@ -383,6 +387,13 @@ class DeepseekMLA(nn.Module):
                 epsilon=self.kv_a_layernorm.variance_epsilon,
                 cache_mode="PA_NZ",
                 is_output_kv=True) # adapter NZ
+
+            if model_extra_config.operator_opt_config.c8_calib_path is not None and get_world_group().rank_in_group == 0:
+                layer_idx = int(self.prefix.split(sep='.')[-2])
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                filename = f"{timestamp}_{layer_idx}.pth"
+                save_path = os.path.join(model_extra_config.operator_opt_config.c8_calib_path, filename)
+                torch.save(kv_a.detach().to("cpu").contiguous(), save_path)
         else:
             latent_cache = latent_cache.view(-1, latent_cache.size(-1))
             # adapt end
