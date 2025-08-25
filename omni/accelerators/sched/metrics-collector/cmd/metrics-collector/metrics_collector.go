@@ -38,7 +38,7 @@ func isValidIPPortList(s string) bool {
 
 // 获取当前文件所在目录
 func getCurrentFileDir() (string, error) {
-	_, file, _, ok: := runtime.Caller(1)
+	_, file, _, ok := runtime.Caller(1)
 	if !ok {
 		return "", fmt.Errorf("无法获取调用栈信息")
 	}
