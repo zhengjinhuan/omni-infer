@@ -159,34 +159,26 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
 
     return sections
 
-def check_model_path(default_cfg_path, sections, data, node_type, node_name):
+def check_model_path(sections, data, node_type, node_name):
     if node_type == 'C':
         return True
-    if 'model_path_used' not in data:
+    if 'MODEL_PATH' not in data['all']['children'][node_type]['hosts'][node_name]['env']:
         if 'MODEL_PATH' in sections['env']:
-            if 'deepseek' in sections['env']['MODEL_PATH'].lower():
-                data['model_path_used'] = 'deepseek'
-            elif 'qwen' in sections['env']['MODEL_PATH'].lower():
-                data['model_path_used'] = 'qwen'
+            if 'deepseek' in sections['env']['MODEL_PATH'].lower() or 'qwen' in sections['env']['MODEL_PATH'].lower():
+                return True
             else:
-                print("This model is currently not supported")
-            data['profiles']['vllm'][data['model_path_used']][node_type]['env']['MODEL_PATH'] = sections['env']['MODEL_PATH']
+                print("Error: This model is currently not supported.")
+                return False
         else:
-            print(f"Error: The model_path is not configured in {node_name}. Please set the configuration.")
+            print("Error: This model is not configured.")
             return False
     else:
-        if 'MODEL_PATH' in sections['env']:
-            if 'deepseek' in sections['env']['MODEL_PATH'].lower():
-                data['model_path_used'] = 'deepseek'
-            elif 'qwen' in sections['env']['MODEL_PATH'].lower():
-                data['model_path_used'] = 'qwen'
-            else:
-                print("This model is currently not supported")
-            data['profiles']['vllm'][data['model_path_used']][node_type]['env']['MODEL_PATH'] = sections['env']['MODEL_PATH']
-
-    with open(default_cfg_path , 'w') as file:
-        yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-    return True
+        model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
+        if 'deepseek' in model_path.lower() or 'qwen' in model_path.lower():
+            return True
+        else:
+            print("Error: This model is not configured or This model is currently not supported.")
+            return False
 
 def updata_dict(sections, data):
     for modify_key, modify_values in sections.items():
@@ -320,6 +312,20 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     else:
         print(f"[ERROR] There is no data in {yml_file_path}.")
         return
+    
+def modify_by_use_default_file(sections, default_cfg, data, node_type, node_name):
+    if check_model_path(sections, data, node_type, node_name) is False:
+        return False
+    if 'MODEL_PATH' in sections['env']:
+        if 'deepseek' in sections['env']['MODEL_PATH'].lower():
+            sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
+        elif 'qwen' in sections['env']['MODEL_PATH'].lower():
+            sections_bak = default_cfg['profiles']['vllm']['qwen'][node_type]
+        else:
+            print("Error: This model is currently not supported.")
+            return False
+        updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
+    return True
 
 def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
@@ -336,24 +342,15 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         if node_type == 'all':
             for n_type in default_cfg['profiles']['vllm']['deepseek']:
                 for n_name in data['all']['children'][n_type]['hosts']:
-                    if check_model_path(default_cfg_path, sections, default_cfg, n_type, n_name) is False:
+                    if modify_by_use_default_file(sections, default_cfg, data, n_type, n_name) is False:
                         return
-                    if 'MODEL_PATH' in sections['env']:
-                        sections_bak = default_cfg['profiles']['vllm'][default_cfg['model_path_used']][n_type]
-                        updata_dict(sections_bak, data['all']['children'][n_type]['hosts'][n_name])
         elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
             for n_name in data['all']['children'][node_type]['hosts']:
-                if check_model_path(default_cfg_path, sections, default_cfg, node_type, n_name) is False:
+                if modify_by_use_default_file(sections, default_cfg, data, node_type, n_name) is False:
                     return
-                if 'MODEL_PATH' in sections['env']:
-                    sections_bak = default_cfg['profiles']['vllm'][default_cfg['model_path_used']][node_type]
-                    updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][n_name])
         else:
-            if check_model_path(default_cfg_path, sections, default_cfg, node_type, node_name) is False:
+            if modify_by_use_default_file(sections, default_cfg, data, node_type, node_name) is False:
                 return
-            if 'MODEL_PATH' in sections['env']:
-                sections_bak = default_cfg['profiles']['vllm'][default_cfg['model_path_used']][node_type]
-                updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
