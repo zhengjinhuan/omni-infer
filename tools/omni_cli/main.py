@@ -1147,10 +1147,10 @@ def main():
 
     if args.command == "start" and not any([args.normal, args.run_dev]):
         args.normal = True
-    if args.config_path is None:
-        args.config_path = default_deploy_path
 
     if args.command == "start":
+        if args.config_path is None:
+            args.config_path = default_deploy_path
         if args.normal:
             print("[INFO] Starting omni service in Normal mode...")
             omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=False)
