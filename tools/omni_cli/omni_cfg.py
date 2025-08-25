@@ -122,19 +122,19 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
             if arg in seen_sections:
                 raise ValueError(f"Duplicate section keyword '{arg}'")
             seen_sections.add(arg)
-            if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
-                raise ValueError(f"Missing value for key: '{arg}'")
             if is_set:
+                if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
+                    raise ValueError(f"Missing value for key: '{arg}'")
                 sections[arg[2:]] = remaining_args[i+1]
                 i += 2
             else:
                 sections[arg[2:]] = True
                 i += 1
         elif arg[2:] == 'container_name_prefix':
-            print("请注意你正在通过容器名前缀设置容器名。")
-            if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
-                raise ValueError(f"Missing value for key: '{arg}'")
+            print("Please note that you are setting the container name using the container name prefix.")
             if is_set:
+                if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
+                    raise ValueError(f"Missing value for key: '{arg}'")
                 update_container_name(node_type, node_name, remaining_args[i+1], yml_file_path)
                 i += 2
             else:
@@ -188,14 +188,14 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     updata_dict(filtered_sections, data['all']['children'][n_type]['hosts'][n_name])
-            print("你已修改所有节点的配置")
-        elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
+            print("You have modified the configuration of all nodes")
+        elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][n_name])
-            print("你已修改 %s 组所有节点的配置" % node_type)
+            print("You have modified the configuration of all nodes in the group %s" % node_type)
         else:
             updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][node_name])
-            print("你已修改 %s 节点的配置" % node_name)
+            print("You have modified the configuration of node %s" % node_name)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
@@ -264,7 +264,7 @@ def delete_model_path(sections):
 
     if 'MODEL_PATH' in sections['env']:
         if 'model_path_used' not in default_cfg:
-            print("键 'MODEL_PATH' 不存在，无需删除")
+            print("The key 'MODEL_PATH' does not exist, there is no need to delete it")
             return
 
         del default_cfg['model_path_used']
@@ -288,21 +288,21 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
         if node_type == 'all':
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
-                    print("你已删除所有节点的配置")
                     delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                         ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
                         additional_config_list, kv_transfer_config_list)
-        elif node_type == 'P' or node_type == 'D' or node_type == 'C':
+                    print("You have deleted the configuration of all nodes")
+        elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
-                print("你已删除 %s 组所有节点的配置" % node_type)
                 delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                     ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
                     additional_config_list, kv_transfer_config_list)
+                print("You have deleted the configuration of all nodes in group %s" % node_type)
         else:
-            print("你已删除 %s 节点的配置" % n_name)
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                 ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
                 additional_config_list, kv_transfer_config_list)
+            print("You have deleted the configuration of node %s" % n_name)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
@@ -312,10 +312,10 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
 
 def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
-        print(f"错误：无效的节点名称 '{args.name[0]}'。")
-        print("节点名称必须符合以下格式之一：")
-        print("  - prefill_<number> (例如: prefill_0, prefiill_1, prefill_11)")
-        print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
+        print(f"Error: Invalid node name: '{args.name[0]}'。")
+        print("The node name must conform to one of the following formats:")
+        print("  - prefill_<number> (例如: p0, p1, p11)")
+        print("  - decode_<number> (例如: d0, d1, d11)")
         return
     
     default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
@@ -353,10 +353,10 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
 
 def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
-        print(f"错误：无效的节点名称 '{args.name[0]}'。")
-        print("节点名称必须符合以下格式之一：")
-        print("  - prefill_<number> (例如: prefill_0, prefiill_1, prefill_11)")
-        print("  - decode_<number> (例如: decode_0, decode_1, decode_11)")
+        print(f"Error: Invalid node name: '{args.name[0]}'。")
+        print("The node name must conform to one of the following formats:")
+        print("  - prefill_<number> (例如: p0, p1, p11)")
+        print("  - decode_<number> (例如: d0, d1, d11)")
         return
 
     delete_cfg_yml(node_type, node_name, sections, deploy_path)
