@@ -13,7 +13,8 @@ ngx_module_srcs="$ngx_addon_dir/ngx_http_omni_proxy_module.c \
                  $ngx_addon_dir/omni_scheduler.c \
                  $ngx_addon_dir/omni_utils.c \
                  $ngx_addon_dir/omni_tokenizer.c \
-                 $ngx_addon_dir/omni_tokenizer_worker.c"
+                 $ngx_addon_dir/omni_tokenizer_worker.c \
+                 $ngx_addon_dir/omni_zmq_handler.c" 
 
 # Include directories for the module
 ngx_module_incs="$ngx_addon_dir"
@@ -34,12 +35,45 @@ detect_python_config() {
     echo "$PYTHON_INCLUDES $PYTHON_LDFLAGS"
 }
 
-PYTHON_FLAGS=$(detect_python_config)
+detect_zeromq_config() {
+    if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libzmq; then
+        ZMQ_CFLAGS=$(pkg-config --cflags libzmq)
+        ZMQ_LIBS=$(pkg-config --libs libzmq)
+    elif [ -f /usr/include/zmq.h ] || [ -f /usr/local/include/zmq.h ]; then
+        ZMQ_CFLAGS=""
+        ZMQ_LIBS="-lzmq"
+    else
+        # 尝试查找ZeroMQ
+        ZMQ_PATHS="/usr /usr/local /opt/local"
+        for path in $ZMQ_PATHS; do
+            if [ -f "$path/include/zmq.h" ]; then
+                ZMQ_CFLAGS="-I$path/include"
+                ZMQ_LIBS="-L$path/lib -lzmq"
+                break
+            fi
+        done
+        if [ -z "$ZMQ_LIBS" ]; then
+            echo "ZeroMQ not found, using default flags" >&2
+            ZMQ_CFLAGS=""
+            ZMQ_LIBS="-lzmq"
+        fi
+    fi
+    
+    echo "$ZMQ_CFLAGS $ZMQ_LIBS"
+}
 
-CFLAGS="$CFLAGS $PYTHON_FLAGS"
-ngx_module_libs="$ngx_module_libs $PYTHON_FLAGS"
+PYTHON_FLAGS=$(detect_python_config)
+ZMQ_FLAGS=$(detect_zeromq_config)
+
+CFLAGS="$CFLAGS $PYTHON_FLAGS $ZMQ_FLAGS"
+ngx_module_libs="$ngx_module_libs $PYTHON_FLAGS $ZMQ_FLAGS"
 
 CFLAGS="$CFLAGS -Wno-unused-function -Wno-unused-variable"
+
+echo "Python flags: $PYTHON_FLAGS"
+echo "ZeroMQ flags: $ZMQ_FLAGS"
+echo "Final CFLAGS: $CFLAGS"
+echo "Final libs: $ngx_module_libs"
 
 # This sources NGINX's auto/module script to register the module
 . auto/module
