@@ -28,6 +28,18 @@ def parse_node_name(name):
             return node_type, full_match
     return None, None
 
+def convert_to_dict(s):
+    if ':' not in s:
+        return s
+    
+    parts = s.split(":", 1)
+    key = parts[0].strip()
+    value_str = parts[1].strip()
+    if not key or not value_str:
+        return s
+    
+    return {key: value_str}
+
 def parse_remaining_args_for_set(arg, remaining_args, sections, i):
     if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config']:
         if i + 2 >= len(remaining_args):
@@ -43,7 +55,8 @@ def parse_remaining_args_for_set(arg, remaining_args, sections, i):
                 sections.setdefault(arg, {}).setdefault(remaining_args[i+1][2:], {})[extra_arg[2:]] = ''
                 j += 1
             elif j + 1 < len(extra_args_list) and not extra_args_list[j+1].startswith('--'):
-                sections.setdefault(arg, {}).setdefault(remaining_args[i+1][2:], {})[extra_arg[2:]] = extra_args_list[j+1]
+                extra_args_dict = convert_to_dict(extra_args_list[j+1])
+                sections.setdefault(arg, {}).setdefault(remaining_args[i+1][2:], {})[extra_arg[2:]] = extra_args_dict
                 j += 2
     elif i + 2 >= len(remaining_args) or remaining_args[i+2].startswith('--'):
         raise ValueError(f"Missing value for key: '{remaining_args[i+1]}'")

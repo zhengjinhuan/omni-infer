@@ -92,6 +92,8 @@ def _build_json_args(cfg: Dict[str, Any]) -> str:
                 parts.append(f"{key}:{s}")
             else:                              # normal JSON string
                 parts.append(f"{key}:{json.dumps(s)}")
+        elif isinstance(v, bool):
+            parts.append(f"{key}:{json.dumps(v)}")
         elif isinstance(v, (int, float)):
             parts.append(f"{key}:{v}")
         else:
