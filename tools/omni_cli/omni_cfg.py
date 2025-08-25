@@ -40,10 +40,10 @@ def parse_remaining_args_for_set(arg, remaining_args, sections, i):
                 raise ValueError(f"Invalid key format: '{extra_arg}'. Keys must start with '--'")
             elif (j + 1 < len(extra_args_list) and extra_args_list[j+1].startswith('--')) or \
                 j + 1 == len(extra_args_list):
-                sections.setdefault(arg, {}).setdefault(arg[2:], {})[extra_arg[2:]] = ''
+                sections.setdefault(arg, {}).setdefault(remaining_args[i+1][2:], {})[extra_arg[2:]] = ''
                 j += 1
             elif j + 1 < len(extra_args_list) and not extra_args_list[j+1].startswith('--'):
-                sections.setdefault(arg, {}).setdefault(arg[2:], {})[extra_arg[2:]] = extra_args_list[j+1]
+                sections.setdefault(arg, {}).setdefault(remaining_args[i+1][2:], {})[extra_arg[2:]] = extra_args_list[j+1]
                 j += 2
     elif i + 2 >= len(remaining_args) or remaining_args[i+2].startswith('--'):
         raise ValueError(f"Missing value for key: '{remaining_args[i+1]}'")
@@ -101,14 +101,15 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
     seen_sections = set()
 
     i = 0
+    arg = remaining_args[0]
     while i < len(remaining_args):
-        arg = remaining_args[i]
-        if arg in list(sections.keys())[:2]:
-            if arg in seen_sections:
-                raise ValueError(f"Duplicate section keyword '{arg}'")
-            seen_sections.add(arg)
+        if remaining_args[i] in list(sections.keys())[:2]:
+            arg = remaining_args[i]
+            if remaining_args[i] in seen_sections:
+                raise ValueError(f"Duplicate section keyword '{remaining_args[i]}'")
+            seen_sections.add(remaining_args[i])
             if i + 1 >= len(remaining_args) or not remaining_args[i+1].startswith('--'):
-                raise ValueError(f"Missing value for key: '{arg}'")
+                raise ValueError(f"Missing value for key: '{remaining_args[i]}'")
             elif remaining_args[i+1][2:] not in list(sections.keys())[2:]:
                 if is_set:
                     parse_remaining_args_for_set(arg, remaining_args, sections, i)
@@ -118,7 +119,8 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                     i += 2
             else:
                 raise ValueError(f"Unexpected argument '{remaining_args[i+1]}' after (env/arg)")
-        elif arg[2:] in list(sections.keys())[2:6]:
+        elif remaining_args[i][2:] in list(sections.keys())[2:5]:
+            arg = remaining_args[i]
             if arg in seen_sections:
                 raise ValueError(f"Duplicate section keyword '{arg}'")
             seen_sections.add(arg)
@@ -130,17 +132,30 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
             else:
                 sections[arg[2:]] = True
                 i += 1
-        elif arg[2:] == 'container_name_prefix':
+        elif remaining_args[i][2:] == 'container_name_prefix':
             print("Please note that you are setting the container name using the container name prefix.")
             if is_set:
                 if i + 1 >= len(remaining_args) or remaining_args[i+1].startswith('--'):
-                    raise ValueError(f"Missing value for key: '{arg}'")
+                    raise ValueError(f"Missing value for key: '{remaining_args[i]}'")
                 update_container_name(node_type, node_name, remaining_args[i+1], yml_file_path)
                 i += 2
             else:
                 raise ValueError(f"Unexpected key {arg}")
         else:
-            raise ValueError(f"Unexpected key {arg}")
+            if arg in list(sections.keys())[:2]:
+                if i + 1 >= len(remaining_args) or not remaining_args[i+1].startswith('--'):
+                    raise ValueError(f"Missing value for key: '{remaining_args[i]}'")
+                elif remaining_args[i+1][2:] not in list(sections.keys())[2:]:
+                    if is_set:
+                        parse_remaining_args_for_set(arg, remaining_args, sections, i)
+                        i += 3
+                    else:
+                        i = parse_remaining_args_for_delete(arg, remaining_args, sections, i)
+                        i += 2
+                else:
+                    raise ValueError(f"Unexpected argument '{remaining_args[i+1]}' after (env/arg)")
+            else:
+                raise ValueError(f"Unexpected key {remaining_args[i]}")
 
     return sections
 
@@ -314,8 +329,8 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
         print(f"Error: Invalid node name: '{args.name[0]}'。")
         print("The node name must conform to one of the following formats:")
-        print("  - prefill_<number> (例如: p0, p1, p11)")
-        print("  - decode_<number> (例如: d0, d1, d11)")
+        print("  - prefill_<number> (for example: p0, p1, p11)")
+        print("  - decode_<number> (for example: d0, d1, d11)")
         return
     
     default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
@@ -355,8 +370,8 @@ def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
         print(f"Error: Invalid node name: '{args.name[0]}'。")
         print("The node name must conform to one of the following formats:")
-        print("  - prefill_<number> (例如: p0, p1, p11)")
-        print("  - decode_<number> (例如: d0, d1, d11)")
+        print("  - prefill_<number> (for example: p0, p1, p11)")
+        print("  - decode_<number> (for example: d0, d1, d11)")
         return
 
     delete_cfg_yml(node_type, node_name, sections, deploy_path)
