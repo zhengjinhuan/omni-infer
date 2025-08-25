@@ -116,7 +116,7 @@ class NPUModelRunner(GPUModelRunner):
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
-        self.use_rejection_sampler = False
+        self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
         self.topk = 4
         num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
         penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, num_tokens_per_reqs_decode - 1, self.topk, self.device)

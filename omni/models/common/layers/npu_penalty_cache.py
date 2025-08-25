@@ -76,7 +76,7 @@ class PenaltyCache:
             self.topk_spec_token_probs[index] = torch.zeros_like(self.topk_spec_token_probs[index])
             self.computed[index] = False
             prompt_mask_cpu = torch.zeros_like(self.prompt_mask[index], device='cpu')
-            prompt_token_ids_tensor = torch.tensor(scheduled_new_reqs[index].prompt_token_ids, dtype=torch.int64)
+            prompt_token_ids_tensor = torch.tensor(scheduled_new_reqs[i].prompt_token_ids, dtype=torch.int64)
             prompt_mask_cpu.scatter_(dim=0, index=prompt_token_ids_tensor, src=self.ones_cpu)
             self.prompt_mask[index] = prompt_mask_cpu.to(device=self.prompt_mask.device)
         

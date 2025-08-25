@@ -888,7 +888,7 @@ class SimpleSampler(RejectionSamplerV1):
                 topk_spec_token_probs = self.main_sampler.penalty_cache.topk_spec_token_probs[:batch_size].view(-1, self.topk)
                 draft_tokens_probs = topk_spec_token_probs[:, 0].view(-1)
                 draft_token_ids = topk_spec_token_ids[:, 0].view(-1)
-                target_token_probs = target_probs[:, draft_token_ids].view(-1)
+                target_token_probs = target_probs[torch.arange(batch_size), draft_token_ids].view(-1)
                 
                 accepted_probs = target_token_probs / draft_tokens_probs
                 accepted = torch.empty_like(accepted_probs).uniform_() < accepted_probs # boolean mask
