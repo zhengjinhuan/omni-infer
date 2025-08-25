@@ -78,7 +78,7 @@ def init_dp_group(self) -> ProcessGroup:
     ProcessGroup._set_default_backend = noops
     pg = origin_stateless_init_dp_group(self)
     ProcessGroup.__init__ = origin_pg_init
-    return pg;
+    return pg
 
 def update_parallel_state():
     global origin_destroy_model_parallel
@@ -126,6 +126,20 @@ def ascend_direct_register_custom_op(
 
 def update_utils_custom_op():
     utils.direct_register_custom_op = ascend_direct_register_custom_op
+
+
+def enable_overwrite_request_id():
+    """Patch OpenAIServing to use random UUIDs for request IDs."""
+    from fastapi import Request
+    from vllm.utils import random_uuid
+    from vllm.entrypoints.openai.serving_engine import OpenAIServing
+    @staticmethod
+    def _base_request_id(raw_request: Optional[Request], 
+                         default: Optional[str] = None) -> Optional[str]:
+        return default or random_uuid()
+
+    OpenAIServing._base_request_id = _base_request_id
+    logging.info("Applied patch: overwrite_request_id")
 
 
 def register() -> str:
@@ -290,7 +304,12 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
+        if os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1":
+            enable_overwrite_request_id()
         import omni.quantization  # noqa: F401
+        from omni.adaptors.vllm.ems.ems_env import EmsEnv
+        if EmsEnv.enable_vllm_ems:
+            from omni.adaptors.vllm.patches import ems_patch
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:

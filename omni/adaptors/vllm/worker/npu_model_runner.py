@@ -50,6 +50,7 @@ from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
+from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 
 if TYPE_CHECKING:
@@ -170,6 +171,10 @@ class NPUModelRunner(GPUModelRunner):
         self.arange_npu = torch.arange(max(self.max_num_reqs + 1, self.max_model_len, self.max_num_tokens),
                                        dtype=torch.int64,
                                        device=self.device)
+        #init ems adapters
+        if EmsEnv.enable_vllm_ems:
+            from omni.adaptors.vllm.ems.ems_adapter import EmsAdapter
+            self.ems_adapter = EmsAdapter(vllm_config=vllm_config)
 
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
@@ -523,6 +528,10 @@ class NPUModelRunner(GPUModelRunner):
         output.loading_kv_failure = loading_kv_failure
         return output
 
+    def load_kv_cache(self, info_load_reqs) -> List[int]:
+        result = self.ems_adapter.load(info_load_reqs)
+        return result
+
     @staticmethod
     def get_loading_kv_failure_req_ids() -> Optional[set[str]]:
         if has_kv_transfer_group():
@@ -536,6 +545,10 @@ class NPUModelRunner(GPUModelRunner):
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, IntermediateTensors]:
         start = time.time()
+
+        if EmsEnv.enable_vllm_ems:
+            self.ems_adapter.sync_save_event()
+
         # Update KVConnector with the KVConnector metadata forward().
         self._update_states(scheduler_output)
 
@@ -703,6 +716,10 @@ class NPUModelRunner(GPUModelRunner):
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
         return_spec_token = [None] * (self.total_step - 1)
         return_spec_token.append(spec_token_ids)
+
+        if EmsEnv.enable_vllm_ems:
+            self.ems_adapter.async_save(scheduler_output)
+
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
@@ -912,6 +929,9 @@ class NPUModelRunner(GPUModelRunner):
 
         if has_kv_transfer_group():
             get_kv_transfer_group().register_kv_caches(kv_caches)
+
+        if EmsEnv.enable_vllm_ems:
+            self.ems_adapter.bind_kvcaches(self.kv_caches)
 
     def capture_model(self) -> None:
         if self.enable_torchair_graph_mode:

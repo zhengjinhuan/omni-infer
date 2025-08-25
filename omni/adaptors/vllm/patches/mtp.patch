@@ -62,3 +62,19 @@ index 910c0e80b..9b848fac5 100644
  
          # Request states.
          self.requests: dict[str, CachedRequestState] = {}
+diff --git a/vllm/config.py b/vllm/config.py
+index db35c848b..5b255e210 100644
+--- a/vllm/config.py
++++ b/vllm/config.py
+@@ -2737,9 +2737,9 @@ class SpeculativeConfig:
+                              f"{self.disable_by_batch_size=}")
+ 
+         if self.method == "eagle3" and self.target_model_config and \
+-            "llama" not in self.target_model_config.hf_text_config.model_type:
++            not any(item in self.target_model_config.hf_text_config.model_type for item in ('qwen2',)):
+             raise ValueError(
+-                "Eagle3 is only supported for Llama models. "
++                "Eagle3 is only supported for Qwen2 models. "
+                 f"Got {self.target_model_config.hf_text_config.model_type=}")
+ 
+     @property

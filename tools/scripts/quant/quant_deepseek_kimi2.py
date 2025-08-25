@@ -1,5 +1,6 @@
 import optiquant.int8 as qint8
 import optiquant.int4 as qint4
+import optiquant.faquant as faquant
 from argparse import ArgumentParser
 import json
 import os
@@ -17,8 +18,13 @@ if __name__ == "__main__":
     parser.add_argument("--ssz", default=False, action="store_true", help="use ssz algorithm for int4 quantization")
     parser.add_argument("--fast", default=False, action="store_true", help="use fast int4 quantization, not compatible with ssz")
     parser.add_argument("--qtype", type=str, default="sszs50g0a0b4sym1", help="quantization config. only support sszs50g0a0b4sym1 now")
+    parser.add_argument("--c8-calib-path", type=str, default=None, help="mla c8 calibration data path")
+    parser.add_argument("--kvs-safetensor-name", type=str, default=None, help="mla c8 (faquant) safetensor name")
 
     args = parser.parse_args()
+
+    if args.c8_calib_path is not None:
+        faquant.main(args, args.output_int8_hf_path, args.c8_calib_path, args.kvs_safetensor_name)
 
     if args.w4 or args.fast or args.ssz:
         qint4.main(args, args.input_bf16_hf_path, args.output_int8_hf_path, args.model_name)
