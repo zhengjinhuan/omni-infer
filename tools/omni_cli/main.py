@@ -498,11 +498,11 @@ def get_host_groups(inv_data: dict) -> Dict[str, List[str]]:
     return host_groups
 
 def sync_dev(
-    inventory_path: str = "omni_cli/configs/servering_profiles.yml",
+    inventory_path,
     dry_run: bool = False,
     code_path: str = None
 ) -> None:
-    """Sync code to all relevant hosts and containers"""
+    """Sync code to all relevant hosts and containers with minimal output"""
     if not code_path:
         print("Error: code_path is required")
         return
@@ -543,6 +543,24 @@ def sync_dev(
         # Write script header
         tf.write("#!/bin/bash\n\n")
         tf.write(f"CODE_SRC=\"{code_path}\"\n\n")
+        
+        # Add progress indicator function
+        tf.write("""
+# Function to show progress spinner
+show_spinner() {
+    local pid=$!
+    local delay=0.1
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c] " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\\b\\b\\b\\b\\b"
+    done
+    printf "    \\b\\b\\b\\b"
+}
+""")
 
         # Create directories and sync code to all target hosts
         for host in all_target_hosts:
@@ -556,31 +574,34 @@ def sync_dev(
 
             # Build SSH command prefixes
             ssh_prefix = "ssh"
-            rsync_prefix = "rsync -avz --delete"
+            rsync_prefix = "rsync -avz --quiet --delete"
 
             if ssh_private_key:
                 ssh_prefix = f"ssh -i {ssh_private_key}"
-                rsync_prefix = f"rsync -avz --delete -e 'ssh -i {ssh_private_key}'"
+                rsync_prefix = f"rsync -avz --quiet --delete -e 'ssh -i {ssh_private_key}'"
 
             if ssh_user:
                 ssh_prefix = f"{ssh_prefix} -l {ssh_user}"
                 rsync_prefix = f"{rsync_prefix} -e 'ssh -l {ssh_user}'"
                 if ssh_private_key:
-                    rsync_prefix = f"rsync -avz --delete -e 'ssh -i {ssh_private_key} -l {ssh_user}'"
+                    rsync_prefix = f"rsync -avz --quiet --delete -e 'ssh -i {ssh_private_key} -l {ssh_user}'"
 
-            tf.write(f"echo \"Creating directory on {host}\"\n")
-            tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\"\n\n")
+            tf.write(f"echo \"[INFO] Creating directory on {host}\"\n")
+            tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
-            tf.write(f"echo \"Syncing code to {host}\"\n")
-            tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/\n\n")
+            tf.write(f"echo \"[INFO] Syncing code to {host}\"\n")
+            tf.write(f"echo -n \"  Progress: \"\n")
+            tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/ & show_spinner\n")
+            tf.write(f"echo \" Done\"\n\n")
 
             # Handle docker cp for all hosts that need it
             container_name = host_vars.get("container_name", "")
             if container_name:
-                tf.write(f"echo \"Copying code to container on {host}\"\n")
-                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\"\n\n")
+                tf.write(f"echo \"[INFO] Copying code to container on {host}\"\n")
+                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\" >/dev/null 2>&1\n")
+                tf.write(f"echo \"  Container copy completed\"\n\n")
             else:
-                print(f"Missing container_name for host {host}")
+                tf.write(f"echo \"[WARN] Missing container_name for host {host}\"\n\n")
 
     # Set script execution permissions
     os.chmod(script_path, 0o755)
@@ -591,18 +612,32 @@ def sync_dev(
         with open(script_path, 'r') as f:
             print(f.read())
     else:
-        print("Executing sync script...")
+        print("Starting sync process...")
         try:
-            result = subprocess.run([script_path], capture_output=True, text=True, check=True)
-            print("Script output:")
-            print(result.stdout)
-            if result.stderr:
-                print("Script errors:")
-                print(result.stderr)
-            print("\nSync process completed.")
-        except subprocess.CalledProcessError as e:
-            print(f"Sync process failed with return code {e.returncode}")
-            print(f"Error output: {e.stderr}")
+            # Execute the script and capture output
+            process = subprocess.Popen(
+                [script_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Print output in real-time
+            for line in process.stdout:
+                print(line, end='')
+            
+            # Wait for process to complete
+            process.wait()
+            
+            if process.returncode == 0:
+                print("\nSync process completed successfully.")
+            else:
+                print(f"\nSync process failed with return code {process.returncode}")
+                print("Error output:")
+                for line in process.stderr:
+                    print(line, end='')
+        except Exception as e:
+            print(f"Error during sync process: {e}")
         finally:
             # Clean up temporary file
             try:
