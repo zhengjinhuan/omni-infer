@@ -275,6 +275,17 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             block_table = self._get_graph_runner_block_tables(
                 self._num_decode_tokens, block_table)
             kv_index = None
+        elif USE_TND_PA:
+            if graph_pad_size > 0:
+                padding = torch.tensor([graph_pad_size], dtype=query_lens.dtype, device=query_lens.device)
+                query_lens = torch.cat([query_lens, padding], dim=0).to(self.runner.device)
+                seq_lens = torch.cat([seq_lens, padding], dim=0).to(self.runner.device)
+                block_table_padding = torch.zeros(
+                    (1, ) + block_table.shape[1:],
+                    dtype=block_table.dtype,
+                    device=block_table.device,
+                )
+                block_table = torch.cat([block_table, block_table_padding], dim=0)
         else:
             kv_index = self.get_kv_index(
                 seq_lens=seq_lens,
