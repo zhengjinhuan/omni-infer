@@ -304,7 +304,7 @@ def omni_ranktable(inventory):
     os.system(cmd)
 
 def omni_cli_start(
-    inventory_path: str = "./serving_profiles.yml",
+    inventory_path: str = "./server_profiles.yml",
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
     role_filter: Optional[str] = None,    # e.g., "P" or "D"
     python_bin: str = "python",
@@ -413,7 +413,7 @@ def omni_cli_start(
                 pass
 
 def omni_cli_stop(
-    inventory_path: str = "./serving_profiles.yml",
+    inventory_path: str = "./server_profiles.yml",
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
     role_filter: Optional[str] = None,    # e.g., "P" or "D"
 ) -> None:
@@ -576,6 +576,7 @@ show_spinner() {
             # Get SSH key path (if exists)
             ssh_private_key = host_vars.get("ansible_ssh_private_key_file", "")
             ssh_user = host_vars.get("ansible_user", "")
+            env = host_vars.get("env", {})
 
             # Build SSH command prefixes
             ssh_prefix = "ssh"
@@ -591,7 +592,14 @@ show_spinner() {
                 if ssh_private_key:
                     rsync_prefix = f"rsync -avz --quiet --delete -e 'ssh -i {ssh_private_key} -l {ssh_user}'"
 
-            tf.write(f"echo \"[INFO] Creating directory on {host}\"\n")
+            log_path = env.get("LOG_PATH")
+            if log_path:
+                tf.write(f"echo \"[INFO] Creating log directory on {host}\"\n")
+                tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {log_path}/{host}\" >/dev/null 2>&1\n\n")
+            else:
+                tf.write(f"echo \"[WARN] LOG_PATH not defined for host {host}, skipping log directory creation\"\n\n")
+
+            tf.write(f"echo \"[INFO] Creating code directory on {host}\"\n")
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
             tf.write(f"echo \"[INFO] Syncing code to {host}\"\n")
@@ -651,7 +659,7 @@ show_spinner() {
                 pass
 
 def install_dev(
-    inventory_path: str = "omni_cli/configs/servering_profiles.yml",
+    inventory_path: str = "omni_cli/configs/server_profiles.yml",
     dry_run: bool = False,
 ) -> None:
     """Install code inside container"""
@@ -780,7 +788,7 @@ def get_default_deploy_path(current_cmd):
     """Get or create the default deployment path (file is created only on first call)"""
     # Create default file and save path
     current_dir = Path.cwd()
-    deploy_path = current_dir / "servering_profiles.yml"
+    deploy_path = current_dir / "server_profiles.yml"
 
     if not deploy_path.exists():
         # Create default inventory structure
@@ -801,7 +809,7 @@ def get_default_deploy_path(current_cmd):
 
             print(f"Created default inventory file at: {deploy_path}")
         else:
-            raise "servering_profiles.yml not found, please confirm the workspace or reinitialize using add_node"
+            raise FileNotFoundError("server_profiles.yml not found, please confirm the workspace or reinitialize using add_node")
     # Save as absolute path
     deploy_path = deploy_path.resolve()
     return deploy_path
@@ -847,7 +855,7 @@ def print_node_list(inventory_path: str) -> None:
     print("-" * 30)
 
 def run_docker_containers(
-    inventory_path: str = "omni_cli/configs/servering_profiles.yml",
+    inventory_path: str = "omni_cli/configs/server_profiles.yml",
     dry_run: bool = False,
 ) -> None:
     inv_file = Path(inventory_path).expanduser().resolve()
@@ -1052,17 +1060,17 @@ def main():
     ls_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
-        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+        help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     ls_parser.set_defaults(func=lambda args:print_node_list(
         inventory_path=args.deploy_path
     ))
     # ADD_NODE command configuration
-    addnode_parser = subparsers.add_parser("add_node", help="Add a node to servering_profiles.yml")
+    addnode_parser = subparsers.add_parser("add_node", help="Add a node to server_profiles.yml")
     addnode_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
-        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+        help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     addnode_parser.add_argument("--role", required=True, choices=['P', 'D', 'C'], help="Node role")
     addnode_parser.add_argument("--name", required=True, help="Node name")
@@ -1075,12 +1083,12 @@ def main():
     addnode_parser.set_defaults(func=add_node)
 
     # RM_NODE command configuration
-    rmnode_parser = subparsers.add_parser("rm_node", help="Remove a node from servering_profiles.yml")
+    rmnode_parser = subparsers.add_parser("rm_node", help="Remove a node from server_profiles.yml")
     rmnode_parser.add_argument("--role", required=True, choices=['P', 'D', 'C'], help="Node role")
     rmnode_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
-        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+        help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     rmnode_parser.add_argument("--name", required=True, help="Node name to remove")
     rmnode_parser.set_defaults(func=rm_node)
@@ -1090,7 +1098,7 @@ def main():
     run_docker_parser.add_argument(
         "--inventory", "-i",
         default=str(default_deploy_path),
-        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+        help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     run_docker_parser.add_argument(
         "--dry-run",
@@ -1106,7 +1114,7 @@ def main():
     sync_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
-        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+        help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     sync_parser.add_argument(
         "--dry_run",
@@ -1126,7 +1134,7 @@ def main():
     install_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
-        help=f"Path to servering_profiles.yml (default: {default_deploy_path})"
+        help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     install_parser.add_argument(
         "--dry_run",
@@ -1147,10 +1155,10 @@ def main():
 
     if args.command == "start" and not any([args.normal, args.run_dev]):
         args.normal = True
-    if args.config_path is None:
-        args.config_path = default_deploy_path
 
     if args.command == "start":
+        if args.config_path is None:
+            args.config_path = default_deploy_path
         if args.normal:
             print("[INFO] Starting omni service in Normal mode...")
             omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=False)
