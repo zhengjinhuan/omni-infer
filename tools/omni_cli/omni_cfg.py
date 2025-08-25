@@ -219,7 +219,7 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
         return
 
 def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-    ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, additional_config_list, \
+    ascend_rt_visible_devices, container_name, extra_args_list, additional_config_list, \
     kv_transfer_config_list):
     vars_dict = data['all']['children'][node_type]['hosts'][node_name]
     for key in env_list:
@@ -239,9 +239,6 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
 
     if ascend_rt_visible_devices and 'ascend_rt_visible_devices' in vars_dict:
         del vars_dict['ascend_rt_visible_devices']
-
-    if EXECUTOR_CODE_PATH and 'EXECUTOR_CODE_PATH' in vars_dict:
-        del vars_dict['EXECUTOR_CODE_PATH']
 
     if container_name and 'container_name' in vars_dict:
         del vars_dict['container_name']
@@ -292,7 +289,6 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     arg_list = sections['args']
     DOCKER_IMAGE_ID = sections['DOCKER_IMAGE_ID']
     ascend_rt_visible_devices = sections['ascend_rt_visible_devices']
-    EXECUTOR_CODE_PATH = sections['EXECUTOR_CODE_PATH']
     container_name = sections['container_name']
     extra_args_list = sections['extra-args']
     additional_config_list = sections['additional-config']
@@ -304,18 +300,18 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-                        ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                        ascend_rt_visible_devices, container_name, extra_args_list, \
                         additional_config_list, kv_transfer_config_list)
                     print("[INFO] You have deleted the configuration of all nodes")
         elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-                    ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                    ascend_rt_visible_devices, container_name, extra_args_list, \
                     additional_config_list, kv_transfer_config_list)
                 print("[INFO] You have deleted the configuration of all nodes in group %s" % node_type)
         else:
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-                ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                ascend_rt_visible_devices, container_name, extra_args_list, \
                 additional_config_list, kv_transfer_config_list)
             print("[INFO] You have deleted the configuration of node %s" % n_name)
 
