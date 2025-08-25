@@ -33,6 +33,19 @@ from omni.models.common.layers.attention.backend.attention import AscendAttentio
 
 logger = init_logger(__name__)
 
+def mark_static_for_graph_default(
+        input_ids,
+        previous_hidden_states: Optional[torch.Tensor] = None,
+    ):
+    torch._dynamo.mark_static(input_ids)
+    if isinstance(previous_hidden_states, List):
+        # for eagle3
+        for item in previous_hidden_states:
+            torch._dynamo.mark_static(item)    
+    elif previous_hidden_states is not None:
+        # for eagle/mtp
+        torch._dynamo.mark_static(previous_hidden_states)
+
 class PostDrafter(EagleProposer):
     def __init__(
         self,
@@ -137,16 +150,12 @@ class PostDrafter(EagleProposer):
 
             if self.runner.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly \
                 and (not self.mark_static):
-                    torch._dynamo.mark_static(input_ids)
-                    if isinstance(previous_hidden_states, list):
-                        # for eagle 3
-                        for item in previous_hidden_states:
-                            torch._dynamo.mark_static(item)
-                    elif previous_hidden_states is not None:
-                        # for eagle/mtp
-                        torch._dynamo.mark_static(previous_hidden_states)
+                from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
+                if isinstance(self.model, GraphCompileConfiguration):
+                    self.model.mark_static_for_graph()
+                mark_static_for_graph_default(input_ids, previous_hidden_states)
+                self.mark_static = True
 
-                    self.mark_static = True
             with set_forward_context(attn_metadata, self.vllm_config):
                 is_dummy = (last_accepted_index is None) or (sample_indices is None)
                 for i in range(self.speculative_config.num_speculative_tokens):
