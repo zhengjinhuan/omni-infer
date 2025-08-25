@@ -371,6 +371,10 @@ function nginx_set_upstream() {
             lb_sdk_line="least_total_load on;"
             lb_sdk_extra="least_total_load_batch_size 16;"
             ;;
+        "prefix_cache_affinity_least_total_load")
+            lb_sdk_line="prefix_cache_affinity_least_total_load on;"
+            lb_sdk_extra="prefix_cache_affinity_block_size 640;"
+            ;;
         "auto_balance_controller")
             lb_sdk_line="auto_balance_controller on;"
             lb_sdk_extra="auto_balance_controller_batch_size 32;"

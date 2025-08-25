@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -837,9 +836,3 @@ ngx_http_prefix_cache_affinity_least_total_load_postconfig(ngx_conf_t *cf)
 
     return NGX_OK;
 }
-
-
-
-
-
-
