@@ -526,17 +526,30 @@ def sync_dev(
     p_hosts = set()
     d_hosts = set()
     c_hosts = set()
-
+    p_d_ips = set()
     for host, groups in host_groups.items():
+        host_vars = all_hosts.get(host, {})
+        host_ip = host_vars.get("ansible_host", host)
+
         if 'P' in groups:
             p_hosts.add(host)
+            p_d_ips.add(host_ip)
         if 'D' in groups:
             d_hosts.add(host)
+            p_d_ips.add(host_ip)
         if 'C' in groups:
             c_hosts.add(host)
 
     # Find C nodes that need processing (not in P or D)
-    c_hosts_to_process = c_hosts - (p_hosts | d_hosts)
+    c_hosts_to_process = set()
+    for host in c_hosts:
+        host_vars = all_hosts.get(host, {})
+        host_ip = host_vars.get("ansible_host", host)
+
+        if host_ip not in p_d_ips:
+            c_hosts_to_process.add(host)
+        else:
+            print("[INFO] Node C is skipped because it has the same IP address as a P or D node")
 
     # All hosts that need processing
     all_target_hosts = p_hosts | d_hosts | c_hosts_to_process
@@ -594,25 +607,25 @@ show_spinner() {
 
             log_path = env.get("LOG_PATH")
             if log_path:
-                tf.write(f"echo \"[INFO] Creating log directory on {host}\"\n")
+                tf.write(f"echo \"[INFO] Creating log directory \"{log_path}/{host}\" on {host}\"\n")
                 tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {log_path}/{host}\" >/dev/null 2>&1\n\n")
             else:
                 tf.write(f"echo \"[WARN] LOG_PATH not defined for host {host}, skipping log directory creation\"\n\n")
 
-            tf.write(f"echo \"[INFO] Creating code directory on {host}\"\n")
+            tf.write(f"echo \"[INFO] Creating code directory \'{code_path}\' on {host}\"\n")
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
-            tf.write(f"echo \"[INFO] Syncing code to {host}\"\n")
-            tf.write(f"echo -n \"  Progress: \"\n")
+            tf.write(f"echo \"[INFO] Syncing code from executor from \'{code_path}/omniinfer/\' to \'{host}:{code_path}/omniinfer/\' \"\n")
+            tf.write(f"echo -n \"[INFO] Progress: \"\n")
             tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/ & show_spinner\n")
-            tf.write(f"echo \" Done\"\n\n")
+            tf.write(f"echo \"Done\"\n\n")
 
             # Handle docker cp for all hosts that need it
             container_name = host_vars.get("container_name", "")
             if container_name:
-                tf.write(f"echo \"[INFO] Copying code to container on {host}\"\n")
+                tf.write(f"echo \"[INFO] Docker cp code to container on {host}, from {code_path}/omniinfer to {container_name}:/workspace/\"\n")
                 tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\" >/dev/null 2>&1\n")
-                tf.write(f"echo \"  Container copy completed\"\n\n")
+                tf.write(f"echo \"[INFO] Container copy completed\"\n\n")
             else:
                 tf.write(f"echo \"[WARN] Missing container_name for host {host}\"\n\n")
 
