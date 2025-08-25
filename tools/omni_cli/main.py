@@ -526,17 +526,30 @@ def sync_dev(
     p_hosts = set()
     d_hosts = set()
     c_hosts = set()
-
+    p_d_ips = set()
     for host, groups in host_groups.items():
+        host_vars = all_hosts.get(host, {})
+        host_ip = host_vars.get("ansible_host", host)
+
         if 'P' in groups:
             p_hosts.add(host)
+            p_d_ips.add(host_ip)
         if 'D' in groups:
             d_hosts.add(host)
+            p_d_ips.add(host_ip)
         if 'C' in groups:
             c_hosts.add(host)
 
     # Find C nodes that need processing (not in P or D)
-    c_hosts_to_process = c_hosts - (p_hosts | d_hosts)
+    c_hosts_to_process = set()
+    for host in c_hosts:
+        host_vars = all_hosts.get(host, {})
+        host_ip = host_vars.get("ansible_host", host)
+
+        if host_ip not in p_d_ips:
+            c_hosts_to_process.add(host)
+        else:
+            print("[INFO] Node C is skipped because it has the same IP address as a P or D node")
 
     # All hosts that need processing
     all_target_hosts = p_hosts | d_hosts | c_hosts_to_process
