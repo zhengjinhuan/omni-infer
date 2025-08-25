@@ -84,7 +84,7 @@ def update_container_name(node_type, node_name, container_name_prefix, yml_file_
         else:
             data['all']['children'][node_type]['hosts'][node_name]['container_name'] = \
                     f'{container_name_prefix}_{node_name}'
-        
+
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
@@ -203,45 +203,42 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     updata_dict(filtered_sections, data['all']['children'][n_type]['hosts'][n_name])
-            print("You have modified the configuration of all nodes")
+            print("[INFO] You have modified the configuration of all nodes")
         elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][n_name])
-            print("You have modified the configuration of all nodes in the group %s" % node_type)
+            print("[INFO] You have modified the configuration of all nodes in the group %s" % node_type)
         else:
             updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][node_name])
-            print("You have modified the configuration of node %s" % node_name)
+            print("[INFO] You have modified the configuration of node %s" % node_name)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
-        print(f"Error: There is no data in {yml_file_path}.")
+        print(f"[ERROR] There is no data in {yml_file_path}.")
         return
-    
+
 def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-    ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, additional_config_list, \
+    ascend_rt_visible_devices, container_name, extra_args_list, additional_config_list, \
     kv_transfer_config_list):
     vars_dict = data['all']['children'][node_type]['hosts'][node_name]
     for key in env_list:
         if key in vars_dict['env']:
             del vars_dict['env'][key]
         else:
-            print("Warning: No matching configuration %s found." % key)
+            print("[WARNING] No matching configuration %s found." % key)
 
     for key in arg_list:
         if key in vars_dict['args']:
             del vars_dict['args'][key]
         else:
-            print("Warning: No matching configuration %s found." % key)
+            print("[WARNING] No matching configuration %s found." % key)
 
     if DOCKER_IMAGE_ID and 'DOCKER_IMAGE_ID' in vars_dict:
         del vars_dict['DOCKER_IMAGE_ID']
 
     if ascend_rt_visible_devices and 'ascend_rt_visible_devices' in vars_dict:
         del vars_dict['ascend_rt_visible_devices']
-
-    if EXECUTOR_CODE_PATH and 'EXECUTOR_CODE_PATH' in vars_dict:
-        del vars_dict['EXECUTOR_CODE_PATH']
 
     if container_name and 'container_name' in vars_dict:
         del vars_dict['container_name']
@@ -250,7 +247,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if key in vars_dict['args']['extra-args']:
             del vars_dict['args']['extra-args'][key]
         else:
-            print("Warning: No matching configuration %s found." % key)
+            print("[WARNING] No matching configuration %s found." % key)
 
     if 'extra-args' in vars_dict['args'] and vars_dict['args']['extra-args'] == {}:
         vars_dict['args']['extra-args'] = ''
@@ -259,7 +256,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if key in vars_dict['args']['additional-config']:
             del vars_dict['args']['additional-config'][key]
         else:
-            print("Warning: No matching configuration %s found." % key)
+            print("[WARNING] No matching configuration %s found." % key)
 
     if 'additional-config' in vars_dict['args'] and vars_dict['args']['additional-config'] == {}:
         vars_dict['args']['additional-config'] = ''
@@ -268,7 +265,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if key in vars_dict['args']['kv-transfer-config']:
             del vars_dict['args']['kv-transfer-config'][key]
         else:
-            print("Warning: No matching configuration %s found." % key)
+            print("[WARNING] No matching configuration %s found." % key)
 
     if 'kv-transfer-config' in vars_dict['args'] and vars_dict['args']['kv-transfer-config'] == {}:
         vars_dict['args']['kv-transfer-config'] = ''
@@ -279,7 +276,7 @@ def delete_model_path(sections):
 
     if 'MODEL_PATH' in sections['env']:
         if 'model_path_used' not in default_cfg:
-            print("The key 'MODEL_PATH' does not exist, there is no need to delete it")
+            print("[WARNING] The key 'MODEL_PATH' does not exist, there is no need to delete it")
             return
 
         del default_cfg['model_path_used']
@@ -292,7 +289,6 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     arg_list = sections['args']
     DOCKER_IMAGE_ID = sections['DOCKER_IMAGE_ID']
     ascend_rt_visible_devices = sections['ascend_rt_visible_devices']
-    EXECUTOR_CODE_PATH = sections['EXECUTOR_CODE_PATH']
     container_name = sections['container_name']
     extra_args_list = sections['extra-args']
     additional_config_list = sections['additional-config']
@@ -304,35 +300,35 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-                        ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                        ascend_rt_visible_devices, container_name, extra_args_list, \
                         additional_config_list, kv_transfer_config_list)
-                    print("You have deleted the configuration of all nodes")
+                    print("[INFO] You have deleted the configuration of all nodes")
         elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-                    ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                    ascend_rt_visible_devices, container_name, extra_args_list, \
                     additional_config_list, kv_transfer_config_list)
-                print("You have deleted the configuration of all nodes in group %s" % node_type)
+                print("[INFO] You have deleted the configuration of all nodes in group %s" % node_type)
         else:
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
-                ascend_rt_visible_devices, EXECUTOR_CODE_PATH, container_name, extra_args_list, \
+                ascend_rt_visible_devices, container_name, extra_args_list, \
                 additional_config_list, kv_transfer_config_list)
-            print("You have deleted the configuration of node %s" % n_name)
+            print("[INFO] You have deleted the configuration of node %s" % n_name)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
-        print(f"Error: There is no data in {yml_file_path}.")
+        print(f"[ERROR] There is no data in {yml_file_path}.")
         return
 
 def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
-        print(f"Error: Invalid node name: '{args.name[0]}'。")
+        print(f"[ERROR] Invalid node name: '{args.name[0]}'。")
         print("The node name must conform to one of the following formats:")
         print("  - prefill_<number> (for example: p0, p1, p11)")
         print("  - decode_<number> (for example: d0, d1, d11)")
         return
-    
+
     default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
     default_cfg = get_data_from_yaml(default_cfg_path)
     data =  get_data_from_yaml(deploy_path)
@@ -368,7 +364,7 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
 
 def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
-        print(f"Error: Invalid node name: '{args.name[0]}'。")
+        print(f"[ERROR] Invalid node name: '{args.name[0]}'。")
         print("The node name must conform to one of the following formats:")
         print("  - prefill_<number> (for example: p0, p1, p11)")
         print("  - decode_<number> (for example: d0, d1, d11)")
