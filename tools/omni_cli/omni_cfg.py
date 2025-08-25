@@ -123,7 +123,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
             seen_sections.add(remaining_args[i])
             if i + 1 >= len(remaining_args) or not remaining_args[i+1].startswith('--'):
                 raise ValueError(f"Missing value for key: '{remaining_args[i]}'")
-            elif remaining_args[i+1][2:] not in list(sections.keys())[2:]:
+            elif remaining_args[i+1][2:] not in list(sections.keys())[2:5]:
                 if is_set:
                     parse_remaining_args_for_set(arg, remaining_args, sections, i)
                     i += 3
@@ -200,6 +200,9 @@ def check_model_path(sections, data, node_type, node_name):
 def updata_dict(sections, data):
     for modify_key, modify_values in sections.items():
         if isinstance(modify_values, dict) and modify_key in data:
+            updata_dict(modify_values, data[modify_key])
+        elif isinstance(modify_values, dict) and modify_key not in data:
+            data[modify_key] = {}
             updata_dict(modify_values, data[modify_key])
         else:
             data[modify_key] = modify_values
@@ -322,7 +325,7 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                 ascend_rt_visible_devices, container_name, extra_args_list, \
                 additional_config_list, kv_transfer_config_list)
-            print("[INFO] You have deleted the configuration of node %s" % n_name)
+            print("[INFO] You have deleted the configuration of node %s" % node_name)
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
