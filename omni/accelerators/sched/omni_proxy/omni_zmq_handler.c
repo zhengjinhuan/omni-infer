@@ -6,7 +6,7 @@
 
 static void omni_zmq_event_handler(ngx_event_t *ev)
 {
-    ngx_omni_zmq_handler_t *handler = ev->data;
+    omni_zmq_handler_t *handler = ev->data;
 
     while (1)
     {
@@ -96,7 +96,7 @@ static void omni_zmq_event_handler(ngx_event_t *ev)
     }
 }
 
-ngx_int_t omni_zmq_handler_reinit(ngx_omni_zmq_handler_t *handler)
+ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
 {
     if (handler->active)
     {
@@ -162,7 +162,7 @@ ngx_int_t omni_zmq_handler_reinit(ngx_omni_zmq_handler_t *handler)
 }
 
 ngx_int_t omni_zmq_handler_init(ngx_cycle_t *cycle,
-                                ngx_omni_zmq_handler_t *handler,
+                                omni_zmq_handler_t *handler,
                                 ngx_str_t zmq_address,
                                 ngx_str_t subscribe_topic,
                                 omni_zmq_msg_callback_t callback)
@@ -188,7 +188,7 @@ ngx_int_t omni_zmq_handler_init(ngx_cycle_t *cycle,
     return omni_zmq_handler_reinit(handler);
 }
 
-void omni_zmq_handler_exit(ngx_omni_zmq_handler_t *handler)
+void omni_zmq_handler_exit(omni_zmq_handler_t *handler)
 {
     if (!handler->active)
     {

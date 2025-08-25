@@ -7,14 +7,14 @@
 #include <ngx_http.h>
 #include <zmq.h>
 
-struct ngx_omni_zmq_handler_s;
+struct omni_zmq_handler_s;
 
-typedef void (*omni_zmq_msg_callback_t)(struct ngx_omni_zmq_handler_s *handler,
+typedef void (*omni_zmq_msg_callback_t)(struct omni_zmq_handler_s *handler,
                                         const char *topic,
                                         const void *message,
                                         size_t length);
 
-typedef struct ngx_omni_zmq_handler_s
+typedef struct omni_zmq_handler_s
 {
     void *zmq_context;
     void *zmq_socket;
@@ -26,14 +26,14 @@ typedef struct ngx_omni_zmq_handler_s
     ngx_cycle_t *cycle;
     ngx_connection_t *zmq_connection;
     ngx_event_t *zmq_event;
-} ngx_omni_zmq_handler_t;
+} omni_zmq_handler_t;
 
-ngx_int_t omni_zmq_handler_reinit(ngx_omni_zmq_handler_t *handler);
+ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler);
 
 ngx_int_t omni_zmq_handler_init(ngx_cycle_t *cycle,
-                                ngx_omni_zmq_handler_t *handler,
+                                omni_zmq_handler_t *handler,
                                 ngx_str_t zmq_address,
                                 ngx_str_t subscribe_topic,
                                 omni_zmq_msg_callback_t callback);
 
-void omni_zmq_handler_exit(ngx_omni_zmq_handler_t *handler);
+void omni_zmq_handler_exit(omni_zmq_handler_t *handler);

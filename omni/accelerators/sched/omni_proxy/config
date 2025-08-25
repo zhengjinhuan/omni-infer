@@ -14,6 +14,7 @@ ngx_module_srcs="$ngx_addon_dir/ngx_http_omni_proxy_module.c \
                  $ngx_addon_dir/omni_utils.c \
                  $ngx_addon_dir/omni_tokenizer.c \
                  $ngx_addon_dir/omni_tokenizer_worker.c \
+                 $ngx_addon_dir/omni_apc.c \
                  $ngx_addon_dir/omni_zmq_handler.c" 
 
 # Include directories for the module
@@ -66,7 +67,7 @@ PYTHON_FLAGS=$(detect_python_config)
 ZMQ_FLAGS=$(detect_zeromq_config)
 
 CFLAGS="$CFLAGS $PYTHON_FLAGS $ZMQ_FLAGS"
-ngx_module_libs="$ngx_module_libs $PYTHON_FLAGS $ZMQ_FLAGS"
+ngx_module_libs="$ngx_module_libs $PYTHON_FLAGS $ZMQ_FLAGS -lmsgpackc"
 
 CFLAGS="$CFLAGS -Wno-unused-function -Wno-unused-variable"
 
