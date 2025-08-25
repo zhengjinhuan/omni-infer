@@ -14,6 +14,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 1. 添加节点
    
    ```bash
+   omni_cli add_node --role C --name c0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
    omni_cli add_node --role P --name p0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
    omni_cli add_node --role D --name d0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
    omni_cli add_node --role D --name d1 --host_ip 本机IP --master_ip 主D节点IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
