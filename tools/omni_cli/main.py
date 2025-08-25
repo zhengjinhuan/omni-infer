@@ -616,7 +616,7 @@ show_spinner() {
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
             tf.write(f"echo \"[INFO] Syncing code from executor from \'{code_path}/omniinfer/\' to \'{host}:{code_path}/omniinfer/\' \"\n")
-            tf.write(f"echo -n \"[INFO]  Progress: \"\n")
+            tf.write(f"echo -n \"[INFO] Progress: \"\n")
             tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/ & show_spinner\n")
             tf.write(f"echo \"Done\"\n\n")
 
@@ -624,7 +624,7 @@ show_spinner() {
             container_name = host_vars.get("container_name", "")
             if container_name:
                 tf.write(f"echo \"[INFO] Docker cp code to container on {host}, from {code_path}/omniinfer to {container_name}:/workspace/\"\n")
-                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer => {container_name}:/workspace/\" >/dev/null 2>&1\n")
+                tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\" >/dev/null 2>&1\n")
                 tf.write(f"echo \"[INFO] Container copy completed\"\n\n")
             else:
                 tf.write(f"echo \"[WARN] Missing container_name for host {host}\"\n\n")
