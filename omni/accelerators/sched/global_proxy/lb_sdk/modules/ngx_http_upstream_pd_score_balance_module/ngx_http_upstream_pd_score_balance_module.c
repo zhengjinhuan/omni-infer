@@ -9,8 +9,6 @@
 #include <stdlib.h>
 #include <float.h>
 
-#define MAX_TOTAL_ACTIVE_REQS 8192
-#define MAX_PEER_COUNT 512
 
 typedef enum {
     PD_MODE_NONE = 0,
@@ -44,14 +42,15 @@ typedef struct {
 } ngx_http_pd_score_shm_peer_D_t;
 
 typedef struct {
+    ngx_queue_t queue;
     void *id_ptr;
     ngx_uint_t request_length;
     ngx_uint_t inque_time;
-} ngx_http_pd_score_running_request;
+} ngx_http_pd_score_run_req_node_t;
 
 typedef struct {
     ngx_uint_t total_active_request_count;
-    ngx_http_pd_score_running_request running_requests_P[MAX_TOTAL_ACTIVE_REQS];
+    ngx_queue_t running_requests_P;
     ngx_http_pd_score_shm_peer_P_t *peers_P;
     ngx_http_pd_score_shm_peer_D_t *peers_D;
     char data[0];
@@ -189,7 +188,7 @@ static ngx_int_t ngx_http_pd_score_init_shm_zone(ngx_shm_zone_t *shm_zone,
     if (!shm_block) {
         return NGX_ERROR;
     }
-
+    ngx_queue_init(&shm_block->running_requests_P);
     shm_block->total_active_request_count = 0;
     shm_block->peers_P = (ngx_http_pd_score_shm_peer_P_t *)(shm_block->data);
     shm_block->peers_D = (ngx_http_pd_score_shm_peer_D_t *)(shm_block->peers_P + ctx->num_prefill_peers);
@@ -440,21 +439,28 @@ ngx_http_pd_score_prefill_strategy(ngx_http_request_t *r,
     pdata->last_total_tokens = 0;
     ngx_http_pd_score_shm_peer_P_t *peer_P = &pd_shm->peers_P[chosen];
 
-    if (pd_shm->total_active_request_count < MAX_TOTAL_ACTIVE_REQS) {
-        ngx_uint_t i = pd_shm->total_active_request_count++;
-        // find suitable insert position, keep sorted
-        while (i > 0 && pd_shm->running_requests_P[i - 1].inque_time > now) {
-            pd_shm->running_requests_P[i] = pd_shm->running_requests_P[i - 1];
-            i--;
-        }
-        pd_shm->running_requests_P[i].id_ptr = pdata;
-        pd_shm->running_requests_P[i].inque_time = now;
-        pd_shm->running_requests_P[i].request_length = (ngx_uint_t)r->request_length;
-        
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "[PDScore-PREFILL] request %p add to queue", pdata);
+    ngx_http_pd_score_run_req_node_t *cur_req = ngx_slab_alloc_locked(shpool, sizeof(ngx_http_pd_score_run_req_node_t));
+    if (cur_req == NULL) {
+        ngx_shmtx_unlock(&shpool->mutex);
+        return NGX_ERROR;
     }
 
+    cur_req->id_ptr = pdata;
+    cur_req->inque_time = now;
+    cur_req->request_length = (ngx_uint_t)r->request_length;
+
+    pd_shm->total_active_request_count++;
+    // find suitable position to insert, keep the queue sorted by inque_time ascendingly
+    ngx_queue_t *q = ngx_queue_last(&pd_shm->running_requests_P);
+    while (q != ngx_queue_sentinel(&pd_shm->running_requests_P) && ((ngx_http_pd_score_run_req_node_t *)q)->inque_time > now) {
+        q = ngx_queue_prev(q);
+    }
+    ngx_queue_insert_after(q, &cur_req->queue);
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                  "[PDScore-PREFILL] request(len=%ui) enqueued, total_active_request_count=%ui",
+                  (ngx_uint_t)r->request_length, pd_shm->total_active_request_count);
+    
     ngx_atomic_fetch_add(&peer_P->active_requests, 1);
     ngx_atomic_fetch_add(&peer_P->total_request_length,
                          (ngx_atomic_int_t)r->request_length);
@@ -489,13 +495,19 @@ ngx_http_pd_score_decode_strategy(ngx_http_request_t *r,
 
     ngx_shmtx_lock(&shpool->mutex);
 
-    ngx_uint_t filtered_req_lengths[max_predict_reqs + 1];
+    ngx_uint_t *filtered_req_lengths = ngx_pcalloc(r->pool, sizeof(ngx_uint_t) * (max_predict_reqs + 1));
+    if (filtered_req_lengths == NULL) {
+        ngx_shmtx_unlock(&shpool->mutex);
+        return NGX_ERROR;
+    }
 
     ngx_uint_t filtered_count = pd_shm->total_active_request_count < max_predict_reqs ?
                                 pd_shm->total_active_request_count : max_predict_reqs;
     ngx_uint_t j = 0;
+    ngx_queue_t *q = ngx_queue_head(&pd_shm->running_requests_P);
     for (j = 0; j < filtered_count; j++) {
-        filtered_req_lengths[j] = pd_shm->running_requests_P[j].request_length;
+        filtered_req_lengths[j] = ((ngx_http_pd_score_run_req_node_t *)q)->request_length;
+        q = ngx_queue_next(q);
     }
     filtered_req_lengths[filtered_count] = (ngx_uint_t)r->request_length;
     qsort(filtered_req_lengths, filtered_count + 1, sizeof(ngx_uint_t), cmp_desc);
@@ -505,7 +517,12 @@ ngx_http_pd_score_decode_strategy(ngx_http_request_t *r,
                       filtered_req_lengths[j]);
     }
 
-    ngx_uint_t peer_loads[MAX_PEER_COUNT];
+    ngx_uint_t *peer_loads = ngx_pcalloc(r->pool, sizeof(ngx_uint_t) * n);
+    if (peer_loads == NULL) {
+        ngx_shmtx_unlock(&shpool->mutex);
+        return NGX_ERROR;
+    }
+
     for (i = 0; i < n; i++) {
         peer_loads[i] = pd_shm->peers_D[i].total_decode_num * 4;
     }
@@ -621,14 +638,19 @@ static void ngx_http_pd_score_free_peer_P(ngx_peer_connection_t *pc, void *data,
     ngx_log_error(NGX_LOG_INFO, pc->log, 0, "total active request count: %ui",
                   pd_shm->total_active_request_count);
 
-    for (ngx_uint_t i = 0; i < pd_shm->total_active_request_count; i++) {
-        if (pd_shm->running_requests_P[i].id_ptr == (void *)pc->data) {
+    // find and remove from running_requests_P queue
+    ngx_queue_t *q;
+    ngx_http_pd_score_run_req_node_t *cur_req;
+    for (q = ngx_queue_head(&pd_shm->running_requests_P);
+         q != ngx_queue_sentinel(&pd_shm->running_requests_P);
+         q = ngx_queue_next(q)) {
+        cur_req = (ngx_http_pd_score_run_req_node_t *)q;
+        if (cur_req->id_ptr == (void *)pc->data) {
             ngx_log_error(NGX_LOG_INFO, pc->log, 0,
-                          "free P request %p, idx: %ui", pc->data, i);
-            // keep sorted
-            for (ngx_uint_t j = i; j < pd_shm->total_active_request_count - 1; j++) {
-                pd_shm->running_requests_P[j] = pd_shm->running_requests_P[j + 1];
-            }
+                          "found and removing req.%p from running_requests_P queue",
+                          pc->data);
+            ngx_queue_remove(q);
+            ngx_slab_free_locked(shpool, cur_req);
             pd_shm->total_active_request_count--;
             break;
         }
