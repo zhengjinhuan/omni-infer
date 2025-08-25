@@ -15,6 +15,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"fmt"
+	"path/filepath"
+	"runtime"
 
 	"github.com/gin-gonic/gin"
 )
@@ -34,10 +37,10 @@ func isValidIPPortList(s string) bool {
 }
 
 // 获取当前文件所在目录
-func getCurrentFileDir() (string, err) {
-	// _, file, _, of := runtime.Caller(1)
+func getCurrentFileDir() (string, error) {
+	_, file, _, ok: := runtime.Caller(1)
 	if !ok {
-		return "", fmt.Errof("无法获取调用栈信息")
+		return "", fmt.Errorf("无法获取调用栈信息")
 	}
 	// 从文件路径中提取目录
 	dir := filepath.Dir(file)
@@ -80,7 +83,7 @@ func main() {
 		os.Exit(1)
 	}
 	if *metricsConfigYamlPath == "../../deploy/metrics_config_vllm_0.9.0.yaml" {
-		die, err := getCurrentFileDir()
+		dir, err := getCurrentFileDir()
 		if err != nil {
 			logger.Logger().Errorf("获取默认metrics config yaml文件失败")
 			os.Exit(1)
