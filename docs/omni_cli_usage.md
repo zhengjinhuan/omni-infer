@@ -42,7 +42,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 
    ```bash
    # 节点管理
-   omni_cli ls          # 开发中
+   omni_cli ls        
    omni_cli add_node
    omni_cli rm_node
    
