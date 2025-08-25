@@ -15,7 +15,7 @@ description = "Omni_Infer is a powerful suite of inference accelerators tailored
 authors = [
     { name = "Huawei" }
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "torch",
