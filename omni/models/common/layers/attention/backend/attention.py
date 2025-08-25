@@ -498,7 +498,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 block_size=block_size,
                 sparse_mode=3,
                 atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                actual_seq_qlen=attn_metadata.query_lens,
+                actual_seq_qlen=attn_metadata.query_lens.cumsum(dim=0),
                 actual_seq_kvlen=attn_metadata.seq_lens,
             )[0]
 
