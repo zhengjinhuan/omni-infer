@@ -221,9 +221,9 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    >
    > --omni_package:  需要安装的omniinfer包
    >
-   > --vllm_package:  需要安装的omniinfer包
+   > --vllm_package:  需要安装的vllm包
    >
-   > --proxy_package: 需要安装的omniinfer包
+   > --proxy_package: 需要安装的Global Proxy包
    
     使用示例：
    
