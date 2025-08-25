@@ -279,5 +279,5 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
     使用示例：
    
    ```bash
-   omni_cli sync_dev --code_path /path/to/my/code
+   omni_cli sync_dev --code_path /path/to/my/code   # 路径会被补全为 /path/to/my/code/omniinfer
    ```
