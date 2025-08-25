@@ -576,6 +576,7 @@ show_spinner() {
             # Get SSH key path (if exists)
             ssh_private_key = host_vars.get("ansible_ssh_private_key_file", "")
             ssh_user = host_vars.get("ansible_user", "")
+            env = host_vars.get("env", {})
 
             # Build SSH command prefixes
             ssh_prefix = "ssh"
@@ -591,7 +592,14 @@ show_spinner() {
                 if ssh_private_key:
                     rsync_prefix = f"rsync -avz --quiet --delete -e 'ssh -i {ssh_private_key} -l {ssh_user}'"
 
-            tf.write(f"echo \"[INFO] Creating directory on {host}\"\n")
+            log_path = env.get("LOG_PATH")
+            if log_path:
+                tf.write(f"echo \"[INFO] Creating log directory on {host}\"\n")
+                tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {log_path}/{host}\" >/dev/null 2>&1\n\n")
+            else:
+                tf.write(f"echo \"[WARN] LOG_PATH not defined for host {host}, skipping log directory creation\"\n\n")
+
+            tf.write(f"echo \"[INFO] Creating code directory on {host}\"\n")
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
             tf.write(f"echo \"[INFO] Syncing code to {host}\"\n")
