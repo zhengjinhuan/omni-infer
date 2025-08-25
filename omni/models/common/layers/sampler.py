@@ -872,6 +872,8 @@ class SimpleSampler(RejectionSamplerV1):
         # else [forward_tokens_result, -1]
 
         # all prefill
+        
+        num_spec_tokens_per_req = num_sampling_tokens_per_req - 1
         if num_decodes == 0:
             last_accepted_index = torch.arange(batch_size, dtype=torch.int32, device = logits_indices.device)
             output_token_ids = forward_tokens.view(-1, 1)
@@ -891,6 +893,10 @@ class SimpleSampler(RejectionSamplerV1):
                 accepted_probs = target_token_probs / draft_tokens_probs
                 accepted = torch.empty_like(accepted_probs).uniform_() < accepted_probs # boolean mask
                 accepted = accepted.view(batch_size, -1)
+                
+                simple_accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens.view(batch_size, -1)[:, :-1]
+                computed_msk = self.main_sampler.penalty_cache.computed[:batch_size].unsqueeze(1).expand(-1, num_spec_tokens_per_req)
+                accepted = torch.where(computed_msk, accepted, simple_accepted)
             else:
                 accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens.view(batch_size, -1)[:, :-1]
       
@@ -905,17 +911,16 @@ class SimpleSampler(RejectionSamplerV1):
             last_accepted_index = torch.arange(batch_size, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num
 
             if self.use_rejection_sampler:
-                num_spec_tokens_per_req = num_sampling_tokens_per_req - 1
                 reject_req_indices = torch.where(accepted_num < num_spec_tokens_per_req)[0]
 
                 if reject_req_indices.numel() > 0:
                     resample_indices = last_accepted_index[reject_req_indices]
                     bias = torch.arange(batch_size, device=last_accepted_index.device, dtype=torch.int32)
-                    drafter_resample_indices = last_accepted_index - bias
+                    drafter_resample_indices = (last_accepted_index - bias)[reject_req_indices]
                     forward_tokens[resample_indices] = self._reject_sampling(main_probs[resample_indices], topk_spec_token_ids[drafter_resample_indices], topk_spec_token_probs[drafter_resample_indices])
 
                 forward_tokens = forward_tokens.view(batch_size, -1)
-                for i in range(forward_tokens):
+                for i in range(num_sampling_tokens_per_req):
                     self.main_sampler.penalty_cache.save_token_ids(forward_tokens[:, i])
 
             forward_tokens = forward_tokens.view(batch_size, -1)
@@ -923,7 +928,7 @@ class SimpleSampler(RejectionSamplerV1):
             
             for spec_token_idx in range(1, num_spec_tokens_per_req):
                 accepted[:, spec_token_idx] = accepted[:, spec_token_idx] & accepted[:, spec_token_idx - 1]
-            self.main_sampler.penalty_cache.revert_rejected_tokens(accepted, forward_tokens[logits_indices].view(batch_size, -1)[:, :-1])
+            self.main_sampler.penalty_cache.revert_rejected_tokens(accepted, forward_tokens.view(batch_size, -1)[:, 1:])
 
         sampler_output = SamplerOutputV1(
             sampled_token_ids = output_token_ids,

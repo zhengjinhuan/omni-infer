@@ -23,7 +23,11 @@ class PenaltyCache:
                                         device=device,
                                         pin_memory=is_pin_memory_available())
         self.topk_spec_token_probs = torch.zeros((num_req + 1, num_tokens, topk),
-                                        dtype=torch.float32,
+                                        dtype=torch.bfloat16,
+                                        device=device,
+                                        pin_memory=is_pin_memory_available())
+        self.computed = torch.zeros(num_req + 1,
+                                        dtype=torch.bool,
                                         device=device,
                                         pin_memory=is_pin_memory_available())
         self.ones_cpu = torch.ones(vocab_size, dtype=torch.bool, device="cpu")
@@ -32,7 +36,7 @@ class PenaltyCache:
         num_reqs = len(src)
         applied = [False] * num_reqs
         last_idx = self.prompt_mask.shape[0] - 1
-        for cached_tensor in [self.prompt_mask, self.output_mask, self.output_bin_counts, self.topk_spec_token_ids, self.topk_spec_token_probs]:
+        for cached_tensor in [self.prompt_mask, self.output_mask, self.output_bin_counts, self.topk_spec_token_ids, self.topk_spec_token_probs, self.computed]:
             for i in range(num_reqs):
                 cur = i
                 while src[cur] != cur and src[cur] != -1 and not applied[cur]:
@@ -68,6 +72,9 @@ class PenaltyCache:
                 raise RuntimeError("penalty cache: a scheduled new req is not in req id list")
             self.output_bin_counts[index] = torch.zeros_like(self.output_bin_counts[index])
             self.output_mask[index] = torch.zeros_like(self.output_mask[index])
+            self.topk_spec_token_ids[index] = torch.zeros_like(self.topk_spec_token_ids[index])
+            self.topk_spec_token_probs[index] = torch.zeros_like(self.topk_spec_token_probs[index])
+            self.computed[index] = False
             prompt_mask_cpu = torch.zeros_like(self.prompt_mask[index], device='cpu')
             prompt_token_ids_tensor = torch.tensor(scheduled_new_reqs[index].prompt_token_ids, dtype=torch.int64)
             prompt_mask_cpu.scatter_(dim=0, index=prompt_token_ids_tensor, src=self.ones_cpu)
@@ -84,12 +91,12 @@ class PenaltyCache:
         (self.do_frequency_penalties, self.do_presence_penalties, self.do_repetition_penalties) = self.do_penalty_from_samplinng_metadata(input_batch)
     
     def prepare_cache(self, scheduled_new_reqs, req_ids, sampling_metadata, input_batch):
+        self.permute_cached_reqs(input_batch.req_ids)
         if sampling_metadata.no_penalties:
             self.do_penalties = False
             return
         self.do_penalties = True
         self.update_do_penalty(sampling_metadata, input_batch)
-        self.permute_cached_reqs(input_batch.req_ids)
         self.prepare_new_reqs(scheduled_new_reqs)
     
     def save_token_ids(self, sampled_token_ids):
@@ -112,4 +119,5 @@ class PenaltyCache:
         batch_size = topk_spec_token_ids.shape[0]
         self.topk_spec_token_ids[:batch_size, idx, :] = topk_spec_token_ids
         self.topk_spec_token_probs[:batch_size, idx, :] = topk_spec_token_probs
+        self.computed[:batch_size] = True
         

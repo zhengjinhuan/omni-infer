@@ -152,15 +152,19 @@ class PostDrafter(EagleProposer):
                         selected_indices=None if attn_state == AscendAttentionState.DecodeOnly else sample_indices,
                         mtp_layer_idx=layer_idx,
                     )
-                    if self.use_rejection_sampler:
-                        mtp_probs = torch.nn.functional.softmax(drafter_logits[last_accepted_index], dim=-1)
-                        mtp_topk_token_probs, mtp_topk_token_ids = torch.topk(mtp_probs, self.topk, dim=1)
-                        mtp_topk_token_ids = mtp_topk_token_ids.unsqueeze(1)
-                        mtp_topk_token_probs = mtp_topk_token_probs.unsqueeze(1)
-                        self.rejection_sampler.main_sampler.penalty_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, layer_idx)
                     if not is_dummy:
-                        draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
-                        draft_forward_tokens_list.append(draft_forward_tokens)
+                        if self.use_rejection_sampler:
+                            mtp_probs = torch.nn.functional.softmax(drafter_logits[last_accepted_index], dim=-1)
+                            batch_size = last_accepted_index.numel()
+                            mtp_topk_token_probs, mtp_topk_token_ids = torch.topk(mtp_probs, self.topk, dim=1)
+                            mtp_topk_token_ids = mtp_topk_token_ids.view(batch_size, -1).unsqueeze(1)
+                            mtp_topk_token_probs = mtp_topk_token_probs.view(batch_size, -1).unsqueeze(1)
+                            self.rejection_sampler.main_sampler.penalty_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, layer_idx)
+                            draft_forward_tokens = mtp_topk_token_ids[:, 0].view(-1)
+                            draft_forward_tokens_list.append(draft_forward_tokens)
+                        else:
+                            draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
+                            draft_forward_tokens_list.append(draft_forward_tokens)
                     if layer_idx == self.speculative_config.num_speculative_tokens - 1:
                         break
                     if not is_dummy:
@@ -169,7 +173,7 @@ class PostDrafter(EagleProposer):
                             input_ids[last_accepted_index] = draft_forward_tokens
                         else: # prefill
                             input_ids[sample_indices] = draft_forward_tokens
-            if last_accepted_index is None:
+            if is_dummy:
                 return None
             else:
                 return torch.stack(draft_forward_tokens_list, dim=1)
