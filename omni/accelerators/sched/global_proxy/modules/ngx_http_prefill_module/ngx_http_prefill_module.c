@@ -362,7 +362,7 @@ void json_token_tostr(const char *json, const jsmntok_t *t, char *buf, size_t bu
 }
 
 // Info for all modifications, in the order they appear in the JSON
-typedef enum { R_MAX_TOKENS, R_STREAM, R_STREAM_OPTIONS } region_type_t;
+typedef enum { R_MAX_TOKENS, R_MAX_COMPLETION_TOKENS, R_STREAM, R_STREAM_OPTIONS } region_type_t;
 typedef struct {
     region_type_t type;
     size_t idx;    // For value keys: value token index; For stream_options: key token index
@@ -377,9 +377,10 @@ void gen_prefill_json_str_jsmn(
     int tokens_size = 256;
     jsmntok_t *tokens = NULL;
     int ret = -1;
-    region_info_t region_infos[3];
+    region_info_t region_infos[4];
     int region_infos_count = 0;
     int max_tokens_val_idx = -1;
+    int max_completion_tokens_val_idx = -1;
     int stream_val_idx = -1;
     int stream_options_key_idx = -1, stream_options_val_idx = -1;
     char keybuf[64];
@@ -420,6 +421,11 @@ void gen_prefill_json_str_jsmn(
                 max_tokens_val_idx = i + 1;
                 region_infos[region_infos_count++] = (region_info_t){
                     R_MAX_TOKENS, max_tokens_val_idx, tokens[max_tokens_val_idx].start, tokens[max_tokens_val_idx].end};
+            }
+            if (max_completion_tokens_val_idx == -1 && strcmp(keybuf, "max_completion_tokens") == 0) {
+                max_completion_tokens_val_idx = i + 1;
+                region_infos[region_infos_count++] = (region_info_t){
+                    R_MAX_COMPLETION_TOKENS, max_completion_tokens_val_idx, tokens[max_completion_tokens_val_idx].start, tokens[max_completion_tokens_val_idx].end};
             }
             if (stream_val_idx == -1 && strcmp(keybuf, "stream") == 0) {
                 stream_val_idx = i + 1;
@@ -477,6 +483,11 @@ void gen_prefill_json_str_jsmn(
                 pos += 1;
                 src = ri->end;
                 break;
+            case R_MAX_COMPLETION_TOKENS:
+                memcpy(newjson + pos, "1", 1);
+                pos += 1;
+                src = ri->end;
+                break;
             case R_STREAM:
                 memcpy(newjson + pos, "false", 5);
                 pos += 5;
@@ -493,12 +504,12 @@ void gen_prefill_json_str_jsmn(
         pos += len - 1 - src;
     }
 
-    // If "max_tokens" was missing, insert before '}'
-    if (max_tokens_val_idx == -1) {
+    // If neither "max_tokens" nor "max_completion_tokens" was found, insert "max_completion_tokens" before '}'
+    if (max_tokens_val_idx == -1 && max_completion_tokens_val_idx == -1) {
         if (pos > 0 && newjson[pos - 1] != '{') {
             newjson[pos++] = ',';
         }
-        const char *insertion = "\"max_tokens\":1";
+        const char *insertion = "\"max_completion_tokens\":1";
         memcpy(newjson + pos, insertion, strlen(insertion));
         pos += strlen(insertion);
     }

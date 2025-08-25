@@ -4,7 +4,7 @@ from llm_datadist.v2.llm_types import Cache, CacheDesc, BlocksCacheKey
 from omni.accelerators.pd.llmdatadist_manager import (
     LLMDataDistManager,
     TORCH_DTYPE_TO_NPU_DTYPE,
-    unzip_kv_cache,
+    unzip_kv_cache_dict,
     logger,
 )
 from . import kv_cache_interface as itfc
@@ -20,7 +20,7 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
             raise ValueError("Attr `registerd_kv_caches` must be empty before register kv_caches.")
         # NOTE: flatten_kv_caches is a nested list like [[k1,k2,...,kL], [v1,v2,...,vL]]
         # if KV is just one tensor, then it's [[kv1,kv2,...,kvL]]
-        flatten_kv_caches: list[list[torch.Tensor]] = unzip_kv_cache(kv_caches)
+        flatten_kv_caches: list[list[torch.Tensor]] = unzip_kv_cache_dict(kv_caches)
         num_layers = len(flatten_kv_caches[0])
 
         # partition layer indices into full and omni

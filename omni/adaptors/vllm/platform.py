@@ -78,7 +78,7 @@ def init_dp_group(self) -> ProcessGroup:
     ProcessGroup._set_default_backend = noops
     pg = origin_stateless_init_dp_group(self)
     ProcessGroup.__init__ = origin_pg_init
-    return pg;
+    return pg
 
 def update_parallel_state():
     global origin_destroy_model_parallel
@@ -126,6 +126,20 @@ def ascend_direct_register_custom_op(
 
 def update_utils_custom_op():
     utils.direct_register_custom_op = ascend_direct_register_custom_op
+
+
+def enable_overwrite_request_id():
+    """Patch OpenAIServing to use random UUIDs for request IDs."""
+    from fastapi import Request
+    from vllm.utils import random_uuid
+    from vllm.entrypoints.openai.serving_engine import OpenAIServing
+    @staticmethod
+    def _base_request_id(raw_request: Optional[Request], 
+                         default: Optional[str] = None) -> Optional[str]:
+        return default or random_uuid()
+
+    OpenAIServing._base_request_id = _base_request_id
+    logging.info("Applied patch: overwrite_request_id")
 
 
 def register() -> str:
@@ -240,23 +254,14 @@ class ConfigUpdater:
 
     @staticmethod
     def _may_enable_omni_attn(vllm_config: 'VllmConfig') -> None:
-        if not vllm_config.additional_config:
+        if vllm_config.additional_config is None:
             return
-        def to_bool(val):
-            if isinstance(val, int):
-                return val == 1
-            if isinstance(val, str):
-                return val.lower() in ["1", "true"]
-            if isinstance(val, bool):
-                return val
-            raise ValueError(f"Cannot convert variable to bool. Type {type(val)}. Value {val}.")
-        enable_omni_attn = to_bool(vllm_config.additional_config.get("enable_omni_attn", False))
+        from omni.accelerators.cache import apply_omni_attn_patch, check_omni_attn_cmd_arg
+        enable_omni_attn = check_omni_attn_cmd_arg(vllm_config.additional_config)
+        kv_transfer_config = vllm_config.kv_transfer_config
+        is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
         omni_attn_config = vllm_config.additional_config.get("omni_attn_config", None)
-        if enable_omni_attn:
-            from omni.accelerators.cache import apply_omni_attn_patch
-            kv_transfer_config = vllm_config.kv_transfer_config
-            is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
-            apply_omni_attn_patch(enable=True, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
+        apply_omni_attn_patch(enable=enable_omni_attn, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
 
 
 class NPUPlatform(Platform):
@@ -277,12 +282,17 @@ class NPUPlatform(Platform):
         update_utils_custom_op()
         super().__init__()
 
-    def is_sleep_mode_available(self) -> bool:
+    @classmethod
+    def is_sleep_mode_available(cls) -> bool:
         """Check if sleep mode is available for NPU.
 
         Returns:
             bool: Always True for NPU.
         """
+        import omni.adaptors.vllm.envs as envs_ascend
+        if not envs_ascend.VLLM_ENABLE_SLEEP_MODE:
+            return False
+
         return True
 
     @classmethod
@@ -294,7 +304,12 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
+        if os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1":
+            enable_overwrite_request_id()
         import omni.quantization  # noqa: F401
+        from omni.adaptors.vllm.ems.ems_env import EmsEnv
+        if EmsEnv.enable_vllm_ems:
+            from omni.adaptors.vllm.patches import ems_patch
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:

@@ -18,7 +18,7 @@ check_dependencies() {
 # Function to install Google Test
 install_gtest() {
     echo "Installing Google Test ${GOOGLE_TEST_VERSION}"
-    local DEST="${CURRENT_DIR}/omni_planner/cpp/test/${GOOGLE_TEST_VERSION}"
+    local DEST="${CURRENT_DIR}/omni_placement/cpp/test/${GOOGLE_TEST_VERSION}"
 
     if [ -d "$DEST" ]; then
         echo "Google Test is already installed at $DEST"
@@ -47,17 +47,17 @@ install_gtest() {
     }
     echo "Google Test installed successfully"
 
-    cd "$CURRENT_DIR/omni_planner/cpp/test" || {
+    cd "$CURRENT_DIR/omni_placement/cpp/test" || {
         echo "Error: Failed to return to test directory"
         exit 1
     }
 }
 
 # Function to build the C++ library
-setup_omni_planner_clib() {
-    echo "Setting up omni_planner C++ library"
-    cd "${CURRENT_DIR}/omni_planner/cpp" || {
-        echo "Error: Failed to cd into ${CURRENT_DIR}/omni_planner/cpp"
+setup_omni_placement_clib() {
+    echo "Setting up omni_placement C++ library"
+    cd "${CURRENT_DIR}/omni_placement/cpp" || {
+        echo "Error: Failed to cd into ${CURRENT_DIR}/omni_placement/cpp"
         exit 1
     }
 
@@ -74,13 +74,13 @@ setup_omni_planner_clib() {
     echo "C++ library setup completed"
 }
 
-pip_install_omni_planner_whl(){
+pip_install_omni_placement_whl(){
     cd "${CURRENT_DIR}" || {
         echo "Error: Failed to cd into ${CURRENT_DIR}"
         exit 1
     }
     pip install -e . || {
-        echo "Error: Failed to pip install omni_planner"
+        echo "Error: Failed to pip install omni_placement"
         exit 1
     }
 }
@@ -90,8 +90,8 @@ run_cpp_unittest() {
     local clean_flag="$1"  # Capture the clean parameter
 
     echo "Running C++ tests"
-    cd "${CURRENT_DIR}/omni_planner/cpp/test" || {
-        echo "Error: Failed to cd into ${CURRENT_DIR}/omni_planner/cpp/test"
+    cd "${CURRENT_DIR}/omni_placement/cpp/test" || {
+        echo "Error: Failed to cd into ${CURRENT_DIR}/omni_placement/cpp/test"
         exit 1
     }
 
@@ -132,7 +132,7 @@ run_pytest() {
     # apply patch to vllm_npu
     bash ./scripts/copy_dsv3_to_vllm_npu.sh
 
-    pytest --ignore=omni_planner/cpp/test/googletest-1.16.0/ --ignore=examples/ || {
+    pytest --ignore=omni_placement/cpp/test/googletest-1.16.0/ --ignore=examples/ || {
         echo "Error: pytest failed"
         exit 1
     }
@@ -148,13 +148,13 @@ source ~/.bashrc
 
 # Check if 'clean' is passed as an argument
 if [ "$1" = "clean" ]; then
-    setup_omni_planner_clib
-    pip_install_omni_planner_whl
+    setup_omni_placement_clib
+    pip_install_omni_placement_whl
     run_cpp_unittest "clean"  # Pass clean to run_cpp_unittest
     run_pytest
 else
-    setup_omni_planner_clib
-    pip_install_omni_planner_whl
+    setup_omni_placement_clib
+    pip_install_omni_placement_whl
     run_cpp_unittest ""       # Run without clean
     run_pytest
 fi

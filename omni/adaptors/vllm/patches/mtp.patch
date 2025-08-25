@@ -1,48 +1,5 @@
-diff --git a/vllm/config.py b/vllm/config.py
-index db35c848b..46d89e01e 100644
---- a/vllm/config.py
-+++ b/vllm/config.py
-@@ -2753,7 +2753,7 @@ class SpeculativeConfig:
-         return self.num_speculative_tokens
- 
-     def use_eagle(self) -> bool:
--        return self.method in ("eagle", "eagle3", "deepseek_mtp")
-+        return self.method in ("eagle", "eagle3")
- 
-     def __repr__(self) -> str:
-         method = self.method
-diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
-index b25aa9ab2..81aa039bf 100644
---- a/vllm/engine/arg_utils.py
-+++ b/vllm/engine/arg_utils.py
-@@ -1330,6 +1330,7 @@ class EngineArgs:
-         is_ngram_enabled = False
-         is_eagle_enabled = False
-         is_medusa_enabled = False
-+        is_mtp_enabled = False
-         if self.speculative_config is not None:
-             # This is supported but experimental (handled below).
-             speculative_method = self.speculative_config.get("method")
-@@ -1338,13 +1339,15 @@ class EngineArgs:
-                     is_ngram_enabled = True
-                 elif speculative_method == "medusa":
-                     is_medusa_enabled = True
--                elif speculative_method in ("eagle", "eagle3", "deepseek_mtp"):
-+                elif speculative_method in ("eagle", "eagle3"):
-                     is_eagle_enabled = True
-+                elif speculative_method in ("deepseek_mtp",):
-+                    is_mtp_enabled = True
-             else:
-                 speculative_model = self.speculative_config.get("model")
-                 if speculative_model in ("ngram", "[ngram]"):
-                     is_ngram_enabled = True
--            if not (is_ngram_enabled or is_eagle_enabled or is_medusa_enabled):
-+            if not (is_ngram_enabled or is_eagle_enabled or is_medusa_enabled or is_mtp_enabled):
-                 # Other speculative decoding methods are not supported yet.
-                 _raise_or_fallback(feature_name="Speculative Decoding",
-                                    recommend_to_remove=False)
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 3b1d3f94a..e5456a3c0 100644
+index 3b1d3f94a..844f6d511 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -389,7 +389,7 @@ class Scheduler(SchedulerInterface):
@@ -82,15 +39,42 @@ index 3b1d3f94a..e5456a3c0 100644
          request.num_computed_tokens = request.num_tokens - 1
  
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 910c0e80b..55b7ede65 100644
+index 910c0e80b..9b848fac5 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
-@@ -158,6 +158,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
-             if get_pp_group().is_last_rank:
+@@ -159,8 +159,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  if self.speculative_config.method == "ngram":
                      self.drafter = NgramProposer(self.vllm_config)
-+                elif self.speculative_config.method == "deepseek_mtp":
-+                    self.drafter = None
                  elif self.speculative_config.use_eagle():
-                     self.drafter = EagleProposer(self.vllm_config, self.device,
-                                                  self)  # type: ignore
+-                    self.drafter = EagleProposer(self.vllm_config, self.device,
+-                                                 self)  # type: ignore
++                    self.drafter = None
++
+                     if self.speculative_config.method == "eagle3":
+                         self.use_aux_hidden_state_outputs = True
+                 elif self.speculative_config.method == "medusa":
+@@ -170,7 +170,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 else:
+                     raise ValueError("Unknown speculative decoding method: "
+                                      f"{self.speculative_config.method}")
+-                self.rejection_sampler = RejectionSampler()
++                self.rejection_sampler = None
+ 
+         # Request states.
+         self.requests: dict[str, CachedRequestState] = {}
+diff --git a/vllm/config.py b/vllm/config.py
+index db35c848b..5b255e210 100644
+--- a/vllm/config.py
++++ b/vllm/config.py
+@@ -2737,9 +2737,9 @@ class SpeculativeConfig:
+                              f"{self.disable_by_batch_size=}")
+ 
+         if self.method == "eagle3" and self.target_model_config and \
+-            "llama" not in self.target_model_config.hf_text_config.model_type:
++            not any(item in self.target_model_config.hf_text_config.model_type for item in ('qwen2',)):
+             raise ValueError(
+-                "Eagle3 is only supported for Llama models. "
++                "Eagle3 is only supported for Qwen2 models. "
+                 f"Got {self.target_model_config.hf_text_config.model_type=}")
+ 
+     @property

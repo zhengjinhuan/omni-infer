@@ -18,12 +18,11 @@
 2. 根据激活数据生成优化后的专家放置模式，支持仅重新排列和冗余两种模式。
 3. 验证放置模式的有效性，并生成可视化视图以展示部署分布。
 4. 分析放置模式的负载均衡效果，生成热图、柱状图和量化分析 CSV 文件。
-5. （可选）分析指定层的专家激活统计特性，生成包含方差、熵、最大最小差值和均值的 CSV 文件。
 
 ## 使用方式
 
 ### 1. 环境准备
-在运行流水线或统计分析脚本之前，请确保以下环境要求已满足：
+在运行流水线之前，请确保以下环境要求已满足：
 - **Python 环境**：Python 3.6 或以上版本。
 - **依赖库**：安装以下 Python 库以支持数据处理、可视化和统计分析：
   ```bash
@@ -47,7 +46,7 @@
   ./pattern_generation_pipeline.sh \
     --input_txt_folders "/path/to/input/txt/folder" \
     --input_mode txt \
-    --num_ranks_of_collecting_data 32 \
+    --num_ranks_of_collecting_data 1 \
     --num_ranks_target_pattern 256 \
     --pattern_mode all \
     --collecting_modes decode \
@@ -83,14 +82,14 @@
      python pipeline.py \
        --input_txt_folders "/path/to/input/txt/folder" \
        --input_mode txt \
-       --num_ranks_of_collecting_data 32 \
+       --num_ranks_of_collecting_data 1 \
        --num_ranks_target_pattern 256 \
        --pattern_mode all \
        --collecting_modes decode \
        --recordstep_range 0:100000
      ```
 
-### 5. 查看输出
+### 4. 查看输出
 流水线运行完成后，会在指定目录生成以下输出文件：
 
 - **激活计数 CSV 文件**：
@@ -119,10 +118,8 @@
   - 内容：量化不同放置模式的负载均衡效果，包含负载降低百分比。
 - **日志文件**：
   - 路径：当前目录。
-  - 示例：
-    - 流水线日志：`pattern_generation_pipeline_20250630_183900.log`。
-    - 统计分析日志：`layer_stats_pipeline_20250630_183900.log`。
-  - 内容：记录运行的详细日志，包括信息、警告和错误，便于调试。
+  - 示例：`pattern_generation_pipeline_<timestamp>.log`。
+  - 内容：记录运行的详细日志，包括执行信息、警告和错误。
 
 详见“输出文件详细说明”部分，了解每个文件的格式和用途。
 
@@ -188,7 +185,7 @@
 | `--placement_pattern_analysis_dir`| 负载分析图像及 CSV 输出目录                      | `./placement_pattern_analysis`          | 存储负载分布热图、柱状图和分析 CSV 文件。                            |
 | `--output_csv`                    | 输出 CSV 文件名                                  | 空（自动生成时间戳命名）                | 若为空，生成 `topk_ids_count_<timestamp>_<collecting_modes>_step<start>to<end>.csv`。 |
 | `--num_layers`                    | 模型层数                                         | `58`                                    | MoE 模型的层数，需与输入数据匹配。                                   |
-| `--num_ranks_of_collecting_data`  | 数据收集的 rank 数                               | `32`                                    | 输入数据对应的 rank 数量，需为正整数。                               |
+| `--num_ranks_of_collecting_data`  | 数据收集的 rank 数                               | `1`                                    | 输入数据对应的 rank 数量，需为正整数。版本相关：在 ≤0.2.0 版本中，`num_ranks_of_collecting_data` 支持任意正整数；在 ≥0.3.0 版本中，该参数固定为 1。                               |
 | `--num_positions_of_routed_experts`| 路由专家位置数                                   | `256`                                   | 每层的专家总数，需能被 `num_ranks_of_collecting_data` 整除。          |
 | `--num_ranks_target_pattern`      | 目标放置模式的 rank 数                           | `256`                                   | 放置模式的目标 rank 数量，需为正整数。                               |
 | `--num_redundant_layers` | 指定优化分配的层数列表 | `58` | 在 redundant 模式下，指定哪些层被视为高负载层（high_load_layers），这些层将允许专家多次部署（最多 1 + expert_redundant_limit 次），通过 allocate_expert_deployments_improved 和 distribute_experts_to_ranks 分配，budget_limit 设为 num_ranks_target_pattern；非高负载层同样使用优化分配，但 budget_limit=0，限制为每个专家部署一次。在 rearrange 模式下，指定哪些层为高负载层，使用 allocate_expert_deployments_improved 和 distribute_experts_to_ranks 进行优化分配（每个专家部署一次）；非高负载层使用 distribute_experts_sequentially 进行顺序分配。支持多个值，空格分隔。 |
@@ -392,6 +389,7 @@
   - `num_positions_of_routed_experts` 必须能被 `num_ranks_of_collecting_data` 整除（默认 256 / 32 = 8）。
   - `num_eps_target_pattern` 必须能被 `num_ranks_target_pattern` 整除（默认 256 / 256 = 1）。
   - `layer_id` 必须有效，`recordstep_range` 需与输入文件中的 recordstep 匹配。
+  - **版本相关**：在 ≤0.2.0 版本中，`num_ranks_of_collecting_data` 支持任意正整数；在 ≥0.3.0 版本中，该参数固定为 1。
 
 - **中文支持**：
   - 可视化图像包含中文标题和标签，需安装 SimHei 或 Microsoft YaHei 字体。

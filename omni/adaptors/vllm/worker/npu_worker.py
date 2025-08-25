@@ -29,11 +29,12 @@ from vllm.config import VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce,
+                              get_world_group,
                               get_dp_group)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import logger
 from vllm.model_executor import set_random_seed
-from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
+from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, GiB_bytes
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
                                         KVCacheSpec)
@@ -121,10 +122,32 @@ class NPUWorker(WorkerBase):
         self._init_graph_options()
 
     def sleep(self, level: int = 1) -> None:
-        logger.error("Sleep mode is only supported on v0")
+        if not NPUPlatform.is_sleep_mode_available():
+            logger.error("Sleep mode is only supported on v0")
+            return
+
+        from omni.adaptors.vllm.npu_mem_pool import NpuMemAllocator
+        free_bytes_before_sleep = NPUPlatform.mem_get_info()[0]
+        allocator = NpuMemAllocator.get_instance()
+        allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
+        free_bytes_after_sleep, total = NPUPlatform.mem_get_info()
+        freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
+        used_bytes = total - free_bytes_after_sleep
+        assert freed_bytes >= 0, "Memory usage increased after sleeping."
+        logger.info(
+            "Sleep mode freed %.2f GiB memory, "
+            "%.2f GiB memory is still in use.", freed_bytes / GiB_bytes,
+                                                used_bytes / GiB_bytes)
 
     def wake_up(self, tags: Optional[list[str]] = None) -> None:
-        logger.error("Sleep mode is only supported on v0")
+        if not NPUPlatform.is_sleep_mode_available():
+            logger.error("Sleep mode is only supported on v0")
+            return
+
+        from omni.adaptors.vllm.npu_mem_pool import NpuMemAllocator
+        allocator = NpuMemAllocator.get_instance()
+        allocator.wake_up(tags=tags)
+
 
     def init_device(self):
         if self.device_config.device.type == current_platform.device_type:
@@ -178,7 +201,7 @@ class NPUWorker(WorkerBase):
         last_use_kv_cache_bytes = cur_npu_kv_cache_bytes
 
         if self.use_cached_npu_graph:
-            dp_size = get_dp_group().world_size
+            dp_size = get_world_group().world_size
             if check_torchair_cache_exists() and check_block_num_cache_exist():
                 logger.info("Currently use graph cache")
                 npu_kv_cache_bytes = read_block_num_from_file(torch.distributed.get_rank())
@@ -190,7 +213,7 @@ class NPUWorker(WorkerBase):
                     torch.tensor([0], dtype=old_kv_cache_bytes.dtype, device="cpu")
                     for _ in range(dp_size)
                 ]
-                dist.all_gather(all_kv_cache_bytes, old_kv_cache_bytes, group=get_dp_group().cpu_group)
+                dist.all_gather(all_kv_cache_bytes, old_kv_cache_bytes, group=get_world_group().cpu_group)
                 for kv_cache_bytes in all_kv_cache_bytes:
                     if kv_cache_bytes != old_kv_cache_bytes:
                         raise RuntimeError(f"The block num data of some ranks has been modified, origin: {old_kv_cache_bytes}, now: {kv_cache_bytes}")
@@ -205,7 +228,7 @@ class NPUWorker(WorkerBase):
                     torch.tensor([0], dtype=cur_npu_kv_cache_bytes.dtype, device="cpu")
                     for _ in range(dp_size)
                 ]
-                dist.all_gather(all_kv_cache_bytes, cur_npu_kv_cache_bytes, group=get_dp_group().cpu_group)
+                dist.all_gather(all_kv_cache_bytes, cur_npu_kv_cache_bytes, group=get_world_group().cpu_group)
                 kv_cache_bytes = int(min(all_kv_cache_bytes[:]))
                 write_block_num_to_file(torch.distributed.get_rank(), kv_cache_bytes)
                 clear_var(cur_npu_kv_cache_bytes, all_kv_cache_bytes)
@@ -242,16 +265,30 @@ class NPUWorker(WorkerBase):
             f"Available memory: {usable_memory_size}, total memory: {total_npu_memory}"
         )
         return int(npu_kv_cache_bytes)
+    
+    def load_kv_cache(self, info_load_reqs) -> List[int]:
+        result = self.model_runner.load_kv_cache(info_load_reqs)
+        return result
 
     def execute_model(
         self,
         scheduler_output: "SchedulerOutput",
     ) -> Optional[ModelRunnerOutput]:
         output = self.model_runner.execute_model(scheduler_output)
-        return output if self.rank == 0 else None
+        return output if self.is_driver_worker else None
 
     def load_model(self) -> None:
-        self.model_runner.load_model()
+        if NPUPlatform.is_sleep_mode_available():
+            allocator = NpuMemAllocator.get_instance()
+            assert allocator.get_current_usage() == 0, (
+                "Sleep mode can only be "
+                "used for one instance per process.")
+            context = allocator.use_memory_pool(tag="weights")
+        else:
+            from contextlib import nullcontext
+            context = nullcontext()
+        with context:
+            self.model_runner.load_model()
 
     def compile_or_warm_up_model(self) -> None:
         if self.enable_torchair_graph_mode:
@@ -268,12 +305,18 @@ class NPUWorker(WorkerBase):
 
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Allocate NPU KV cache with the specified kv_cache_config."""
-        self.model_runner.initialize_kv_cache(kv_cache_config)
+        if NPUPlatform.is_sleep_mode_available():
+            allocator = NpuMemAllocator.get_instance()
+            context = allocator.use_memory_pool(tag="kv_cache")
+        else:
+            from contextlib import nullcontext
+            context = nullcontext()
+        with context:
+            self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def initialize_cache(self, kv_cache_configs: List[KVCacheConfig]) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
-        kv_cache_config = kv_cache_configs[self.rank]
-        self.model_runner.initialize_kv_cache(kv_cache_config)
+        self.initialize_from_config(kv_cache_config)
 
     def profile(self, is_start: bool = True):
         if self.profiler is None:
@@ -284,6 +327,8 @@ class NPUWorker(WorkerBase):
             self.profiler.stop()
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            self.model_runner.planner.place_experts()
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
 

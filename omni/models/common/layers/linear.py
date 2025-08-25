@@ -16,7 +16,8 @@ from vllm.model_executor.layers.linear import (LinearBase,
                                                ReplicatedLinear,
                                                RowParallelLinear as RowParallelLinearGPU,
                                                adjust_marlin_shard,
-                                               adjust_scalar_to_fused_array)
+                                               adjust_scalar_to_fused_array,
+                                               UnquantizedLinearMethod)
 from vllm import logger
 
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig, QuantizeMethodBase
@@ -27,7 +28,9 @@ from vllm.distributed import (
     split_tensor_along_last_dim,
     get_tensor_model_parallel_rank,
     tensor_model_parallel_all_reduce,
-    tensor_model_parallel_all_gather
+    tensor_model_parallel_all_gather,
+    tensor_model_parallel_reduce_scatter,
+    get_tp_group
 )
 
 from omni.adaptors.vllm.distributed.communication_op import mla_tensor_model_parallel_reduce_scatter
@@ -36,7 +39,16 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_o_proj_tp_group,
     GroupCoordinator
 )
+from omni.models.common.config.model_config import model_extra_config
 
+class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
+
+    def process_weights_after_loading(self, layer):
+        if model_extra_config.operator_opt_config.unquant_bmm_nz:
+            weight = layer.weight
+            weight.data = torch_npu.npu_format_cast(weight.data, 29)
+            layer.weight = Parameter(weight, requires_grad=False)
+        return
 
 class AscendMergedColumnParallelLinear(LinearBase):
     def __init__(self,
@@ -503,7 +515,7 @@ class Tp2DpAndTpRowParallelLinear(AscendRowParallelLinear):
                                                   input_parallel,
                                                   bias=bias_)
         if self.reduce_results and self.tp_size > 1:
-            output = get_o_proj_tp_group.reduce_scatter(output_parallel)
+            output = get_o_proj_tp_group().reduce_scatter(output_parallel)
         else:
             output = output_parallel
 
@@ -522,7 +534,7 @@ class ColumnParallelLinearQuantGather(ColumnParallelLinear):
  
     def forward(self, input_):
         bias = self.bias if not self.skip_bias_add else None
- 
+
         # Matrix multiply.
         if self.quant_method is None:
             raise RuntimeError("self.quant_method is not None")
@@ -888,7 +900,8 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
         weight_data = layer.weight.data.t().contiguous()
-        layer.weight = torch.nn.Parameter(weight_data, requires_grad=False)
+        layer.weight.data = weight_data
+        set_weight_attrs(layer.weight, {"is_weight_transposed": True})
         # weight_data = torch_npu.npu_format_cast(layer.weight.data.t().contiguous(), 29)
         # layer.weight = torch.nn.Parameter(weight_data, requires_grad=False)
 
@@ -899,6 +912,12 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
               module_name: Optional[str] = "",
               x_transform: Optional[str] = None,
               is_prefill: Optional[bool] = True) -> torch.Tensor:
+        
+        if x_transform == "AG":
+            x = get_tp_group().all_gather(x, dim=0)
+        elif x_transform == "A2A":
+            x = get_tp_group().all_to_all(x)
+
         if bias is not None:
             # return F.linear(x, layer.weight, bias)
             return torch.addmm(bias, x, layer.weight)
@@ -982,6 +1001,10 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
             self.register_parameter("bias", None)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        # veRL special case: transpose the weight back to original shape
+        is_weight_transposed = getattr(param, "is_weight_transposed", False)
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
         input_dim = getattr(param, "input_dim", None)
         param_data = param.data
 
@@ -994,6 +1017,9 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
+        # veRL special case: transpose the weight to use torch npu operator
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
 
     def forward(self, input_, reduce_type="AR", x_transform=None):
         input_parallel = input_
@@ -1011,6 +1037,8 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         if self.tp_size > 1:
             if reduce_type == "AR":
                 output = tensor_model_parallel_all_reduce(output_parallel)
+            elif reduce_type == "RS":
+                output = tensor_model_parallel_reduce_scatter(output_parallel)
             else:
                 output = output_parallel
         else:
@@ -1070,6 +1098,10 @@ class ColumnParallelFlashCommLinear(FlashCommLinearBase):
         self.prefix = prefix
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        # veRL special case: transpose the weight back to original shape
+        is_weight_transposed = getattr(param, "is_weight_transposed", False)
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
         output_dim = getattr(param, "output_dim", None)
 
         param_data = param.data
@@ -1082,6 +1114,9 @@ class ColumnParallelFlashCommLinear(FlashCommLinearBase):
         loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
+        # veRL special case: transpose the weight to use torch npu operator
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
 
     def forward(self, input_, x_transform=None, is_prefill=True):
         bias = self.bias if not self.skip_bias_add else None
@@ -1153,7 +1188,10 @@ class QKVParallelFlashCommLinear(ColumnParallelFlashCommLinear):
                       param: Parameter,
                       loaded_weight: torch.Tensor,
                       loaded_shard_id: Optional[str] = None):
-
+        # veRL special case: transpose the weight back to original shape
+        is_weight_transposed = getattr(param, "is_weight_transposed", False)
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
         param_data = param.data
         output_dim = getattr(param, "output_dim", None)
         assert loaded_shard_id in ["q", "k", "v"]
@@ -1185,6 +1223,9 @@ class QKVParallelFlashCommLinear(ColumnParallelFlashCommLinear):
         loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
+        # veRL special case: transpose the weight to use torch npu operator
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
 
 class MergedColumnParallelFlashCommLinear(ColumnParallelFlashCommLinear):
 
@@ -1215,7 +1256,10 @@ class MergedColumnParallelFlashCommLinear(ColumnParallelFlashCommLinear):
                       param: Parameter,
                       loaded_weight: torch.Tensor,
                       loaded_shard_id: Optional[int] = None):
-
+        # veRL special case: transpose the weight back to original shape
+        is_weight_transposed = getattr(param, "is_weight_transposed", False)
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
         param_data = param.data
         output_dim = getattr(param, "output_dim", None)
 
@@ -1234,3 +1278,6 @@ class MergedColumnParallelFlashCommLinear(ColumnParallelFlashCommLinear):
         loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
+        # veRL special case: transpose the weight to use torch npu operator
+        if is_weight_transposed:
+            param.data = param.data.t().contiguous()
