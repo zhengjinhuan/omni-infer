@@ -674,7 +674,7 @@ show_spinner() {
                 pass
 
 def install_dev(
-    inventory_path: str = "omni_cli/configs/server_profiles.yml",
+    inventory_path,
     dry_run: bool = False,
 ) -> None:
     """Install code inside container"""
@@ -870,7 +870,7 @@ def print_node_list(inventory_path: str) -> None:
     print("-" * 30)
 
 def run_docker_containers(
-    inventory_path: str = "omni_cli/configs/server_profiles.yml",
+    inventory_path,
     dry_run: bool = False,
 ) -> None:
     inv_file = Path(inventory_path).expanduser().resolve()
