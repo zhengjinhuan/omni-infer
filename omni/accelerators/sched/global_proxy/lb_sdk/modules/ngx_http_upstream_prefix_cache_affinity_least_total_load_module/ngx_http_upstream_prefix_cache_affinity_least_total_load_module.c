@@ -30,8 +30,8 @@ typedef struct {
     ngx_http_least_total_load_shm_peer_t peers[1];
 } prefill_upstream_info_t;
 
-typedef struct ngx_http_node_t{
-    ngx_uint_t              key;
+typedef struct ngx_http_node_t {
+    uint64_t                key;
     ngx_uint_t              peer;
     struct ngx_http_node_t* next_key;
     struct ngx_http_node_t* next;
@@ -55,7 +55,7 @@ typedef struct {
     ngx_uint_t              peer_count;
     ngx_uint_t              max_size;
     ngx_http_bucket_t*      buckets;
-    ngx_http_list_t         lists;
+    ngx_http_list_t*        lists;
 } ngx_http_dictionary_t;
 
 typedef struct {
@@ -75,7 +75,7 @@ typedef struct {
 } ngx_http_prefix_cache_affinity_least_total_load_peer_data_t;
 
 typedef struct {
-    ngx_uint_t blocks[MAX_HASH_BLOCKS];
+    uint64_t   blocks[MAX_HASH_BLOCKS];
     ngx_uint_t count;
 } ngx_http_hash_chain_t;
 
@@ -84,7 +84,7 @@ static prefill_upstream_info_t *prefill_shm = NULL;
 static ngx_uint_t ngx_http_least_total_load_shm_size = 0;
 static ngx_uint_t ngx_http_least_total_load_batch_size = 0;
 
-static ngx_http_cache_global_t *global_cache = NULL;
+static ngx_http_dictionary_t *global_cache = NULL;
 static ngx_shm_zone_t *ngx_http_prefix_cache_affinity_shm_zone = NULL;
 static ngx_uint_t ngx_http_prefix_cache_affinity_shm_size = 0;
 static ngx_uint_t ngx_http_prefix_cache_affinity_dict_size = 0;
@@ -93,7 +93,7 @@ static const uint8_t siphash_key[16] = {0};
 
 static ngx_int_t ngx_http_prefix_cache_affinity_least_total_load_get_peer(
     ngx_peer_connection_t *pc, void *data);
-static void ngx_http_prefix_cache_affinity_free_peer(
+static void ngx_http_prefix_cache_affinity_least_total_load_free_peer(
     ngx_peer_connection_t *pc, void *data, ngx_uint_t state);
 static ngx_int_t ngx_http_prefix_cache_affinity_least_total_load_postconfig(
     ngx_conf_t *cf);
@@ -133,7 +133,7 @@ static ngx_int_t ngx_http_least_total_load_init_shm_zone(
     shpool = (ngx_slab_pool_t *)shm_zone->shm.addr;
 
     size_t sz = sizeof(prefill_upstream_info_t) +
-                (MAX_DICTS - 1) * sizeof(ngx_http_least_total_load_shm_peer_t);
+                (MAX_PEERS - 1) * sizeof(ngx_http_least_total_load_shm_peer_t);
     shm_block = ngx_slab_alloc(shpool, sz);
     if (shm_block == NULL) {
         return NGX_ERROR;
@@ -152,7 +152,7 @@ static ngx_int_t ngx_http_prefix_cache_affinity_init_shm_zone(
     ngx_shm_zone_t *shm_zone, void *data)
 {
     ngx_slab_pool_t           *shpool;
-    ngx_http_cache_global_t   *cache;
+    ngx_http_dictionary_t     *cache;
     ngx_uint_t                i, peer_count;
     ngx_http_upstream_srv_conf_t *uscf;
 
@@ -189,37 +189,37 @@ static ngx_int_t ngx_http_prefix_cache_affinity_init_shm_zone(
         return NGX_ERROR;
     }
 
-    sizt_t bucket_mutex_size = sizeof(ngx_shmtx_sh_t) * cache->bucket_count;
+    size_t bucket_mutex_size = sizeof(ngx_shmtx_sh_t) * cache->bucket_count;
     ngx_shmtx_sh_t *bucket_mutexes = ngx_slab_alloc(shpool, bucket_mutex_size);
     if (bucket_mutexes == NULL) {
         return NGX_ERROR;
     }
-    ngx_memzero(bucket_mutexes, bucket_mutex_size)
+    ngx_memzero(bucket_mutexes, bucket_mutex_size);
 
     for (i = 0; i < cache->bucket_count; i++) {
         ngx_shmtx_create(
-            &buckets[i].mutex, &bucket_mutexes[i], (u_char *)"bukcet_mutex");
-            buckets[i].head = NULL;
+            &buckets[i].mutex, &bucket_mutexes[i], (u_char *)"bucket_mutex");
+        buckets[i].head = NULL;
     }
 
-    ngx_http_lists_t *lists = ngx_slab_alloc(
-        shpool, sizeof(ngx_http_lists_t) * cache->peer_count);
+    ngx_http_list_t *lists = ngx_slab_alloc(
+        shpool, sizeof(ngx_http_list_t) * cache->peer_count);
     if (lists == NULL) {
         return NGX_ERROR;
     }
 
-    sizt_t list_mutex_size = sizeof(ngx_shmtx_sh_t) * cache->peer_count;
+    size_t list_mutex_size = sizeof(ngx_shmtx_sh_t) * cache->peer_count;
     ngx_shmtx_sh_t *list_mutexes = ngx_slab_alloc(shpool, list_mutex_size);
     if (list_mutexes == NULL) {
         return NGX_ERROR;
     }
-    ngx_memzero(list_mutexes, list_mutex_size)
+    ngx_memzero(list_mutexes, list_mutex_size);
 
     for (i = 0; i < cache->peer_count; i++) {
         ngx_shmtx_create(
             &lists[i].mutex, &list_mutexes[i], (u_char *)"list_mutex");
-            list[i].head = list[i].tail = NULL;
-            list[i].size = 0;
+            lists[i].head = lists[i].tail = NULL;
+            lists[i].size = 0;
     }
 
     cache->buckets = buckets;
@@ -287,8 +287,10 @@ ngx_module_t ngx_http_upstream_prefix_cache_affinity_least_total_load_module = {
 static ngx_http_hash_chain_t 
 compute_hash_chain(const uint8_t *data, size_t len, const uint8_t key[16]) 
 { 
-    (void)key; /* unused */ ngx_http_hash_chain_t hash_chain; 
+    (void)key; /* unused */ 
+    ngx_http_hash_chain_t hash_chain; 
     hash_chain.count = 0; 
+
     ngx_uint_t total_blocks = 
         (ngx_uint_t)(len / ngx_http_prefix_cache_affinity_block_size); 
     if (total_blocks == 0) { 
@@ -400,7 +402,7 @@ ngx_http_generate_request_hash_chain(ngx_http_request_t *r)
     return hash_chain;
 }
 
-static ngx_uint_t get(ngx_uint_t key, ngx_uint_t peer_count, double* scores)
+static ngx_uint_t get(uint64_t key, ngx_uint_t peer_count, double* scores)
 {
     ngx_uint_t count = 0;
     ngx_uint_t peer = peer_count;
@@ -411,7 +413,7 @@ static ngx_uint_t get(ngx_uint_t key, ngx_uint_t peer_count, double* scores)
 
     ngx_shmtx_lock(&bucket->mutex);
 
-    ngx_uint_node_t *curr = bucket->head;
+    ngx_http_node_t *curr = bucket->head;
     while (curr)
     {
         if (curr->key == key && curr->peer < peer_count) {
@@ -427,11 +429,11 @@ static ngx_uint_t get(ngx_uint_t key, ngx_uint_t peer_count, double* scores)
         }
         curr = curr->next_key;
     }
-    ngx_shmtx_lock(&bucket->mutex);
+    ngx_shmtx_unlock(&bucket->mutex);
     return peer;
 }
 
-static ngx_uint_t insert(ngx_uint_t key, ngx_uint_t peer){
+static ngx_int_t insert(uint64_t key, ngx_uint_t peer){
     ngx_slab_pool_t *shpool
         = (ngx_slab_pool_t *)ngx_http_prefix_cache_affinity_shm_zone->shm.addr;
 
@@ -440,13 +442,13 @@ static ngx_uint_t insert(ngx_uint_t key, ngx_uint_t peer){
     ngx_http_list_t *list = &global_cache->lists[peer];
     ngx_shmtx_lock(&bucket->mutex);
 
-    ngx_uint_node_t *curr = bucket->head;
+    ngx_http_node_t *curr = bucket->head;
     while (curr) {
         if (curr->key == key && curr->peer == peer) {
             ngx_shmtx_unlock(&bucket->mutex);
             ngx_shmtx_lock(&list->mutex);
             if (curr->next) {
-                curr->next-prev = curr->prev;
+                curr->next->prev = curr->prev;
                 if(curr->prev) {
                     curr->prev->next = curr->next;
                 } else {
@@ -463,7 +465,7 @@ static ngx_uint_t insert(ngx_uint_t key, ngx_uint_t peer){
         curr = curr->next_key;
     }
 
-    ngx_uint_node_t *new_node = ngx_slab_alloc(shpool, sizeof(ngx_uint_node_t));
+    ngx_http_node_t *new_node = ngx_slab_alloc(shpool, sizeof(ngx_http_node_t));
 
     if (!new_node) {
         ngx_shmtx_unlock(&bucket->mutex);
@@ -477,7 +479,7 @@ static ngx_uint_t insert(ngx_uint_t key, ngx_uint_t peer){
     ngx_shmtx_unlock(&bucket->mutex);
 
     ngx_shmtx_lock(&list->mutex);
-    if (list-tail) {
+    if (list->tail) {
         list->tail->next = new_node;
         new_node->prev = list->tail;
         list->tail = new_node;
@@ -503,12 +505,12 @@ static ngx_uint_t insert(ngx_uint_t key, ngx_uint_t peer){
         ngx_shmtx_unlock(&list->mutex);
         ngx_shmtx_lock(&bucket->mutex);
 
-        ngx_uint_node_t *prev = NULL;
+        ngx_http_node_t *prev = NULL;
         curr = bucket->head;
         while (curr) {
             if (curr->key == key && curr->peer == peer) {
                 if (prev) {
-                    curr->next_key = curr->next_key;
+                    prev->next_key = curr->next_key;
                 } else {
                     bucket->head = curr->next_key;
                 } 
@@ -525,7 +527,7 @@ static ngx_uint_t insert(ngx_uint_t key, ngx_uint_t peer){
     }
 
     ngx_shmtx_unlock(&list->mutex);
-    return NGX_ERROR;
+    return NGX_OK;
 }
 
 static ngx_int_t 
@@ -535,7 +537,7 @@ prefix_cache_affinity_least_total_load_select(
     ngx_uint_t request_length,
     ngx_uint_t peer_count)
 {
-    const char                               *strategy
+    const char                               *strategy;
     ngx_http_hash_chain_t                    hash_chain;
     ngx_uint_t                               chosen = 0;
     ngx_uint_t                               count = 0;
@@ -562,7 +564,7 @@ prefix_cache_affinity_least_total_load_select(
             max_len = request_sum_peers; 
         }
 
-        double score = length_sum_peers 
+        scores[i] = length_sum_peers 
                     * ((ceil(request_sum_peers / least_total_load_batch_size) 
                         + 1.0) 
                         / 2.0);
@@ -582,26 +584,26 @@ prefix_cache_affinity_least_total_load_select(
     ngx_uint_t request_diff = max_len - min_len;
     if (request_diff > REQUEST_DIFF_THRESHOLD) {
         strategy = "least_total_load";
-        chosen = min_peers[ngx_random() % count];
-
+        chosen = min_peers;
     } else {
         strategy = "prefix_cache_affinity";
-        ngx_uint_t one_peer = 0;
         chosen = min_peers;
-        while(r < l) {
+        int l = 0, r = hash_chain.count;
+        while(r > l) {
             int mid = (l + r) / 2;
             ngx_uint_t peer = get(hash_chain.blocks[mid], peer_count, scores);
             if (peer == peer_count) {
                 r = mid;
             } else {
-                l = mid + l;
+                l = mid + 1;
                 chosen = peer;
             }
-            max_hits = l;
-        } 
+        }
+        max_hits = l;
+    }
 
-    for (ngx_uint_t j = hash_chain.count - 1; j >= 0; j--) {
-        insert(hash_chain.blocks[j], chosen)
+    for (ngx_int_t j = hash_chain.count - 1; j >= 0; j--) {
+        insert(hash_chain.blocks[j], chosen);
     }
 
     ngx_slab_pool_t *least_total_load_shpool 
@@ -620,15 +622,15 @@ prefix_cache_affinity_least_total_load_select(
         r->connection->log, 
         0,
         "[prefix_cache_affinity_least_total_load][%s] chosen peer=%ui, "
-        "min_score=%.2f, hits=%ui/%ui, ties=%ui, request_length=%ui",
+        "min_score=%.2f, hits=%ui/%ui, request_length=%ui",
         strategy,
         chosen,
         min_score,
         max_hits, 
         hash_chain.count, 
         request_length);
-
-    return chosen
+    free(scores);
+    return chosen;
 }
 
 static ngx_int_t
@@ -649,7 +651,7 @@ ngx_http_prefix_cache_affinity_least_total_load_upstream_init(
     rrp = u->peer.data;
 
     if (prefill_shm == NULL) {
-        prefill_shm = ngx_http_least_total_shm_zone->data;
+        prefill_shm = ngx_http_least_total_load_shm_zone->data;
     }
 
     peer_count = rrp->peers->number;
@@ -724,9 +726,9 @@ static void ngx_http_prefix_cache_affinity_least_total_load_free_peer(
 }
 
 static ngx_int_t 
-ngx_http_upstream_least_load_and_prefix_postconfig(ngx_conf_t *cf)
+ngx_http_prefix_cache_affinity_least_total_load_postconfig(ngx_conf_t *cf)
 {
-    ngx_str_t                         least_total_load_shm_name, prefix_cache_affinity_shm_name;
+    ngx_str_t least_total_load_shm_name, prefix_cache_affinity_shm_name;
     ngx_http_upstream_main_conf_t     *upcf;
     ngx_http_upstream_srv_conf_t      **uscfp;
     ngx_http_prefix_cache_affinity_least_total_load_conf_t  *conf;
@@ -765,8 +767,7 @@ ngx_http_upstream_least_load_and_prefix_postconfig(ngx_conf_t *cf)
         }
 
         if (conf->batch_size == NGX_CONF_UNSET_UINT) {
-            ngx_http_least_total_load_batch_size =
-                DEFAULT_BATCH_SIZE;
+            ngx_http_least_total_load_batch_size = DEFAULT_BATCH_SIZE;
         } else {
             ngx_http_least_total_load_batch_size = conf->batch_size;
         }
@@ -797,9 +798,9 @@ ngx_http_upstream_least_load_and_prefix_postconfig(ngx_conf_t *cf)
         if (ngx_http_least_total_load_shm_zone == NULL) {
             return NGX_ERROR;
         }
-        ngx_http_least_total_load_shm_zone->init =
-            ngx_http_least_total_load_init_shm_zone;
-        ngx_http_least_total_load_shm_zone->tag = uscfp[i]
+        ngx_http_least_total_load_shm_zone->init 
+            = ngx_http_least_total_load_init_shm_zone;
+        ngx_http_least_total_load_shm_zone->tag = uscfp[i];
 
         ngx_http_prefix_cache_affinity_shm_zone 
             = ngx_shared_memory_add(
@@ -811,9 +812,9 @@ ngx_http_upstream_least_load_and_prefix_postconfig(ngx_conf_t *cf)
         if (ngx_http_prefix_cache_affinity_shm_zone == NULL) {
             return NGX_ERROR;
         }
-        ngx_http_prefix_cache_affinity_shm_zone->init =
-            ngx_http_prefix_cache_affinity_init_shm_zone;
-            ngx_http_prefix_cache_affinity_shm_zone->tag = uscfp[j]
+        ngx_http_prefix_cache_affinity_shm_zone->init 
+            = ngx_http_prefix_cache_affinity_init_shm_zone;
+        ngx_http_prefix_cache_affinity_shm_zone->tag = uscfp[i];
 
         uscfp[i]->peer.init 
             = ngx_http_prefix_cache_affinity_least_total_load_upstream_init;
