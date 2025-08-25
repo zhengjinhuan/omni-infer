@@ -11,7 +11,7 @@ sh build.sh
 ## Start metrics collector
 
 ```bash
-metics-collector -metrics_collector_server="ip:prot" -scheduler_server="ip:prot" -prefill_servers_list="ip:port,ip:prot,..."  -decode_servers_list="ip:port,ip:prot,..."
+metics-collector -metrics_collector_server="ip:port" -scheduler_server="ip:port" -prefill_servers_list="ip:port,ip:port,..."  -decode_servers_list="ip:port,ip:port,..."
 ```
 
 Note:
