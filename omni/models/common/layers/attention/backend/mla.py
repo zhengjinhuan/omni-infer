@@ -110,6 +110,20 @@ class AscendMLABackend(AttentionBackend):
             layer_kv_cache_pe = torch_npu.npu_format_cast(layer_kv_cache_pe, 2)
         return (layer_kv_cache_nope, layer_kv_cache_pe)
 
+    @staticmethod
+    def swap_blocks(
+            src_kv_cache: List[torch.Tensor],
+            dst_kv_cache: List[torch.Tensor],
+            src_to_dst: torch.Tensor,
+    ) -> None:
+        src_key_cache, src_value_cache = src_kv_cache[0], src_kv_cache[1]
+        dst_key_cache, dst_value_cache = dst_kv_cache[0], dst_kv_cache[1]
+        src_indices = src_to_dst[:, 0]
+        dst_indices = src_to_dst[:, 1]
+
+        dst_key_cache[dst_indices] = src_key_cache[src_indices].to(dst_key_cache.device)
+        dst_value_cache[dst_indices] = src_value_cache[src_indices].to(dst_key_cache.device)
+
 @dataclass
 class AscendMLAPrefillMetadata:
     """ Prefill Specific Metadata for Ascend"""
