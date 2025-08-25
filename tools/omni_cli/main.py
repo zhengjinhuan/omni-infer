@@ -316,6 +316,11 @@ def omni_cli_start(
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
+    if not inventory_path:
+        print("[ERROR] Inventory path is required.")
+        return
+    else:
+        print("[INFO] Use inventory at:", inventory_path)
     if not dev:
         omni_ranktable(inventory_path)
 
@@ -543,7 +548,7 @@ def sync_dev(
         # Write script header
         tf.write("#!/bin/bash\n\n")
         tf.write(f"CODE_SRC=\"{code_path}\"\n\n")
-        
+
         # Add progress indicator function
         tf.write("""
 # Function to show progress spinner
@@ -621,14 +626,14 @@ show_spinner() {
                 stderr=subprocess.PIPE,
                 text=True
             )
-            
+
             # Print output in real-time
             for line in process.stdout:
                 print(line, end='')
-            
+
             # Wait for process to complete
             process.wait()
-            
+
             if process.returncode == 0:
                 print("\nSync process completed successfully.")
             else:
@@ -815,30 +820,30 @@ def _walk_hosts(node: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
 def print_node_list(inventory_path: str) -> None:
     """
     Print the current node list including role, name, and IP address.
-    
+
     Args:
         inventory_path: Path to the inventory YAML file
     """
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inv_file, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
-    
+
     children = inv.get("all", {}).get("children", {})
-    
+
     print(f"{'Role':<5} | {'Name':<5} | {'IP Address':<15}")
     print("-" * 30)
-    
+
     for role, role_data in children.items():
         if role not in ["C", "D", "P"]:
             continue
-            
+
         hosts = role_data.get("hosts", {})
-        
+
         for host_name, host_data in hosts.items():
             ip_address = host_data.get("ansible_host", "N/A")
-            
+
             print(f"{role:<5} | {host_name:<5} | {ip_address:<15}")
-    
+
     print("-" * 30)
 
 def run_docker_containers(
@@ -881,7 +886,7 @@ def run_docker_containers(
 
     for host, hv in all_hosts:
         print(f"\nProcessing host: {host}")
-  
+
         # Determine role
         groups = host_groups.get(host, [])
         role = "C"
@@ -942,7 +947,7 @@ def run_docker_containers(
             # Add MODEL_PATH mount for P and D roles
             if role in ['P', 'D'] and model_path:
                 tf.write(f"docker_cmd+=\" -v {shlex.quote(model_path)}:{shlex.quote(model_path)}\"\n")
-            
+
             tf.write(f"docker_cmd+=\" -d --name {shlex.quote(container_name)} {shlex.quote(docker_image_id)}\"\n")
 
             # Execute command
@@ -1142,21 +1147,18 @@ def main():
 
     if args.command == "start" and not any([args.normal, args.run_dev]):
         args.normal = True
+    if args.config_path is None:
+        args.config_path = default_deploy_path
 
-    # Command processing logic
     if args.command == "start":
-        print("Start omni service.")
-        if args.config_path is not None:
-            print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=False)
-        elif args.normal:
-            print("Normal mode.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=False)
+        if args.normal:
+            print("[INFO] Starting omni service in Normal mode...")
+            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=False)
         elif args.run_dev:
-            print("Developer mode: Environmental preparation.")
-            omni_cli_start(inventory_path=default_deploy_path, skip_verify_config=args.skip_verify_config, dev=True)
+            print("[INFO] Starting omni service in Developer mode...")
+            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=True)
     elif args.command == "stop":
-        print("Stop omni service.")
+        print("[INFO] Stopping omni service...")
         omni_cli_stop(inventory_path=default_deploy_path)
     elif args.command == "cfg":
         node_type, node_name = parse_node_name(args.name[0])
