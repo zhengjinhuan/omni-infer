@@ -692,22 +692,27 @@ def install_dev(
 
     # Update command templates
     docker_update_code_cmd = """
-    /bin/bash -c '. ~/.bashrc
-    export http_proxy=http://10.155.96.5:8081
-    export https_proxy=http://10.155.96.5:8081
-    sed -i s#https://pypi.tuna.tsinghua.edu.cn/simple#https://mirrors.tools.huawei.com/pypi/simple#g /root/.config/pip/pip.conf && sed -i s#pypi.tuna.tsinghua.cn#mirrors.tools.huawei.com#g /root/.config/pip/pip.conf
-    pip install setuptools_scm
-    cd /workspace/omniinfer/infer_engines
-    git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm
-    bash bash_install_code.sh
-    pip uninstall vllm -y
-    pip uninstall omniinfer -y
-    cd vllm
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation
-    cd ../../
-    pip install -e . --no-deps --no-build-isolation
-    > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'
-"""
+    /bin/bash -c '
+    {
+        . ~/.bashrc
+        export http_proxy=http://10.155.96.5:8081
+        export https_proxy=http://10.155.96.5:8081
+        sed -i s#https://pypi.tuna.tsinghua.edu.cn/simple#https://mirrors.tools.huawei.com/pypi/simple#g /root/.config/pip/pip.conf
+        sed -i s#pypi.tuna.tsinghua.cn#mirrors.tools.huawei.com#g /root/.config/pip/pip.conf
+        pip install setuptools_scm
+        cd /workspace/omniinfer/infer_engines
+        git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm
+        bash bash_install_code.sh
+        pip uninstall vllm -y
+        pip uninstall omniinfer -y
+        cd vllm
+        SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation
+        cd ../../
+        pip install -e . --no-deps --no-build-isolation
+    } > ${LOG_PATH}/{{ inventory_hostname }}/pip.log 2>&1
+    '
+    """
+
     for host, hv in all_hosts:
         groups = host_groups.get(host, [])
         print(f"\nProcessing host: {host} (groups: {groups})")
