@@ -146,62 +146,40 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 
    使用示例：
    ```bash
-   # 针对所有节点进行配置
-   omni_cli cfg --set all env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
-   omni_cli cfg --set all args --num-servers 32
-   omni_cli cfg --set all args --extra-args '--max-num-batched-tokens 30000 --max-num-seqs 32'
-   omni_cli cfg --set all args --additional-config '--graph_model_compile_config level:1'
-   omni_cli cfg --set all --container_name_prefix docker_name # 设置容器名前缀
-   omni_cli cfg --set all --container_name docker_name # 设置容器名
-   omni_cli cfg --set all --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily # 设置镜像 ID
-   omni_cli cfg --set all --ascend_rt_visible_devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 # 设置卡号
+   
+   # NAME 可以是 all(所有节点)， p/d/c(按照Role)，p0/d0/c0(按照名称)
+   
+   # 配置设置
+   #
+   # 环境变量
+   omni_cli cfg --set NAME env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
+   # 一般 args
+   omni_cli cfg --set NAME args --num-servers 32
+   # extra-args
+   omni_cli cfg --set NAME args --extra-args '--max-num-batched-tokens 30000 --max-num-seqs 32'
+   # additional-config
+   omni_cli cfg --set NAME args --additional-config '--graph_model_compile_config level:1'
+   # 单独支持 容器名称、镜像、visible device 配置
+   omni_cli cfg --set NAME --container_name_prefix docker_name # 设置容器名前缀
+   omni_cli cfg --set NAME --container_name docker_name # 设置容器名
+   omni_cli cfg --set NAME --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily # 设置镜像 ID
+   omni_cli cfg --set NAME --ascend_rt_visible_devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 # 设置卡号
 
-   # 针对某组节点进行配置
-   omni_cli cfg --set p env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
-   omni_cli cfg --set p args --num-servers 32
-   omni_cli cfg --set p args --extra-args '--max-num-batched-tokens 30000 --max-num-seqs 32'
-   omni_cli cfg --set p args --additional-config '--graph_model_compile_config level:1'
-   omni_cli cfg --set p --container_name_prefix docker_name
-   omni_cli cfg --set p --container_name docker_name
-   omni_cli cfg --set p --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily
-   omni_cli cfg --set p --ascend_rt_visible_devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16
+   # 配置删除
+   #
+   # 环境变量
+   omni_cli cfg --delete NAME env --MODEL_PATH
+   # 一般 args
+   omni_cli cfg --delete NAME args --num-servers
+   # extra-args
+   omni_cli cfg --delete NAME args --extra-args '--max-num-batched-tokens --max-num-seqs'
+   # additional-config 
+   omni_cli cfg --delete NAME args --additional-config '--graph_model_compile_config'
+   # 单独支持 容器名称、镜像、visible device 配置
+   omni_cli cfg --delete NAME --container_name
+   omni_cli cfg --delete NAME --DOCKER_IMAGE_ID
+   omni_cli cfg --delete NAME --ascend_rt_visible_devices
 
-   # 针对单一节点进行配置
-   omni_cli cfg --set p0 env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
-   omni_cli cfg --set p0 args --num-servers 32
-   omni_cli cfg --set p0 args --extra-args '--max-num-batched-tokens 30000 --max-num-seqs 32'
-   omni_cli cfg --set p0 args --additional-config '--graph_model_compile_config level:1'
-   omni_cli cfg --set p0 --container_name_prefix docker_name
-   omni_cli cfg --set p0 --container_name docker_name
-   omni_cli cfg --set p0 --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily
-   omni_cli cfg --set p0 --ascend_rt_visible_devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16
-
-   # 删除所有节点的指定配置
-   omni_cli cfg --delete all env --MODEL_PATH
-   omni_cli cfg --delete all args --num-servers
-   omni_cli cfg --delete all args --extra-args '--max-num-batched-tokens --max-num-seqs'
-   omni_cli cfg --delete all args --additional-config '--graph_model_compile_config'
-   omni_cli cfg --delete all --container_name
-   omni_cli cfg --delete all --DOCKER_IMAGE_ID
-   omni_cli cfg --delete all --ascend_rt_visible_devices
-
-   # 删除某组节点的指定配置
-   omni_cli cfg --delete p env --MODEL_PATH
-   omni_cli cfg --delete p args --num-servers
-   omni_cli cfg --delete p args --extra-args '--max-num-batched-tokens --max-num-seqs'
-   omni_cli cfg --delete p args --additional-config '--graph_model_compile_config'
-   omni_cli cfg --delete p --container_name
-   omni_cli cfg --delete p --DOCKER_IMAGE_ID
-   omni_cli cfg --delete p --ascend_rt_visible_devices
-
-   # 删除单一节点的指定配置
-   omni_cli cfg --delete p0 env --MODEL_PATH
-   omni_cli cfg --delete p0 args --num-servers
-   omni_cli cfg --delete p0 args --extra-args '--max-num-batched-tokens --max-num-seqs'
-   omni_cli cfg --delete p0 args --additional-config '--graph_model_compile_config'
-   omni_cli cfg --delete p0 --container_name
-   omni_cli cfg --delete p0 --DOCKER_IMAGE_ID
-   omni_cli cfg --delete p0 --ascend_rt_visible_devices
    ```
 
 2. omni_cli inspect
