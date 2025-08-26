@@ -9,7 +9,7 @@ pip install omni_cli***.wheel --force-reinstall --no-build-isolation --no-deps
 
 ## 快速开始
 
-omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件。不同用户、模型请在不同路径下执行。add_node第一次执行时会创建该配置文件。以下内容以deepseek 1p1d 三机部署为例。
+omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件。不同用户、模型请在不同路径下执行。add_node第一次执行时会创建该配置文件。以下内容以deepseek 1p1d 三机部署为例，使用镜像容器中已经安装的omniinfer和vllm，依赖于容器中/workspace/omniinfer的拉起脚本。
 
 1. 添加节点
 
