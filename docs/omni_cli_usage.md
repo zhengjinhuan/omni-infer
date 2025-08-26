@@ -139,10 +139,10 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli cfg --set all args --num-servers 32
    omni_cli cfg --set all args --extra-args '--max-num-batched-tokens 30000 --max-num-seqs 32'
    omni_cli cfg --set all args --additional-config '--graph_model_compile_config level:1'
-   omni_cli cfg --set all --container_name_prefix docker_name
-   omni_cli cfg --set all --container_name docker_name
-   omni_cli cfg --set all --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily
-   omni_cli cfg --set all --ascend_rt_visible_devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16
+   omni_cli cfg --set all --container_name_prefix docker_name # 设置容器名前缀
+   omni_cli cfg --set all --container_name docker_name # 设置容器名
+   omni_cli cfg --set all --DOCKER_IMAGE_ID swr.cn-east-4.myhuaweicloud.com/omni-ci/omni_infer-a3-arm:master-202508191159-daily # 设置镜像 ID
+   omni_cli cfg --set all --ascend_rt_visible_devices 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 # 设置卡号
 
    # 针对某组节点进行配置
    omni_cli cfg --set p env --MODEL_PATH /data/models/DeepSeek-R1-w8a8-fusion
