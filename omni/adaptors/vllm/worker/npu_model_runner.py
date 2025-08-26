@@ -522,7 +522,7 @@ class NPUModelRunner(GPUModelRunner):
                                 input_ids=input_ids,
                                 positions=positions,
                                 intermediate_tensors=intermediate_tensors,
-                                inputs_embeds=None,
+                                inputs_embeds=inputs_embeds,
                                 **model_kwargs,
                             )
                     end_model = time.time()
@@ -540,7 +540,7 @@ class NPUModelRunner(GPUModelRunner):
                         input_ids=input_ids,
                         positions=positions,
                         intermediate_tensors=intermediate_tensors,
-                        inputs_embeds=None,
+                        inputs_embeds=inputs_embeds,
                         **model_kwargs,
                     )
             self.maybe_wait_for_kv_save()
