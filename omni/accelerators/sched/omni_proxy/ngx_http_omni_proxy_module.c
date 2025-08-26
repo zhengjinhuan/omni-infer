@@ -180,7 +180,6 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
     }
 
     ngx_http_omni_loc_conf_t *olcf;
-    ngx_http_omni_main_conf_t *mcf;
 
     olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
     if (olcf == NULL || olcf->upstream_name.len == 0)
@@ -1144,32 +1143,7 @@ ngx_int_t omni_proxy_init_global_state(ngx_conf_t *cf)
     return NGX_OK;
 }
 
-/* -------------------- main conf create/init -------------------- */
-
-static void *
-ngx_http_omni_create_main_conf(ngx_conf_t *cf)
-{
-    ngx_http_omni_main_conf_t *mcf;
-
-    mcf = ngx_pcalloc(cf->pool, sizeof(ngx_http_omni_main_conf_t));
-    if (mcf == NULL)
-    {
-        return NULL;
-    }
-
-    return mcf;
-}
-
-static char *
-ngx_http_omni_init_main_conf(ngx_conf_t *cf, void *conf)
-{
-    return NGX_CONF_OK;
-}
-
-/* -------------------- loc conf create/merge -------------------- */
-
-static void *
-ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
+static void *ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
 {
     ngx_http_omni_loc_conf_t *conf;
 
@@ -1179,31 +1153,46 @@ ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-    conf->upstream_name.len = 0;
     conf->upstream_name.data = NULL;
-    conf->rr_index = 0;
+    conf->upstream_name.len = 0;
+
+    conf->pd_policy = NGX_CONF_UNSET;
+    conf->model_path.data = NULL;
+    conf->model_path.len = 0;
+
+    conf->vllm_kv_port_offset = NGX_CONF_UNSET;
 
     return conf;
 }
 
-static char *
-ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+static char *ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
     ngx_http_omni_loc_conf_t *prev = parent;
     ngx_http_omni_loc_conf_t *conf = child;
 
-    if (conf->upstream_name.data == NULL)
+    ngx_conf_merge_str_value(conf->upstream_name, prev->upstream_name, "");
+
+    if (conf->pd_policy == NGX_CONF_UNSET)
     {
-        conf->upstream_name = prev->upstream_name;
+        conf->pd_policy = (prev->pd_policy != NGX_CONF_UNSET) ? prev->pd_policy : NGX_CONF_UNSET;
     }
 
-    ngx_conf_merge_uint_value(conf->pd_policy, prev->pd_policy, PD_SEQUENTIAL);
+    ngx_conf_merge_str_value(conf->model_path, prev->model_path, "");
+
+    if (conf->vllm_kv_port_offset == NGX_CONF_UNSET)
+    {
+        conf->vllm_kv_port_offset = (prev->vllm_kv_port_offset != NGX_CONF_UNSET) ? prev->vllm_kv_port_offset : NGX_CONF_UNSET;
+    }
+
+    if (conf->model_path.len != 0 || conf->vllm_kv_port_offset != NGX_CONF_UNSET || conf->pd_policy != NGX_CONF_UNSET)
+    {
+        local_state.loc_conf = conf;
+    }
 
     return NGX_CONF_OK;
 }
 
-static ngx_int_t
-ngx_http_omni_init_upstreams()
+static ngx_int_t ngx_http_omni_init_upstreams()
 {
     if (g_state->upstream_initialized)
     {
@@ -1278,7 +1267,6 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
-    ngx_memzero(&local_state, sizeof(omni_worker_local_state_t));
     omni_proxy_init_req_groups(local_state.groups);
 
     return NGX_OK;
@@ -1322,12 +1310,14 @@ static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
 
 static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
 {
-    u_char *model_path_str;
     ngx_connection_t *c;
 
-    model_path_str = (u_char *)"/root/nginx-1.26.0/omni_proxy/deepseek";
-    local_state.tokenize_worker.model_path.len = ngx_strlen(model_path_str);
-    local_state.tokenize_worker.model_path.data = model_path_str;
+    if (local_state.loc_conf->model_path.len == 0)
+    {
+        return NGX_OK;
+    }
+
+    local_state.tokenize_worker.model_path = local_state.loc_conf->model_path;
 
     if (omni_tokenizer_worker_init(cycle, &local_state.tokenize_worker) != NGX_OK)
     {
@@ -1370,8 +1360,8 @@ static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
     local_state.tokenize_worker.resp_connection = c;
 
     ngx_log_error(NGX_LOG_INFO, cycle->log, 0,
-                  "Omni proxy process initialized with tokenizer worker, model: %s",
-                  model_path_str);
+                  "Omni proxy process initialized with tokenizer worker, model: %V",
+                  &local_state.loc_conf->model_path);
 
     g_state->has_tokenizer = true;
     return NGX_OK;
@@ -1386,13 +1376,6 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
     local_state.omni_proxy_timer_event.log = cycle->log;
     local_state.omni_proxy_timer_event.data = NULL;
 
-    if (omni_proxy_init_tokenizer_worker(cycle) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                      "Failed to initialize tokenizer worker");
-        return NGX_ERROR;
-    }
-
     if (ngx_http_omni_init_upstreams(cycle) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
@@ -1400,9 +1383,12 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
-    ngx_log_error(NGX_LOG_INFO, cycle->log, 0,
-                  "Omni proxy process initialized with tokenizer worker, model: %V",
-                  &local_state.tokenize_worker.model_path);
+    if (omni_proxy_init_tokenizer_worker(cycle) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "Failed to initialize tokenizer worker");
+        return NGX_ERROR;
+    }
 
     omni_register_worker(g_state, &g_state->shmtx);
 
@@ -1436,57 +1422,18 @@ static char *omni_proxy_init_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
     ngx_http_core_loc_conf_t *clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = omni_proxy_handler;
 
+    ngx_memzero(&local_state, sizeof(omni_worker_local_state_t));
+
     ngx_http_omni_loc_conf_t *olcf = conf;
     ngx_str_t *value = cf->args->elts;
 
-    // tokens start at value[1]
-    for (ngx_uint_t i = 1; i < cf->args->nelts; i++)
+    if (cf->args->nelts != 2)
     {
-        ngx_str_t *v = &value[i];
-
-        // pd_policy=sequential|parallel
-        if (v->len >= sizeof("pd_policy=") - 1 &&
-            ngx_strncasecmp(v->data, (u_char *)"pd_policy=", sizeof("pd_policy=") - 1) == 0)
-        {
-            u_char *val = v->data + (sizeof("pd_policy=") - 1);
-            size_t len = v->len - (sizeof("pd_policy=") - 1);
-
-            if (len == 0)
-            {
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "empty value for \"pd_policy\"");
-                return NGX_CONF_ERROR;
-            }
-
-            if (len == sizeof("sequential") - 1 &&
-                ngx_strncasecmp(val, (u_char *)"sequential", sizeof("sequential") - 1) == 0)
-            {
-                olcf->pd_policy = PD_SEQUENTIAL;
-                continue;
-            }
-
-            if (len == sizeof("parallel") - 1 &&
-                ngx_strncasecmp(val, (u_char *)"parallel", sizeof("parallel") - 1) == 0)
-            {
-                olcf->pd_policy = PD_PARALLEL;
-                continue;
-            }
-
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                               "invalid value \"%V\" for \"pd_policy\" "
-                               "(expected \"sequential\" or \"parallel\")",
-                               v);
-            return NGX_CONF_ERROR;
-        }
-
-        // Default to be the upstream name
-        olcf->upstream_name.len = value[1].len;
-        olcf->upstream_name.data = ngx_pstrdup(cf->pool, &value[1]);
-        if (olcf->upstream_name.data == NULL)
-        {
-            return NGX_CONF_ERROR;
-        }
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid number of arguments in \"%V\"", &cmd->name);
+        return NGX_CONF_ERROR;
     }
+
+    olcf->upstream_name = value[1];
 
     ngx_url_t u;
     ngx_memzero(&u, sizeof(ngx_url_t));
@@ -1502,22 +1449,86 @@ static char *omni_proxy_init_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
     return NGX_CONF_OK;
 }
 
-static ngx_command_t omni_proxy_commands[] = {
+static char *ngx_http_omni_proxy_pd_policy(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_omni_loc_conf_t *olcf = conf;
+    ngx_str_t *value = cf->args->elts;
+
+    if (cf->args->nelts != 2)
     {
-        ngx_string("omni_proxy"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE2,
-        omni_proxy_init_conf,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        0,
-        NULL,
-    },
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid number of arguments in \"%V\"", &cmd->name);
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strcmp(value[1].data, "sequential") == 0)
+    {
+        olcf->pd_policy = 0;
+    }
+    else if (ngx_strcmp(value[1].data, "parallel") == 0)
+    {
+        olcf->pd_policy = 1;
+    }
+    else
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid policy \"%V\"", &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+static char *ngx_http_omni_proxy_model_path(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_omni_loc_conf_t *olcf = conf;
+    ngx_str_t *value = cf->args->elts;
+
+    if (cf->args->nelts != 2)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid number of arguments in \"%V\"", &cmd->name);
+        return NGX_CONF_ERROR;
+    }
+
+    olcf->model_path = value[1];
+    return NGX_CONF_OK;
+}
+
+static ngx_command_t omni_proxy_commands[] = {
+
+    {ngx_string("omni_proxy"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     omni_proxy_init_conf,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     0,
+     NULL},
+
+    {ngx_string("omni_proxy_pd_policy"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_http_omni_proxy_pd_policy,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     0,
+     NULL},
+
+    {ngx_string("omni_proxy_model_path"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_http_omni_proxy_model_path,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     0,
+     NULL},
+
+    {ngx_string("omni_proxy_vllm_kv_port_offset"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, vllm_kv_port_offset),
+     NULL},
+
     ngx_null_command};
 
 static ngx_http_module_t omni_proxy_module_ctx = {
-    NULL,                           // preconfiguration
-    omni_proxy_post_config,         // postconfiguration
-    ngx_http_omni_create_main_conf, /* create main configuration */
-    ngx_http_omni_init_main_conf,   /* init main configuration */
+    NULL,                   // preconfiguration
+    omni_proxy_post_config, // postconfiguration
+    NULL,                   /* create main configuration */
+    NULL,                   /* init main configuration */
 
     NULL, /* create server configuration */
     NULL, /* merge server configuration */

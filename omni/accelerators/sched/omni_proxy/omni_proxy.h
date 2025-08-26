@@ -12,28 +12,12 @@
 #include <omni_metrics.h>
 #include <omni_tokenizer_worker.h>
 
-typedef struct omni_worker_local_state_s
-{
-    pid_t pid;
-
-    ngx_omni_tokenize_worker_t tokenize_worker;
-    ngx_event_t omni_proxy_timer_event;
-    ngx_http_output_body_filter_pt ngx_http_next_body_filter;
-    omni_req_group_t groups[PHASE_MAX];
-} omni_worker_local_state_t;
-
-typedef struct
-{
-    // Nothing to store for now, placeholder for future use
-    int placeholder;
-} ngx_http_omni_main_conf_t;
-
-/* location conf: stores the upstream name and rr index */
 typedef struct
 {
     ngx_str_t upstream_name;
-    ngx_uint_t pd_policy;
-    ngx_uint_t rr_index;
+    ngx_int_t pd_policy;
+    ngx_str_t model_path;
+    ngx_int_t vllm_kv_port_offset;
     ngx_http_upstream_srv_conf_t *upstream;
 } ngx_http_omni_loc_conf_t;
 
@@ -50,3 +34,15 @@ typedef struct omni_req_context_s
     u_char *prefill_response_body;
     ngx_uint_t prefill_response_body_size;
 } omni_req_context_t;
+
+typedef struct omni_worker_local_state_s
+{
+    pid_t pid;
+    uint32_t worker;
+
+    ngx_omni_tokenize_worker_t tokenize_worker;
+    ngx_event_t omni_proxy_timer_event;
+    ngx_http_output_body_filter_pt ngx_http_next_body_filter;
+    omni_req_group_t groups[PHASE_MAX];
+    ngx_http_omni_loc_conf_t *loc_conf;
+} omni_worker_local_state_t;
