@@ -438,7 +438,10 @@ class Qwen2Model(nn.Module):
         return hidden_states, residual, aux_hidden_states
 
     def forward_layers(self, positions, hidden_states, residual, kv_caches, cos, sin):
+        aux_hidden_states = [] # for eagle 3
         for layer_idx in range(self.start_layer, self.end_layer):
+            if layer_idx in self.aux_hidden_state_layers:
+                aux_hidden_states.append(hidden_states + residual)
             layer = self.layers[layer_idx]
             hidden_states, residual = layer(
                 positions,
