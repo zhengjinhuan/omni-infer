@@ -9,6 +9,8 @@
 #include <stdbool.h>
 
 ngx_module_t ngx_http_omni_proxy_module;
+#define PREFILL_ENDPOINTS "prefill_endpoints"
+#define DECODE_ENDPOINTS "decode_endpoints"
 
 #define TIMER_INTERVAL 1
 
@@ -163,55 +165,6 @@ static void omni_proxy_main_req_cleanup(void *data)
     omni_req_free(req);
 }
 
-/* find entry in main conf by name */
-static ngx_omni_upstream_entry_t *
-ngx_http_omni_find_entry(ngx_http_omni_main_conf_t *mcf, ngx_str_t *name)
-{
-    if (mcf == NULL || mcf->entries == NULL)
-    {
-        return NULL;
-    }
-
-    ngx_uint_t i;
-    ngx_omni_upstream_entry_t *entries = mcf->entries->elts;
-    for (i = 0; i < mcf->entries->nelts; i++)
-    {
-        if (entries[i].name.len == name->len && ngx_strncmp(entries[i].name.data, name->data, name->len) == 0)
-        {
-            return &entries[i];
-        }
-    }
-    return NULL;
-}
-
-static ngx_omni_backend_t *ngx_http_omni_choose_backend(ngx_http_request_t *r)
-{
-    omni_req_context_t *ctx = omni_get_req_ctx(r);
-    if (ctx == NULL || ctx->backends == NULL)
-    {
-        return NULL;
-    }
-
-    ngx_array_t *arr = ctx->backends;
-    if (arr->nelts == 0)
-    {
-        return NULL;
-    }
-
-    omni_req_t *req = omni_get_req(r);
-    ngx_uint_t idx = req->decode_upstream_endpoint_idx;
-    if (idx >= arr->nelts)
-    {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "omni_proxy: upstream endpoint index %d out of bounds for backend array size %d",
-                      idx, arr->nelts);
-        return NULL;
-    }
-
-    ngx_omni_backend_t *b = arr->elts;
-    return &b[idx];
-}
-
 static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
 {
     if (r->parent != NULL)
@@ -228,7 +181,6 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
 
     ngx_http_omni_loc_conf_t *olcf;
     ngx_http_omni_main_conf_t *mcf;
-    ngx_omni_upstream_entry_t *entry;
 
     olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
     if (olcf == NULL || olcf->upstream_name.len == 0)
@@ -241,26 +193,6 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                   "[Prefill-%d]: enter main request handler, policy:%d",
                   req->slot_index, g_state->pd_policy);
-
-    /* find parsed upstream entry from main conf */
-    mcf = ngx_http_get_module_main_conf(r, ngx_http_omni_proxy_module);
-    if (mcf == NULL)
-    {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: main conf missing");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    entry = ngx_http_omni_find_entry(mcf, &olcf->upstream_name);
-    if (entry == NULL)
-    {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "omni_proxy: upstream \"%V\" not found in configuration", &olcf->upstream_name);
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    omni_req_context_t *ctx = omni_get_req_ctx(r);
-
-    ctx->backends = entry->backends;
 
     req->metrics.time_received = ngx_current_msec;
 
@@ -830,6 +762,7 @@ static void ngx_http_omni_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
 
 static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
 {
+    omni_req_t *req = omni_get_req(r);
     ngx_http_omni_loc_conf_t *olcf;
 
     if (ngx_http_upstream_create(r) != NGX_OK)
@@ -857,12 +790,14 @@ static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
 
     u->output.tag = (ngx_buf_tag_t)&ngx_http_omni_proxy_module;
 
-    ngx_omni_backend_t *b = ngx_http_omni_choose_backend(r);
-    if (b == NULL)
+    if (req->decode_upstream_endpoint_idx > g_state->num_decode_endpoints - 1)
     {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: no backend available");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "omni_proxy: decode upstream endpoint index %d out of bounds for configured size %d",
+                      req->decode_upstream_endpoint_idx, g_state->num_decode_endpoints);
         return NGX_ERROR;
     }
+    omni_upstream_address_t *addr = &g_state->decode_states[req->decode_upstream_endpoint_idx].address;
 
     u->resolved = ngx_pcalloc(r->pool, sizeof(ngx_http_upstream_resolved_t));
     if (u->resolved == NULL)
@@ -870,26 +805,20 @@ static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    struct sockaddr *sa = ngx_pcalloc(r->pool, b->socklen);
+    struct sockaddr *sa = ngx_pcalloc(r->pool, addr->socklen);
     if (sa == NULL)
     {
         return NGX_ERROR;
     }
-    ngx_memcpy(sa, b->sockaddr, b->socklen);
+    ngx_memcpy(sa, &addr->sockaddr, addr->socklen);
 
     u->resolved->sockaddr = sa;
-    u->resolved->port = b->port;
-    u->resolved->socklen = b->socklen;
+    u->resolved->port = addr->port;
+    u->resolved->socklen = addr->socklen;
     u->resolved->naddrs = 1;
 
-    u->resolved->host.len = b->text.len;
-    u->resolved->host.data = ngx_pnalloc(r->pool, b->text.len + 1);
-    if (u->resolved->host.data == NULL)
-    {
-        return NGX_ERROR;
-    }
-    ngx_memcpy(u->resolved->host.data, b->text.data, b->text.len);
-    u->resolved->host.data[b->text.len] = '\0';
+    u->resolved->host.len = addr->text_len;
+    u->resolved->host.data = addr->text;
 
     ngx_http_upstream_init(r);
 
@@ -1166,6 +1095,8 @@ static void omni_proxy_init_req_groups(omni_req_group_t groups[])
 
 static void omni_proxy_init_req_groups(omni_req_group_t groups[])
 {
+    ngx_uint_t i;
+
     if (data)
     {
         zone->data = data;
@@ -1178,14 +1109,15 @@ static void omni_proxy_init_req_groups(omni_req_group_t groups[])
     }
 
     g_state = (omni_global_state_t *)zone->shm.addr;
-    memset(g_state, 0, GLOBAL_STATE_SIZE);
-    g_state->num_decode_endpoints = local_state.num_decode_endpoints;
-    g_state->num_prefill_endpoints = local_state.num_prefill_endpoints;
+    ngx_memzero(g_state, GLOBAL_STATE_SIZE);
+    g_state->magic = 47;
 
     omni_proxy_init_req_groups(g_state->groups);
 
     ngx_shmtx_create(&local_state.g_shmtx, &g_state->lock,
                      (u_char *)"omni_proxy_lock");
+
+    printf("shared memory initialed\n");
 
     return NGX_OK;
 }
@@ -1205,6 +1137,8 @@ ngx_int_t omni_proxy_init_global_state(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
+    zone->shm.log->data = cf->cycle;
+
     zone->init = omni_proxy_global_state_init;
 
     return NGX_OK;
@@ -1222,9 +1156,6 @@ ngx_http_omni_create_main_conf(ngx_conf_t *cf)
     {
         return NULL;
     }
-
-    mcf->entries = NULL;
-    mcf->upstreams = NULL;
 
     return mcf;
 }
@@ -1271,29 +1202,19 @@ ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     return NGX_CONF_OK;
 }
 
-#define PREFILL_ENDPOINTS "prefill_endpoints"
-#define DECODE_ENDPOINTS "decode_endpoints"
-
 static ngx_int_t
-ngx_http_omni_init_upstreams(ngx_conf_t *cf)
+ngx_http_omni_init_upstreams()
 {
-    ngx_http_omni_main_conf_t *mcf;
-    ngx_http_upstream_main_conf_t *umcf;
+    if (g_state->upstream_initialized)
+    {
+        return NGX_OK;
+    }
+
+    g_state->upstream_initialized = 1;
+
     ngx_uint_t i;
+    ngx_http_upstream_main_conf_t *umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
 
-    mcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_omni_proxy_module);
-    if (mcf == NULL)
-    {
-        return NGX_ERROR;
-    }
-
-    mcf->entries = ngx_array_create(cf->pool, 4, sizeof(ngx_omni_upstream_entry_t));
-    if (mcf->entries == NULL)
-    {
-        return NGX_ERROR;
-    }
-
-    umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
     if (umcf == NULL)
     {
         return NGX_OK;
@@ -1306,71 +1227,44 @@ ngx_http_omni_init_upstreams(ngx_conf_t *cf)
     for (i = 0; i < nupstreams; i++)
     {
         ngx_http_upstream_srv_conf_t *uscf = uscfp[i];
-
-        /* create an entry for this upstream name */
-        ngx_omni_upstream_entry_t *entry = ngx_array_push(mcf->entries);
-        if (entry == NULL)
+        bool is_prefill = false;
+        if (ngx_strncmp(uscf->host.data, PREFILL_ENDPOINTS, sizeof(PREFILL_ENDPOINTS) - 1) == 0)
         {
-            return NGX_ERROR;
+            g_state->num_prefill_endpoints = uscf->servers->nelts;
+            is_prefill = true;
         }
-        ngx_memzero(entry, sizeof(ngx_omni_upstream_entry_t));
-
-        entry->name.len = uscf->host.len;
-        entry->name.data = ngx_pnalloc(cf->pool, uscf->host.len + 1);
-        if (entry->name.data == NULL)
+        else if (ngx_strncmp(uscf->host.data, DECODE_ENDPOINTS, sizeof(DECODE_ENDPOINTS) - 1) == 0)
         {
-            return NGX_ERROR;
-        }
-        ngx_memcpy(entry->name.data, uscf->host.data, uscf->host.len);
-        entry->name.data[uscf->host.len] = '\0';
-
-        entry->backends = ngx_array_create(cf->pool, 4, sizeof(ngx_omni_backend_t));
-        if (entry->backends == NULL)
-        {
-            return NGX_ERROR;
-        }
-
-        if (uscf->peer.data == NULL)
-        {
-            continue;
+            g_state->num_decode_endpoints = uscf->servers->nelts;
         }
 
         ngx_http_upstream_rr_peers_t *peers = uscf->peer.data;
 
-        for (; peers; peers = peers->next)
+        ngx_uint_t j;
+        ngx_http_upstream_rr_peer_t *peer = peers->peer;
+        for (j = 0; j < peers->number; j++)
         {
-            ngx_uint_t j;
-            ngx_http_upstream_rr_peer_t *peer = peers->peer;
-            for (j = 0; j < peers->number; j++)
+            omni_upstream_address_t *address = NULL;
+            if (is_prefill)
             {
-                ngx_omni_backend_t *b = ngx_array_push(entry->backends);
-                if (b == NULL)
-                {
-                    return NGX_ERROR;
-                }
-                ngx_memzero(b, sizeof(ngx_omni_backend_t));
-
-                struct sockaddr *sa = ngx_pcalloc(cf->pool, peer[j].socklen);
-                if (sa == NULL)
-                {
-                    return NGX_ERROR;
-                }
-                ngx_memcpy(sa, peer[j].sockaddr, peer[j].socklen);
-                b->sockaddr = sa;
-                b->socklen = peer[j].socklen;
-
-                struct sockaddr_in *sin = (struct sockaddr_in *)peer->sockaddr;
-                b->port = ntohs(sin->sin_port);
-
-                b->text.len = peer[j].name.len;
-                b->text.data = ngx_pnalloc(cf->pool, b->text.len + 1);
-                if (b->text.data == NULL)
-                {
-                    return NGX_ERROR;
-                }
-                ngx_memcpy(b->text.data, peer[j].name.data, b->text.len);
-                b->text.data[b->text.len] = '\0';
+                g_state->prefill_states[j].index = j;
+                address = &g_state->prefill_states[j].address;
             }
+            else
+            {
+                g_state->decode_states[j].index = j;
+                address = &g_state->decode_states[j].address;
+            }
+            address->socklen = peer[j].socklen;
+
+            ngx_memcpy(&address->sockaddr, peer[j].sockaddr, peer[j].socklen);
+
+            address->text_len = peer[j].name.len;
+            ngx_memcpy(address->text, peer[j].name.data, peer[j].name.len);
+            address->text[address->text_len] = '\0';
+            struct sockaddr_in *ipv4 = (struct sockaddr_in *)&address->sockaddr;
+            inet_ntop(AF_INET, &(ipv4->sin_addr), address->ip, UPSTREAM_IP_MAX);
+            address->port = ntohs(ipv4->sin_port);
         }
     }
 
@@ -1387,35 +1281,7 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
     ngx_memzero(&local_state, sizeof(omni_worker_local_state_t));
     omni_proxy_init_req_groups(local_state.groups);
 
-    ngx_http_upstream_main_conf_t *upcf;
-    ngx_http_upstream_srv_conf_t **uscfp;
-
-    ngx_uint_t i;
-    upcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
-    if (upcf == NULL)
-    {
-        return NGX_ERROR;
-    }
-
-    uscfp = upcf->upstreams.elts;
-    for (i = 0; i < upcf->upstreams.nelts; i++)
-    {
-        uscfp[i]->peer.init = omni_proxy_upstream_init;
-
-        size_t n = sizeof(PREFILL_ENDPOINTS);
-        if (n - 1 == uscfp[i]->host.len && ngx_strncmp(uscfp[i]->host.data, PREFILL_ENDPOINTS, n - 1) == 0)
-        {
-            printf("Prefill nodes:%ld\n", uscfp[i]->servers->nelts);
-            local_state.num_prefill_endpoints = uscfp[i]->servers->nelts;
-        }
-        else
-        {
-            printf("Decode nodes:%ld\n", uscfp[i]->servers->nelts);
-            local_state.num_decode_endpoints = uscfp[i]->servers->nelts;
-        }
-    }
-
-    return ngx_http_omni_init_upstreams(cf);
+    return NGX_OK;
 }
 
 static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
@@ -1524,6 +1390,13 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
     {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                       "Failed to initialize tokenizer worker");
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_omni_init_upstreams(cycle) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "Failed to update global upstream states");
         return NGX_ERROR;
     }
 
