@@ -126,7 +126,6 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
 
     for (size_t i = 0; i < num_reqs; i++)
     {
-        printf("[%s]\n", requests[i]->input_data);
         PyObject *pTextBytes = PyBytes_FromStringAndSize(requests[i]->input_data, requests[i]->input_len);
         if (!pTextBytes)
         {
@@ -148,8 +147,6 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
         PyErr_Print();
         return -1;
     }
-
-    printf("%s: %d\n", __FILE__, __LINE__);
 
     if (!PyTuple_Check(pResult) || PyTuple_Size(pResult) != 3)
     {
@@ -174,8 +171,6 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
         return -1;
     }
 
-    printf("%s: %d\n", __FILE__, __LINE__);
-
     for (size_t i = 0; i < result_count; i++)
     {
         PyObject *pPrompt = PyList_GetItem(pPrompts, i);
@@ -193,10 +188,6 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
                 }
             }
         }
-
-        printf("%s: %d\n", __FILE__, __LINE__);
-
-        printf("%s\n", requests[i]->prompt);
 
         PyObject *pInputIdList = PyList_GetItem(pInputIds, i);
         if (PyList_Check(pInputIdList))
@@ -216,15 +207,12 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
             }
         }
 
-        printf("%s: %d\n", __FILE__, __LINE__);
-
         PyObject *pSize = PyList_GetItem(pMultiModalSizes, i);
         if (PyLong_Check(pSize))
         {
             requests[i]->multi_modal_size = PyLong_AsLong(pSize);
         }
     }
-    printf("%s: %d\n", __FILE__, __LINE__);
 
     Py_DECREF(pResult);
     return 0;

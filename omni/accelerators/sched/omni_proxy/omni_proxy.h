@@ -15,8 +15,6 @@
 typedef struct omni_worker_local_state_s
 {
     pid_t pid;
-    uint32_t num_prefill_endpoints;
-    uint32_t num_decode_endpoints;
 
     ngx_omni_tokenize_worker_t tokenize_worker;
     ngx_event_t omni_proxy_timer_event;
@@ -26,25 +24,8 @@ typedef struct omni_worker_local_state_s
 
 typedef struct
 {
-    struct sockaddr *sockaddr;
-    socklen_t socklen;
-    ngx_int_t port; /* port number */
-    ngx_str_t text; /* textual host:port (nul-terminated) */
-    ngx_str_t index;
-} ngx_omni_backend_t;
-
-typedef struct
-{
-    ngx_str_t name;        /* upstream name */
-    ngx_array_t *backends; /* array of ngx_omni_backend_t (allocated in main conf pool) */
-} ngx_omni_upstream_entry_t;
-
-/* module main conf: holds parsed upstreams (mapping name -> backends) */
-typedef struct
-{
-    ngx_array_t *entries;                     /* array of ngx_omni_upstream_entry_t */
-    ngx_http_upstream_srv_conf_t **upstreams; // reference to upstreams array from ngx_http_upstream_main_conf_t
-                                              /* reference to upstreams array from ngx_http_upstream_main_conf_t */
+    // Nothing to store for now, placeholder for future use
+    int placeholder;
 } ngx_http_omni_main_conf_t;
 
 /* location conf: stores the upstream name and rr index */

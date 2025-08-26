@@ -110,13 +110,22 @@ typedef struct omni_batch_metrics_his_s
 
 #define UPSTREAM_NAME_MAX 64
 #define UPSTREAM_IP_MAX 16
+#define UPSTREAM_ADDR_NAME_MAX 128
+
+typedef struct omni_upstream_address_s
+{
+    struct sockaddr sockaddr;
+    socklen_t socklen;
+    char ip[UPSTREAM_IP_MAX];
+    int port;
+    char text[UPSTREAM_ADDR_NAME_MAX];
+    int text_len;
+} omni_upstream_address_t;
 
 typedef struct omni_upstream_prefill_s
 {
     uint32_t index;
-    char name[UPSTREAM_NAME_MAX];
-    char ip[UPSTREAM_IP_MAX];
-    int port;
+    omni_upstream_address_t address;
     uint32_t num_running;
     uint32_t num_tokens;
     uint32_t last_scheduled_time;
@@ -128,9 +137,7 @@ typedef struct omni_upstream_prefill_s
 typedef struct omni_upstream_decode_s
 {
     uint32_t index;
-    char name[UPSTREAM_NAME_MAX];
-    char ip[UPSTREAM_IP_MAX];
-    int port;
+    omni_upstream_address_t address;
     uint32_t num_running;
     uint32_t generated_tokens;
     uint32_t expected_next_schedule_time;
@@ -161,6 +168,7 @@ typedef struct omni_global_state_s
     uint16_t last_selected_decode;
     uint32_t last_summary;
     uint32_t num_workers;
+    uint32_t upstream_initialized;
     int workers[MAX_WORKERS];
     omni_upstream_prefill_t prefill_states[MAX_PREFILL_UPSTREAMS];
     omni_upstream_decode_t decode_states[MAX_DECODE_UPSTREAMS];
