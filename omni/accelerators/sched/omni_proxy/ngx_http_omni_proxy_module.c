@@ -140,12 +140,54 @@ static void omni_proxy_remove_req_from_groups(omni_req_t *req)
 
         if (phase == PHASE_PREFILLING)
         {
-            g_state->prefill_states[req->prefill_upstream_endpoint_idx].num_running--;
+            omni_upstream_prefill_t *ps =
+                &g_state->prefill_states[req->prefill_upstream_endpoint_idx];
+
+            ps->num_running--;
+
+            if (ps->num_tokens >= req->metrics.prompt_num_tokens)
+            {
+                ps->num_tokens -= req->metrics.prompt_num_tokens;
+            }
+            else
+            {
+                ps->num_tokens = 0;
+            }
+            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                          "[Prefill Release Stats] req %d prompt_tokens=%ui, decoded_tokens=%ui; "
+                          "prefill idx=%d num_running=%ui, num_tokens(after)=%ui",
+                          req->slot_index,
+                          req->metrics.prompt_num_tokens,
+                          req->metrics.decoded_tokens,
+                          req->prefill_upstream_endpoint_idx,
+                          ps->num_running,
+                          ps->num_tokens);
         }
 
         if (phase == PHASE_DECODING)
         {
-            g_state->decode_states[req->decode_upstream_endpoint_idx].num_running--;
+            omni_upstream_decode_t *ds =
+                &g_state->decode_states[req->decode_upstream_endpoint_idx];
+
+            ds->num_running--;
+
+            if (ds->num_tokens >= req->metrics.prompt_num_tokens)
+            {
+                ds->num_tokens -= req->metrics.prompt_num_tokens + req->metrics.decoded_tokens;
+            }
+            else
+            {
+                ds->num_tokens = 0;
+            }
+            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                          "[Decode Release Stats] req %d prompt_tokens=%ui, decoded_tokens=%ui; "
+                          "decode idx=%d num_running=%ui, num_tokens(after)=%ui",
+                          req->slot_index,
+                          req->metrics.prompt_num_tokens,
+                          req->metrics.decoded_tokens,
+                          req->decode_upstream_endpoint_idx,
+                          ds->num_running,
+                          ds->num_tokens);
         }
         ngx_shmtx_unlock(&g_state->shmtx);
 
@@ -454,17 +496,39 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     if (req->metrics.time_last_reponse)
     {
         req->metrics.decoded_tokens++;
-        if (++req->metrics.decoded_tokens != 0)
+        ngx_uint_t decode_idx = req->decode_upstream_endpoint_idx;
+        ngx_atomic_fetch_add(&g_state->decode_states[decode_idx].num_tokens, 1);
+
+        if (req->metrics.decoded_tokens != 0)
         {
             req->metrics.tpot =
                 ((req->metrics.tpot * req->metrics.decoded_tokens) +
                  ngx_current_msec - req->metrics.time_last_reponse) /
                 req->metrics.decoded_tokens;
         }
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                      "[Decode Update Stats]  req %d prompt_tokens= %ui decoded_tokens= %ui; decode upstream %d num_tokens=%ui",
+                      req->slot_index,
+                      req->metrics.prompt_num_tokens,
+                      req->metrics.decoded_tokens,
+                      decode_idx,
+                      (unsigned long long)g_state->decode_states[decode_idx].num_tokens);
     }
     else
     {
         req->metrics.time_first_token = req->metrics.tpot = ngx_current_msec - req->metrics.time_to_decode;
+        req->metrics.decoded_tokens++;
+
+        ngx_uint_t decode_idx = req->decode_upstream_endpoint_idx;
+        ngx_atomic_fetch_add(&g_state->decode_states[decode_idx].num_tokens, 1);
+
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                      "[Decode Update Stats]  req %d prompt_tokens= %ui decoded_tokens= %ui; decode upstream %d num_tokens=%ui",
+                      req->slot_index,
+                      req->metrics.prompt_num_tokens,
+                      req->metrics.decoded_tokens,
+                      decode_idx,
+                      (unsigned long long)g_state->decode_states[decode_idx].num_tokens);
     }
 
     req->metrics.time_last_reponse = ngx_current_msec;
