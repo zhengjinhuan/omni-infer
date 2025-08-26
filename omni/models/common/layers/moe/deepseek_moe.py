@@ -167,7 +167,7 @@ class DeepseekMoE(nn.Module):
         self.is_init_gate = False
         if os.getenv("ASCEND_PLATFORM", "A3")=="A2":
             self.is_A2 = True
-            params_dtype = torch.float16
+            params_dtype = torch.bfloat16
         else:
             self.is_A2 = False
             params_dtype = torch.float32
