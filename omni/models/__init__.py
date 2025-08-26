@@ -61,6 +61,10 @@ def register_model():
     )
 
     ModelRegistry.register_model(
+        "Qwen2_5_VLForConditionalGeneration",
+        "omni.models.qwen.qwen2_5_vl:Qwen2_5_VLForConditionalGeneration")
+    
+    ModelRegistry.register_model(
         "PanguUltraMoEForCausalLM",
         "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
 
