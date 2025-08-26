@@ -423,7 +423,7 @@ class DeepseekV3Model(nn.Module):
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
                 config.hidden_size,
-                # parallel_lmhead=(model_extra_config.parall_config.dp_size > 1),
+                parallel_lmhead=(model_extra_config.parall_config.dp_size > 1),
             )
         else:
             self.embed_tokens = PPMissingLayer()
