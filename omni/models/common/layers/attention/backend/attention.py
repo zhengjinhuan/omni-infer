@@ -654,6 +654,6 @@ class AscendAttentionBackend(AttentionBackend):
         layer_kv_caches = torch.zeros(kv_cache_shape,
                                       dtype=dtype,
                                       device=device)
-        if not int(os.getenv("NO_NPU_MOCK", "0")):
+        if not int(os.getenv("NO_NPU_MOCK", "0")) and device != "cpu":
             torch_npu.npu_format_cast(layer_kv_caches, 2)
         return (layer_kv_caches[0], layer_kv_caches[1])

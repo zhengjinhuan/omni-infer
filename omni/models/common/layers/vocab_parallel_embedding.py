@@ -21,6 +21,7 @@ from vllm.distributed import (divide,
                               tensor_model_parallel_all_reduce,
                               tensor_model_parallel_reduce_scatter)
 from omni.adaptors.vllm.distributed.parallel_state import get_local_world_group, get_world_group
+from omni.adaptors.vllm.distributed.communication_op import all_gather_local, reduce_scatter_local
 from omni.models.common.config.model_config import model_extra_config
 
 DEFAULT_VOCAB_PADDING_SIZE = 64
@@ -68,6 +69,7 @@ class VocabParallelEmbedding(VocabParallelEmbeddingGPU):
  
         # Keep the input dimensions.
         # adapt: lm_head use local tp
+        self.parallel_lmhead = parallel_lmhead
         if parallel_lmhead:
             tp_rank = get_world_group().local_rank
             self.tp_size = get_local_world_group().world_size
@@ -140,6 +142,9 @@ class VocabParallelEmbedding(VocabParallelEmbeddingGPU):
     def forward_vocab(self, input_, reduce = 0):
         if self.tp_size > 1:
             # Build the mask.
+            if self.parallel_lmhead:
+                input_ = all_gather_local(input_, idx=0, dim=0)
+
             masked_input, input_mask = get_masked_input_and_mask(
                 input_, self.shard_indices.org_vocab_start_index,
                 self.shard_indices.org_vocab_end_index,
@@ -159,6 +164,8 @@ class VocabParallelEmbedding(VocabParallelEmbeddingGPU):
             output_parallel *= ~input_mask.unsqueeze(-1)
         if reduce == 0:
             output = tensor_model_parallel_all_reduce(output_parallel)
+        elif self.parallel_lmhead:
+            output = reduce_scatter_local(output_parallel, idx=0)
         else:
             # Reduce across all the model parallel GPUs.
             output = tensor_model_parallel_reduce_scatter(output_parallel)

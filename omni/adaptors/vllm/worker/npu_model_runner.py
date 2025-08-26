@@ -52,6 +52,7 @@ from omni.models.common.config.model_config import update_model_extra_config, mo
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
 from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
+from omni.adaptors.vllm.worker.cache_engine import CacheEngine
 
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
@@ -106,6 +107,7 @@ def mark_static_for_graph_default(
 class NPUModelRunner(GPUModelRunner):
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         super().__init__(vllm_config, device)
+        self.cache_engine = None
         self.head_size = self.model_config.get_head_size()
         self.block_size = vllm_config.cache_config.block_size
 
@@ -538,6 +540,19 @@ class NPUModelRunner(GPUModelRunner):
             return get_kv_transfer_group().get_load_kv_failure_reqs()
         return None
 
+    def _prepare_kv_cache(self, scheduler_output):
+        if scheduler_output.blocks_to_swap_in is not None and len(scheduler_output.blocks_to_swap_in) > 0:
+            blocks_to_swap_in = torch.tensor(scheduler_output.blocks_to_swap_in,
+                                             device="cpu",
+                                             dtype=torch.int64).view(-1, 2)
+            self.cache_engine.swap_in(blocks_to_swap_in)
+
+        if scheduler_output.blocks_to_swap_out is not None and len(scheduler_output.blocks_to_swap_out) > 0:
+            blocks_to_swap_out = torch.tensor(scheduler_output.blocks_to_swap_out,
+                                              device="cpu",
+                                              dtype=torch.int64).view(-1, 2)
+            self.cache_engine.swap_out(blocks_to_swap_out)
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -551,6 +566,8 @@ class NPUModelRunner(GPUModelRunner):
 
         # Update KVConnector with the KVConnector metadata forward().
         self._update_states(scheduler_output)
+
+        self._prepare_kv_cache(scheduler_output)
 
         self.total_step = scheduler_output.num_step
         # cached values
@@ -767,7 +784,7 @@ class NPUModelRunner(GPUModelRunner):
                 else:
                     hidden_states = forward_results
                     raw_hidden_states = forward_results
-                if self.use_spec_decode: 
+                if self.use_spec_decode:
                     self.drafter.propose(
                         num_tokens=num_tokens,
                         positions=positions,
@@ -884,6 +901,7 @@ class NPUModelRunner(GPUModelRunner):
             cache size of each layer
         """
         kv_caches: Dict[str, torch.Tensor] = {}
+        cpu_caches: Dict[str, torch.Tensor] = {}
         self.kv_cache_config = kv_cache_config
         self.input_batch = InputBatch(
             max_num_reqs=self.max_num_reqs,
@@ -902,6 +920,7 @@ class NPUModelRunner(GPUModelRunner):
         )
         self.input_batch.token_ids_cpu = self.input_batch.token_ids_cpu_tensor.numpy()
         self.initialize_attn_backend(kv_cache_config)
+        preemption_mode = self.vllm_config.scheduler_config.preemption_mode
 
         for i, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
             kv_cache_spec = kv_cache_group.kv_cache_spec
@@ -918,8 +937,21 @@ class NPUModelRunner(GPUModelRunner):
                                                                                            self.device,
                                                                                            self.model_config,
                                                                                            self.enable_torchair_graph_mode)
+                    if preemption_mode and preemption_mode == "swap":
+                        cpu_num_blocks = (self.vllm_config.cache_config.swap_space_bytes //
+                                          kv_cache_spec.page_size_bytes // len(kv_cache_config.tensors))
+                        cpu_kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
+                            cpu_num_blocks, kv_cache_spec.block_size,
+                            kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
+                        cpu_caches[layer_name] = self.attn_backends[i].init_kv_cache_each_layer(cpu_kv_cache_shape, self.dtype,
+                                                                                           "cpu",
+                                                                                           self.model_config,
+                                                                                           self.enable_torchair_graph_mode)
                 else:
                     raise ValueError("Unknown KV cache spec type.")
+
+        if preemption_mode and preemption_mode == "swap":
+            self.cache_engine = CacheEngine(self.attn_backends, self.kv_cache_config, gpu_cache=kv_caches, cpu_cache=cpu_caches)
 
         if not int(os.getenv("NO_NPU_MOCK", "0")):
             bind_kv_cache(

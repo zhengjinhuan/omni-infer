@@ -45,6 +45,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     maybe_prefix)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 
+from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 from omni.models.qwen.qwen2 import Qwen2DecoderLayer, Qwen2Model, Qwen2ForCausalLM
 
@@ -129,7 +130,7 @@ class EagleQwen2Model(Qwen2Model):
         return None, hidden_states
 
 @support_torch_compile
-class EagleQwen2ForCausalLM(Qwen2ForCausalLM):
+class EagleQwen2ForCausalLM(Qwen2ForCausalLM, GraphCompileConfiguration):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         nn.Module.__init__(self)
@@ -167,8 +168,6 @@ class EagleQwen2ForCausalLM(Qwen2ForCausalLM):
     def set_share_weight(self, target_model):
         self.model.full_cos = target_model.model.full_cos
         self.model.full_sin = target_model.model.full_sin
-        torch._dynamo.mark_static(self.model.full_cos)
-        torch._dynamo.mark_static(self.model.full_sin)
         self.model.embed_tokens = target_model.model.embed_tokens
         self.lm_head = target_model.lm_head
 
@@ -204,3 +203,7 @@ class EagleQwen2ForCausalLM(Qwen2ForCausalLM):
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
         return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
+
+    def mark_static_for_graph(self, *args, **kwargs):
+        torch._dynamo.mark_static(self.model.full_cos)
+        torch._dynamo.mark_static(self.model.full_sin)

@@ -205,6 +205,7 @@ class OmniKVCacheManager:
         num_draft_tokens: int = 0,
         num_lookahead_tokens: int = 0,
         delay_cache_blocks: bool = False,
+        is_swap: bool = False,
     ) -> Optional[OmniKVCacheBlocks]:
         """Add slots for a request with new tokens to append.
 
@@ -241,7 +242,7 @@ class OmniKVCacheManager:
         Returns:
             A list of new allocated blocks.
         """
-        if num_new_tokens == 0:
+        if num_new_tokens == 0 and not is_swap:
             raise ValueError("num_new_tokens must be greater than 0")
 
         if new_computed_blocks is not None:
