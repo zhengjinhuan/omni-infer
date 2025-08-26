@@ -794,6 +794,8 @@ log_file=""
 log_level=""
 prefill_lb_sdk="pd_score_balance"
 decode_lb_sdk="pd_score_balance"
+prefill_max_num_seqs=16
+decode_max_num_seqs=32
 
 print_help() {
     echo "Usage:"
