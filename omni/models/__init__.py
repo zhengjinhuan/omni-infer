@@ -76,6 +76,10 @@ def register_model():
         "PanguEmbeddedForCausalLM",
         "omni.models.pangu.pangu_dense:PanguEmbeddedForCausalLM")
 
+    ModelRegistry.register_model(
+        "InternVLChatModel",
+        "omni.models.internvl.internvl:InternVLChatModel")
+
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
         int(os.getenv("CAPTURE_MODE", default='0')) or
