@@ -417,7 +417,7 @@ class NpuHybridScheduler(Scheduler):
                 outputs=[],
                 scheduler_stats=None,
             )
-        if not cached_sampled_token_ids or isinstance(model_runner_output.prompt_logprobs_dict, dict):
+        if not model_runner_output.sampled_token_ids or isinstance(model_runner_output.prompt_logprobs_dict, dict):
             sampled_token_ids = model_runner_output.sampled_token_ids
             spec_token_ids = model_runner_output.spec_token_ids
             logprobs = model_runner_output.logprobs
