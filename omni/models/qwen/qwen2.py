@@ -51,7 +51,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     maybe_prefix)
 from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear
-from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding, MRotaryEmbedding
+from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding, QwenMRotaryEmbedding
 from omni.models.common.layers.fused_mlp import FusedMLP
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
