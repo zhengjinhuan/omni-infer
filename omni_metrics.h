@@ -139,6 +139,7 @@ typedef struct omni_upstream_decode_s
     uint32_t index;
     omni_upstream_address_t address;
     uint32_t num_running;
+    uint32_t num_tokens;
     uint32_t generated_tokens;
     uint32_t expected_next_schedule_time;
     omni_batch_metrics_his_t his;

@@ -1,4 +1,3 @@
-
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
@@ -54,6 +53,66 @@ static void update_prefill_weights(omni_req_group_t *group)
     }
 
     omni_sort_compact_group(group);
+
+    for (uint32_t idx = 0; idx < group->num_requests; idx++)
+    {
+        omni_req_info_t *info = &group->requests[idx];
+        if (!info->in_use)
+        {
+            continue;
+        }
+        omni_req_t *req = omni_info_to_req(info);
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                      "[Prefill-Sort] Order %ui: slot=%ui tokens=%ui weight=%.2f",
+                      idx,
+                      info->slot_index,
+                      req->metrics.prompt_num_tokens,
+                      info->weight);
+    }
+}
+
+static void update_decode_weights(omni_req_group_t *group)
+{
+    uint32_t max_prompt_tokens = 1;
+
+    for (uint32_t i = 0; i < group->watermark; i++)
+    {
+        omni_req_info_t *info = &group->requests[i];
+        if (!info->in_use)
+            continue;
+        omni_req_t *req = omni_info_to_req(info);
+        if (req->metrics.prompt_num_tokens > max_prompt_tokens)
+        {
+            max_prompt_tokens = req->metrics.prompt_num_tokens;
+        }
+    }
+
+    for (uint32_t i = 0; i < group->watermark; i++)
+    {
+        omni_req_info_t *info = &group->requests[i];
+        if (!info->in_use)
+            continue;
+        omni_req_t *req = omni_info_to_req(info);
+        info->weight = (double)req->metrics.prompt_num_tokens / max_prompt_tokens;
+    }
+
+    omni_sort_compact_group(group);
+
+    for (uint32_t idx = 0; idx < group->num_requests; idx++)
+    {
+        omni_req_info_t *info = &group->requests[idx];
+        if (!info->in_use)
+        {
+            continue;
+        }
+        omni_req_t *req = omni_info_to_req(info);
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                      "[Decode-Sort] Order %ui: slot=%ui tokens=%ui weight=%.2f",
+                      idx,
+                      info->slot_index,
+                      req->metrics.prompt_num_tokens,
+                      info->weight);
+    }
 }
 
 void omni_proxy_schedule_prefill(omni_global_state_t *gs)
@@ -123,6 +182,8 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
     // TODO: Here we can do some estimation of pull kv finish time to make sure pull kv
     // workloads are balanced
 
+    update_decode_weights(group);
+
     for (size_t i = 0; i < group->watermark; i++)
     {
         omni_req_info_t *info = &group->requests[i];
@@ -138,9 +199,9 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
         for (int m = gs->last_selected_decode; m < gs->num_decode_endpoints + gs->last_selected_decode; m++)
         {
             int j = m % gs->num_decode_endpoints;
-            if (gs->decode_states[j].num_running < least_load)
+            if (gs->decode_states[j].num_tokens < least_load)
             {
-                least_load = gs->decode_states[j].num_running;
+                least_load = gs->decode_states[j].num_tokens;
                 selected = j;
                 if (least_load == 0)
                 {
@@ -152,6 +213,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
         req->decode_upstream_endpoint_idx = selected;
         gs->last_selected_decode = selected + 1;
         gs->decode_states[selected].num_running++;
+        gs->decode_states[selected].num_tokens += req->metrics.prompt_num_tokens;
 
         omni_global_phase_change_to(req, PHASE_DECODE_WAITING_SCHEDULE, PHASE_DECODE_SCHEDULED);
         omni_req_leave_phase(req, PHASE_DECODE_WAITING_SCHEDULE);
@@ -159,7 +221,10 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
 
         req->metrics.time_decode_scheduled = ngx_current_msec;
 
-        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Decode-%d] Schedule to: %d",
-                      req->slot_index, req->decode_upstream_endpoint_idx);
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                      "[Decode-%d] Schedule to: %d (load=%ui)",
+                      req->slot_index,
+                      req->decode_upstream_endpoint_idx,
+                      gs->decode_states[selected].num_tokens);
     }
 }
