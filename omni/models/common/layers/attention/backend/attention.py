@@ -38,6 +38,7 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.block_table import BlockTable
 from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
+from omni.models.common.layers.rotary_embedding import MRotaryEmbedding
 from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 
@@ -281,7 +282,13 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             
         slot_indices = torch.stack([slot_mapping // self.block_size, slot_mapping % self.block_size], dim=1)
 
-        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+        if hasattr(self.runner.model, 'language_model') and hasattr(self.runner.model.language_model, 'model'):
+            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is MRotaryEmbedding:
+                cos, sin = None, None
+            else:
+                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+        else:
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
@@ -321,7 +328,13 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
 
         fake_positions = torch.zeros(max_pad_size, dtype=torch.int64, device=self.device)
 
-        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+        if hasattr(self.runner.model, 'language_model') and hasattr(self.runner.model.language_model, 'model'):
+            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is MRotaryEmbedding:
+                cos, sin = None, None
+            else:
+                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+        else:
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'

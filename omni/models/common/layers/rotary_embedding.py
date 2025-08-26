@@ -34,6 +34,7 @@ import torch.nn.functional as F
 from vllm.platforms import current_platform
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding as GPURotaryEmbedding
+from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding as GPUMRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding as GPUYaRNScalingRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import DeepseekScalingRotaryEmbedding as DeepseekScalingRotaryEmbeddingGPU
 from vllm.model_executor.layers.rotary_embedding import (_yarn_find_correction_dim,
@@ -608,6 +609,83 @@ class QwenRotaryEmbedding(torch.nn.Module):
 
         return q_embed, k_embed
 
+def _apply_rotary_emb_torch(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    is_neox_style: bool,
+) -> torch.Tensor:
+    cos = cos.unsqueeze(-2).to(x.dtype)
+    sin = sin.unsqueeze(-2).to(x.dtype)
+    if is_neox_style:
+        x1, x2 = torch.chunk(x, 2, dim=-1)
+    else:
+        x1 = x[..., ::2]
+        x2 = x[..., 1::2]
+    o1 = x1 * cos - x2 * sin
+    o2 = x2 * cos + x1 * sin
+    if is_neox_style:
+        return torch.cat((o1, o2), dim=-1)
+    else:
+        return torch.stack((o1, o2), dim=-1).flatten(-2)
+    
+class MRotaryEmbedding(GPUMRotaryEmbedding):
+    """Rotary Embedding with Multimodal Sections."""
+
+    def __init__(self, *args, **kwargs):
+        
+        super().__init__(*args, **kwargs)
+
+    def forward(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """PyTorch-native implementation equivalent to forward().
+
+        Args:
+            positions:
+                [num_tokens,] (text only) or
+                [3, num_tokens] (T/H/W positions with multimodal inputs)
+            query: [num_tokens, num_heads * head_size]
+            key: [num_tokens, num_kv_heads * head_size]
+        """
+        assert positions.ndim == 1 or positions.ndim == 2
+        assert key is not None
+
+        num_tokens = positions.shape[-1]
+        cos_sin = self.cos_sin_cache[positions]
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        if positions.ndim == 2:
+            assert self.mrope_section
+
+            cos = torch.cat([
+                m[i]
+                for i, m in enumerate(cos.split(self.mrope_section, dim=-1))
+            ],
+                            dim=-1)
+            sin = torch.cat([
+                m[i]
+                for i, m in enumerate(sin.split(self.mrope_section, dim=-1))
+            ],
+                            dim=-1)
+
+        query_shape = query.shape
+        query = query.reshape(num_tokens, -1, self.head_size)
+        query_rot = query[..., :self.rotary_dim]
+        query_pass = query[..., self.rotary_dim:]
+        query_rot = _apply_rotary_emb_torch(query_rot, cos, sin, self.is_neox_style)
+        query = torch.cat((query_rot, query_pass), dim=-1).reshape(query_shape)
+
+        key_shape = key.shape
+        key = key.reshape(num_tokens, -1, self.head_size)
+        key_rot = key[..., :self.rotary_dim]
+        key_pass = key[..., self.rotary_dim:]
+        key_rot = _apply_rotary_emb_torch(key_rot, cos, sin, self.is_neox_style)
+        key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
+        return query, key
+
 
 _ROPE_DICT: Dict[Tuple, nn.Module] = {}
 
@@ -624,8 +702,18 @@ def get_rope(
 ):
     if dtype is None:
         dtype = torch.get_default_dtype()
+
+    if rope_scaling is not None:
+        rope_scaling_tuple = {
+            k:tuple(v) if isinstance(v, list) else v for k,v in rope_scaling.items()
+        }
+        rope_scaling_args = tuple(rope_scaling_tuple.items())
+    else:
+        rope_scaling_args = None
+
     key = (head_size, rotary_dim, max_position, base, is_neox_style,
-           tuple(rope_scaling.items()) if rope_scaling is not None else None)
+           rope_scaling_args)
+    
     if key in _ROPE_DICT:
         return _ROPE_DICT[key]
     # Adapt:
@@ -635,7 +723,8 @@ def get_rope(
         # adapt Replacing legacy 'type' key with 'rope_type' in 0.6.3
         scaling_type = rope_scaling["rope_type"]
         if scaling_type != "su":
-            scaling_factor = rope_scaling["factor"]
+            if "factor" in rope_scaling:
+                scaling_factor = rope_scaling["factor"]
         if scaling_type == "linear":
             rotary_emb = LinearScalingRotaryEmbedding(head_size, rotary_dim,
                                                       max_position, base,
@@ -672,8 +761,24 @@ def get_rope(
                                                      max_position, base,
                                                      is_neox_style, dtype)
         elif scaling_type == "qwen":
-            rotary_emb = QwenRotaryEmbedding(head_size, rotary_dim, max_position, base,
-                                             is_neox_style)
+            if 'mrope_section' in rope_scaling:
+                rotary_emb = MRotaryEmbedding(
+                    head_size, 
+                    rotary_dim, 
+                    max_position, 
+                    base,
+                    is_neox_style,
+                    dtype,
+                    mrope_section=rope_scaling["mrope_section"]
+                )
+            else:
+                rotary_emb = QwenRotaryEmbedding(
+                        head_size, 
+                        rotary_dim, 
+                        max_position, 
+                        base,
+                        is_neox_style)
+                
         else:
             scaling_type = rope_scaling["type"]
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}, only support linear and dynamic now")
