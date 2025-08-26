@@ -81,7 +81,7 @@ index 9a017bf315..9943500623 100644
 -                continue
 +        for current_steps in range(num_steps):
 +            new_running: list[Request] = []
-+            if not cached_sampled_token_ids:
++            if not cached_sampled_token_ids or isinstance(cached_prompt_logprobs_dict, dict):
 +                sampled_token_ids = cached_sampled_token_ids
 +                spec_token_ids = cached_spec_token_ids
 +                logprobs = cached_logprobs
