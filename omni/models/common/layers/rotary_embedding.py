@@ -629,7 +629,7 @@ def _apply_rotary_emb_torch(
     else:
         return torch.stack((o1, o2), dim=-1).flatten(-2)
     
-class MRotaryEmbedding(GPUMRotaryEmbedding):
+class QwenMRotaryEmbedding(GPUMRotaryEmbedding):
     """Rotary Embedding with Multimodal Sections."""
 
     def __init__(self, *args, **kwargs):
@@ -762,7 +762,7 @@ def get_rope(
                                                      is_neox_style, dtype)
         elif scaling_type == "qwen":
             if 'mrope_section' in rope_scaling:
-                rotary_emb = MRotaryEmbedding(
+                rotary_emb = QwenMRotaryEmbedding(
                     head_size, 
                     rotary_dim, 
                     max_position, 

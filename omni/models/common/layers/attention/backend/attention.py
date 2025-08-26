@@ -38,7 +38,7 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.block_table import BlockTable
 from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
-from omni.models.common.layers.rotary_embedding import MRotaryEmbedding
+from omni.models.common.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 
@@ -283,7 +283,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         slot_indices = torch.stack([slot_mapping // self.block_size, slot_mapping % self.block_size], dim=1)
 
         if hasattr(self.runner.model, 'language_model') and hasattr(self.runner.model.language_model, 'model'):
-            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is MRotaryEmbedding:
+            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is QwenMRotaryEmbedding:
                 cos, sin = None, None
             else:
                 cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
@@ -329,7 +329,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         fake_positions = torch.zeros(max_pad_size, dtype=torch.int64, device=self.device)
 
         if hasattr(self.runner.model, 'language_model') and hasattr(self.runner.model.language_model, 'model'):
-            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is MRotaryEmbedding:
+            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is QwenMRotaryEmbedding:
                 cos, sin = None, None
             else:
                 cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
