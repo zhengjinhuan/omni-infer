@@ -231,7 +231,6 @@ class NPUModelRunner(GPUModelRunner):
         if self.uses_mrope:
             self._calc_mrope_positions(scheduler_output)
 
-        if self.uses_mrope:
             # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
             self.mrope_positions[:, :total_num_scheduled_tokens].copy_(
                 self.mrope_positions_cpu[:, :total_num_scheduled_tokens], non_blocking=True)
@@ -288,16 +287,13 @@ class NPUModelRunner(GPUModelRunner):
             # The reduce_scatter in the TP communication domain after embedding, P goes through this
             graph_pad_size = _get_pad_size(num_input_tokens)
 
-        if self.uses_mrope:
-            # padding positions
-            if graph_pad_size >= 0:
+        if graph_pad_size >= 0:
+            if self.uses_mrope:
                 padding_positions = torch.zeros(positions.size(0), graph_pad_size, dtype=positions.dtype, device=positions.device)
-                positions = torch.cat([positions, padding_positions], dim=1)  
-        else:
-            # padding positions
-            if graph_pad_size >= 0:
+                positions = torch.cat([positions, padding_positions], dim=1)
+            else:
                 padding_positions = torch.zeros(graph_pad_size, dtype=positions.dtype, device=positions.device)
-                positions = torch.cat([positions, padding_positions])  
+                positions = torch.cat([positions, padding_positions])
 
         extra_builder_kwargs = {'graph_pad_size': graph_pad_size}
 
@@ -467,7 +463,8 @@ class NPUModelRunner(GPUModelRunner):
                 if attn_state == AscendAttentionState.DecodeOnly:
                     padding_embeds = torch.zeros(graph_pad_size, inputs_embeds.size(-1), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
                 else:
-                    padding_embeds = torch.randn(graph_pad_size, inputs_embeds.size(-1), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+                    vocab_size = self.model_config.get_vocab_size()
+                    padding_embeds = torch.randint(1, vocab_size, (graph_pad_size, inputs_embeds.size(-1)), dtype=input_ids.dtype, device=input_ids.device)
 
                 inputs_embeds = torch.cat([inputs_embeds, padding_embeds])
     

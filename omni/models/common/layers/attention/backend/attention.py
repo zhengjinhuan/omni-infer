@@ -286,7 +286,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is MRotaryEmbedding:
                 cos, sin = None, None
             else:
-                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+                cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
         else:
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
 
@@ -332,7 +332,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) is MRotaryEmbedding:
                 cos, sin = None, None
             else:
-                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+                cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
         else:
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
 
