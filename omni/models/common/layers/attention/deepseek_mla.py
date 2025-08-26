@@ -777,6 +777,10 @@ class DeepseekMLA(nn.Module):
                 q, latent_cache = torch.split(qkv, [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1)
                 q = self.q_a_layernorm(q)
             else:
+                if not isinstance(hidden_states, Dict):
+                    h_quant, h_scale = torch_npu.npu_dynamic_quant(hidden_states)
+                    hidden_states = {'x_int8': h_quant,
+                                     'pertoken_scale':h_scale}
                 latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
 
                 latent_cache = all_gather_world(latent_cache, idx=0, dim=0)
