@@ -40,9 +40,7 @@ from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
-
-
-USE_TND_PA = os.environ.get("USE_TND_PA", "0") == "1"
+from omni.models.common.config.model_config import model_extra_config
 
 
 class AscendAttentionState(Enum):
@@ -275,7 +273,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             block_table = self._get_graph_runner_block_tables(
                 self._num_decode_tokens, block_table)
             kv_index = None
-        elif USE_TND_PA:
+        elif model_extra_config.operator_opt_config.use_tnd_pa:
             kv_index = None
             if graph_pad_size > 0:
                 padding = torch.tensor([graph_pad_size], dtype=query_lens.dtype, device=query_lens.device)
@@ -420,9 +418,10 @@ class AscendAttentionBackendImpl(AttentionImpl):
             AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE = ~torch.tril(
                 torch.ones((2048, 2048), dtype=torch.bool, device="npu")
             )
+        self.use_tnd_pa = model_extra_config.operator_opt_config.use_tnd_pa
 
     def forward(self, *args, **kwargs):
-        if USE_TND_PA:
+        if self.use_tnd_pa:
             return self.forward_pa(*args, **kwargs)
         else:
             return self.forward_vanilla(*args, **kwargs)
