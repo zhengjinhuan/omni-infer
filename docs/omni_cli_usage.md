@@ -331,3 +331,5 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 4. start命令要支持单独拉P/D/C
 5. ls命令需要返回容器状态
 6. start命令要检查服务是否拉起，以进度条方式展示
+7. 完成 omni_cli upgrade    
+8. 完成 omni_cli collect_log
