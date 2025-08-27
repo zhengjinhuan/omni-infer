@@ -21,6 +21,7 @@ import subprocess
 import json
 import shlex
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from typing import Dict, Any, List, Tuple, Optional
@@ -37,6 +38,106 @@ from omni_cli.omni_cfg import parse_remaining_args
 from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
 from omni_cli.omni_inspect import print_node_config
+
+@dataclass
+class ClusterInfo:
+    inventory: Dict[str, Any]
+    allhosts: List[Tuple[str, Dict[str, Any]]] = field(init=False)  # [(host, hostvars), ...]
+
+    # {master_host: {"kv_rank": kv_rank,
+    #                "pod_hosts": [host1, host2, ...],
+    #                "device_count": {host1:16, host2:16, ...},
+    #                "server_offset": {host1:0, host2:16, ...},
+    #                "num_dp": 32,
+    #                "num_servers": 1  # API Server for the specific host,  1 for P, 16 for D
+    #
+    #               },
+    # ...}
+    p_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
+    d_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
+
+    master_ip2master_host: Dict[str, str] = field(init=False)  # master_ip@master_port -> master_host
+
+    def __post_init__(self):
+        self.allhosts = _walk_hosts(self.inventory)
+        self._get_master_ip2master_host()
+        self._create_pod_info()
+        self._update_pod_info()
+
+    def _get_master_ip2master_host(self):
+        """Get the master_ip@port to master host mapping."""
+        self.master_ip2master_host = {}
+        for host, hv in self.allhosts:
+            master_ip = hv.get('host_ip', None)
+            master_port = hv.get('env', {}).get('MASTER_PORT', None)
+            ansible_ip = hv.get('ansible_host')
+            if ansible_ip == master_ip:
+                # get the first one as master host
+                if self.master_ip2master_host.get(f"{master_ip}@{master_port}", None) is None:
+                    self.master_ip2master_host[f"{master_ip}@{master_port}"] = host
+
+    def _new_pod_info(self) -> Dict[str, Any]:
+        """Create a fresh pod-info dict."""
+        return {
+            "pod_hosts": [],
+            "device_count": {},
+            "server_offset": {},
+            "num_dp": None,
+            "num_servers": None,
+            "kv_rank": None,
+        }
+
+    def _create_pod_info(self):
+        """Get the P/D POD dictionary."""
+        self.p_pod_info, self.d_pod_info = {}, {}
+
+        for host, hv in self.allhosts:
+            master_ip = hv.get('host_ip', None)
+            master_port = hv.get('env', {}).get('MASTER_PORT', None)
+            role = hv.get('env', {}).get('ROLE', None)
+            master_host = self.master_ip2master_host.get(f"{master_ip}@{master_port}", None)
+            device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
+            if master_host:
+                if role == "prefill":
+                    pod_vars = self.p_pod_info.setdefault(master_host, self._new_pod_info())
+                elif role == "decode":
+                    pod_vars = self.d_pod_info.setdefault(master_host, self._new_pod_info())
+                else:
+                    continue
+                pod_vars["pod_hosts"].append(host)
+                pod_vars["device_count"][host] = device_count
+
+    def _update_pod_info(self):
+        """Calculate the KV rank, server offset, num dp, etc. for P/D POD."""
+        rank_count = 0
+        for master_host, pod_vars in self.p_pod_info.items():
+            pod_vars["kv_rank"] = rank_count
+            rank_count += 1
+            for i, host in enumerate(pod_vars["pod_hosts"]):
+                pod_vars["server_offset"][host] = 0   # for P always 0
+            pod_vars["num_dp"] = 1  # for P always 1
+            pod_vars["num_servers"] = 1  # for P always 1
+
+        for master_host, pod_vars in self.d_pod_info.items():
+            tp = 1
+            pod_vars["kv_rank"] = rank_count
+            rank_count += 1
+            offset = 0
+            for host in pod_vars["pod_hosts"]:
+                pod_vars["server_offset"][host] = offset
+                offset += pod_vars["device_count"][host]
+            pod_vars["num_dp"] = sum(pod_vars["device_count"].values()) // tp
+            pod_vars["num_servers"] = pod_vars["device_count"][host]
+
+    @property
+    def prefill_pod_num(self):
+        return len(self.p_pod_info)
+
+    @property
+    def decode_pod_num(self):
+        return len(self.d_pod_info)
+
+
 
 
 def execute_command(command):
