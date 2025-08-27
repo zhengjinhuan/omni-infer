@@ -321,3 +321,11 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    ```bash
    omni_cli sync_dev --code_path /path/to/my/code   # 路径会被补全为 /path/to/my/code/omniinfer
    ```
+
+## 开发计划
+1. cfg 支持按照特性级别配置，并检查单个服务内配置是否冲突、互斥
+2. 当前设计所有模型、场景默认/最优配置在同一个文件tools/omni_cli/configs/default_profiles.yml，后续要将不同模型最优配置拆分为独立文件
+3. 拉起服务调用start命令，需要校验多个服务间的配置是否有差异，防止不同服务特性配置不一致
+4. start命令要支持单独拉P/D/C
+5. ls命令需要返回容器状态
+6. start命令要检查服务是否拉起，以进度条方式展示
