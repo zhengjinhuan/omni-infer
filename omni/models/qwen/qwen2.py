@@ -157,7 +157,7 @@ class Qwen2Attention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states, is_prefill=is_prefill)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
-        if type(self.rotary_emb) is MRotaryEmbedding:
+        if type(self.rotary_emb) is QwenMRotaryEmbedding:
             q, k = self.rotary_emb(positions, q, k)
         else:
             q, k = self.rotary_emb(positions, q, k, cos, sin)
@@ -346,7 +346,7 @@ class Qwen2Model(nn.Module):
             residual = intermediate_tensors["residual"]
 
         cos, sin = None, None
-        if type(self.layers[0].self_attn.rotary_emb) is not MRotaryEmbedding:
+        if type(self.layers[0].self_attn.rotary_emb) is not QwenMRotaryEmbedding:
             cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
             sin = torch.index_select(self.full_sin, dim=0, index=positions)
             attn_metadata = get_forward_context().attn_metadata
