@@ -311,7 +311,10 @@ export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
 export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
-export CPU_AFFINITY_CONF=1,npu0:0-1,npu1:40-41,npu2:80-81,npu3:120-121,npu4:160-161,npu5:200-201,npu6:240-241,npu7:280-281
+
+# Turn on these two variables to enable proc_bind
+# export CPU_AFFINITY_CONF=2
+# export PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml
 
 if [ -n "$HCCL_OP_EXPANSION_MODE" ]; then
     export HCCL_OP_EXPANSION_MODE
