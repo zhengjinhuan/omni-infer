@@ -3,7 +3,6 @@ from abc import abstractmethod
 from typing import Optional
 from vllm.model_executor.layers.quantization.base_config import (QuantizationConfig, 
                                                                  QuantizeMethodBase)
-from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.distributed import (
     get_tensor_model_parallel_world_size,
     get_tensor_model_parallel_rank,
@@ -12,6 +11,7 @@ from vllm.distributed import (
     tensor_model_parallel_reduce_scatter,
     get_tp_group
 )
+from omni.models.common.layers.activation import SiluAndMul
 from omni.models.common.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
 
 class FusedMLPMethodBase(QuantizeMethodBase):
