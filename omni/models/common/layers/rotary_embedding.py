@@ -794,7 +794,7 @@ def get_rope(
                                                      is_neox_style, dtype)
         elif scaling_type == "qwen":
             if 'mrope_section' in rope_scaling:
-                rotary_emb = MRotaryEmbedding(
+                rotary_emb = QwenMRotaryEmbedding(
                     head_size, 
                     rotary_dim, 
                     max_position, 
