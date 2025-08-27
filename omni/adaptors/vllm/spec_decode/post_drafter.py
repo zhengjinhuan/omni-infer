@@ -183,8 +183,8 @@ class PostDrafter(EagleProposer):
                             draft_forward_tokens_list.append(draft_forward_tokens)
                     if i == self.speculative_config.num_speculative_tokens - 1:
                         break
+                    self.input_ids[:num_tokens] = torch.roll(input_ids, -1, -1)
                     if not is_dummy:
-                        input_ids = torch.roll(input_ids, -1, -1)
                         if attn_state == AscendAttentionState.DecodeOnly:
                             input_ids[last_accepted_index] = draft_forward_tokens
                         else: # prefill
