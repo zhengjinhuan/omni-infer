@@ -30,7 +30,6 @@ import torch_npu
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import PretrainedConfig
 
 from vllm.platforms import current_platform
 from vllm.forward_context import ForwardContext, get_forward_context
@@ -610,38 +609,6 @@ class QwenRotaryEmbedding(torch.nn.Module):
 
         return q_embed, k_embed
 
-    def forward_cos_sin(self, query, key, cos, sin):
-        """
-        Args:
-            position_ids: [num_tokens, ]
-            query: [num_tokens, num_heads * head_size]
-            key: [num_tokens, num_heads * head_size]
-        """
-
-        if self.rotary_dim != 128:
-            query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
-            key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
-            cos = cos.unsqueeze(-2)
-            sin = sin.unsqueeze(-2)
-            q_embed = self.apply_rotary_pos_emb(query, cos, sin)
-            k_embed = self.apply_rotary_pos_emb(key, cos, sin)
-            q_embed = q_embed.flatten(-2)
-            k_embed = k_embed.flatten(-2)
-        else:
-            # shape to bsnd
-            cos = cos.unsqueeze(1).unsqueeze(1)
-            sin = sin.unsqueeze(1).unsqueeze(1)
-
-            query = query.view(query.shape[0], 1, -1, self.head_size)
-            key = key.view(key.shape[0], 1, -1, self.head_size)
-
-            q_embed, k_embed = torch_npu.npu_apply_rotary_pos_emb(query, key, cos, sin)
-
-            q_embed = q_embed.view(q_embed.shape[0], -1)
-            k_embed = k_embed.view(k_embed.shape[0], -1)
-
-        return q_embed, k_embed
-
 def _apply_rotary_emb_torch(
     x: torch.Tensor,
     cos: torch.Tensor,
@@ -743,6 +710,7 @@ def get_rope(
         rope_scaling_args = tuple(rope_scaling_tuple.items())
     else:
         rope_scaling_args = None
+    
     key = (head_size, rotary_dim, max_position, base, is_neox_style,
            rope_scaling_args)
     
