@@ -77,6 +77,10 @@ def register_model():
         "omni.models.pangu.pangu_dense:PanguEmbeddedForCausalLM")
 
     ModelRegistry.register_model(
+        "InternLM2ForCausalLM",
+        "omni.models.internvl.internlm2:InternLM2ForCausalLM")
+    
+    ModelRegistry.register_model(
         "InternVLChatModel",
         "omni.models.internvl.internvl:InternVLChatModel")
 
