@@ -12,13 +12,13 @@ os.environ.update({
     "VLLM_USE_V1": "1",
     "VLLM_WORKER_MULTIPROC_METHOD": "fork",
     "ASCEND_LAUNCH_BLOCKING": "1",
-    "PYTHORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+    "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
     "HCCL_INTRA_ROCE_ENABLE": "1",
     "HCCL_INTRA_PCIE_ENABLE": "0",
 })
 
 # User Configuration
-MODEL_TYPE = "internvl" # Model type: "internvl or "qwen2_vl"
+MODEL_TYPE = "internvl" # Model type: "internvl" or "qwen2_vl"
 MODEL_PATH = "/data/models/InternVL2_5-8B"
 
 # Test requests list - each request contains (filepath, question, type)
@@ -32,17 +32,17 @@ TEST_REQUESTS = [
 
 def create_requests():
     tokens = {
-        "internvl": {"image": "<image>", "vedio": "<video>"},
-        "qwen2_vl": {"image": "<|image_pad|>", "vedio": "<|video_pad|>"}
+        "internvl": {"image": "<image>", "video": "<video>"},
+        "qwen2_vl": {"image": "<|image_pad|>", "video": "<|video_pad|>"}
     }
-    request = []
+    requests = []
     for file_path, prompt, req_type in TEST_REQUESTS:
         # Add corresponding tokens for multimodal requests
         if req_type in tokens[MODEL_TYPE]:
             prompt = tokens[MODEL_TYPE][req_type] + prompt
-        request.append((file_path, prompt, req_type))
+        requests.append((file_path, prompt, req_type))
     
-    return request
+    return requests
 
 requests = create_requests()
 
@@ -53,7 +53,7 @@ llm = LLM(
     tensor_parallel_size=2,
     gpu_memory_utilization=0.7,
     trust_remote_code=True,
-    limit_mm_per_prompt={"image": 1, "vedio": 1},
+    limit_mm_per_prompt={"image": 1, "video": 1},
 )
 sampling_params = SamplingParams(max_tokens=200, temperature=0.0)
 
@@ -82,7 +82,7 @@ def create_input(file_path, prompt, media_type):
         return {"prompt": formatted_prompt}
     elif media_type == "image":
         return {"prompt": formatted_prompt, "multi_modal_data": {"image": Image.open(file_path)}}
-    elif media_type == "vedio":
+    elif media_type == "video":
         return {"prompt": formatted_prompt, "multi_modal_data": {"video": load_video(file_path)}}
 
 
@@ -110,7 +110,7 @@ if inputs:
 
     print(f"Completed, time taken: {time.time() - start_time:.2f} seconds\n")
 
-    #Display results
+    # Display results
     for i, (output, (_, prompt, media_type)) in enumerate(zip(outputs, requests), 1):
         print(f"=== Request {i} ({media_type}) ===")
         print(f"Question: {prompt}")
