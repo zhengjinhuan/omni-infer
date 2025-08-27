@@ -59,7 +59,7 @@ class ClusterInfo:
     master_ip2master_host: Dict[str, str] = field(init=False)  # master_ip@master_port -> master_host
 
     def __post_init__(self):
-        self.allhosts = _walk_hosts(self.inventory)
+        self.allhosts = _walk_hosts(self.inventory.get("all", self.inventory))
         self._get_master_ip2master_host()
         self._create_pod_info()
         self._update_pod_info()
@@ -137,7 +137,8 @@ class ClusterInfo:
     def decode_pod_num(self):
         return len(self.d_pod_info)
 
-
+    def __repr__(self):
+        return f"<PodInfo(p_pod_info={self.p_pod_info}, d_pod_info={self.d_pod_info})>"
 
 
 def execute_command(command):
@@ -430,6 +431,7 @@ def omni_cli_start(
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inventory_path, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
+
     if not skip_verify_config:
         _verify_and_fix_env_vars(inv, inv_file)
 
