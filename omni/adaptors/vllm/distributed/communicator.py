@@ -155,3 +155,9 @@ class NPUCommunicator(DeviceCommunicatorBase):
             output_tensor, input_, group=self.device_group, async_op=True
         )
         return output_tensor, handle
+
+    def all_gather_v(self, output_list_: List[torch.Tensor], input_:torch.Tensor) -> None:
+        torch.distributed.all_gather(output_list_, input_, group=self.device_group)
+
+    def reduce_scatter_v(self, output_:torch.Tensor, input_list_:List[torch.Tensor]) -> None:
+        torch.distributed.reduce_scatter(output_, input_list_, group=self.device_group)
