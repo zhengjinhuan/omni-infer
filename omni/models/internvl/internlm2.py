@@ -1,35 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Iterable
-from functools import partial
 from typing import Any, Optional, Union, List
 
 import torch
 from torch import nn
 from transformers import PretrainedConfig
 
-from vllm.attention import Attention, AttentionMetadata
+from vllm.attention import AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import (get_pp_group, get_tensor_model_parallel_rank,
-                              get_tensor_model_parallel_world_size,
-                              split_tensor_along_last_dim,
-                              tensor_model_parallel_all_gather)
-from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.distributed import get_pp_group
 from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
-                                               QKVParallelLinear,
-                                               RowParallelLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.pooler import Pooler, PoolingType
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead, VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.pooling_metadata import PoolingMetadata
 from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.sequence import IntermediateTensors, PoolerOutput
+from vllm.sequence import IntermediateTensors
 
 from vllm.model_executor.models.interfaces import SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (is_pp_missing_parameter,
@@ -101,7 +90,6 @@ class InternLMDecoderLayer(nn.Module):
         return hidden_states, residual
 
 
-@support_torch_compile
 class InternLM2Model(nn.Module):
 
     def __init__(
@@ -165,6 +153,7 @@ class InternLM2Model(nn.Module):
         return hidden_states
 
 
+@support_torch_compile
 class InternLM2ForCausalLM(nn.Module, SupportsPP, SupportsLoRA):
     packed_modules_mapping = {
         "wqkv": ["wqkv"],
