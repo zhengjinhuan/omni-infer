@@ -893,11 +893,10 @@ class SimpleSampler(RejectionSamplerV1):
                 accepted = torch.empty_like(accepted_probs).uniform_() < accepted_probs # boolean mask
                 accepted = accepted.view(batch_size, -1)
                 
-                simple_accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens.view(batch_size, -1)[:, :-1]
                 computed_msk = self.main_sampler.prob_cache.computed[:batch_size].unsqueeze(1).expand(-1, num_spec_tokens_per_req)
-                accepted = torch.where(computed_msk, accepted, simple_accepted)
+                accepted = torch.where(computed_msk, accepted, computed_msk)
             else:
-                accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens.view(batch_size, -1)[:, :-1]
+                accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens[:, :-1]
       
             if model_extra_config.operator_opt_config.control_accept_rate >= 0 and model_extra_config.operator_opt_config.control_accept_rate <= 1:
                 accepted = torch.empty_like(accepted, dtype=torch.float32).uniform_() < model_extra_config.operator_opt_config.control_accept_rate
@@ -913,17 +912,17 @@ class SimpleSampler(RejectionSamplerV1):
                 reject_req_indices = torch.where(accepted_num < num_spec_tokens_per_req)[0]
 
                 if reject_req_indices.numel() > 0:
+                    forward_tokens = forward_tokens.view(-1)
                     resample_indices = last_accepted_index[reject_req_indices]
                     bias = torch.arange(batch_size, device=last_accepted_index.device, dtype=torch.int32)
                     drafter_resample_indices = (last_accepted_index - bias)[reject_req_indices]
                     forward_tokens[resample_indices] = self._reject_sampling(main_probs[resample_indices], topk_spec_token_ids[drafter_resample_indices], topk_spec_token_probs[drafter_resample_indices])
+                    forward_tokens = forward_tokens.view(batch_size, -1)
 
-                forward_tokens = forward_tokens.view(batch_size, -1)
                 if self.main_sampler.penalty_cache is not None:
                     for i in range(num_sampling_tokens_per_req):
                         self.main_sampler.penalty_cache.save_token_ids(forward_tokens[:, i])
 
-            forward_tokens = forward_tokens.view(batch_size, -1)
             output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], forward_tokens, self.minus_one)
             
             for spec_token_idx in range(1, num_spec_tokens_per_req):

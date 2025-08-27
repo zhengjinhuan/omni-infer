@@ -6,7 +6,6 @@ def move_cached_tensors(cached_tensor_list, src):
     num_reqs = len(src)
     applied = [False] * num_reqs
     last_idx = cached_tensor_list[0].shape[0] - 1
-    # for cached_tensor in [self.prompt_mask, self.output_mask, self.output_bin_counts, self.topk_spec_token_ids, self.topk_spec_token_probs, self.computed]:
     for cached_tensor in cached_tensor_list:
         for i in range(num_reqs):
             cur = i
@@ -41,7 +40,7 @@ class PenaltyCache:
         if self.cached_req_ids == None:
             self.cached_req_ids = new_req_ids
             return
-        num_reqs = len(self.cached_req_ids)
+        num_reqs = len(new_req_ids)
         src = [-1] * num_reqs
         for i in range(len(self.cached_req_ids)):
             try:
@@ -120,7 +119,7 @@ class ProbCache:
         if self.cached_req_ids == None:
             self.cached_req_ids = new_req_ids
             return
-        num_reqs = len(self.cached_req_ids)
+        num_reqs = len(new_req_ids)
         src = [-1] * num_reqs
         for i in range(len(self.cached_req_ids)):
             try:
