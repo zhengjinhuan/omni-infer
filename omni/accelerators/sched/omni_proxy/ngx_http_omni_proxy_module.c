@@ -7,6 +7,7 @@
 #include <omni_utils.h>
 #include <omni_tokenizer.h>
 #include <stdbool.h>
+#include <omni_apc.h>
 
 ngx_module_t ngx_http_omni_proxy_module;
 #define PREFILL_ENDPOINTS "prefill_endpoints"
@@ -1431,6 +1432,55 @@ static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
+void zmq_test_handler(struct omni_zmq_handler_s *handler,
+                      const char *topic,
+                      const void *message,
+                      size_t length)
+{
+    KVEventBatch *batch = parse_kv_event_batch(message, length);
+    if (!batch)
+    {
+        return;
+    }
+
+    printf("[%ld - %ld] Received KV event batch with %ld events\n",
+           handler->index, ngx_worker, batch->events_count);
+
+    // print_kv_event_batch(batch);
+    free_kv_event_batch(batch);
+}
+
+static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
+{
+    if (local_state.loc_conf->vllm_kv_port_offset == NGX_CONF_UNSET)
+    {
+        return NGX_OK;
+    }
+
+    ngx_core_conf_t *ccf;
+    ccf = (ngx_core_conf_t *)ngx_get_conf(ngx_cycle->conf_ctx, ngx_core_module);
+    for (int i = 0; i < g_state->num_prefill_endpoints; i++)
+    {
+        omni_upstream_prefill_t *prefill = &g_state->prefill_states[i];
+        prefill->kv_handler.index = i;
+
+        if (i % ccf->worker_processes == ngx_worker)
+        {
+            u_char *buf = ngx_palloc(cycle->pool, 64);
+            u_char *last = ngx_snprintf((u_char *)buf, 64, "%s:%d",
+                                        prefill->address.ip,
+                                        prefill->address.port + local_state.loc_conf->vllm_kv_port_offset);
+
+            printf("address: %s\n", buf);
+            ngx_str_t addr;
+            addr.data = buf;
+            addr.len = last - buf;
+            ngx_str_t topic = ngx_string("");
+            omni_zmq_handler_init(cycle, &prefill->kv_handler, addr, topic, zmq_test_handler);
+        }
+    }
+}
+
 static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
 {
     local_state.pid = ngx_pid;
@@ -1459,6 +1509,8 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
     printf("Init timer, pid: %u, worker: %lu\n", ngx_pid, ngx_worker);
 
     ngx_add_timer(&local_state.omni_proxy_timer_event, TIMER_INTERVAL);
+
+    omni_proxy_init_kv_listener(cycle);
 
     return NGX_OK;
 }

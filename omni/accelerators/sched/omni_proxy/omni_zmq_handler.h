@@ -18,6 +18,7 @@ typedef struct omni_zmq_handler_s
 {
     void *zmq_context;
     void *zmq_socket;
+    ngx_int_t index;
     ngx_int_t active;
     ngx_str_t zmq_address;
     ngx_str_t subscribe_topic;
