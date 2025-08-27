@@ -5,197 +5,150 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <omni_apc.h>
 
-typedef struct
-{
-    double ts;
-    void **events;
-    size_t events_count;
-} KVEventBatch;
+#define BLOCK_STORED_TAG "BlockStored"
+#define BLOCK_REMOVED_TAG "BlockRemoved"
+#define ALL_BLOCKS_CLEARED_TAG "AllBlocksCleared"
+#define BLOCK_STORED_FIELDS 6
+#define BLOCK_REMOVED_FIELDS 2
+#define BLOCK_HASHES_INDEX 1
+#define PARENT_BLOCK_HASH_INDEX 2
+#define TOKEN_IDS_INDEX 3
+#define BLOCK_SIZE_INDEX 4
+#define LORA_ID_INDEX 5
 
-typedef struct
+static int64_t *parse_int64_array(const msgpack_object *obj, size_t *out_count)
 {
-    int type; // 0: BlockStored, 1: BlockRemoved, 2: AllBlocksCleared
-    union
+    if (obj->type != MSGPACK_OBJECT_ARRAY || obj->via.array.size == 0)
     {
-        struct
-        {
-            int64_t *block_hashes;
-            size_t block_hashes_count;
-            int64_t parent_block_hash;
-            int64_t *token_ids;
-            size_t token_ids_count;
-            int32_t block_size;
-            int64_t lora_id;
-        } block_stored;
-        struct
-        {
-            int64_t *block_hashes;
-            size_t block_hashes_count;
-        } block_removed;
-    } data;
-} KVCacheEvent;
-
-static int parse_block_stored(msgpack_object_map *map, KVCacheEvent *event)
-{
-    event->type = 0;
-
-    for (size_t i = 0; i < map->size; i++)
+        *out_count = 0;
+        return NULL;
+    }
+    size_t n = obj->via.array.size;
+    int64_t *arr = malloc(n * sizeof(int64_t));
+    if (!arr)
     {
-        msgpack_object_kv *kv = &map->ptr[i];
-
-        if (kv->key.type == MSGPACK_OBJECT_STR &&
-            kv->key.via.str.size == 12 &&
-            memcmp(kv->key.via.str.ptr, "block_hashes", 12) == 0)
+        *out_count = 0;
+        return NULL;
+    }
+    for (size_t j = 0; j < n; ++j)
+    {
+        if (obj->via.array.ptr[j].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
         {
-            if (kv->val.type == MSGPACK_OBJECT_ARRAY)
-            {
-                event->data.block_stored.block_hashes_count = kv->val.via.array.size;
-                event->data.block_stored.block_hashes = malloc(kv->val.via.array.size * sizeof(int64_t));
-                for (size_t j = 0; j < kv->val.via.array.size; j++)
-                {
-                    if (kv->val.via.array.ptr[j].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-                    {
-                        event->data.block_stored.block_hashes[j] = kv->val.via.array.ptr[j].via.u64;
-                    }
-                }
-            }
+            arr[j] = obj->via.array.ptr[j].via.u64;
         }
-        else if (kv->key.type == MSGPACK_OBJECT_STR &&
-                 kv->key.via.str.size == 17 &&
-                 memcmp(kv->key.via.str.ptr, "parent_block_hash", 17) == 0)
+        else if (obj->via.array.ptr[j].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
         {
-            if (kv->val.type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-            {
-                event->data.block_stored.parent_block_hash = kv->val.via.u64;
-            }
-            else if (kv->val.type == MSGPACK_OBJECT_NIL)
-            {
-                event->data.block_stored.parent_block_hash = -1;
-            }
+            arr[j] = obj->via.array.ptr[j].via.i64;
         }
-        else if (kv->key.type == MSGPACK_OBJECT_STR &&
-                 kv->key.via.str.size == 9 &&
-                 memcmp(kv->key.via.str.ptr, "token_ids", 9) == 0)
+        else
         {
-            if (kv->val.type == MSGPACK_OBJECT_ARRAY)
-            {
-                event->data.block_stored.token_ids_count = kv->val.via.array.size;
-                event->data.block_stored.token_ids = malloc(kv->val.via.array.size * sizeof(int64_t));
-                for (size_t j = 0; j < kv->val.via.array.size; j++)
-                {
-                    if (kv->val.via.array.ptr[j].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-                    {
-                        event->data.block_stored.token_ids[j] = kv->val.via.array.ptr[j].via.u64;
-                    }
-                }
-            }
-        }
-        else if (kv->key.type == MSGPACK_OBJECT_STR &&
-                 kv->key.via.str.size == 10 &&
-                 memcmp(kv->key.via.str.ptr, "block_size", 10) == 0)
-        {
-            if (kv->val.type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-            {
-                event->data.block_stored.block_size = kv->val.via.u64;
-            }
-        }
-        else if (kv->key.type == MSGPACK_OBJECT_STR &&
-                 kv->key.via.str.size == 7 &&
-                 memcmp(kv->key.via.str.ptr, "lora_id", 7) == 0)
-        {
-            if (kv->val.type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-            {
-                event->data.block_stored.lora_id = kv->val.via.u64;
-            }
-            else if (kv->val.type == MSGPACK_OBJECT_NIL)
-            {
-                event->data.block_stored.lora_id = -1;
-            }
+            arr[j] = 0;
         }
     }
+    *out_count = n;
+    return arr;
+}
+
+static int parse_block_stored(const msgpack_object_array *array, KVCacheEvent *event)
+{
+    event->type = KV_EVENT_BLOCK_STORED;
+
+    if (array->size != BLOCK_STORED_FIELDS)
+        return -1;
+
+    size_t hashes_count = 0;
+    event->data.block_stored.block_hashes = parse_int64_array(&array->ptr[BLOCK_HASHES_INDEX], &hashes_count);
+    event->data.block_stored.block_hashes_count = hashes_count;
+
+    if (array->ptr[PARENT_BLOCK_HASH_INDEX].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
+        event->data.block_stored.parent_block_hash = array->ptr[PARENT_BLOCK_HASH_INDEX].via.u64;
+    else if (array->ptr[PARENT_BLOCK_HASH_INDEX].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
+        event->data.block_stored.parent_block_hash = array->ptr[PARENT_BLOCK_HASH_INDEX].via.i64;
+    else
+        event->data.block_stored.parent_block_hash = -1;
+
+    size_t token_ids_count = 0;
+    event->data.block_stored.token_ids = parse_int64_array(&array->ptr[TOKEN_IDS_INDEX], &token_ids_count);
+    event->data.block_stored.token_ids_count = token_ids_count;
+
+    if (array->ptr[BLOCK_SIZE_INDEX].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
+        event->data.block_stored.block_size = (int)array->ptr[BLOCK_SIZE_INDEX].via.u64;
+    else if (array->ptr[BLOCK_SIZE_INDEX].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
+        event->data.block_stored.block_size = (int)array->ptr[BLOCK_SIZE_INDEX].via.i64;
+    else
+        event->data.block_stored.block_size = 128;
+
+    if (array->ptr[LORA_ID_INDEX].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
+        event->data.block_stored.lora_id = array->ptr[LORA_ID_INDEX].via.u64;
+    else if (array->ptr[LORA_ID_INDEX].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
+        event->data.block_stored.lora_id = array->ptr[LORA_ID_INDEX].via.i64;
+    else if (array->ptr[LORA_ID_INDEX].type == MSGPACK_OBJECT_NIL)
+        event->data.block_stored.lora_id = -1;
+    else
+        event->data.block_stored.lora_id = -1;
+
     return 0;
 }
 
-static int parse_block_removed(msgpack_object_map *map, KVCacheEvent *event)
+static int parse_block_removed(const msgpack_object_array *array, KVCacheEvent *event)
 {
-    event->type = 1;
+    event->type = KV_EVENT_BLOCK_REMOVED;
 
-    for (size_t i = 0; i < map->size; i++)
-    {
-        msgpack_object_kv *kv = &map->ptr[i];
+    if (array->size != BLOCK_REMOVED_FIELDS)
+        return -1;
 
-        if (kv->key.type == MSGPACK_OBJECT_STR &&
-            kv->key.via.str.size == 12 &&
-            memcmp(kv->key.via.str.ptr, "block_hashes", 12) == 0)
-        {
-            if (kv->val.type == MSGPACK_OBJECT_ARRAY)
-            {
-                event->data.block_removed.block_hashes_count = kv->val.via.array.size;
-                event->data.block_removed.block_hashes = malloc(kv->val.via.array.size * sizeof(int64_t));
-                for (size_t j = 0; j < kv->val.via.array.size; j++)
-                {
-                    if (kv->val.via.array.ptr[j].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-                    {
-                        event->data.block_removed.block_hashes[j] = kv->val.via.array.ptr[j].via.u64;
-                    }
-                }
-            }
-        }
-    }
+    size_t hashes_count = 0;
+    event->data.block_removed.block_hashes = parse_int64_array(&array->ptr[BLOCK_HASHES_INDEX], &hashes_count);
+    event->data.block_removed.block_hashes_count = hashes_count;
+
     return 0;
 }
 
-static int parse_all_blocks_cleared(msgpack_object_map *map, KVCacheEvent *event)
+static int parse_all_blocks_cleared(const msgpack_object_array *array, KVCacheEvent *event)
 {
-    event->type = 2;
+    (void)array;
+    event->type = KV_EVENT_ALL_BLOCKS_CLEARED;
     return 0;
 }
 
-static int parse_kv_event(msgpack_object *obj, KVCacheEvent *event)
+static int parse_kv_event(const msgpack_object *obj, KVCacheEvent *event)
 {
-    if (obj->type != MSGPACK_OBJECT_MAP)
+    if (obj->type != MSGPACK_OBJECT_ARRAY)
     {
         return -1;
     }
 
-    msgpack_object_map *map = &obj->via.map;
-    const char *event_type = NULL;
-
-    for (size_t i = 0; i < map->size; i++)
-    {
-        msgpack_object_kv *kv = &map->ptr[i];
-
-        if (kv->key.type == MSGPACK_OBJECT_STR &&
-            kv->key.via.str.size == 4 &&
-            memcmp(kv->key.via.str.ptr, "type", 4) == 0)
-        {
-            if (kv->val.type == MSGPACK_OBJECT_STR)
-            {
-                event_type = kv->val.via.str.ptr;
-                break;
-            }
-        }
-    }
-
-    if (!event_type)
+    const msgpack_object_array *array = &obj->via.array;
+    if (array->size < 1 || array->ptr[0].type != MSGPACK_OBJECT_STR)
     {
         return -1;
     }
 
-    if (strncmp(event_type, "BlockStored", 11) == 0)
+    const char *tag = array->ptr[0].via.str.ptr;
+    size_t tag_len = array->ptr[0].via.str.size;
+
+    if (tag_len == strlen(BLOCK_STORED_TAG) && memcmp(tag, BLOCK_STORED_TAG, tag_len) == 0)
     {
-        return parse_block_stored(map, event);
+        if (array->size == BLOCK_STORED_FIELDS)
+        {
+            return parse_block_stored(array, event);
+        }
     }
-    else if (strncmp(event_type, "BlockRemoved", 12) == 0)
+    else if (tag_len == strlen(BLOCK_REMOVED_TAG) && memcmp(tag, BLOCK_REMOVED_TAG, tag_len) == 0)
     {
-        return parse_block_removed(map, event);
+        if (array->size == BLOCK_REMOVED_FIELDS)
+        {
+            return parse_block_removed(array, event);
+        }
     }
-    else if (strncmp(event_type, "AllBlocksCleared", 16) == 0)
+    else if (tag_len == strlen(ALL_BLOCKS_CLEARED_TAG) && memcmp(tag, ALL_BLOCKS_CLEARED_TAG, tag_len) == 0)
     {
-        return parse_all_blocks_cleared(map, event);
+        return parse_all_blocks_cleared(array, event);
     }
 
+    event->type = KV_EVENT_UNKNOWN;
     return -1;
 }
 
@@ -210,8 +163,8 @@ KVEventBatch *parse_kv_event_batch(const void *payload, size_t length)
         return NULL;
     }
 
-    msgpack_object *obj = &result.data;
-    if (obj->type != MSGPACK_OBJECT_MAP)
+    const msgpack_object *obj = &result.data;
+    if (obj->type != MSGPACK_OBJECT_ARRAY || obj->via.array.size < 2)
     {
         msgpack_unpacked_destroy(&result);
         return NULL;
@@ -219,45 +172,34 @@ KVEventBatch *parse_kv_event_batch(const void *payload, size_t length)
 
     KVEventBatch *batch = malloc(sizeof(KVEventBatch));
     memset(batch, 0, sizeof(KVEventBatch));
+    const msgpack_object_array *array = &obj->via.array;
 
-    msgpack_object_map *map = &obj->via.map;
-    for (size_t i = 0; i < map->size; i++)
+    // Timestamp
+    if (array->ptr[0].type == MSGPACK_OBJECT_FLOAT)
+        batch->ts = array->ptr[0].via.f64;
+    else if (array->ptr[0].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
+        batch->ts = array->ptr[0].via.u64;
+    else
+        batch->ts = 0;
+
+    // Events
+    if (array->ptr[1].type == MSGPACK_OBJECT_ARRAY)
     {
-        msgpack_object_kv *kv = &map->ptr[i];
-
-        if (kv->key.type == MSGPACK_OBJECT_STR &&
-            kv->key.via.str.size == 2 &&
-            memcmp(kv->key.via.str.ptr, "ts", 2) == 0)
+        size_t n = array->ptr[1].via.array.size;
+        batch->events_count = n;
+        batch->events = malloc(n * sizeof(KVCacheEvent *));
+        for (size_t j = 0; j < n; ++j)
         {
-            if (kv->val.type == MSGPACK_OBJECT_FLOAT)
+            KVCacheEvent *event = malloc(sizeof(KVCacheEvent));
+            memset(event, 0, sizeof(KVCacheEvent));
+            if (parse_kv_event(&array->ptr[1].via.array.ptr[j], event) == 0)
             {
-                batch->ts = kv->val.via.f64;
+                batch->events[j] = event;
             }
-        }
-        else if (kv->key.type == MSGPACK_OBJECT_STR &&
-                 kv->key.via.str.size == 6 &&
-                 memcmp(kv->key.via.str.ptr, "events", 6) == 0)
-        {
-            if (kv->val.type == MSGPACK_OBJECT_ARRAY)
+            else
             {
-                batch->events_count = kv->val.via.array.size;
-                batch->events = malloc(kv->val.via.array.size * sizeof(KVCacheEvent *));
-
-                for (size_t j = 0; j < kv->val.via.array.size; j++)
-                {
-                    KVCacheEvent *event = malloc(sizeof(KVCacheEvent));
-                    memset(event, 0, sizeof(KVCacheEvent));
-
-                    if (parse_kv_event(&kv->val.via.array.ptr[j], event) == 0)
-                    {
-                        batch->events[j] = event;
-                    }
-                    else
-                    {
-                        free(event);
-                        batch->events[j] = NULL;
-                    }
-                }
+                free(event);
+                batch->events[j] = NULL;
             }
         }
     }
@@ -270,25 +212,23 @@ void free_kv_event_batch(KVEventBatch *batch)
 {
     if (!batch)
         return;
-
     for (size_t i = 0; i < batch->events_count; i++)
     {
         if (batch->events[i])
         {
             KVCacheEvent *event = batch->events[i];
-            if (event->type == 0)
+            if (event->type == KV_EVENT_BLOCK_STORED)
             {
                 free(event->data.block_stored.block_hashes);
                 free(event->data.block_stored.token_ids);
             }
-            else if (event->type == 1)
+            else if (event->type == KV_EVENT_BLOCK_REMOVED)
             {
                 free(event->data.block_removed.block_hashes);
             }
             free(event);
         }
     }
-
     free(batch->events);
     free(batch);
 }
@@ -297,43 +237,46 @@ void print_kv_event_batch(const KVEventBatch *batch)
 {
     printf("Timestamp: %.3f\n", batch->ts);
     printf("Events count: %zu\n", batch->events_count);
-
     for (size_t i = 0; i < batch->events_count; i++)
     {
         const KVCacheEvent *event = batch->events[i];
         if (!event)
+        {
+            printf("Event %zu: NULL\n", i);
             continue;
-
+        }
         printf("Event %zu: ", i);
         switch (event->type)
         {
-        case 0:
+        case KV_EVENT_BLOCK_STORED:
             printf("BlockStored\n");
             printf("  Block hashes: ");
             for (size_t j = 0; j < event->data.block_stored.block_hashes_count; j++)
-            {
                 printf("%ld ", event->data.block_stored.block_hashes[j]);
-            }
+
             printf("\n  Parent block hash: %ld\n", event->data.block_stored.parent_block_hash);
             printf("  Token IDs: ");
             for (size_t j = 0; j < event->data.block_stored.token_ids_count; j++)
-            {
                 printf("%ld ", event->data.block_stored.token_ids[j]);
-            }
+
             printf("\n  Block size: %d\n", event->data.block_stored.block_size);
             printf("  Lora ID: %ld\n", event->data.block_stored.lora_id);
             break;
-        case 1:
+
+        case KV_EVENT_BLOCK_REMOVED:
             printf("BlockRemoved\n");
             printf("  Block hashes: ");
             for (size_t j = 0; j < event->data.block_removed.block_hashes_count; j++)
-            {
                 printf("%ld ", event->data.block_removed.block_hashes[j]);
-            }
             printf("\n");
             break;
-        case 2:
+
+        case KV_EVENT_ALL_BLOCKS_CLEARED:
             printf("AllBlocksCleared\n");
+            break;
+
+        default:
+            printf("Unknown event\n");
             break;
         }
     }
