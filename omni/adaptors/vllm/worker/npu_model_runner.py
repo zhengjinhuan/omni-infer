@@ -47,7 +47,7 @@ from omni.adaptors.vllm.forward_context import set_forward_context
 from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
-from omni.models.common.layers.npu_penalty_cache import PenaltyCache
+from omni.models.common.layers.npu_sampler_cache import PenaltyCache, ProbCache
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
@@ -116,16 +116,23 @@ class NPUModelRunner(GPUModelRunner):
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
         self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
+        self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
         self.topk = vllm_config.additional_config.get("rejection_sampler_topk", 4)
-        num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
-        penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, num_tokens_per_reqs_decode - 1, self.topk, self.device)
+        num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens) 
         if self.use_spec_decode:
             self.rejection_sampler = SimpleSampler(AscendSamplerV1(), self.use_rejection_sampler, self.topk)
-            self.rejection_sampler.main_sampler.penalty_cache = penalty_cache
+            if self.use_penalty:
+                penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, self.device)
+                self.rejection_sampler.main_sampler.penalty_cache = penalty_cache
+            if self.use_rejection_sampler:
+                prob_cache = ProbCache(self.max_num_reqs, num_tokens_per_reqs_decode - 1, self.topk, self.device)
+                self.rejection_sampler.main_sampler.prob_cache = prob_cache
             self.drafter = PostDrafter(vllm_config, device, self)
         else:
             self.sampler = AscendSamplerV1()
-            self.sampler.penalty_cache = penalty_cache
+            if self.use_penalty:
+                penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, self.device)
+                self.main_sampler.penalty_cache = penalty_cache
         self._init_graph_options()
 
         self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,
@@ -591,10 +598,13 @@ class NPUModelRunner(GPUModelRunner):
                                                    attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
             sampling_metadata = self.input_batch.sampling_metadata
             if self.curr_step == 0:
-                if self.use_spec_decode:
-                    self.rejection_sampler.main_sampler.penalty_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
-                else:
-                    self.sampler.penalty_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
+                if self.use_penalty:
+                    if self.use_spec_decode:
+                        self.rejection_sampler.main_sampler.penalty_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
+                    else:
+                        self.sampler.penalty_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
+                if self.use_rejection_sampler:
+                    self.rejection_sampler.main_sampler.prob_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
             if temp_finished_sending is not None:
                 finished_sending.update(temp_finished_sending)
             if temp_finished_recving is not None:

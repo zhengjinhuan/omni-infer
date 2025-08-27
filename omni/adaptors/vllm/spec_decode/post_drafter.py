@@ -175,7 +175,7 @@ class PostDrafter(EagleProposer):
                             mtp_topk_token_probs, mtp_topk_token_ids = torch.topk(mtp_probs, self.topk, dim=1)
                             mtp_topk_token_ids = mtp_topk_token_ids.view(batch_size, -1)
                             mtp_topk_token_probs = mtp_topk_token_probs.view(batch_size, -1)
-                            self.rejection_sampler.main_sampler.penalty_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, layer_idx)
+                            self.rejection_sampler.main_sampler.prob_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, )
                             draft_forward_tokens = mtp_topk_token_ids[:, 0].view(-1)
                             draft_forward_tokens_list.append(draft_forward_tokens)
                         else:
