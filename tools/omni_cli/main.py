@@ -1039,7 +1039,7 @@ def main():
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
     start_parser.add_argument(
-        "config_path",
+        "--config_path",
         nargs='?',
         default=None,
         help='Start in normal mode with config file'
@@ -1165,10 +1165,18 @@ def main():
         inventory_path=args.deploy_path,
         dry_run=args.dry_run
     ))
-    args = parser.parse_args()
 
-    args.deploy_path = get_default_deploy_path(args.command)
-    default_deploy_path = args.deploy_path
+    args = parser.parse_args()
+    
+    if args.config_path is None and args.normal is None:                                       
+        args.deploy_path = get_default_deploy_path(args.command)                               
+        default_deploy_path = args.deploy_path                                                 
+    else:                                                                                      
+        if args.config_path is None:                                                           
+            default_deploy_path = args.normal                                                  
+        if args.normal is None:                                                                
+            default_deploy_path = args.config_path    
+    
     if hasattr(args, 'func'):
         args.func(args)
         return
