@@ -417,10 +417,16 @@ class NpuHybridScheduler(Scheduler):
                 outputs=[],
                 scheduler_stats=None,
             )
-        sampled_token_ids = model_runner_output.sampled_token_ids[-1]
-        spec_token_ids = model_runner_output.spec_token_ids[-1]
-        logprobs = model_runner_output.logprobs[-1]
-        prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict[-1]
+        if not model_runner_output.sampled_token_ids or isinstance(model_runner_output.prompt_logprobs_dict, dict):
+            sampled_token_ids = model_runner_output.sampled_token_ids
+            spec_token_ids = model_runner_output.spec_token_ids
+            logprobs = model_runner_output.logprobs
+            prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
+        else:
+            sampled_token_ids = model_runner_output.sampled_token_ids[-1]
+            spec_token_ids = model_runner_output.spec_token_ids[-1]
+            logprobs = model_runner_output.logprobs[-1]
+            prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict[-1]
         logger.warning(
             f" { sampled_token_ids = } { spec_token_ids = } { logprobs = } { prompt_logprobs_dict = }"
         )
