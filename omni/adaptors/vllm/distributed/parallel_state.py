@@ -26,6 +26,7 @@ from vllm.distributed import (
     get_ep_group
 )
 from vllm.logger import logger
+from vllm.config import get_current_vllm_config
 from omni.models.common.config.model_config import model_extra_config
 import os
 
@@ -132,6 +133,7 @@ _MLP_TP: Optional[GroupCoordinator] = None
 _STREAM1_ATTN_GROUP: Optional[GroupCoordinator] = None
 _STREAM1_MLP_GROUP: Optional[GroupCoordinator] = None
 _STREAM1_MOE_GROUP: Optional[GroupCoordinator] = None
+_SCALE_PARALLEL_GROUP: Optional[GroupCoordinator] = None
 GROUP_STREAM1_ATTN = "stream1_attn" # p侧使能双micro batch为第二个流创建 attention 层通信域
 GROUP_STREAM1_MLP = "stream1_mlp" # p侧使能双micro batch为第二个流创建 mlp 层通信域
 GROUP_STREAM1_MOE = "stream1_moe" # p侧使能双micro batch为第二个流创建 moe 层通信域
@@ -185,6 +187,29 @@ def initialize_model_parallel(
                 initialize_far_cross_comm_group_list(backend)
                 initialize_near_cross_comm_group_list(backend)
 
+    scale_parallel = os.environ.get('SCALE_PARALLEL','0') == '1'
+    if scale_parallel:
+        initial_scale_parallel_group()
+
+
+def initial_scale_parallel_group():
+    config = get_current_vllm_config()
+    world_size = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
+    data_parallel_size = config.parallel_config.data_parallel_size
+    pipeline_model_parallel_size = config.parallel_config.pipeline_parallel_size
+    tensor_model_parallel_size = config.parallel_config.tensor_parallel_size
+
+    all_ranks = torch.arange(world_size).reshape(-1, data_parallel_size, pipeline_model_parallel_size,
+                tensor_model_parallel_size)
+    group_ranks = all_ranks.view(-1, tensor_model_parallel_size).unbind(0)
+    group_ranks = [x.tolist() for x in group_ranks]
+    global _SCALE_PARALLEL_GROUP
+    _SCALE_PARALLEL_GROUP = init_model_parallel_group(group_ranks,
+                                    parallel_state.get_world_group().local_rank,
+                                    "hccl",
+                                    use_message_queue_broadcaster=False,
+                                    group_name="scale_parallel")
 
 def _init_parallel_group_factory(
         group_name: str,
@@ -512,6 +537,8 @@ def get_o_proj_dp_group() -> GroupCoordinator:
 def get_local_world_group() -> GroupCoordinator:
     return _LOCAL_WORLD
 
+def get_scale_parallel_group() -> GroupCoordinator:
+    return _SCALE_PARALLEL_GROUP
 
 def get_local_group_from_list(idx: int) -> GroupCoordinator:
     return _LOCAL_COMM_LIST[idx]
