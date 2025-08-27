@@ -23,7 +23,6 @@ from vllm.v1.outputs import SamplerOutput as SamplerOutputV1
 from vllm.v1.sample.ops.penalties import apply_min_token_penalties
 from vllm.sampling_params import SamplingType
 from vllm.sequence import Logprob, VLLM_INVALID_TOKEN_ID
-from omni.models.common.layers.npu_penalty_cache import PenaltyCache
 from omni.models.common.config.model_config import model_extra_config
 
 
@@ -818,7 +817,7 @@ class AscendSamplerV1(SamplerV1):
             update_penalty: Optional[bool] = True,
     ) -> SamplerOutput:
         result = super().forward(logits, sampling_metadata)
-        if update_penalty:
+        if self.penalty_cache is not None and update_penalty:
             self.penalty_cache.save_token_ids(result.sampled_token_ids)
         return result
 
@@ -884,8 +883,8 @@ class SimpleSampler(RejectionSamplerV1):
                 vocab_size = main_probs.shape[1]
                 target_probs = main_probs.view(batch_size, -1, vocab_size)[:, :-1, :].view(-1, vocab_size)
 
-                topk_spec_token_ids = self.main_sampler.penalty_cache.topk_spec_token_ids[:batch_size].view(-1, self.topk)
-                topk_spec_token_probs = self.main_sampler.penalty_cache.topk_spec_token_probs[:batch_size].view(-1, self.topk)
+                topk_spec_token_ids = self.main_sampler.prob_cache.topk_spec_token_ids[:batch_size].view(-1, self.topk)
+                topk_spec_token_probs = self.main_sampler.prob_cache.topk_spec_token_probs[:batch_size].view(-1, self.topk)
                 draft_tokens_probs = topk_spec_token_probs[:, 0].view(-1)
                 draft_token_ids = topk_spec_token_ids[:, 0].view(-1)
                 target_token_probs = target_probs[torch.arange(batch_size), draft_token_ids].view(-1)
@@ -895,7 +894,7 @@ class SimpleSampler(RejectionSamplerV1):
                 accepted = accepted.view(batch_size, -1)
                 
                 simple_accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens.view(batch_size, -1)[:, :-1]
-                computed_msk = self.main_sampler.penalty_cache.computed[:batch_size].unsqueeze(1).expand(-1, num_spec_tokens_per_req)
+                computed_msk = self.main_sampler.prob_cache.computed[:batch_size].unsqueeze(1).expand(-1, num_spec_tokens_per_req)
                 accepted = torch.where(computed_msk, accepted, simple_accepted)
             else:
                 accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens.view(batch_size, -1)[:, :-1]
@@ -920,15 +919,17 @@ class SimpleSampler(RejectionSamplerV1):
                     forward_tokens[resample_indices] = self._reject_sampling(main_probs[resample_indices], topk_spec_token_ids[drafter_resample_indices], topk_spec_token_probs[drafter_resample_indices])
 
                 forward_tokens = forward_tokens.view(batch_size, -1)
-                for i in range(num_sampling_tokens_per_req):
-                    self.main_sampler.penalty_cache.save_token_ids(forward_tokens[:, i])
+                if self.main_sampler.penalty_cache is not None:
+                    for i in range(num_sampling_tokens_per_req):
+                        self.main_sampler.penalty_cache.save_token_ids(forward_tokens[:, i])
 
             forward_tokens = forward_tokens.view(batch_size, -1)
             output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], forward_tokens, self.minus_one)
             
             for spec_token_idx in range(1, num_spec_tokens_per_req):
                 accepted[:, spec_token_idx] = accepted[:, spec_token_idx] & accepted[:, spec_token_idx - 1]
-            self.main_sampler.penalty_cache.revert_rejected_tokens(accepted, forward_tokens.view(batch_size, -1)[:, 1:])
+            if self.main_sampler.penalty_cache is not None:
+                self.main_sampler.penalty_cache.revert_rejected_tokens(accepted, forward_tokens.view(batch_size, -1)[:, 1:])
 
         sampler_output = SamplerOutputV1(
             sampled_token_ids = output_token_ids,

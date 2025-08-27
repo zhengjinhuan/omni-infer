@@ -124,6 +124,8 @@ class NPUModelRunner(GPUModelRunner):
             if self.use_penalty:
                 penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, self.device)
                 self.rejection_sampler.main_sampler.penalty_cache = penalty_cache
+            else:
+                self.rejection_sampler.main_sampler.penalty_cache = None
             if self.use_rejection_sampler:
                 prob_cache = ProbCache(self.max_num_reqs, num_tokens_per_reqs_decode - 1, self.topk, self.device)
                 self.rejection_sampler.main_sampler.prob_cache = prob_cache
@@ -132,7 +134,10 @@ class NPUModelRunner(GPUModelRunner):
             self.sampler = AscendSamplerV1()
             if self.use_penalty:
                 penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, self.device)
-                self.main_sampler.penalty_cache = penalty_cache
+                self.sampler.penalty_cache = penalty_cache
+            else:
+                self.sampler.penalty_cache = None
+
         self._init_graph_options()
 
         self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,
