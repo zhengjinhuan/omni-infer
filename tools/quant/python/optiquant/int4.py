@@ -199,13 +199,21 @@ def pack_4bit(x):
     return y.T.contiguous()
 
 
-def main(args, bf16_path, output_path, model_name="deepseek-ai/DeepSeek-R1"):
+def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepSeek-R1"):
     quant_prefix = "quant_model_weight_w4a8_dynamic"
     disable_names = []
     for i in range(62):
         disable_names.append(f"model.layers.{i}.self_attn.kv_b_proj.weight")
         disable_names.append(f"model.layers.{i}.mlp.gate.weight")
         disable_names.append(f"model.layers.{i}.mlp.gate.e_score_correction_bias")
+
+        disable_names.append(f"model.layers.{i}.input_layernorm.weight")
+        disable_names.append(f"model.layers.{i}.post_attention_layernorm.weight")
+        disable_names.append(f"model.layers.{i}.pre_mlp_layernorm.weight")
+        disable_names.append(f"model.layers.{i}.post_mlp_layernorm.weight")
+
+        disable_names.append(f"model.layers.{i}.self_attn.q_a_layernorm.weight")
+        disable_names.append(f"model.layers.{i}.self_attn.kv_a_layernorm.weight")
 
     disable_names.append("lm_head")
     disable_names.append("model.norm.weight")
@@ -263,7 +271,7 @@ def main(args, bf16_path, output_path, model_name="deepseek-ai/DeepSeek-R1"):
                 new_weight_map[weight_name] = file_name
                 continue
             scale_inv_name = f"{weight_name}_scale_inv"
-            if scale_inv_name in weight_map:
+            if scale_inv_name in weight_map or pangu_mode:
                 assert weight.element_size() == 2
                 quant_count += 1
                 if weight_is_w4(weight_name):

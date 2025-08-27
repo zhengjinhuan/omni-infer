@@ -13,6 +13,7 @@ if __name__ == "__main__":
     parser.add_argument("--file_count", type=int, default=0, help="File count when loading model")
     parser.add_argument("--model-name", type=str, default="deepseek-ai/DeepSeek-R1", help="Huggingface repo name")
 
+    parser.add_argument("--pangu-mode", default=False, action="store_true", help="pangu mode")
     parser.add_argument("--w4", default=False, action="store_true", help="int4 quantization flag")
     parser.add_argument("--qtype", type=str, default="sszs50g0a0b4sym1", help="quantization config. only support sszs50g0a0b4sym1 now")
     parser.add_argument("--c8-calib-path", type=str, default=None, help="mla c8 calibration data path")
