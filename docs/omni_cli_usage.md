@@ -206,14 +206,14 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 
    > --help: 帮助信息
    >
-   > --deploy_path：配置文件路径，默认为 $pwd/server_profiles.yml
+   > --config_path：配置文件路径，默认为 $pwd/server_profiles.yml
    >
    > --dry-run：测试模式，只显示将要执行的操作而不实际执行
 
     使用示例：
 
    ```bash
-   omni_cli run_docker
+   omni_cli run_docker --config_path test.yml
    ```
 
 2. omni_cli start
@@ -226,14 +226,14 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    >
    > --skip-verify-config:  跳过配置校验，避免配置推断修改用户指定配置
    >
-   > --normal config_path:  使用指定omni_cli配置文件拉起服务，默认为 $pwd/server_profiles.yml
+   > --config_path:  使用指定omni_cli配置文件拉起服务，默认为 $pwd/server_profiles.yml
    >
    > --run_dev: 开发者快速拉起，跳过ranktable生成和global proxy拉起。需确保已经进行normal拉起，完成ranktable生成和global proxy拉起。
 
    使用示例：
 
    ```bash
-   omni_cli start --normal server_profiles.yml
+   omni_cli start --config_path server_profiles.yml
    ```
 
 3. omni_cli stop
