@@ -35,6 +35,7 @@ from vllm.platforms import current_platform
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding as GPURotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding as GPUMRotaryEmbedding
+from vllm.model_executor.layers.rotary_embedding import DynamicNTKScalingRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding as GPUYaRNScalingRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import DeepseekScalingRotaryEmbedding as DeepseekScalingRotaryEmbeddingGPU
 from vllm.model_executor.layers.rotary_embedding import (_yarn_find_correction_dim,
@@ -778,7 +779,15 @@ def get_rope(
                         max_position, 
                         base,
                         is_neox_style)
-                
+        elif  scaling_type == "dynamic":
+            rotary_emb = DynamicNTKScalingRotaryEmbedding(
+                        head_size, 
+                        rotary_dim, 
+                        max_position, 
+                        base,
+                        is_neox_style,
+                        scaling_factor, 
+                        dtype)
         else:
             scaling_type = rope_scaling["type"]
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}, only support linear and dynamic now")
