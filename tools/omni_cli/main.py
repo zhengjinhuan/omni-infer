@@ -1167,24 +1167,24 @@ def main():
     ))
 
     args = parser.parse_args()
-    
+
     if hasattr(args, 'func'):
-        if args.config_path is None:                                                           
-            args.deploy_path = get_default_deploy_path(args.command)                           
-            default_deploy_path = args.deploy_path                                             
-        else:                                                                                  
-            default_deploy_path = args.config_path                                             
-            args.func(args)
-            return
-    else:                                                                                      
-        if args.config_path is None and args.normal is None:                                   
-            args.deploy_path = get_default_deploy_path(args.command)                           
-            default_deploy_path = args.deploy_path                                             
-        else:                                                                                  
-            if args.config_path is None:                                                       
-                default_deploy_path = args.normal                                              
-            if args.normal is None:                                                            
-                default_deploy_path = args.config_path  
+        if args.config_path is None:
+            args.deploy_path = get_default_deploy_path(args.command)
+            default_deploy_path = args.deploy_path
+        else:
+            default_deploy_path = args.config_path
+        args.func(args)
+        return
+    else:
+        if args.config_path is None and args.normal is None:
+            args.deploy_path = get_default_deploy_path(args.command)
+            default_deploy_path = args.deploy_path
+        else:
+            if args.config_path is None:
+                default_deploy_path = args.normal
+            if args.normal is None:
+                default_deploy_path = args.config_path
 
     if args.command == "start" and not any([args.normal, args.run_dev]):
         args.normal = True
