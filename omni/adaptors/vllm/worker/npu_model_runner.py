@@ -453,7 +453,7 @@ class NPUModelRunner(GPUModelRunner):
         else:
             mm_embeds = []
 
-        if self.is_multimodal_model:
+        if self.is_multimodal_model and get_pp_group().is_first_rank:
             if mm_embeds:
                 inputs_embeds = self.model.get_input_embeddings(input_ids, mm_embeds)
             else:

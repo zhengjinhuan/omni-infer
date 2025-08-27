@@ -39,6 +39,7 @@ from vllm.model_executor.layers.rotary_embedding import DynamicNTKScalingRotaryE
 from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding as GPUYaRNScalingRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import DeepseekScalingRotaryEmbedding as DeepseekScalingRotaryEmbeddingGPU
 from vllm.model_executor.layers.rotary_embedding import (_yarn_find_correction_dim,
+                                            _apply_rotary_emb_torch,
                                             _yarn_find_correction_range,
                                             _yarn_linear_ramp_mask,
                                             _yarn_get_mscale,
@@ -610,26 +611,7 @@ class QwenRotaryEmbedding(torch.nn.Module):
 
         return q_embed, k_embed
 
-def _apply_rotary_emb_torch(
-    x: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    is_neox_style: bool,
-) -> torch.Tensor:
-    cos = cos.unsqueeze(-2).to(x.dtype)
-    sin = sin.unsqueeze(-2).to(x.dtype)
-    if is_neox_style:
-        x1, x2 = torch.chunk(x, 2, dim=-1)
-    else:
-        x1 = x[..., ::2]
-        x2 = x[..., 1::2]
-    o1 = x1 * cos - x2 * sin
-    o2 = x2 * cos + x1 * sin
-    if is_neox_style:
-        return torch.cat((o1, o2), dim=-1)
-    else:
-        return torch.stack((o1, o2), dim=-1).flatten(-2)
-    
+
 class QwenMRotaryEmbedding(GPUMRotaryEmbedding):
     """Rotary Embedding with Multimodal Sections."""
 
