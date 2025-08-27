@@ -605,7 +605,7 @@ def get_host_groups(inv_data: dict) -> Dict[str, List[str]]:
     traverse(inv_data.get("all", inv_data))
     return host_groups
 
-def sync_dev(
+def sync_code(
     inventory_path,
     dry_run: bool = False,
     code_path: str = None
@@ -774,7 +774,7 @@ show_spinner() {
             except:
                 pass
 
-def install_dev(
+def install_code(
     inventory_path,
     dry_run: bool = False,
 ) -> None:
@@ -1140,7 +1140,7 @@ def main():
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
     start_parser.add_argument(
-        "config_path",
+        "--config_path",
         nargs='?',
         default=None,
         help='Start in normal mode with config file'
@@ -1217,7 +1217,7 @@ def main():
     # RUN_DOCKER command configuration
     run_docker_parser = subparsers.add_parser("run_docker", help="Run Docker containers based on inventory")
     run_docker_parser.add_argument(
-        "--inventory", "-i",
+        "--config_path", "-i",
         default=str(default_deploy_path),
         help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
@@ -1230,8 +1230,8 @@ def main():
         inventory_path=str(default_deploy_path),
         dry_run=args.dry_run
     ))
-    # SYNC_DEV command configuration
-    sync_parser = subparsers.add_parser("sync_dev", help="Developer mode: Synchronize the code")
+    # SYNC_CODE command configuration
+    sync_parser = subparsers.add_parser("sync_code", help="Developer mode: Synchronize the code")
     sync_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
@@ -1244,14 +1244,14 @@ def main():
     )
     sync_parser.add_argument("--code_path", required=True, help="code_path")
 
-    sync_parser.set_defaults(func=lambda args:sync_dev(
+    sync_parser.set_defaults(func=lambda args:sync_code(
         inventory_path=args.deploy_path,
         dry_run=args.dry_run,
         code_path=args.code_path
     ))
 
-    # INSTALL_DEV command configuration
-    install_parser = subparsers.add_parser("install_dev", help="Developer mode: Install packages")
+    # INSTALL_CODE command configuration
+    install_parser = subparsers.add_parser("install_code", help="Developer mode: Install packages")
     install_parser.add_argument(
         "--deploy_path",
         default=str(default_deploy_path),
@@ -1262,17 +1262,30 @@ def main():
         action="store_true",
         help="Show what would be done without making any changes"
     )
-    install_parser.set_defaults(func=lambda args:install_dev(
+    install_parser.set_defaults(func=lambda args:install_code(
         inventory_path=args.deploy_path,
         dry_run=args.dry_run
     ))
+
     args = parser.parse_args()
 
-    args.deploy_path = get_default_deploy_path(args.command)
-    default_deploy_path = args.deploy_path
     if hasattr(args, 'func'):
+        if args.config_path is None:
+            args.deploy_path = get_default_deploy_path(args.command)
+            default_deploy_path = args.deploy_path
+        else:
+            default_deploy_path = args.config_path
         args.func(args)
         return
+    else:
+        if args.config_path is None and args.normal is None:
+            args.deploy_path = get_default_deploy_path(args.command)
+            default_deploy_path = args.deploy_path
+        else:
+            if args.config_path is None:
+                default_deploy_path = args.normal
+            if args.normal is None:
+                default_deploy_path = args.config_path
 
     if args.command == "start" and not any([args.normal, args.run_dev]):
         args.normal = True
