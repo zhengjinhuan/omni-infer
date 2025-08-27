@@ -1272,11 +1272,11 @@ def main():
     args = parser.parse_args()
 
     if hasattr(args, 'func'):
-        if args.config_path is None:
+        if  hasattr(args, 'config_path') and args.config_path is not None:
+            default_deploy_path = args.config_path
+        else:
             args.deploy_path = get_default_deploy_path(args.command)
             default_deploy_path = args.deploy_path
-        else:
-            default_deploy_path = args.config_path
         args.func(args)
         return
     else:
