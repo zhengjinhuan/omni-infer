@@ -58,6 +58,8 @@ class ClusterInfo:
             "pod_hosts": [],
             "device_count": {},
             "server_offset": {},
+            "master_ip": None,
+            "master_port": None,  # all nodes in the pod use the same master port
             "num_dp": None,
             "num_servers": None,
             "kv_rank": None,
@@ -68,8 +70,6 @@ class ClusterInfo:
         self.p_pod_info, self.d_pod_info = {}, {}
 
         for host, hv in self.allhosts:
-            master_ip = hv.get('host_ip', None)
-            master_port = hv.get('env', {}).get('MASTER_PORT', None)
             role = hv.get('env', {}).get('ROLE', None)
             master_host = hv.get("master_node", None)
             device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
@@ -80,6 +80,9 @@ class ClusterInfo:
                     pod_vars = self.d_pod_info.setdefault(master_host, self._new_pod_info())
                 else:
                     continue
+                if host == master_host:  # master node
+                    pod_vars["master_port"] = hv.get('env', {}).get('MASTER_PORT', None)
+                    pod_vars["master_ip"] = hv.get('ansible_host', None)
                 pod_vars["pod_hosts"].append(host)
                 pod_vars["device_count"][host] = device_count
 
@@ -272,23 +275,10 @@ def _verify_and_fix_env_vars(
     # calculate pod num, server ip list and server offset, kv rank
     server_ip_list_temp = []
     host_ip_dict = {}
-    master_port_p_dict, master_port_d_dict = {}, {}
-    for host, hv in inventory['all']['children']['P']['hosts'].items():
-        ip = hv.get('ansible_host', None)
-        host_ip = hv.get('host_ip', None)
-        host_ip_dict[host] = host_ip
-        if host_ip is not None and ip == host_ip:
-            master_port_p_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
     for host, hv in inventory['all']['children']['D']['hosts'].items():
         ip = hv.get('ansible_host', None)
-        host_ip = hv.get('host_ip', None)
-        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
         if ip:
             server_ip_list_temp.append(f"{ip}")
-        server_offset += device_count
-        host_ip_dict[host] = host_ip
-        if host_ip is not None and ip == host_ip:
-            master_port_d_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
 
     # update num_dp_dict
     server_ip_list = ','.join(server_ip_list_temp)
@@ -305,7 +295,8 @@ def _verify_and_fix_env_vars(
             continue
 
         if master_host is None:
-            print(f"[WARNING] host={host} can not find MASTER_HOST")
+            print(f"[ERROR] host={host} can not find master node")
+            raise RuntimeError(f"host={host} can not find master node")
 
         if "PREFILL_POD_NUM" in hv.get("env", {}):
             if hv.get("env", {}).get("PREFILL_POD_NUM") != cluster_info.prefill_pod_num:
@@ -355,11 +346,11 @@ def _verify_and_fix_env_vars(
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
             role = hv.get("env", {}).get("ROLE", None)
-            master_port_dict = master_port_p_dict if role == "prefill" else master_port_d_dict
+            master_port = all_hosts
             if role == "prefill" or role == "decode":
-                master_port = master_port_dict.get(host_ip, None)
+                master_port = pod_info.get("master_port", None)
                 if master_port is None:
-                    print(f"[WARNING] host={host} with master ip={host_ip} can not find MASTER_PORT")
+                    print(f"[WARNING] host={host} with master node={master_host} can not find MASTER_PORT")
                 if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
                     hv.get("env", {})["MASTER_PORT"] = master_port
                     need_overwrite_inv = True
