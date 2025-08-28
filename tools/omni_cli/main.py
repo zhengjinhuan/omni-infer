@@ -479,6 +479,11 @@ def omni_cli_start(
         log_path = str(env.get("LOG_PATH") or "").strip()
         log_path = f"{log_path}/{host.replace('.', '_')}"
         env["LOG_PATH"] = log_path
+        # check if start ray
+        need_start_ray, ray_cmd = maybe_start_ray(is_master, pod_info, role)
+        if need_start_ray:
+            args.get("extra-args", {})["distributed-executor-backend"] = "ray"
+
 
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
@@ -513,8 +518,6 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
             tf.write(export_block + "\n\n")
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
 
-            # check if start ray
-            need_start_ray, ray_cmd = maybe_start_ray(is_master, pod_info, role)
             if need_start_ray:
                 tf.write(f"{ray_cmd}\n")
                 if is_master:
