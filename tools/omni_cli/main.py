@@ -1278,7 +1278,7 @@ def main():
         args.func(args)
         return
     else:
-        if args.config_path is None and args.normal is None:
+        if not hasattr(args, 'config_path') or (args.config_path is None and args.normal is None):
             args.deploy_path = get_default_deploy_path(args.command)
             default_deploy_path = args.deploy_path
         else:
