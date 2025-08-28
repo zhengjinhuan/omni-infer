@@ -790,6 +790,8 @@ class AscendSamplerV1(SamplerV1):
             logits: torch.Tensor,
             sampling_metadata: SamplingMetadata,
     ) -> torch.Tensor:
+        if self.penalty_cache is None:
+            return logits
         if sampling_metadata.min_tokens:
             apply_min_token_penalties(logits,
                                       sampling_metadata.output_token_ids,
