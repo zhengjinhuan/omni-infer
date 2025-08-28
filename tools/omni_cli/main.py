@@ -287,9 +287,11 @@ def _verify_and_fix_env_vars(
     for host, hv in all_hosts:
         master_host = hv.get("master_node", None)
         role = hv.get("env", {}).get("ROLE", None)
+        if role not in ["prefill", "decode"]:
+            continue
         pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
         pod_info = pod_info.get(master_host, None)
-        if pod_info is None and role in ["prefill", "decode"]:
+        if pod_info is None:
             print(f"[WARNING] host={host} can not find POD_INFO")
             continue
 
