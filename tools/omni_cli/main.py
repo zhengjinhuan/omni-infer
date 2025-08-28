@@ -314,19 +314,16 @@ def _verify_and_fix_env_vars(
             rank_table_save_path = hv.get("env", {})["RANKTABLE_SAVE_PATH"]
             if role == 'prefill':
                 if len(pod_info["pod_hosts"]) > 1:
-                    file_pattern = os.path.join(rank_table_save_path, "global/collect_files_p", pod_info['master_ip'], "local_*merge.json")
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_p/{pod_info['master_ip']}/local_*merge.json | tr '\n' ' ')"
                 else:
                     prefill_server_list = hv.get("ascend_rt_visible_devices", "").replace(',', '')
-                    file_pattern = os.path.join(rank_table_save_path, "prefill_config", f"local_*{prefill_server_list}.json")
-                matched_files = glob.glob(file_pattern)
-                hv.get("env", {})["RANK_TABLE_FILE_PATH"] = ' '.join(matched_files)
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/prefill_config/local_*{prefill_server_list}.json | tr '\n' ' ')"
             if role == 'decode':
-                if cluster_info.decode_pod_num > 1:
-                    file_pattern = os.path.join(rank_table_save_path, "global/collect_files_d", "local_*merge.json")
+                if len(pod_info["pod_hosts"]) > 1:
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_d/local_*merge.json | tr '\n' ' ')"
                 else:
-                    file_pattern = os.path.join(rank_table_save_path, "decode_config", "local_*.json")
-                matched_files = glob.glob(file_pattern)
-                hv.get("env", {})["RANK_TABLE_FILE_PATH"] = ' '.join(matched_files)
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/decode_config/local_*.json | tr '\n' ' ')"
+            print(f"[INFO] host={host} RANK_TABLE_FILE_PATH set to {hv.get('env', {})['RANK_TABLE_FILE_PATH']}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
                 need_overwrite_inv = True
