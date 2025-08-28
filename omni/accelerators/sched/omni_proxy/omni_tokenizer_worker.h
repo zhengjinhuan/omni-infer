@@ -25,6 +25,7 @@ typedef struct
     int epoll_fd;
     ngx_int_t active;
     ngx_str_t model_path;
+    ngx_int_t kv_block_size;
     ngx_log_t *log;
     ngx_connection_t *resp_connection; // 响应管道的连接
 } ngx_omni_tokenize_worker_t;

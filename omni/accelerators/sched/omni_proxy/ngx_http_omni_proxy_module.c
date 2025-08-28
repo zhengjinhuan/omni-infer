@@ -122,8 +122,18 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
     req->tokenizer_req.prompt = ngx_palloc(r->pool, req->tokenizer_req.prompt_buf_size);
 
     req->tokenizer_req.input_ids_buf_size = req->tokenizer_req.prompt_buf_size;
-    req->tokenizer_req.input_ids = ngx_palloc(r->pool, sizeof(int) * req->tokenizer_req.input_ids_buf_size);
+    req->tokenizer_req.input_ids = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.input_ids_buf_size);
 
+    req->tokenizer_req.block_hashes_buf_size = req->tokenizer_req.input_ids_buf_size / local_state.loc_conf->kv_block_size;
+    req->tokenizer_req.block_hashes = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.block_hashes_buf_size);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                  "buf sizes: prompt %zu, input_ids %zu, block_hashes %zu, %p, %p, %p\n",
+                  req->tokenizer_req.prompt_buf_size,
+                  req->tokenizer_req.input_ids_buf_size,
+                  req->tokenizer_req.block_hashes_buf_size,
+                  req->tokenizer_req.prompt,
+                  req->tokenizer_req.input_ids,
+                  req->tokenizer_req.block_hashes);
     omni_tokenizer_worker_submit(&local_state.tokenize_worker, req->slot_index);
 }
 
@@ -1224,6 +1234,7 @@ static void *ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
     conf->pd_policy = NGX_CONF_UNSET;
     conf->model_path.data = NULL;
     conf->model_path.len = 0;
+    conf->kv_block_size = 128;
 
     conf->vllm_kv_port_offset = NGX_CONF_UNSET;
 
@@ -1355,6 +1366,8 @@ static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
 
             req->metrics.time_tokenized = ngx_current_msec;
             printf("Tokenize %ld, time taken:%lu\n", req->tokenizer_req.input_len, ngx_current_msec - req->metrics.time_contents_received);
+            print_tokenize_result(&req->tokenizer_req);
+
             omni_proxy_post_tokenized(req);
         }
         else
@@ -1383,6 +1396,7 @@ static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
     }
 
     local_state.tokenize_worker.model_path = local_state.loc_conf->model_path;
+    local_state.tokenize_worker.kv_block_size = local_state.loc_conf->kv_block_size;
 
     if (omni_tokenizer_worker_init(cycle, &local_state.tokenize_worker) != NGX_OK)
     {

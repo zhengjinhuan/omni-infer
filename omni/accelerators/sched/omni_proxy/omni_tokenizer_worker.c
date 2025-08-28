@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 
 static void *omni_tokenizer_worker_func(void *data)
 {
@@ -90,12 +91,16 @@ static void *omni_tokenizer_worker_func(void *data)
             if (omni_batch_chat_encode(batch_requests, batch_count) == 0)
             {
                 printf("Write response back:%ld\n", nread);
-                write(worker->resp_pipe[OMNI_PIPE_WRITE], slot_ids, nread);
             }
             else
             {
+                for (int i = 0; i < batch_count; i++)
+                {
+                    batch_requests[i]->failed = true;
+                }
                 printf("Tokenize failed.\n");
             }
+            write(worker->resp_pipe[OMNI_PIPE_WRITE], slot_ids, nread);
         }
 
         if (nread == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
