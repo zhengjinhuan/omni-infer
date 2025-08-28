@@ -129,6 +129,7 @@ class PostDrafter(EagleProposer):
             positions,
             attn_metadata,
             block_size,
+            model_layer,
     ):
         if isinstance(attn_metadata, Dict):
             # suppose that types of attn in layers of drafter is same, and share one attn_metadata
@@ -137,7 +138,7 @@ class PostDrafter(EagleProposer):
         pad_mask = attn_metadata.slot_mapping == self.minus_one
         positions[:] = torch.where(pad_mask, positions, positions + 1)
 
-        attn_metadata.advance_step(attn_metadata, positions, block_size, pad_mask)
+        attn_metadata.advance_step(attn_metadata, positions, block_size, pad_mask, model_layer)
 
 
     @torch.inference_mode()
@@ -184,7 +185,7 @@ class PostDrafter(EagleProposer):
                 for i in range(self.speculative_config.num_speculative_tokens):
                     if i >= self.n_predictor:
                         if attn_state == AscendAttentionState.DecodeOnly:
-                            self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size)
+                            self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size, self.model.model.layer[0])
                         else:
                             break
                     drafter_logits, next_hidden_states = self.model(
