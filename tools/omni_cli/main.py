@@ -414,7 +414,9 @@ while true; do
     fi
 done
 """
-    return True, ray_cmd
+        return True, ray_cmd
+    else:
+        return False, ""
 
 def omni_cli_start(
     inventory_path: str = "./server_profiles.yml",
