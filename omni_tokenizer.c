@@ -111,7 +111,8 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
     {
         if (requests[i]->input_data == NULL || requests[i]->input_len == 0 ||
             requests[i]->prompt == NULL || requests[i]->prompt_buf_size == 0 ||
-            requests[i]->input_ids == NULL || requests[i]->input_ids_buf_size == 0)
+            requests[i]->input_ids == NULL || requests[i]->input_ids_buf_size == 0 ||
+            requests[i]->block_hashes == NULL || requests[i]->block_hashes_buf_size == 0)
         {
             return -1;
         }
@@ -148,7 +149,7 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
         return -1;
     }
 
-    if (!PyTuple_Check(pResult) || PyTuple_Size(pResult) != 3)
+    if (!PyTuple_Check(pResult) || PyTuple_Size(pResult) != 4)
     {
         Py_DECREF(pResult);
         return -1;
@@ -156,7 +157,8 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
 
     PyObject *pPrompts = PyTuple_GetItem(pResult, 0);
     PyObject *pInputIds = PyTuple_GetItem(pResult, 1);
-    PyObject *pMultiModalSizes = PyTuple_GetItem(pResult, 2);
+    PyObject *pBlockIds = PyTuple_GetItem(pResult, 2);
+    PyObject *pMultiModalSizes = PyTuple_GetItem(pResult, 3);
 
     if (!PyList_Check(pPrompts) || !PyList_Check(pInputIds) || !PyList_Check(pMultiModalSizes))
     {
@@ -207,6 +209,24 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
             }
         }
 
+        PyObject *pBlockIdList = PyList_GetItem(pBlockIds, i);
+        if (PyList_Check(pBlockIdList))
+        {
+            size_t id_count = PyList_Size(pBlockIdList);
+            if (id_count <= requests[i]->block_hashes_buf_size)
+            {
+                for (size_t j = 0; j < id_count; j++)
+                {
+                    PyObject *pId = PyList_GetItem(pBlockIdList, j);
+                    if (PyLong_Check(pId))
+                    {
+                        requests[i]->block_hashes[j] = PyLong_AsLong(pId);
+                    }
+                }
+                requests[i]->block_hashes_len = id_count;
+            }
+        }
+
         PyObject *pSize = PyList_GetItem(pMultiModalSizes, i);
         if (PyLong_Check(pSize))
         {
@@ -216,4 +236,29 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
 
     Py_DECREF(pResult);
     return 0;
+}
+
+void print_tokenize_result(omni_tokenizer_request *requests)
+{
+    if (requests == NULL)
+    {
+        return;
+    }
+
+    printf("Prompt: %.*s\n", (int)requests->prompt_len, requests->prompt);
+    printf("Input IDs (%zu): ", requests->input_ids_len);
+    for (size_t i = 0; i < requests->input_ids_len; i++)
+    {
+        printf("%ld ", requests->input_ids[i]);
+    }
+    printf("\n");
+
+    printf("Block Hashes (%zu): ", requests->block_hashes_len);
+    for (size_t i = 0; i < requests->block_hashes_len; i++)
+    {
+        printf("%ld ", requests->block_hashes[i]);
+    }
+    printf("\n");
+
+    printf("Multi Modal Size: %d\n", requests->multi_modal_size);
 }

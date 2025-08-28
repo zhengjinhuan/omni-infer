@@ -1,27 +1,28 @@
+import hashlib
 import os
 import json
-import time
 import base64
+import pickle
 from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass
-import concurrent.futures
-from functools import partial
-import multiprocessing as mp
 import os
 
 os.environ["RAYON_NUM_THREADS"] = os.environ.get("RAYON_NUM_THREADS", "2")
 os.environ["TOKENIZERS_PARALLELISM"] = os.environ.get("TOKENIZERS_PARALLELISM", "true")
 os.environ["RAYON_MIN_CHUNK_SIZE"] = os.environ.get("RAYON_MIN_CHUNK_SIZE", "1024")
 
+if os.getenv("PYTHONHASHSEED") == None:
+    raise ValueError("PYTHONHASHSEED must be set to use APC")
+
+print(f"Using {os.environ['PYTHONHASHSEED']} for block hash seed")
 print(f"Using {os.environ['RAYON_NUM_THREADS']} threads for Rayon parallelism")
 print(f"Tokenizers parallelism set to: {os.environ['TOKENIZERS_PARALLELISM']}")
 print(f"Rayon minimum chunk size: {os.environ['RAYON_MIN_CHUNK_SIZE']}")
 
-try:
-    from transformers import PreTrainedTokenizer, AutoTokenizer
-    from vllm.transformers_utils.tokenizer import get_tokenizer
-except ImportError:
-    from transformers import PreTrainedTokenizer, AutoTokenizer
+from transformers import PreTrainedTokenizer, AutoTokenizer
+from vllm.transformers_utils.tokenizer import get_tokenizer
+# from vllm.utils import sha256
+# from vllm.v1.core import kv_cache_utils
 
 @dataclass
 class PreprocessResult:
@@ -611,6 +612,30 @@ def batch_chat_encode(texts: List[str]) -> Tuple[List[str], List[List[int]], Lis
     
     return prompts, input_ids, multi_modal_size
 
+def sha256(input) -> int:
+    input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
+    return int.from_bytes(hashlib.sha256(input_bytes).digest(),
+                          byteorder="big")
+
+def hash_block_tokens(token_ids: List[int], block_size: int = 128) -> List[int]:
+    block_hashes= []
+    NONE_HASH = sha256(os.environ.get("PYTHONHASHSEED"))
+
+    parent_block_hash_value = NONE_HASH
+    hash_function = hash
+
+    for start in range(0, len(token_ids), block_size):
+        end = start + block_size
+        block_token_ids = token_ids[start:end]
+        if len(block_token_ids) < block_size:
+            break
+
+        block_hash = hash_function((parent_block_hash_value, tuple(block_token_ids), None))
+        block_hashes.append(block_hash)
+        parent_block_hash_value = block_hash 
+
+    return block_hashes
+
 def batch_chat_encode_bytes(texts_bytes: List[bytes]) -> Tuple[List[bytes], List[List[int]], List[int]]:
     global tokenizer
     if tokenizer is None:
@@ -638,9 +663,11 @@ def batch_chat_encode_bytes(texts_bytes: List[bytes]) -> Tuple[List[bytes], List
                 prompts.append(str(result.prompt).encode('utf-8'))
         
         input_ids = [result.input_ids for result in results]
+        block_hashes = [hash_block_tokens(token_ids, block_size=128) for token_ids in input_ids]
+
         multi_modal_sizes = [0 if result.multi_modal_data is None else len(result.multi_modal_data) for result in results]
         
-        return prompts, input_ids, multi_modal_sizes
+        return prompts, input_ids, block_hashes, multi_modal_sizes
         
     except Exception as e:
         print(f"Error in batch_chat_encode_bytes: {e}")
@@ -662,22 +689,25 @@ if __name__ == "__main__":
     try:
         model_path = "/root/nginx-1.26.0/omni_proxy/deepseek"
         msgs = [
-            '{"messages":[{"role":"user","content":"赵女士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他的儿子们偷吃了，二说道：“是老四偷吃的。”老三人说了实话，其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"}],"model":"deepseek","temperature":0,"max_tokens":20, "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}',
+            '{"messages":[{"role":"user","content":"赵女士买了一些水果和小食品准备去看望一个朋友，士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看望一个朋友，谁知品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他谁知，这些水果和小食品被他的儿子们偷吃了，二说道：“是老四偷吃的。”老三人说了实话，其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"}],"model":"deepseek","temperature":0,"max_tokens":20, "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}',
             '{"messages":[{"role":"user","content":"老四说道：“老二在说谎。”这4个儿子中只有一个人说了实话，其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"}],"model":"deepseek","temperature":0,"max_tokens":20, "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}',
         ]
+
+        msgs = [s.encode('utf-8') for s in msgs]
         tokenizer = load_tokenizer(model_path)
 
         # prompts, input_ids, multi_modal_data = batch_chat_encode(msgs)
-        prompts, input_ids, multi_modal_data = batch_chat_encode_bytes(msgs)
+        prompts, input_ids, block_hashes, multi_modal_data = batch_chat_encode_bytes(msgs)
                       
         # conversations, prompts, input_ids, multi_modal_data = preprocess_chat_batch(model_path, test_requests)
         # print(f"Processed {len(conversations)} requests successfully")
         print(f"Multi-modal data found: {any(multi_modal_data)}")
 
-        for prompt, ids, mm_data in zip(prompts, input_ids, multi_modal_data):
+        for prompt, ids, block_hash, mm_data in zip(prompts, input_ids, block_hashes, multi_modal_data):
             # print(f"Conversation: {conv}")
             print(f"Prompt: {prompt}")
             print(f"  Input IDs ({len(ids)}): {ids}")
+            print(f"  Block Hashes ({len(ids)}): {block_hash}")
             if mm_data:
                 print(f"Multi-modal data: {mm_data}")
             print("-" * 40)
