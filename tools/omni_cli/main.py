@@ -274,7 +274,6 @@ def _verify_and_fix_env_vars(
 
     # calculate pod num, server ip list and server offset, kv rank
     server_ip_list_temp = []
-    host_ip_dict = {}
     for host, hv in inventory['all']['children']['D']['hosts'].items():
         ip = hv.get('ansible_host', None)
         if ip:
@@ -290,7 +289,7 @@ def _verify_and_fix_env_vars(
         role = hv.get("env", {}).get("ROLE", None)
         pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
         pod_info = pod_info.get(master_host, None)
-        if pod_info is None:
+        if pod_info is None and role in ["prefill", "decode"]:
             print(f"[WARNING] host={host} can not find POD_INFO")
             continue
 
@@ -326,7 +325,7 @@ def _verify_and_fix_env_vars(
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} KV_RANK set to {kv_rank}")
         if "HOST_IP" in hv.get("env", {}):
-            host_ip = host_ip_dict.get(host, None)
+            host_ip = hv.get("host_ip", None)
             if host_ip is not None and hv.get("env", {}).get("HOST_IP") != host_ip:
                 hv.get("env", {})["HOST_IP"] = host_ip
                 need_overwrite_inv = True
