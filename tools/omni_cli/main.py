@@ -57,14 +57,16 @@ class ClusterInfo:
     d_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
 
     master_ip2master_host: Dict[str, str] = field(init=False)  # master_ip@master_port -> master_host
+    host2master_ip: Dict[str, str] = field(init=False)  # host -> master_ip@master_port
+    host2master_host: Dict[str, str] = field(init=False)  # host -> master_host
 
     def __post_init__(self):
         self.allhosts = _walk_hosts(self.inventory.get("all", self.inventory))
-        self._get_master_ip2master_host()
+        self._get_host_master_mapping()
         self._create_pod_info()
         self._update_pod_info()
 
-    def _get_master_ip2master_host(self):
+    def _get_host_master_mapping(self):
         """Get the master_ip@port to master host mapping."""
         self.master_ip2master_host = {}
         for host, hv in self.allhosts:
@@ -75,6 +77,11 @@ class ClusterInfo:
                 # get the first one as master host
                 if self.master_ip2master_host.get(f"{master_ip}@{master_port}", None) is None:
                     self.master_ip2master_host[f"{master_ip}@{master_port}"] = host
+            self.host2master_ip[host] = f"{master_ip}@{master_port}"
+
+        for host, master_ip in self.host2master_ip.items():
+            self.host2master_host[host] = self.master_ip2master_host.get(master_ip, None)
+
 
     def _new_pod_info(self) -> Dict[str, Any]:
         """Create a fresh pod-info dict."""
@@ -242,6 +249,7 @@ def _build_args_line(args: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 def _verify_and_fix_env_vars(
+    cluster_info: ClusterInfo,
     inventory: Dict[str, Any],
     inventory_path: str = None,
 ) -> List[str]:
@@ -293,71 +301,66 @@ def _verify_and_fix_env_vars(
     need_overwrite_inv = len(conflicts) > 0
 
     # calculate pod num, server ip list and server offset, kv rank
-    kv_rank_dict, kv_rank = {}, 0
-    prefill_pod_num = 0
-    server_offset_dict, server_offset = {}, 0
     server_ip_list_temp = []
     host_ip_dict = {}
-    num_server_dict, num_dp_dict_p, num_dp_dict_d = {}, {}, {}
-    total_dp_d = 0
     master_port_p_dict, master_port_d_dict = {}, {}
     for host, hv in inventory['all']['children']['P']['hosts'].items():
         ip = hv.get('ansible_host', None)
         host_ip = hv.get('host_ip', None)
-        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
-        tp = int(hv.get('args', {}).get('tp', 16))
-        prefill_pod_num += 1
-        server_offset_dict[host] = server_offset  # for P always 0
         host_ip_dict[host] = host_ip
-        kv_rank_dict[host] = kv_rank
-        kv_rank += 1
-        num_server_dict[host] = device_count // tp
-        num_dp_dict_p[host] = device_count // tp
         if host_ip is not None and ip == host_ip:
             master_port_p_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
     for host, hv in inventory['all']['children']['D']['hosts'].items():
         ip = hv.get('ansible_host', None)
         host_ip = hv.get('host_ip', None)
         device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
-        tp = int(hv.get('args', {}).get('tp', 1))
         if ip:
             server_ip_list_temp.append(f"{ip}")
-        server_offset_dict[host] = server_offset
         server_offset += device_count
         host_ip_dict[host] = host_ip
-        kv_rank_dict[host] = kv_rank
-        num_server_dict[host] = device_count // tp
-        total_dp_d += device_count // tp
-        num_dp_dict_d[host] = total_dp_d
         if host_ip is not None and ip == host_ip:
             master_port_d_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
 
     # update num_dp_dict
-    num_dp_dict_d = {k: total_dp_d for k in num_dp_dict_d.keys()}
-    num_dp_dict = {**num_dp_dict_p, **num_dp_dict_d}
     server_ip_list = ','.join(server_ip_list_temp)
 
     ## update inventory
     need_overwrite_inv = False
     for host, hv in all_hosts:
+        master_host = cluster_info.host2master_host.get(host, None)
+        role = hv.get("env", {}).get("ROLE", None)
+        pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
+        pod_info = pod_info.get(master_host, None)
+        if pod_info is None:
+            print(f"[WARNING] host={host} can not find POD_INFO")
+            continue
+
+        if master_host is None:
+            print(f"[WARNING] host={host} can not find MASTER_HOST")
+
         if "PREFILL_POD_NUM" in hv.get("env", {}):
-            if hv.get("env", {}).get("PREFILL_POD_NUM") != prefill_pod_num:
+            if hv.get("env", {}).get("PREFILL_POD_NUM") != cluster_info.prefill_pod_num:
                 need_overwrite_inv = True
-                hv.get("env", {})["PREFILL_POD_NUM"] = prefill_pod_num
-                print(f"[INFO] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
+                hv.get("env", {})["PREFILL_POD_NUM"] = cluster_info.prefill_pod_num
+                print(f"[INFO] host={host} PREFILL_POD_NUM set to {cluster_info.prefill_pod_num}")
+        if "DECODE_POD_NUM" in hv.get("env", {}):
+            if hv.get("env", {}).get("DECODE_POD_NUM") != cluster_info.decode_pod_num:
+                need_overwrite_inv = True
+                hv.get("env", {})["DECODE_POD_NUM"] = cluster_info.decode_pod_num
+                print(f"[INFO] host={host} DECODE_POD_NUM set to {cluster_info.decode_pod_num}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
                 need_overwrite_inv = True
                 hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
                 print(f"[INFO] host={host} SERVER_IP_LIST set to {server_ip_list}")
         if "SERVER_OFFSET" in hv.get("env", {}):
-            server_offset = server_offset_dict.get(host, None)
+            server_offset = pod_info.get("server_offset", {}).get(host, None)
             if server_offset is not None and hv.get("env", {}).get("SERVER_OFFSET") != server_offset:
                 hv.get("env", {})["SERVER_OFFSET"] = server_offset
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} SERVER_OFFSET set to {server_offset}")
         if "KV_RANK" in hv.get("env", {}):
-            kv_rank = kv_rank_dict.get(host, None)
+            kv_rank = pod_info.get("kv_rank", None)
             if kv_rank is not None and hv.get("env", {}).get("KV_RANK") != kv_rank:
                 hv.get("env", {})["KV_RANK"] = kv_rank
                 need_overwrite_inv = True
@@ -369,13 +372,13 @@ def _verify_and_fix_env_vars(
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} HOST_IP set to {host_ip}")
         if "num-servers" in hv.get("args", {}):
-            num_server = num_server_dict.get(host, None)
+            num_server = pod_info.get("num_servers", None)
             if num_server is not None and hv.get("args", {}).get("num-servers") != num_server:
                 hv.get("args", {})["num-servers"] = num_server
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} num-servers set to {num_server}")
         if "num-dp" in hv.get("args", {}):
-            num_dp = num_dp_dict.get(host, None)
+            num_dp = pod_info.get("num_dp", None)
             if num_dp is not None and hv.get("args", {}).get("num-dp") != num_dp:
                 hv.get("args", {})["num-dp"] = num_dp
                 need_overwrite_inv = True
@@ -432,8 +435,9 @@ def omni_cli_start(
     with open(inventory_path, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
 
+    cluster_info = ClusterInfo(inv)
     if not skip_verify_config:
-        _verify_and_fix_env_vars(inv, inv_file)
+        _verify_and_fix_env_vars(cluster_info, inv, inv_file)
 
     if not dev:
         omni_cli.proxy.omni_run_proxy(inventory_path)
