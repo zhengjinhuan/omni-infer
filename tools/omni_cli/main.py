@@ -327,11 +327,21 @@ def _verify_and_fix_env_vars(
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} KV_RANK set to {kv_rank}")
         if "HOST_IP" in hv.get("env", {}):
-            host_ip = hv.get("host_ip", None)
+            host_ip = pod_info.get("master_ip", None)
             if host_ip is not None and hv.get("env", {}).get("HOST_IP") != host_ip:
                 hv.get("env", {})["HOST_IP"] = host_ip
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} HOST_IP set to {host_ip}")
+        # set master port same as host_ip's master port
+        if "MASTER_PORT" in hv.get("env", {}):
+            if role == "prefill" or role == "decode":
+                master_port = pod_info.get("master_port", None)
+                if master_port is None:
+                    print(f"[WARNING] host={host} with master node={master_host} can not find MASTER_PORT")
+                if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
+                    hv.get("env", {})["MASTER_PORT"] = master_port
+                    need_overwrite_inv = True
+                    print(f"[INFO] host={host} MASTER_PORT set to {master_port}")
         if "num-servers" in hv.get("args", {}):
             num_server = pod_info.get("num_servers", None)
             if num_server is not None and hv.get("args", {}).get("num-servers") != num_server:
@@ -344,17 +354,6 @@ def _verify_and_fix_env_vars(
                 hv.get("args", {})["num-dp"] = num_dp
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} num-dp set to {num_dp}")
-        # set master port same as host_ip's master port
-        if "MASTER_PORT" in hv.get("env", {}):
-            master_port = all_hosts
-            if role == "prefill" or role == "decode":
-                master_port = pod_info.get("master_port", None)
-                if master_port is None:
-                    print(f"[WARNING] host={host} with master node={master_host} can not find MASTER_PORT")
-                if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
-                    hv.get("env", {})["MASTER_PORT"] = master_port
-                    need_overwrite_inv = True
-                    print(f"[INFO] host={host} MASTER_PORT set to {master_port}")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
