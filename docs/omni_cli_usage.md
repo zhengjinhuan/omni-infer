@@ -17,7 +17,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli add_node --role C --name c0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
    omni_cli add_node --role P --name p0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
    omni_cli add_node --role D --name d0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
-   omni_cli add_node --role D --name d1 --host_ip 本机IP --master_ip 主D节点IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
+   omni_cli add_node --role D --name d1 --host_ip 本机IP --master-node 主D节点 --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
    ```
 
 2. 修改配置
@@ -78,14 +78,14 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    效果展示：
 
    ```
-   Role  | Name  | IP Address     
+   Role  | Name  | IP Address
    ------------------------------
-   C     | c0    | 127.0.0.1      
-   D     | d0    | 127.0.0.2      
-   D     | d1    | 127.0.0.3      
-   P     | p0    | 127.0.0.1      
+   C     | c0    | 127.0.0.1
+   D     | d0    | 127.0.0.2
+   D     | d1    | 127.0.0.3
+   P     | p0    | 127.0.0.1
    ------------------------------
-   
+
    ```
 2. omni_cli add_node
 
@@ -109,7 +109,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    >
    > --ssh_common_args：SSH通用参数，默认为"-o StrictHostKeyChecking=no -o IdentitiesOnly=yes"
    >
-   >  --master_ip：主节点IP，默认为host_ip值，用于多机组服务，从节点需要配置主节点IP
+   >  --master-ip：主节点，默认为当前添加的节点自己，用于多机组服务。主节点无需设置，从节点需要配置主节点，例如，d0.
 
    使用示例：
 
@@ -148,9 +148,9 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 
    使用示例：
    ```bash
-   
+
    # NAME 可以是 all(所有节点)， p/d/c(按照Role)，p0/d0/c0(按照名称)
-   
+
    # 配置设置
    #
    # 环境变量
@@ -175,7 +175,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    omni_cli cfg --delete NAME args --num-servers
    # extra-args
    omni_cli cfg --delete NAME args --extra-args '--max-num-batched-tokens --max-num-seqs'
-   # additional-config 
+   # additional-config
    omni_cli cfg --delete NAME args --additional-config '--graph_model_compile_config'
    # 单独支持 容器名称、镜像、visible device 配置
    omni_cli cfg --delete NAME --container_name
@@ -331,5 +331,5 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 4. start命令要支持单独拉P/D/C
 5. ls命令需要返回容器状态
 6. start命令要检查服务是否拉起，以进度条方式展示
-7. 完成 omni_cli upgrade    
+7. 完成 omni_cli upgrade
 8. 完成 omni_cli collect_log

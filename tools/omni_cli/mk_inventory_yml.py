@@ -60,9 +60,6 @@ def add_node(args):
         print("[ERROR] role must be P, D, or C.")
         return
 
-    # Set master IP if not provided
-    if not args.master_ip:
-        args.master_ip = args.host_ip
 
     # Set container name prefix based on role
     if args.role == 'P':
@@ -86,12 +83,29 @@ def add_node(args):
     if hasattr(args, 'docker_image_id') and args.docker_image_id:
         node['DOCKER_IMAGE_ID'] = args.docker_image_id
 
-    # For P/D roles, add master_ip
-    if args.role in ['P', 'D']:
-        node['host_ip'] = args.master_ip
     # Get role-specific configuration from default profiles
     role_config = default_profiles['profiles']['vllm']['deepseek'].get(args.role)
     env = role_config.get('env', {}).copy()
+
+    # Set master IP if not provided
+    if not args.master_node:
+        args.master_node = args.name
+    is_slave_node = args.master_node != args.name
+    if is_slave_node:
+        if args.master_node not in hosts:
+            print(f"[ERROR] Master node '{args.master_node}' not found in role '{args.role}'. Please add the master node first.")
+            return
+        master_ip = hosts[args.master_node]['ansible_host']
+        master_port = hosts[args.master_node]['env'].get('MASTER_PORT', None)
+    else:
+        master_ip = args.host_ip
+        master_port = env.get('MASTER_PORT', None) # use default in default_profiles.yml
+
+    # For P/D roles, add master_ip
+    if args.role in ['P', 'D']:
+        node['host_ip'] = master_ip
+        node['master_node'] = args.master_node
+        env['MASTER_PORT'] = master_port
 
     # Copy arguments if present
     if role_config.get('args', {}):
@@ -100,7 +114,7 @@ def add_node(args):
 
     # Update PORT fields in environment variables
     for k in env:
-        if k.endswith('PORT'):
+        if k.endswith('PORT') and k != 'MASTER_PORT':
             user_port = None
             if user_port is not None:
                 env[k] = user_port

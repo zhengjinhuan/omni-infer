@@ -44,15 +44,6 @@ class ClusterInfo:
     inventory: Dict[str, Any]
     allhosts: List[Tuple[str, Dict[str, Any]]] = field(init=False)  # [(host, hostvars), ...]
 
-    # {master_host: {"kv_rank": kv_rank,
-    #                "pod_hosts": [host1, host2, ...],
-    #                "device_count": {host1:16, host2:16, ...},
-    #                "server_offset": {host1:0, host2:16, ...},
-    #                "num_dp": 32,
-    #                "num_servers": 1  # API Server for the specific host,  1 for P, 16 for D
-    #
-    #               },
-    # ...}
     p_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
     d_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
 
@@ -1205,7 +1196,10 @@ def main():
     addnode_parser.add_argument("--user", default="root", help="ansible_user")
     addnode_parser.add_argument("--ssh_common_args", default="-o StrictHostKeyChecking=no -o IdentitiesOnly=yes", help="ssh_common_args")
     addnode_parser.add_argument("--ssh_private_key_file", required=True, help="ssh_private_key_file")
-    addnode_parser.add_argument("--master_ip", help="master_ip:The default value is set to host_ip")
+    addnode_parser.add_argument("--master-node",
+                                metavar="<master-node>, e.g. d0",
+                                default=None,
+                                help="The default value is set to current node name.")
     addnode_parser.add_argument("--docker_image_id", required=True, help="docker_image_id")
     addnode_parser.set_defaults(func=add_node)
 
