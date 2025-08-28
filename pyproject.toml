@@ -41,7 +41,7 @@ packages.find.exclude = [
     "omni.accelerators.placement.utils",
     "omni.accelerators.placement.scripts",
     "omni.accelerators.placement.patterns",
-    "omni.accelerators.placement..cloudbuild"   
+    "omni.accelerators.placement..cloudbuild"
 ]
 
 cmdclass.build_ext = "pybind11.setup_helpers.build_ext"
