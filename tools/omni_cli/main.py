@@ -1252,7 +1252,7 @@ def main():
     run_docker_parser = subparsers.add_parser("run_docker", help="Run Docker containers based on inventory")
     run_docker_parser.add_argument(
         "--config_path", "-i",
-        default=str(default_deploy_path),
+        default=None,
         help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     run_docker_parser.add_argument(
