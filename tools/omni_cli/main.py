@@ -47,32 +47,10 @@ class ClusterInfo:
     p_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
     d_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
 
-    master_ip2master_host: Dict[str, str] = field(init=False)  # master_ip@master_port -> master_host
-    host2master_ip: Dict[str, str] = field(init=False)  # host -> master_ip@master_port
-    host2master_host: Dict[str, str] = field(init=False)  # host -> master_host
-
     def __post_init__(self):
         self.allhosts = _walk_hosts(self.inventory.get("all", self.inventory))
-        self._get_host_master_mapping()
         self._create_pod_info()
         self._update_pod_info()
-
-    def _get_host_master_mapping(self):
-        """Get the master_ip@port to master host mapping."""
-        self.master_ip2master_host = {}
-        for host, hv in self.allhosts:
-            master_ip = hv.get('host_ip', None)
-            master_port = hv.get('env', {}).get('MASTER_PORT', None)
-            ansible_ip = hv.get('ansible_host')
-            if ansible_ip == master_ip:
-                # get the first one as master host
-                if self.master_ip2master_host.get(f"{master_ip}@{master_port}", None) is None:
-                    self.master_ip2master_host[f"{master_ip}@{master_port}"] = host
-            self.host2master_ip[host] = f"{master_ip}@{master_port}"
-
-        for host, master_ip in self.host2master_ip.items():
-            self.host2master_host[host] = self.master_ip2master_host.get(master_ip, None)
-
 
     def _new_pod_info(self) -> Dict[str, Any]:
         """Create a fresh pod-info dict."""
@@ -93,7 +71,7 @@ class ClusterInfo:
             master_ip = hv.get('host_ip', None)
             master_port = hv.get('env', {}).get('MASTER_PORT', None)
             role = hv.get('env', {}).get('ROLE', None)
-            master_host = self.master_ip2master_host.get(f"{master_ip}@{master_port}", None)
+            master_host = hv.get("master_node", None)
             device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
             if master_host:
                 if role == "prefill":
@@ -318,7 +296,7 @@ def _verify_and_fix_env_vars(
     ## update inventory
     need_overwrite_inv = False
     for host, hv in all_hosts:
-        master_host = cluster_info.host2master_host.get(host, None)
+        master_host = hv.get("master_node", None)
         role = hv.get("env", {}).get("ROLE", None)
         pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
         pod_info = pod_info.get(master_host, None)
