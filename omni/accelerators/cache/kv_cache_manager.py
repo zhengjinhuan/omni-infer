@@ -418,7 +418,6 @@ class OmniKVCacheManager:
             A list of lists of integers. The outer list corresponds to KV Cache groups,
             where the first is full attention group.
         """
-        assert request_id in self.single_type_manager.req_to_blocks
         group_block_ids: list[list[int]] = []
         for mgr in self.hybrid_managers:
             if request_id in mgr.req_to_blocks:
