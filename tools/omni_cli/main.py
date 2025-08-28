@@ -309,6 +309,24 @@ def _verify_and_fix_env_vars(
                 need_overwrite_inv = True
                 hv.get("env", {})["DECODE_POD_NUM"] = cluster_info.decode_pod_num
                 print(f"[INFO] host={host} DECODE_POD_NUM set to {cluster_info.decode_pod_num}")
+        if  "RANK_TABLE_FILE_PATH" in hv.get("env", {}):
+            need_overwrite_inv = True
+            rank_table_save_path = hv.get("env", {})["RANKTABLE_SAVE_PATH"]
+            if role == 'prefill':
+                if len(pod_info["pod_hosts"]) > 1:
+                    file_pattern = os.path.join(rank_table_save_path, "global/collect_files_p", pod_info['master_ip'], "local_*merge.json")
+                else:
+                    prefill_server_list = hv.get("ascend_rt_visible_devices", "").replace(',', '')
+                    file_pattern = os.path.join(rank_table_save_path, "prefill_config", f"local_*{prefill_server_list}.json")
+                matched_files = glob.glob(file_pattern)
+                hv.get("env", {})["RANK_TABLE_FILE_PATH"] = ' '.join(matched_files)
+            if role == 'decode':
+                if cluster_info.decode_pod_num > 1:
+                    file_pattern = os.path.join(rank_table_save_path, "global/collect_files_d", "local_*merge.json")
+                else:
+                    file_pattern = os.path.join(rank_table_save_path, "decode_config", "local_*.json")
+                matched_files = glob.glob(file_pattern)
+                hv.get("env", {})["RANK_TABLE_FILE_PATH"] = ' '.join(matched_files)
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
                 need_overwrite_inv = True
