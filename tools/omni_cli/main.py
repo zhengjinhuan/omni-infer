@@ -345,7 +345,6 @@ def _verify_and_fix_env_vars(
                 print(f"[INFO] host={host} num-dp set to {num_dp}")
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
-            role = hv.get("env", {}).get("ROLE", None)
             master_port = all_hosts
             if role == "prefill" or role == "decode":
                 master_port = pod_info.get("master_port", None)
@@ -369,6 +368,53 @@ def omni_ranktable(inventory):
     cur_dir = os.path.dirname(__file__)
     cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/configs/generate_ranktable.yml"
     os.system(cmd)
+
+def maybe_start_ray(is_master, pod_info, role):
+
+    if role == "decode":
+        return False, ""
+
+    ## if >1 servers for Prefill, ray is needed
+    num_server_in_pod = len(pod_info.get("pod_hosts", []))
+    num_servers = pod_info.get("num_servers", 1)
+    master_ip = pod_info.get("master_ip", None)
+    if num_server_in_pod > 1 and role == "prefill":
+        if is_master:
+            ray_cmd = f"""
+export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+export RAY_CGRAPH_get_timeout=7200
+ray stop --force
+
+export RAY_USAGE_STATS_ENABLED=0
+ray start --head --num-gpus={num_servers}
+sleep 10s
+"""
+
+        else:
+             ray_cmd = f"""
+sleep 5s
+command="ray start --address='{master_ip}:6379' --num-gpus={num_servers} &> /dev/null"
+echo $command
+cost_time=0
+end_time=300
+while true; do
+    if [ $cost_time -ge $end_time ]; then
+    echo "error, conneciton timeout"
+    exit 1
+    fi
+
+    eval $command
+    if [ $? -eq 0 ]; then
+    echo "succeed to connect to ray head node"
+    break
+    else
+    echo "failed to connect to ray head node, wait 5s....."
+    sleep 5
+    cost_time=$((cost_time + 5))
+    fi
+done
+"""
+    return True, ray_cmd
 
 def omni_cli_start(
     inventory_path: str = "./server_profiles.yml",
@@ -420,6 +466,11 @@ def omni_cli_start(
         env: Dict[str, Any] = hv.get("env", {}) or {}
         args: Dict[str, Any] = hv.get("args", {}) or {}
         container_name: str = hv.get("container_name")
+        role = env.get("ROLE", None)
+        master_node = hv.get("master_node", None)
+        pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
+        pod_info = pod_info.get(master_node, None)
+        is_master = host == master_node
 
         code_path = str(env.get("CODE_PATH") or "").strip()
         log_path = str(env.get("LOG_PATH") or "").strip()
@@ -428,6 +479,15 @@ def omni_cli_start(
 
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
+
+
+        start_server_cmd = f"""
+# Exec the command
+cd {_double_quotes(code_path)}/tools/scripts
+echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
+{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &
+echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
+"""
 
         with tempfile.NamedTemporaryFile(
             "w", delete=False,
@@ -450,11 +510,14 @@ def omni_cli_start(
             tf.write(export_block + "\n\n")
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
 
-            tf.write("# Exec the command\n")
-            tf.write(f"cd {_double_quotes(code_path)}/tools/scripts\n\n")
-            tf.write(f'echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log\n\n')
-            tf.write(f"{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &\n")
-            tf.write(f'echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log\n')
+            # check if start ray
+            need_start_ray, ray_cmd = maybe_start_ray(is_master, pod_info, role)
+            if need_start_ray:
+                tf.write(f"{ray_cmd}\n")
+                if is_master:
+                    tf.write(start_server_cmd)
+            else:
+                tf.write(start_server_cmd)
             tf.write("EOF\n")
 
         os.chmod(script_path, 0o755)
