@@ -346,7 +346,9 @@
         --core-num 4 \
         --start-core-index 16 \
         --prefill-lb-sdk ${PREFILL_LB_SDK} \
-        --decode-lb-sdk ${DECODE_LB_SDK}
+        --decode-lb-sdk ${DECODE_LB_SDK} \
+        --prefill-max-num-seqs 16 \
+        --decode-max-num-seqs 32
 
     kill_python_processes_cmd: |
       #!/bin/bash
