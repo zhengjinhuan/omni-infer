@@ -314,15 +314,15 @@ def _verify_and_fix_env_vars(
             rank_table_save_path = hv.get("env", {})["RANKTABLE_SAVE_PATH"]
             if role == 'prefill':
                 if len(pod_info["pod_hosts"]) > 1:
-                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_p/{pod_info['master_ip']}/local_*merge.json | tr '\n' ' ')"
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_p/{pod_info['master_ip']}/local_*merge.json)"
                 else:
                     prefill_server_list = hv.get("ascend_rt_visible_devices", "").replace(',', '')
-                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/prefill_config/local_*{prefill_server_list}.json | tr '\n' ' ')"
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/prefill_config/local_*{prefill_server_list}.json)"
             if role == 'decode':
                 if len(pod_info["pod_hosts"]) > 1:
-                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_d/local_*merge.json | tr '\n' ' ')"
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_d/local_*merge.json)"
                 else:
-                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/decode_config/local_*.json | tr '\n' ' ')"
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/decode_config/local_*.json)"
             print(f"[INFO] host={host} RANK_TABLE_FILE_PATH set to {hv.get('env', {})['RANK_TABLE_FILE_PATH']}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
@@ -440,7 +440,8 @@ def omni_cli_start(
     python_bin: str = "python",
     entry_py: str = "start_api_servers.py",
     skip_verify_config: bool = False,
-    dev: bool = False
+    dev: bool = False,
+    proxy_only: bool = False
 ) -> None:
     """
     Read inventory YAML, generate a per-host bash script, and run it via:
@@ -453,6 +454,10 @@ def omni_cli_start(
         print("[INFO] Use inventory at:", inventory_path)
     if not dev:
         omni_ranktable(inventory_path)
+
+    if proxy_only:
+        omni_cli.proxy.omni_run_proxy(inventory_path)
+        return
 
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inventory_path, "r", encoding="utf-8") as f:
@@ -1197,6 +1202,7 @@ def main():
         help='Start in normal mode with config file'
     )
     start_parser.add_argument("--skip-verify-config", action="store_true", help="Skip verification of config")
+    start_parser.add_argument("--proxy-only", action="store_true", help="Start the proxy only")
     start_group = start_parser.add_mutually_exclusive_group()
     start_group.add_argument(
         "--normal",
@@ -1349,10 +1355,16 @@ def main():
             args.config_path = default_deploy_path
         if args.normal:
             print("[INFO] Starting omni service in Normal mode...")
-            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=False)
+            omni_cli_start(inventory_path=args.config_path,
+                           skip_verify_config=args.skip_verify_config,
+                           dev=False,
+                           proxy_only=args.proxy_only)
         elif args.run_dev:
             print("[INFO] Starting omni service in Developer mode...")
-            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=True)
+            omni_cli_start(inventory_path=args.config_path,
+                           skip_verify_config=args.skip_verify_config,
+                           dev=True,
+                           proxy_only=args.proxy_only)
     elif args.command == "stop":
         print("[INFO] Stopping omni service...")
         omni_cli_stop(inventory_path=default_deploy_path)
