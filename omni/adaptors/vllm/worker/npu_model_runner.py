@@ -245,9 +245,19 @@ class NPUModelRunner(GPUModelRunner):
         arange = self.arange_np[:total_num_scheduled_tokens] - cumsums_offsets
         positions_np = self.positions_np[:total_num_scheduled_tokens]
         np.add(self.input_batch.num_computed_tokens_cpu[req_indices], arange, out=positions_np)
-        self.positions[:total_num_scheduled_tokens].copy_(
-            self.positions_cpu[:total_num_scheduled_tokens], non_blocking=True)
-        positions = self.positions[:num_input_tokens]
+
+        if self.uses_mrope:
+            self._calc_mrope_positions(scheduler_output)
+
+            # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
+            self.mrope_positions[:, :total_num_scheduled_tokens].copy_(
+                self.mrope_positions_cpu[:, :total_num_scheduled_tokens], non_blocking=True)
+            positions = self.mrope_positions[:, :num_input_tokens]
+        else:
+            # Common case (1D positions)
+            self.positions[:total_num_scheduled_tokens].copy_(
+                self.positions_cpu[:total_num_scheduled_tokens], non_blocking=True)
+            positions = self.positions[:num_input_tokens]
 
         self.seq_lens_np[:num_reqs] = self.input_batch.num_computed_tokens_cpu[:num_reqs] + num_scheduled_tokens
 
@@ -295,10 +305,13 @@ class NPUModelRunner(GPUModelRunner):
             # The reduce_scatter in the TP communication domain after embedding, P goes through this
             graph_pad_size = _get_pad_size(num_input_tokens)
 
-        # padding positions
         if graph_pad_size >= 0:
-            padding_positions = torch.zeros(graph_pad_size, dtype=positions.dtype, device=positions.device)
-            positions = torch.cat([positions, padding_positions])
+            if self.uses_mrope:
+                padding_positions = torch.zeros(positions.size(0), graph_pad_size, dtype=positions.dtype, device=positions.device)
+                positions = torch.cat([positions, padding_positions], dim=1)
+            else:
+                padding_positions = torch.zeros(graph_pad_size, dtype=positions.dtype, device=positions.device)
+                positions = torch.cat([positions, padding_positions])
 
         extra_builder_kwargs = {'graph_pad_size': graph_pad_size}
 
@@ -449,14 +462,44 @@ class NPUModelRunner(GPUModelRunner):
         raw_hidden_states = None
         attn_state = next(iter(attn_metadata.values())).attn_state
 
-        # padding input_ids
-        if graph_pad_size >= 0:
-            if attn_state == AscendAttentionState.DecodeOnly:
-                padding = torch.zeros(graph_pad_size, dtype=input_ids.dtype, device=input_ids.device)
+        # _prepare_inputs may reorder the batch, so we must gather multi
+        # modal outputs after that to ensure the correct order
+        if self.is_multimodal_model:
+            # Run the multimodal encoder if any.
+            self._execute_mm_encoder(scheduler_output)
+            mm_embeds = self._gather_mm_embeddings(scheduler_output)
+        else:
+            mm_embeds = []
+
+        if self.is_multimodal_model and get_pp_group().is_first_rank:
+            if mm_embeds:
+                inputs_embeds = self.model.get_input_embeddings(input_ids, mm_embeds)
             else:
-                vocab_size = self.model_config.get_vocab_size()
-                padding = torch.randint(1, vocab_size, (graph_pad_size,), dtype=input_ids.dtype, device=input_ids.device)
-            input_ids = torch.cat([input_ids, padding])
+                inputs_embeds = self.model.get_input_embeddings(input_ids)
+
+            if graph_pad_size >= 0:
+                if attn_state == AscendAttentionState.DecodeOnly:
+                    padding_embeds = torch.zeros(graph_pad_size, inputs_embeds.size(-1), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+                else:
+                    vocab_size = self.model_config.get_vocab_size()
+                    padding_embeds = torch.randint(1, vocab_size, (graph_pad_size, inputs_embeds.size(-1)), dtype=input_ids.dtype, device=input_ids.device)
+
+                inputs_embeds = torch.cat([inputs_embeds, padding_embeds])
+    
+            self.inputs_embeds[:num_input_tokens + graph_pad_size].copy_(inputs_embeds)
+            inputs_embeds = self.inputs_embeds[:num_input_tokens + graph_pad_size]
+            input_ids = None
+        else:
+            if graph_pad_size >= 0:
+                if attn_state == AscendAttentionState.DecodeOnly:
+                    padding = torch.zeros(graph_pad_size, dtype=input_ids.dtype, device=input_ids.device)
+                else:
+                    vocab_size = self.model_config.get_vocab_size()
+                    padding = torch.randint(1, vocab_size, (graph_pad_size,), dtype=input_ids.dtype, device=input_ids.device)
+                input_ids = torch.cat([input_ids, padding])
+                
+            inputs_embeds = None
+            
         model_kwargs["selected_indices"] = sample_indices if attn_state != AscendAttentionState.DecodeOnly else None
 
         start_fc = time.time()
@@ -494,7 +537,7 @@ class NPUModelRunner(GPUModelRunner):
                                 input_ids=input_ids,
                                 positions=positions,
                                 intermediate_tensors=intermediate_tensors,
-                                inputs_embeds=None,
+                                inputs_embeds=inputs_embeds,
                                 **model_kwargs,
                             )
                     end_model = time.time()
@@ -512,7 +555,7 @@ class NPUModelRunner(GPUModelRunner):
                         input_ids=input_ids,
                         positions=positions,
                         intermediate_tensors=intermediate_tensors,
-                        inputs_embeds=None,
+                        inputs_embeds=inputs_embeds,
                         **model_kwargs,
                     )
             self.maybe_wait_for_kv_save()
