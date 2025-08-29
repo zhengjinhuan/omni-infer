@@ -39,6 +39,10 @@ from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
 from omni_cli.omni_inspect import print_node_config
 
+INFO    = "\033[92m[INFO]\033[0m"      # green
+WARNING = "\033[93m[WARNING]\033[0m"   # yellow
+ERROR   = "\033[91m[ERROR]\033[0m"     # red
+
 @dataclass
 class ClusterInfo:
     inventory: Dict[str, Any]
@@ -133,7 +137,7 @@ def execute_command(command):
 
     return_code = process.wait()
     if return_code != 0:
-        print(f"[ERROR] Deployment failed with return code {return_code}")
+        print(f"{ERROR} Deployment failed with return code {return_code}")
 
     return return_code
 
@@ -232,7 +236,7 @@ def _verify_and_fix_env_vars(
     """
     Detect port conflicts per machine (same IP). If conflicts found, bump by `offset` repeatedly until unique.
     """
-    print("[INFO] verifying and fixing environment variables...")
+    print(f"{INFO} verifying and fixing environment variables...")
     port_vars = ["API_PORT", "MASTER_PORT", "VLLM_LLMDATADIST_ZMQ_PORT"]
     offset: int = 16
     all_hosts = _walk_hosts(inventory.get("all", inventory))  # {host: {vars}}
@@ -255,9 +259,9 @@ def _verify_and_fix_env_vars(
                 port = int(env.get(pv)) if pv in env and str(env.get(pv)).isdigit() else None
                 if port is None:
                     if env.get("ROLE", None) in ["prefill", "decode"]:
-                        print(f"[WARNING] host={host} has no {pv}; skipped.")
+                        print(f"{WARNING} host={host} has no {pv}; skipped.")
                     elif env.get("ROLE", None) in ["proxy"] and pv == "API_PORT":
-                        print(f"[WARNING] host={host} has no {pv} (proxy port); please fix manually.")
+                        print(f"{WARNING} host={host} has no {pv} (proxy port); please fix manually.")
                     continue
                 if port in used_ports:
                     conflicts.append((host, env, port))
@@ -272,7 +276,7 @@ def _verify_and_fix_env_vars(
                     if new_port not in used_ports:
                         env[pv] = str(new_port)
                         used_ports[new_port] = host
-                        print(f"[WARNING] ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
+                        print(f"{WARNING} ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
                         break
     need_overwrite_inv = len(conflicts) > 0
 
@@ -296,23 +300,23 @@ def _verify_and_fix_env_vars(
         pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
         pod_info = pod_info.get(master_host, None)
         if pod_info is None:
-            print(f"[WARNING] host={host} can not find POD_INFO")
+            print(f"{WARNING} host={host} can not find POD_INFO")
             continue
 
         if master_host is None:
-            print(f"[ERROR] host={host} can not find master node")
+            print(f"{ERROR} host={host} can not find master node")
             raise RuntimeError(f"host={host} can not find master node")
 
         if "PREFILL_POD_NUM" in hv.get("env", {}):
             if hv.get("env", {}).get("PREFILL_POD_NUM") != cluster_info.prefill_pod_num:
                 need_overwrite_inv = True
                 hv.get("env", {})["PREFILL_POD_NUM"] = cluster_info.prefill_pod_num
-                print(f"[INFO] host={host} PREFILL_POD_NUM set to {cluster_info.prefill_pod_num}")
+                print(f"{INFO} host={host} PREFILL_POD_NUM set to {cluster_info.prefill_pod_num}")
         if "DECODE_POD_NUM" in hv.get("env", {}):
             if hv.get("env", {}).get("DECODE_POD_NUM") != cluster_info.decode_pod_num:
                 need_overwrite_inv = True
                 hv.get("env", {})["DECODE_POD_NUM"] = cluster_info.decode_pod_num
-                print(f"[INFO] host={host} DECODE_POD_NUM set to {cluster_info.decode_pod_num}")
+                print(f"{INFO} host={host} DECODE_POD_NUM set to {cluster_info.decode_pod_num}")
         if  "RANK_TABLE_FILE_PATH" in hv.get("env", {}):
             need_overwrite_inv = True
             rank_table_save_path = hv.get("env", {})["RANKTABLE_SAVE_PATH"]
@@ -327,76 +331,76 @@ def _verify_and_fix_env_vars(
                     hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_d/local_*merge.json)"
                 else:
                     hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/decode_config/local_*.json)"
-            print(f"[INFO] host={host} RANK_TABLE_FILE_PATH set to {hv.get('env', {})['RANK_TABLE_FILE_PATH']}")
+            print(f"{INFO} host={host} RANK_TABLE_FILE_PATH set to {hv.get('env', {})['RANK_TABLE_FILE_PATH']}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
                 need_overwrite_inv = True
                 hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
-                print(f"[INFO] host={host} SERVER_IP_LIST set to {server_ip_list}")
+                print(f"{INFO} host={host} SERVER_IP_LIST set to {server_ip_list}")
         if "SERVER_OFFSET" in hv.get("env", {}):
             server_offset = pod_info.get("server_offset", {}).get(host, None)
             if server_offset is not None and hv.get("env", {}).get("SERVER_OFFSET") != server_offset:
                 hv.get("env", {})["SERVER_OFFSET"] = server_offset
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} SERVER_OFFSET set to {server_offset}")
+                print(f"{INFO} host={host} SERVER_OFFSET set to {server_offset}")
         if "KV_RANK" in hv.get("env", {}):
             kv_rank = pod_info.get("kv_rank", None)
             if kv_rank is not None and hv.get("env", {}).get("KV_RANK") != kv_rank:
                 hv.get("env", {})["KV_RANK"] = kv_rank
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} KV_RANK set to {kv_rank}")
+                print(f"{INFO} host={host} KV_RANK set to {kv_rank}")
         if "HOST_IP" in hv.get("env", {}):
             host_ip = pod_info.get("master_ip", None)
             if host_ip is not None and hv.get("env", {}).get("HOST_IP") != host_ip:
                 hv.get("env", {})["HOST_IP"] = host_ip
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} HOST_IP set to {host_ip}")
+                print(f"{INFO} host={host} HOST_IP set to {host_ip}")
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
             if role == "prefill" or role == "decode":
                 master_port = pod_info.get("master_port", None)
                 if master_port is None:
-                    print(f"[WARNING] host={host} with master node={master_host} can not find MASTER_PORT")
+                    print(f"{WARNING} host={host} with master node={master_host} can not find MASTER_PORT")
                 if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
                     hv.get("env", {})["MASTER_PORT"] = master_port
                     need_overwrite_inv = True
-                    print(f"[INFO] host={host} MASTER_PORT set to {master_port}")
+                    print(f"{INFO} host={host} MASTER_PORT set to {master_port}")
         if "num-servers" in hv.get("args", {}):
             num_server = pod_info.get("num_servers", None)
             if num_server is not None and hv.get("args", {}).get("num-servers") != num_server:
                 hv.get("args", {})["num-servers"] = num_server
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} num-servers set to {num_server}")
+                print(f"{INFO} host={host} num-servers set to {num_server}")
         if "num-dp" in hv.get("args", {}):
             num_dp = pod_info.get("num_dp", None)
             if num_dp is not None and hv.get("args", {}).get("num-dp") != num_dp:
                 hv.get("args", {})["num-dp"] = num_dp
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} num-dp set to {num_dp}")
+                print(f"{INFO} host={host} num-dp set to {num_dp}")
         if "tp" in hv.get("args", {}):
             tp = pod_info.get("tp", None)
             if tp is not None and hv.get("args", {}).get("tp") != tp:
                 hv.get("args", {})["tp"] = tp
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} tp set to {tp}")
+                print(f"{INFO} host={host} tp set to {tp}")
         if "PREFILL_TENSOR_PARALLEL_SIZE" in hv.get("env", {}) and role == "prefill":
             tp = pod_info.get("tp", None)
             if tp is not None and hv.get("env", {}).get("PREFILL_TENSOR_PARALLEL_SIZE") != tp:
                 hv.get("env", {})["PREFILL_TENSOR_PARALLEL_SIZE"] = tp
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} PREFILL_TENSOR_PARALLEL_SIZE set to {tp}")
+                print(f"{INFO} host={host} PREFILL_TENSOR_PARALLEL_SIZE set to {tp}")
         if "MODEL_LEN_MAX_PREFILL" in hv.get("env", {}) and role == "prefill":
             model_len_max = hv.get("env", {}).get("MODEL_LEN_MAX_PREFILL")
             tp = pod_info.get("tp", None)
             if model_len_max % tp != 0:
-                print(f"[WARNING] host={host} MODEL_LEN_MAX_PREFILL is not a multiple of TP size!")
+                print(f"{WARNING} host={host} MODEL_LEN_MAX_PREFILL is not a multiple of TP size!")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(inventory, f, default_flow_style=False, sort_keys=False)
-        print(f"[INFO] inventory written back to {inventory_path}")
+        print(f"{INFO} inventory written back to {inventory_path}")
     else:
-        print(f"[INFO] inventory at {inventory_path} has passed verification")
+        print(f"{INFO} inventory at {inventory_path} has passed verification")
 
 
 
@@ -464,10 +468,10 @@ def omni_cli_start(
       ansible <host> -i <inventory> -m script -a <script_path>
     """
     if not inventory_path:
-        print("[ERROR] Inventory path is required.")
+        print(f"{ERROR} Inventory path is required.")
         return
     else:
-        print("[INFO] Use inventory at:", inventory_path)
+        print("{INFO} Use inventory at:", inventory_path)
     if not dev:
         omni_ranktable(inventory_path)
 
@@ -582,7 +586,7 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
                         + ":" + str(vars.get('env').get('API_PORT', '')))
                     print("\n\n")
             else:
-                print(f"[error] ansible command failed with return code {return_code}")
+                print(f"{ERROR} ansible command failed with return code {return_code}")
         finally:
             try:
                 script_path.unlink(missing_ok=True)
@@ -687,7 +691,7 @@ def sync_code(
 ) -> None:
     """Sync code to all relevant hosts and containers with minimal output"""
     if not code_path:
-        print("[ERROR] code_path is required")
+        print(f"{ERROR} code_path is required")
         return
 
     # Read inventory file
@@ -727,7 +731,7 @@ def sync_code(
         if host_ip not in p_d_ips:
             c_hosts_to_process.add(host)
         else:
-            print("[INFO] Node C is skipped because it has the same IP address as a P or D node")
+            print("{INFO} Node C is skipped because it has the same IP address as a P or D node")
 
     # All hosts that need processing
     all_target_hosts = p_hosts | d_hosts | c_hosts_to_process
@@ -785,27 +789,27 @@ show_spinner() {
 
             log_path = env.get("LOG_PATH")
             if log_path:
-                tf.write(f"echo \"[INFO] Creating log directory \"{log_path}/{host}\" on {host}\"\n")
+                tf.write(f"echo \"{INFO} Creating log directory \"{log_path}/{host}\" on {host}\"\n")
                 tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {log_path}/{host}\" >/dev/null 2>&1\n\n")
             else:
-                tf.write(f"echo \"[WARN] LOG_PATH not defined for host {host}, skipping log directory creation\"\n\n")
+                tf.write(f"echo \"{WARNING} LOG_PATH not defined for host {host}, skipping log directory creation\"\n\n")
 
-            tf.write(f"echo \"[INFO] Creating code directory \'{code_path}\' on {host}\"\n")
+            tf.write(f"echo \"{INFO} Creating code directory \'{code_path}\' on {host}\"\n")
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
-            tf.write(f"echo \"[INFO] Syncing code from executor from \'{code_path}/omniinfer/\' to \'{host}:{code_path}/omniinfer/\' \"\n")
-            tf.write(f"echo -n \"[INFO] Progress: \"\n")
+            tf.write(f"echo \"{INFO} Syncing code from executor from \'{code_path}/omniinfer/\' to \'{host}:{code_path}/omniinfer/\' \"\n")
+            tf.write(f"echo -n \"{INFO} Progress: \"\n")
             tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/ & show_spinner\n")
             tf.write(f"echo \"Done\"\n\n")
 
             # Handle docker cp for all hosts that need it
             container_name = host_vars.get("container_name", "")
             if container_name:
-                tf.write(f"echo \"[INFO] Docker cp code to container on {host}, from {code_path}/omniinfer to {container_name}:/workspace/\"\n")
+                tf.write(f"echo \"{INFO} Docker cp code to container on {host}, from {code_path}/omniinfer to {container_name}:/workspace/\"\n")
                 tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\" >/dev/null 2>&1\n")
-                tf.write(f"echo \"[INFO] Container copy completed\"\n\n")
+                tf.write(f"echo \"{INFO} Container copy completed\"\n\n")
             else:
-                tf.write(f"echo \"[WARN] Missing container_name for host {host}\"\n\n")
+                tf.write(f"echo \"{WARNING} Missing container_name for host {host}\"\n\n")
 
     # Set script execution permissions
     os.chmod(script_path, 0o755)
@@ -916,10 +920,10 @@ def install_code(
 
         # Check the necessary variables
         if not log_path:
-            print(f"[WARNING] LOG_PATH not defined for host {host}, skipping")
+            print(f"{WARNING} LOG_PATH not defined for host {host}, skipping")
             continue
         if not container_name:
-            print(f"[WARNING] container_name not defined for host {host}, skipping")
+            print(f"{WARNING} container_name not defined for host {host}, skipping")
             continue
 
         # Create a temporary script file
@@ -1003,7 +1007,7 @@ def get_default_deploy_path(current_cmd):
             with open(deploy_path, "w") as f:
                 yaml.dump(default_inventory, f)
 
-            print(f"[INFO] Created default inventory file at: {deploy_path}")
+            print(f"{INFO} Created default inventory file at: {deploy_path}")
         else:
             raise FileNotFoundError("server_profiles.yml not found, please confirm the workspace or reinitialize using add_node")
     # Save as absolute path
@@ -1064,7 +1068,7 @@ def run_docker_containers(
     host_groups = get_host_groups(inv)
 
     if not all_hosts:
-        print("[WARNING] No hosts found in inventory.")
+        print(f"{WARNING} No hosts found in inventory.")
         return
 
     # Base Docker command template without LOG_PATH or MODEL_PATH
@@ -1110,15 +1114,15 @@ def run_docker_containers(
 
         # Check required variables
         if not log_path:
-            print(f"[WARNING] LOG_PATH not defined for host {host}, skipping")
+            print(f"{WARNING} LOG_PATH not defined for host {host}, skipping")
             continue
         if not docker_image_id:
-            print(f"[WARNING] DOCKER_IMAGE_ID not defined for host {host}, skipping")
+            print(f"{WARNING} DOCKER_IMAGE_ID not defined for host {host}, skipping")
             continue
 
         # For P and D roles, MODEL_PATH is required
         if role in ['P', 'D'] and not model_path:
-            print(f"[WARNING] MODEL_PATH not defined for host {host} (role {role}), skipping")
+            print(f"{WARNING} MODEL_PATH not defined for host {host} (role {role}), skipping")
             continue
 
         # Create temporary script file
@@ -1190,7 +1194,7 @@ def run_docker_containers(
                 try:
                     script_path.unlink(missing_ok=True)
                 except Exception as e:
-                    print(f"[WARNING] Failed to delete temp file: {e}")
+                    print(f"{WARNING} Failed to delete temp file: {e}")
         else:
             # In dry-run mode, just show what command would be executed
             print(f"DRY RUN: Would execute for host {host}:")
@@ -1373,37 +1377,37 @@ def main():
         if args.config_path is None:
             args.config_path = default_deploy_path
         if args.normal:
-            print("[INFO] Starting omni service in Normal mode...")
+            print(f"{INFO} Starting omni service in Normal mode...")
             omni_cli_start(inventory_path=args.config_path,
                            skip_verify_config=args.skip_verify_config,
                            dev=False,
                            proxy_only=args.proxy_only)
         elif args.run_dev:
-            print("[INFO] Starting omni service in Developer mode...")
+            print(f"{INFO} Starting omni service in Developer mode...")
             omni_cli_start(inventory_path=args.config_path,
                            skip_verify_config=args.skip_verify_config,
                            dev=True,
                            proxy_only=args.proxy_only)
     elif args.command == "stop":
-        print("[INFO] Stopping omni service...")
+        print(f"{INFO} Stopping omni service...")
         omni_cli_stop(inventory_path=default_deploy_path)
     elif args.command == "cfg":
         node_type, node_name = parse_node_name(args.name[0])
         sections = parse_remaining_args(node_type, node_name, args.set, args.remaining_args, default_deploy_path)
         if args.set:
-            print("[INFO] Set configuration.")
+            print(f"{INFO} Set configuration.")
             cfg_set_process(node_type, node_name, args, sections, default_deploy_path)
         elif args.delete:
-            print("[INFO] Delete configuration.")
+            print(f"{INFO} Delete configuration.")
             cfg_delete_process(node_type, node_name, args, sections, default_deploy_path)
     elif args.command == "inspect":
-        print("[INFO] Inspect configuration.")
+        print(f"{INFO} Inspect configuration.")
         print_node_config(default_deploy_path, args.name[0])
     elif args.command == "upgrade":
-        print("[INFO] Upgrade packages")
+        print(f"{INFO} Upgrade packages")
         upgrade_packages()
     elif args.command == "collect_log":
-        print("[INFO] Fetch logs")
+        print(f"{INFO} Fetch logs")
         collect_logs()
 
 if __name__ == "__main__":
