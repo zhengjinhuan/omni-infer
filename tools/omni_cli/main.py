@@ -471,7 +471,7 @@ def omni_cli_start(
         print(f"{ERROR} Inventory path is required.")
         return
     else:
-        print("{INFO} Use inventory at:", inventory_path)
+        print(f"{INFO} Use inventory at:", inventory_path)
     if not dev:
         omni_ranktable(inventory_path)
 
