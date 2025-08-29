@@ -275,8 +275,12 @@
       
       # install omni_placement
       pip uninstall omni_placement -y
-      
-      python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+
+      if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then
+        python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+      else
+        python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+      fi
 
       cd /workspace/omniinfer/tools/scripts
       PROFILING_NAMELIST=/workspace/omniinfer/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
@@ -443,8 +447,8 @@
 
     docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
     docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'if [[ -e /usr/local/Ascend/ascend-toolkit ]]; then export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest; else ASCEND_TOOLKIT_HOME=/usr/local/Ascend/latest; fi && . ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'if [[ -e /usr/local/Ascend/ascend-toolkit ]]; then export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest; else ASCEND_TOOLKIT_HOME=/usr/local/Ascend/latest; fi && . ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
 
   tasks:
     - name: generate container name.
