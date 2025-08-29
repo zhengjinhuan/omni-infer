@@ -248,7 +248,7 @@ class DeepseekV3MTP(nn.Module):
             attn_metadata=attn_metadata,
             previous_hidden_states=previous_hidden_states,
             selected_indices=selected_indices,
-            mtp_layer_idx=mtp_layer_idx,
+            mtp_layer_idx=min(self.n_predictor - 1, mtp_layer_idx),
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:

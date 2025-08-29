@@ -185,7 +185,7 @@ class PostDrafter(EagleProposer):
                 for i in range(self.speculative_config.num_speculative_tokens):
                     if i >= self.n_predictor:
                         if attn_state == AscendAttentionState.DecodeOnly:
-                            self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size, self.model.model.layer[0])
+                            self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size, next(iter(self.model.model.layers.values())))
                         else:
                             break
                     drafter_logits, next_hidden_states = self.model(
