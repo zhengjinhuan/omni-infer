@@ -539,7 +539,7 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
 
             if need_start_ray:
                 tf.write(f"{ray_cmd}\n")
-                tf.write(f'echo "{ray_cmd}" >> {log_path}/omni_cli.log\n')
+                tf.write(f'echo "{json.dumps(ray_cmd)}" >> {log_path}/omni_cli.log\n')
                 if is_master:
                     tf.write(start_server_cmd)
             else:
@@ -612,7 +612,7 @@ def omni_cli_stop(
             tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
             tf.write("pkill -9 python || true\n")
             tf.write("pkill -9 vllm   || true\n")
-            tf.write("ps aux | grep 'ray' | grep -v 'grep' | awk '{print $2}' | xargs kill -9 || true\n")
+            tf.write("pkill -9 -f ray || true\n")
             tf.write("EOF\n")
         os.chmod(script_path, 0o755)
 
