@@ -404,21 +404,21 @@ sleep 10s
              ray_cmd = f"""
 sleep 5s
 command="ray start --address='{master_ip}:6379' --num-gpus={num_servers} &> /dev/null"
-echo $command
+echo $command >> {log_path}/omni_cli.log
 cost_time=0
 end_time=300
 while true; do
     if [ $cost_time -ge $end_time ]; then
-    echo "error, conneciton timeout"
+    echo "error, conneciton timeout" >> {log_path}/omni_cli.log
     exit 1
     fi
 
     eval $command
     if [ $? -eq 0 ]; then
-    echo "succeed to connect to ray head node"
+    echo "succeed to connect to ray head node" >> {log_path}/omni_cli.log
     break
     else
-    echo "failed to connect to ray head node, wait 5s....."
+    echo "failed to connect to ray head node, wait 5s....." >> {log_path}/omni_cli.log
     sleep 5
     cost_time=$((cost_time + 5))
     fi
