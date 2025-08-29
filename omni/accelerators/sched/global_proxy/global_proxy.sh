@@ -362,9 +362,10 @@ function nginx_set_upstream() {
         "pd_score_balance")
             if [ "$upstream_name" = "prefill_servers" ]; then
                 lb_sdk_line="pd_score_balance prefill;"
+                lb_sdk_extra="pd_score_balance_max_num_seqs ${prefill_max_num_seqs};"
             elif [ "$upstream_name" = "decode_servers" ]; then
                 lb_sdk_line="pd_score_balance decode;"
-                lb_sdk_extra="pd_score_balance_decode_req_limit 25;"
+                lb_sdk_extra="pd_score_balance_max_num_seqs ${decode_max_num_seqs};"
             fi
             ;;
         "least_total_load")
@@ -901,6 +902,8 @@ log_file=""
 log_level=""
 prefill_lb_sdk="pd_score_balance"
 decode_lb_sdk="pd_score_balance"
+prefill_max_num_seqs=16
+decode_max_num_seqs=32
 enable_internal_metrics=""
 
 print_help() {
@@ -920,6 +923,8 @@ print_help() {
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
     echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"pd_score_balance\""
     echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"pd_score_balance\""
+    echo "  --prefill-max-num-seqs <N>                 Prefill servers' setups for max-num-seqs"
+    echo "  --decode-max-num-seqs <N>                  Decode servers' setups for max-num-seqs"
     echo "  --engine-type <string>                     Engine type: vllm or sglang. Default: \"vllm\""
     echo "  --bootstrap-port <PORT>                    Bootstrap port(s) (optional). Default: empty, one port or a list of"
     echo "  --enable-internal-metrics [size]          Enable internal metrics with optional shared memory size (default: 128k)"
@@ -1001,6 +1006,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --decode-lb-sdk)
             decode_lb_sdk="$2"
+            shift 2
+            ;;
+        --prefill-max-num-seqs)
+            prefill_max_num_seqs="$2"
+            shift 2
+            ;;
+        --decode-max-num-seqs)
+            decode_max_num_seqs="$2"
             shift 2
             ;;
         --engine-type)

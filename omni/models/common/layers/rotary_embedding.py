@@ -35,9 +35,11 @@ from vllm.platforms import current_platform
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding as GPURotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding as GPUMRotaryEmbedding
+from vllm.model_executor.layers.rotary_embedding import DynamicNTKScalingRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding as GPUYaRNScalingRotaryEmbedding
 from vllm.model_executor.layers.rotary_embedding import DeepseekScalingRotaryEmbedding as DeepseekScalingRotaryEmbeddingGPU
 from vllm.model_executor.layers.rotary_embedding import (_yarn_find_correction_dim,
+                                            _apply_rotary_emb_torch,
                                             _yarn_find_correction_range,
                                             _yarn_linear_ramp_mask,
                                             _yarn_get_mscale,
@@ -609,26 +611,7 @@ class QwenRotaryEmbedding(torch.nn.Module):
 
         return q_embed, k_embed
 
-def _apply_rotary_emb_torch(
-    x: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    is_neox_style: bool,
-) -> torch.Tensor:
-    cos = cos.unsqueeze(-2).to(x.dtype)
-    sin = sin.unsqueeze(-2).to(x.dtype)
-    if is_neox_style:
-        x1, x2 = torch.chunk(x, 2, dim=-1)
-    else:
-        x1 = x[..., ::2]
-        x2 = x[..., 1::2]
-    o1 = x1 * cos - x2 * sin
-    o2 = x2 * cos + x1 * sin
-    if is_neox_style:
-        return torch.cat((o1, o2), dim=-1)
-    else:
-        return torch.stack((o1, o2), dim=-1).flatten(-2)
-    
+
 class QwenMRotaryEmbedding(GPUMRotaryEmbedding):
     """Rotary Embedding with Multimodal Sections."""
 
@@ -686,7 +669,7 @@ class QwenMRotaryEmbedding(GPUMRotaryEmbedding):
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
         return query, key
 
-    
+
 _ROPE_DICT: Dict[Tuple, nn.Module] = {}
 
 
@@ -710,7 +693,7 @@ def get_rope(
         rope_scaling_args = tuple(rope_scaling_tuple.items())
     else:
         rope_scaling_args = None
-    
+
     key = (head_size, rotary_dim, max_position, base, is_neox_style,
            rope_scaling_args)
     
@@ -778,7 +761,15 @@ def get_rope(
                         max_position, 
                         base,
                         is_neox_style)
-            
+        elif  scaling_type == "dynamic":
+            rotary_emb = DynamicNTKScalingRotaryEmbedding(
+                        head_size, 
+                        rotary_dim, 
+                        max_position, 
+                        base,
+                        is_neox_style,
+                        scaling_factor, 
+                        dtype)
         else:
             scaling_type = rope_scaling["type"]
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}, only support linear and dynamic now")

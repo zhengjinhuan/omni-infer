@@ -44,12 +44,6 @@ class ExpertWeights {
             total_size_ += weight.get_total_size();
         }
     }
-    void enqueueSwapInformation(Distribution *dist_ptr, size_t t_rank);
-    void enqueueSwapInformation(Distribution *dist_ptr, size_t t_rank,
-                                void *recv_buff, bool need_enqueue_recv_buff,
-                                size_t localExpertPositionOfsset);
-    void swap(Distribution *dist_ptr, size_t t_rank, bool send_first,
-              aclrtStream stream);
     // 新增公共方法获取私有成员
     int get_expert_id() const {
         return expert_id_;
@@ -87,6 +81,9 @@ class ExpertWeights {
         }
         return ret;
     };
+    const std::vector<Tensor> &get_weights() const { return weights_; }
+    void enqueueSwapInformation(Distribution *dist_ptr, size_t t_rank,
+                                bool need_enqueue_recv_buff);
 
     void info() {
         std::cout << "One Expert has " + std::to_string(weights_.size()) +
@@ -96,8 +93,8 @@ class ExpertWeights {
 
   private:
     int expert_id_; // TODO: 不再维护，后期废弃， 统一在placement_mapping中维护
-    std::vector<Tensor> weights_; //该专家的多个权重，包含 bias， weight等信息
-    size_t total_size_; // 该专家权重参数数量
+    std::vector<Tensor> weights_; // 该专家的多个权重，包含 bias， weight等信息
+    size_t total_size_;           // 该专家权重参数数量
 };
 
 struct CountData {
@@ -116,7 +113,7 @@ class MoEWeights {
     size_t shm_size_;                            // Total size in bytes
 
     size_t rank_;
-    size_t world_size_; //总进程数，用于分析共享内存的拷贝是否全部完成
+    size_t world_size_; // 总进程数，用于分析共享内存的拷贝是否全部完成
     size_t num_layers_;
     size_t num_experts_;
     size_t num_deploy_experts_per_rank_;
@@ -148,20 +145,11 @@ class MoEWeights {
     void init_weights(
         const std::vector<std::vector<std::vector<Tensor>>> &npu_weights,
         bool init_shm);
-
-    void replacement(Distribution *dist_ptr, size_t layer_idx, size_t rank_a,
-                     size_t expert_position_a, size_t rank_b,
-                     size_t expert_position_b);
-    void replacement(Distribution *dist_ptr, size_t layer_idx, size_t rank_a,
-                     size_t expert_position_a, size_t rank_b,
-                     size_t expert_position_b, void *recv_buff_start_address,
+    void replacement(Distribution *dist_ptr, size_t layer_idx,
+                     size_t source_rank, size_t source_global_position,
+                     size_t target_rank, size_t target_global_position,
                      bool need_enqueue_recv_buff);
-
-    void replacement(Distribution *dist_ptr, aclrtStream stream,
-                     size_t layer_idx, size_t local_expert_idx, size_t t_rank);
-
-    void replacement(size_t layer_idx, size_t src_global_expert_idx,
-                     size_t dst_local_expert_idx);
+    size_t get_expert_itemnum();
     std::vector<std::vector<ExpertWeights>> getNpuWeights() const {
         return npu_weights_;
     }

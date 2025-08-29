@@ -423,7 +423,7 @@ class FusedMoE(torch.nn.Module):
         # for heuristic purposes, so it must be initialized first.
         quant_method: Optional[QuantizeMethodBase] = None
 
-        if quant_config is None:
+        if quant_config is None or prefix in quant_config.ignored:
             quant_method = UnquantizedFusedMoEMethod(moe)
         else:
             quant_method = quant_config.get_quant_method(self, prefix)

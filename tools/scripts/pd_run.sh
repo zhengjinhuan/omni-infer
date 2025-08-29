@@ -53,6 +53,7 @@ ADDITIONAL_CONFIG=""
 VLLM_ENABLE_MC2=0
 HCCL_BUFFSIZE=0
 HCCL_OP_EXPANSION_MODE=""
+NUM_SPECULATIVE_TOKENS=1
 
 # Help information
 print_help() {
@@ -100,6 +101,7 @@ print_help() {
     echo "  --vllm-enable-mc2                vLLM framework: GRAPH parameter (default: $VLLM_ENABLE_MC2)"
     echo "  --hccl-op-expansion-mode         vLLM framework: HCCL_OP_EXPANSION_MODE"
     echo "  --hccl-buffsize                  vLLM framework: HCCL_BUFFSIZE"
+    echo "  --num-speculative-tokens         vLLM framework: Speculative decoding parameter, number of speculative tokens per step (default: $NUM_SPECULATIVE_TOKENS)"
     exit 0
 }
 
@@ -236,6 +238,9 @@ parse_long_option() {
         --hccl-op-expansion-mode)
             HCCL_OP_EXPANSION_MODE="$2"
             ;;
+        --num-speculative-tokens)
+            NUM_SPECULATIVE_TOKENS="$2"
+            ;;
         --help)
             print_help
             ;;
@@ -311,7 +316,10 @@ export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
 export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
-export CPU_AFFINITY_CONF=1,npu0:0-1,npu1:40-41,npu2:80-81,npu3:120-121,npu4:160-161,npu5:200-201,npu6:240-241,npu7:280-281
+
+# Turn on these two variables to enable proc_bind
+# export CPU_AFFINITY_CONF=2
+# export PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml
 
 if [ -n "$HCCL_OP_EXPANSION_MODE" ]; then
     export HCCL_OP_EXPANSION_MODE
@@ -398,6 +406,7 @@ common_operations() {
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
     --enable-mtp \
+    --num-speculative-tokens "$NUM_SPECULATIVE_TOKENS" \
     --extra-args "$EXTRA_ARGS"
 }
 

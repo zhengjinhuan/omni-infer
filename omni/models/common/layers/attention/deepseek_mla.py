@@ -19,7 +19,6 @@ from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear
 )
-from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.distributed.communication_op import (
     tensor_model_parallel_all_gather)
 from vllm.distributed.parallel_state import (
@@ -441,7 +440,14 @@ class DeepseekMLA(nn.Module):
                 prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
                 prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
 
-                kv = self.kv_b_proj.forward(prefill_kv_a)[0]
+                if model_extra_config.parall_config.dp_size > 1:
+                    self.kv_b_proj.weight = torch.nn.Parameter(torch.cat((self.W_UK.permute(2,0,1), self.W_UV.transpose(0,1)), dim=-1) \
+                                                                    .view(self.kv_lora_rank,-1).T, requires_grad=False)
+                    kv = self.kv_b_proj.forward(prefill_kv_a)[0]
+                    self.kv_b_proj.weight = None
+                else:
+                    kv = self.kv_b_proj.forward(prefill_kv_a)[0]
+
                 kv = kv.view(-1, self.num_local_heads, self.qk_nope_head_dim + self.v_head_dim)
                 k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
                 if prefill_metadata.max_query_len > 1:
@@ -770,6 +776,10 @@ class DeepseekMLA(nn.Module):
                 q, latent_cache = torch.split(qkv, [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1)
                 q = self.q_a_layernorm(q)
             else:
+                if not isinstance(hidden_states, Dict):
+                    h_quant, h_scale = torch_npu.npu_dynamic_quant(hidden_states)
+                    hidden_states = {'x_int8': h_quant,
+                                     'pertoken_scale':h_scale}
                 latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
 
                 latent_cache = all_gather_world(latent_cache, idx=0, dim=0)
