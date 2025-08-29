@@ -901,13 +901,10 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
+            "x_active_mask": mc2_mask,
         })
 
-        if model_extra_config.operator_opt_config.enable_mc2_v2:
-            output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
-        else:
-            output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
+        output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
         group_list = expert_token_nums.to(torch.int64)
@@ -930,7 +927,7 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
         kwargs = {
             "expand_x": hidden_states_experts,
             "expert_ids": topk_ids,  # [n*topk]
-            "expand_idx": expand_idx,
+            "assist_info_for_combine": expand_idx,
             "expert_scales": topk_weights.to(torch.float32),  # weight [n*topk]
             "expert_shard_type": 0,
             "shared_expert_rank_num": shared_expert_rank_num,
@@ -947,16 +944,11 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
+            "x_active_mask": mc2_mask,
         }
         kwargs.update(stage3_kwargs)
 
-        if model_extra_config.operator_opt_config.enable_mc2_v2:
-            expand_idx = kwargs.pop('expand_idx', None)
-            kwargs['assist_info_for_combine'] = expand_idx
-            hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
-        else:
-            hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
+        hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
     else:
         raise ValueError("ep number should be greater than 1.")
     return hidden_states_route
