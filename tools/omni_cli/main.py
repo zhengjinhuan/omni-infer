@@ -61,6 +61,7 @@ class ClusterInfo:
             "master_ip": None,
             "master_port": None,  # all nodes in the pod use the same master port
             "num_dp": None,
+            "tp": None,
             "num_servers": None,
             "kv_rank": None,
         }
@@ -89,13 +90,15 @@ class ClusterInfo:
     def _update_pod_info(self):
         """Calculate the KV rank, server offset, num dp, etc. for P/D POD."""
         rank_count = 0
+        dp = 1
         for master_host, pod_vars in self.p_pod_info.items():
             pod_vars["kv_rank"] = rank_count
             rank_count += 1
             for i, host in enumerate(pod_vars["pod_hosts"]):
                 pod_vars["server_offset"][host] = 0   # for P always 0
-            pod_vars["num_dp"] = 1  # for P always 1
+            pod_vars["num_dp"] = dp  # for P always 1
             pod_vars["num_servers"] = 1  # for P always 1
+            pod_vars["tp"] = sum(pod_vars["device_count"].values()) // dp
 
         for master_host, pod_vars in self.d_pod_info.items():
             tp = 1
@@ -107,6 +110,7 @@ class ClusterInfo:
                 offset += pod_vars["device_count"][host]
             pod_vars["num_dp"] = sum(pod_vars["device_count"].values()) // tp
             pod_vars["num_servers"] = pod_vars["device_count"][host]
+            pod_vars["tp"] = tp
 
     @property
     def prefill_pod_num(self):
@@ -369,6 +373,23 @@ def _verify_and_fix_env_vars(
                 hv.get("args", {})["num-dp"] = num_dp
                 need_overwrite_inv = True
                 print(f"[INFO] host={host} num-dp set to {num_dp}")
+        if "tp" in hv.get("args", {}):
+            tp = pod_info.get("tp", None)
+            if tp is not None and hv.get("args", {}).get("tp") != tp:
+                hv.get("args", {})["tp"] = tp
+                need_overwrite_inv = True
+                print(f"[INFO] host={host} tp set to {tp}")
+        if "PREFILL_TENSOR_PARALLEL_SIZE" in hv.get("env", {}) and role == "prefill":
+            tp = pod_info.get("tp", None)
+            if tp is not None and hv.get("env", {}).get("PREFILL_TENSOR_PARALLEL_SIZE") != tp:
+                hv.get("env", {})["PREFILL_TENSOR_PARALLEL_SIZE"] = tp
+                need_overwrite_inv = True
+                print(f"[INFO] host={host} PREFILL_TENSOR_PARALLEL_SIZE set to {tp}")
+        if "MODEL_LEN_MAX_PREFILL" in hv.get("env", {}) and role == "prefill":
+            model_len_max = hv.get("env", {}).get("MODEL_LEN_MAX_PREFILL")
+            tp = pod_info.get("tp", None)
+            if model_len_max % tp != 0:
+                print(f"[WARNING] host={host} MODEL_LEN_MAX_PREFILL is not a multiple of TP size!")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
