@@ -62,7 +62,6 @@ from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
 from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
-from vllm.logger import logger
 
 if model_extra_config.operator_opt_config.use_omni_placement:
     from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
@@ -296,7 +295,6 @@ class DeepseekMoE(nn.Module):
         self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
                                 model_extra_config.operator_opt_config.prefill_moe_all_to_all)
         if self.experts_pruning:
-            logger.info("experts_pruning enabled")
             self.experts_pruning_threshold = torch.tensor(
                     [0, 0.01, 0.01, 0.01, 0.0665, 0.086, 0.125, 0.135])
 
