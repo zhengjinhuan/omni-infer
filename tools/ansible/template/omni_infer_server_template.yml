@@ -212,7 +212,7 @@
       pip uninstall omni_placement -y
 
       cd /workspace/omniinfer/tools/scripts
-      PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -280,7 +280,7 @@
       python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
 
       cd /workspace/omniinfer/tools/scripts
-      PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -446,8 +446,8 @@
 
     docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
     docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation && cd ../../ && pip install -e . --no-deps --no-build-isolation && pip uninstall numpy -y && pip install numpy==1.26 --no-deps --no-build-isolation > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation && cd ../../ && pip install -e . --no-deps --no-build-isolation && pip uninstall numpy -y && pip install numpy==1.26 --no-deps --no-build-isolation > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
 
   tasks:
     - name: generate container name.
@@ -1054,30 +1054,45 @@
         - run_server
       
     
-    - name: check vLLM is Ready
-      shell: |
-        timeout=600
-        while [ $timeout -gt 0 ]; do
-          if grep -q "Application startup complete" {{ ansible_env.LOG_PATH }}/server_0.log; then
-            echo "Service ready"
-            exit 0
-          fi
-          sleep 20
-          timeout=$((timeout - 20))
-        done
-        echo "Timeout waiting for service" >&2
-        exit 0
-      delegate_to: "{{ inventory_hostname }}"
-      become: yes
-      when: "'P' in group_names or 'D' in group_names"
+    - name: Wait for vLLM service to be ready in container D
+      ansible.builtin.shell:
+        cmd: |
+          timeout=300
+          while [ $timeout -gt 0 ]; do
+            if docker exec $DOCKER_NAME_D grep -q "Application startup complete" ${LOG_PATH}/{{ inventory_hostname }}/server_0.log; then
+              echo "Service ready"
+              exit 0
+            fi
+            sleep 20
+            timeout=$((timeout - 20))
+          done
+          echo "Timeout waiting for service" >&2
+          exit 1
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+      when: 
+        - "'D' in group_names"
+        - "proc_bind_enabled | default(false)"
       tags:
         - proc_bind
+
     
-    - name: Ensure bind_cpu.sh is executable
-      file:
-        path: ${CODE_PATH}/omniinfer/tools/scripts/bind_cpu.sh
-        mode: "0755"
-      become: yes
+    - name: Ensure bind_cpu.sh is executable in the container
+      ansible.builtin.shell:
+        cmd: docker exec $DOCKER_NAME_P chmod +x /workspace/omniinfer/tools/scripts/bind_cpu.sh
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags:
+        - proc_bind
+
+    - name: Ensure bind_cpu.sh is executable in the container
+      ansible.builtin.shell:
+        cmd: docker exec $DOCKER_NAME_D chmod +x /workspace/omniinfer/tools/scripts/bind_cpu.sh
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
       tags:
         - proc_bind
     
@@ -1088,7 +1103,9 @@
         SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
         ROLE: "P"
       become: yes
-      when: "'P' in group_names"
+      when: 
+        - "'P' in group_names"
+        - "proc_bind_enabled | default(false)"
       tags:
         - proc_bind
     
@@ -1099,7 +1116,9 @@
         SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
         ROLE: "D"
       become: yes
-      when: "'D' in group_names"
+      when: 
+        - "'D' in group_names"
+        - "proc_bind_enabled | default(false)"
       tags:
         - proc_bind
 

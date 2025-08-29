@@ -58,6 +58,8 @@ class PostDrafter(EagleProposer):
         self.method = self.vllm_config.speculative_config.method
         self.mark_static = False
         self.rejection_sampler = runner.rejection_sampler
+        self.use_rejection_sampler = runner.use_rejection_sampler
+        self.topk = runner.topk
 
         # eagle proposer set dtype as int32, while we need int64
         self.input_ids = torch.zeros(self.max_num_tokens,
@@ -176,17 +178,27 @@ class PostDrafter(EagleProposer):
                                 drafter_logits = self.model.compute_logits(previous_hidden_states, None)
                             else:
                                 drafter_logits = self.model.compute_logits(previous_hidden_states[sample_indices], None)
-                        draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
-                        draft_forward_tokens_list.append(draft_forward_tokens)
+                        if self.use_rejection_sampler:
+                            mtp_probs = torch.nn.functional.softmax(drafter_logits[last_accepted_index], dim=-1)
+                            batch_size = last_accepted_index.numel()
+                            mtp_topk_token_probs, mtp_topk_token_ids = torch.topk(mtp_probs, self.topk, dim=1)
+                            mtp_topk_token_ids = mtp_topk_token_ids.view(batch_size, -1)
+                            mtp_topk_token_probs = mtp_topk_token_probs.view(batch_size, -1)
+                            self.rejection_sampler.main_sampler.prob_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, i)
+                            draft_forward_tokens = mtp_topk_token_ids[:, 0].view(-1)
+                            draft_forward_tokens_list.append(draft_forward_tokens)
+                        else:
+                            draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
+                            draft_forward_tokens_list.append(draft_forward_tokens)
                     if i == self.speculative_config.num_speculative_tokens - 1:
                         break
+                    self.input_ids[:num_tokens] = torch.roll(input_ids, -1, -1)
                     if not is_dummy:
-                        input_ids = torch.roll(input_ids, -1, -1)
                         if attn_state == AscendAttentionState.DecodeOnly:
                             input_ids[last_accepted_index] = draft_forward_tokens
                         else: # prefill
                             input_ids[sample_indices] = draft_forward_tokens
-            if last_accepted_index is None:
+            if is_dummy:
                 return None
             else:
                 return torch.stack(draft_forward_tokens_list, dim=1)

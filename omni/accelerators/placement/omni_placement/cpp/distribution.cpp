@@ -18,7 +18,8 @@ Distribution::Distribution(size_t rank, const char *rankTableFile) {
     HCCLCHECK(HcclGetRankId(hcclComm_, &rank_));
 }
 
-Distribution::Distribution(size_t rank, size_t world_size, const char *infoStr,
+Distribution::Distribution(size_t num_deploy_experts_per_rank, size_t rank,
+                           size_t world_size, const char *infoStr,
                            HcclCommInitType type) {
     // 构建 HCCL 通信域
     if (type == HcclCommInitType::RootInfoString) {
@@ -51,170 +52,188 @@ Distribution::Distribution(size_t rank, size_t world_size, const char *infoStr,
     warmup();
 
     void *data_ptr;
+    host_round_status_.resize(world_size_ * round_info_length_, 0);
 
-    hostHandshakeStatus_.resize(world_size_ * info_length_, 0);
-
-    ACLCHECK(aclrtMalloc(&data_ptr, world_size_ * info_length_ * sizeof(int),
+    ACLCHECK(aclrtMalloc(&data_ptr,
+                         world_size_ * round_info_length_ * sizeof(int),
                          ACL_MEM_MALLOC_HUGE_FIRST));
-    deviceHandshakeStatus_ =
-        Tensor((uint64_t)data_ptr, world_size_ * info_length_, sizeof(int),
-               "int", "constant tensor");
-    deviceHandshakeStatus_.to_device(hostHandshakeStatus_.data());
-
-    ACLCHECK(aclrtMalloc(&data_ptr, info_length_ * sizeof(int),
+    device_round_status_ =
+        Tensor((uint64_t)data_ptr, world_size_ * round_info_length_,
+               sizeof(int), "int", "constant tensor");
+    device_round_status_.to_device(host_round_status_.data());
+    ACLCHECK(aclrtMalloc(&data_ptr, round_info_length_ * sizeof(int),
                          ACL_MEM_MALLOC_HUGE_FIRST));
-    deviceCurrentStatus_ = Tensor((uint64_t)data_ptr, info_length_, sizeof(int),
-                                  "int", "constant tensor");
+    device_cur_round_status_ = Tensor((uint64_t)data_ptr, round_info_length_,
+                                      sizeof(int), "int", "constant tensor");
 
     ACLCHECK(aclrtCreateStream(&memcopy_stream_));
+    num_deploy_experts_per_rank_ = num_deploy_experts_per_rank;
+    queue_size_ = num_deploy_experts_per_rank_;
+    queue_item_num_ = 0;
+    completed_sync_queue_.resize(queue_size_);
+    for (int i = 0; i < queue_size_; ++i) {
+        completed_sync_queue_[i] = new TransDesc;
+    }
 }
 
 Distribution::~Distribution() {
     // 销毁HCCL通信域
     HCCLCHECK(HcclCommDestroy(hcclComm_));
-    deviceHandshakeStatus_.release();
-    deviceCurrentStatus_.release();
     aclrtDestroyStream(stream_);
     aclrtDestroyStream(memcopy_stream_);
+    device_round_status_.release();
+    device_cur_round_status_.release();
+    for (int i = 0; i < queue_size_; ++i) {
+        delete completed_sync_queue_[i];
+    }
 }
 
 void Distribution::allocate_recv_buffs(size_t expert_size) {
     expert_size_ = expert_size;
-    size_t total_size = expert_size_ * QUEUE_SIZE;
+    size_t total_size = expert_size_ * queue_size_;
     ACLCHECK(aclrtMalloc(&recv_buff_, total_size, ACL_MEM_MALLOC_HUGE_FIRST));
 }
 
-bool Distribution::isCompletedQueueFull() {
-    return completedSynchronizeQueue_.IsFull();
-}
-
-void *Distribution::get_recv_buff_address() {
-    if (recv_buff_ == nullptr) {
-        std::cout << "[DynamicEplb-Error], Pls initilization recv_buff_ by "
-                     "allocate_recv_buffs"
-                  << std::endl;
-        exit(0);
-    }
-    size_t queue_idx = getCompletedQueueEnqueuePosition();
-    size_t offset_idx = queue_idx * expert_size_;
-    return static_cast<void *>(static_cast<uint8_t *>(recv_buff_) + offset_idx);
+void Distribution::init_hccl_buffs(size_t item_num) {
+    expert_weight_num_ = item_num;
+    hccl_batch_idx_ = 0;
+    max_hccl_batch_size_ = item_num * queue_size_;
+    send_recv_info_.sendRecvType.resize(max_hccl_batch_size_);
+    send_recv_info_.address.resize(max_hccl_batch_size_);
+    send_recv_info_.lengths.resize(max_hccl_batch_size_);
+    send_recv_info_.sizes.resize(max_hccl_batch_size_);
+    send_recv_info_.dtypes.resize(max_hccl_batch_size_);
+    send_recv_info_.recv_buffs.resize(max_hccl_batch_size_);
+    send_recv_info_.t_rank.resize(max_hccl_batch_size_);
 }
 
 void Distribution::release_recv_buffs() { ACLCHECK(aclrtFree(recv_buff_)); }
 
-void Distribution::enqueue(TransDesc *desc, size_t t_rank,
-                           bool need_enqueue_recv_buff) {
+void Distribution::clear_hccl_buffs() { hccl_batch_idx_ = 0; }
 
-    if (desc == nullptr) {
-        std::cout
-            << "[DynamicEplb-Error], Adding an empty TransDesc ptr to the Queue"
-            << std::endl;
-        exit(0);
+size_t Distribution::hccl_buffs_size() { return hccl_batch_idx_; }
+
+void Distribution::prepare_batch(bool need_enqueue, TransDesc &desc) {
+    if (need_enqueue) {
+        SwapDirection s_direction = (rank_ == desc.t_rank[0])
+                                        ? SwapDirection::LOCAL
+                                        : SwapDirection::RECV;
+        add_to_batch(desc, s_direction);
+        enqueue(&desc);
+    } else {
+        add_to_batch(desc, SwapDirection::SEND);
     }
-    bool send_first = rank_ < t_rank;
-    desc->t_rank = t_rank;
-    TransDesc *position_recv_desc =
-        completedSynchronizeQueue_.GetRear(desc->localExpertPositionOfsset);
-
-    std::vector<void *> send_address = (position_recv_desc == nullptr)
-                                           ? desc->address
-                                           : position_recv_desc->recv_buffs;
-
-    for (size_t idx = 0; idx < desc->address.size(); ++idx) {
-        swap(send_address[idx], desc->recv_buffs[idx], desc->lengths[idx],
-             desc->dtypes[idx], t_rank, send_first,
-             stream_); // 对端队列满了， 等待超时交换失败
-    }
-
-    if (need_enqueue_recv_buff)
-        completedSynchronizeQueue_.Enqueue(desc);
 }
 
-// The global_position_id will be put a new expert with expert_id
-bool Distribution::performGlobalHandshake(int t_rank, int position_offset,
-                                          int expert_id) {
-    // world_size 为 队列满， -1为当前Rank已完成所有下发
-    bool is_full = isCompletedQueueFull();
-    if (is_full && (t_rank != -1 && t_rank != (int)rank_))
-        t_rank = (int)world_size_; // 队列已满，广播当前队列已满 (标志符)
+void Distribution::add_to_batch(TransDesc &desc, int direction) {
+    std::string rank_str = std::to_string(rank_);
+    for (size_t idx = 0; idx < desc.address.size(); ++idx) {
+        // send
+        if (direction & SwapDirection::SEND) {
+            send_recv_info_.sendRecvType[hccl_batch_idx_] = SwapDirection::SEND;
+            send_recv_info_.address[hccl_batch_idx_] = desc.address[idx];
+            send_recv_info_.lengths[hccl_batch_idx_] = desc.lengths[idx];
+            send_recv_info_.dtypes[hccl_batch_idx_] = desc.dtypes[idx];
+            send_recv_info_.t_rank[hccl_batch_idx_] = desc.t_rank[idx];
+            hccl_batch_idx_++;
+        }
 
-    std::vector<int> hostCurrentStatus = {t_rank, position_offset, expert_id};
+        // recv
+        if (direction & SwapDirection::RECV) {
+            send_recv_info_.sendRecvType[hccl_batch_idx_] = SwapDirection::RECV;
+            send_recv_info_.recv_buffs[hccl_batch_idx_] = desc.recv_buffs[idx];
+            send_recv_info_.lengths[hccl_batch_idx_] = desc.lengths[idx];
+            send_recv_info_.dtypes[hccl_batch_idx_] = desc.dtypes[idx];
+            send_recv_info_.t_rank[hccl_batch_idx_] = desc.t_rank[idx];
+            hccl_batch_idx_++;
+        }
 
-    deviceCurrentStatus_.to_device(hostCurrentStatus.data());
+        // local
+        if (direction & SwapDirection::LOCAL) {
+            send_recv_info_.sendRecvType[hccl_batch_idx_] =
+                SwapDirection::LOCAL;
+            send_recv_info_.address[hccl_batch_idx_] = desc.address[idx];
+            send_recv_info_.recv_buffs[hccl_batch_idx_] = desc.recv_buffs[idx];
+            send_recv_info_.sizes[hccl_batch_idx_] = desc.sizes[idx];
+            send_recv_info_.lengths[hccl_batch_idx_] = desc.lengths[idx];
+            send_recv_info_.dtypes[hccl_batch_idx_] = desc.dtypes[idx];
+            send_recv_info_.t_rank[hccl_batch_idx_] = desc.t_rank[idx];
+            hccl_batch_idx_++;
+        }
+    }
+}
 
-    allgather(deviceCurrentStatus_.get_data_ptr(),
-              deviceHandshakeStatus_.get_data_ptr(), info_length_,
+void Distribution::hccl_batch_send() {
+    for (int i = 0; i < hccl_batch_idx_; i++) {
+        if (send_recv_info_.sendRecvType[i] == SwapDirection::SEND) {
+            HCCLCHECK(HcclSend(send_recv_info_.address[i],
+                               send_recv_info_.lengths[i],
+                               NAME2DATATYPE.at(send_recv_info_.dtypes[i]),
+                               send_recv_info_.t_rank[i], hcclComm_, stream_));
+        } else if (send_recv_info_.sendRecvType[i] == SwapDirection::RECV) {
+            HCCLCHECK(HcclRecv(send_recv_info_.recv_buffs[i],
+                               send_recv_info_.lengths[i],
+                               NAME2DATATYPE.at(send_recv_info_.dtypes[i]),
+                               send_recv_info_.t_rank[i], hcclComm_, stream_));
+        } else if (send_recv_info_.sendRecvType[i] == SwapDirection::LOCAL) {
+            ACLCHECK(aclrtMemcpyAsync(
+                send_recv_info_.recv_buffs[i], send_recv_info_.sizes[i],
+                send_recv_info_.address[i], send_recv_info_.sizes[i],
+                ACL_MEMCPY_DEVICE_TO_DEVICE, stream_));
+        }
+        ACLCHECK(aclrtSynchronizeStream(stream_));
+    }
+}
+
+void *Distribution::get_recv_buff_address(bool need_enqueue, size_t size) {
+    if (recv_buff_ == nullptr) {
+        throw std::runtime_error(
+            "Pls initilization recv_buff_ by allocate_recv_buffs");
+    }
+
+    if (!need_enqueue)
+        return nullptr;
+    void *ptr = static_cast<void *>(static_cast<uint8_t *>(recv_buff_) +
+                                    recv_buff_cur_);
+    recv_buff_cur_ += size;
+    return ptr;
+}
+
+bool Distribution::sync_round_shakehand(int cur_round, int curBatch) {
+    std::vector<int> hostCurrentStatus = {cur_round, curBatch};
+    device_cur_round_status_.to_device(hostCurrentStatus.data());
+    allgather(device_cur_round_status_.get_data_ptr(),
+              device_round_status_.get_data_ptr(), round_info_length_,
               "int"); // 广播当前的目标队列
-    deviceHandshakeStatus_.to_host(hostHandshakeStatus_.data());
+    device_round_status_.to_host(host_round_status_.data());
 
-    if (t_rank == (int)world_size_) {
-        return false; // 当前队列已满
+    for (int i = 0; i < world_size_; i++) {
+        if (host_round_status_[i * round_info_length_] != cur_round) {
+            return false;
+        }
+        if (host_round_status_[i * round_info_length_ + 1] != curBatch) {
+            return false;
+        }
     }
-
-    else if (t_rank != -1) {
-        //当前rank 还存在下发任务
-        if (hostHandshakeStatus_[t_rank * info_length_] == (int)rank_)
-            return true; // 对端跟自己握手
-        return false;    // 对端不跟自己握手
-    }
-
-    // 剩下 t_trank == -1 的情况
-    for (size_t idx = 0; idx < world_size_; ++idx) {
-        if (hostHandshakeStatus_[idx * info_length_] != -1)
-            return false; // 还有rank存在swap 下发任务（队列满了等待状态），
-    }
-
     return true;
 }
 
-/**
- * @return 当前完成队列是否为空
- */
-void Distribution::copyFromCompletedQueueToHBM() {
-
-    if (completedSynchronizeQueue_.IsEmpty()) {
-        return;
-    }
-
-    TransDesc *desc = completedSynchronizeQueue_.GetFront();
-    completedSynchronizeQueue_.Dequeue();
-
-    for (size_t idx = 0; idx < desc->recv_buffs.size(); ++idx) {
-        ACLCHECK(aclrtMemcpyAsync(
-            desc->address[idx], desc->sizes[idx], desc->recv_buffs[idx],
-            desc->sizes[idx], ACL_MEMCPY_DEVICE_TO_DEVICE, memcopy_stream_));
-    }
-}
-
-void Distribution::copyAllFromCompletedQueueToHBM() {
-    while (!completedSynchronizeQueue_.IsEmpty()) {
-        copyFromCompletedQueueToHBM();
+void Distribution::copy_from_queue_to_hbm() {
+    for (size_t i = 0; i < queue_item_num_; i++) {
+        TransDesc *desc = completed_sync_queue_[i];
+        for (size_t idx = 0; idx < desc->address.size(); ++idx) {
+            ACLCHECK(aclrtMemcpyAsync(desc->address[idx], desc->sizes[idx],
+                                      desc->recv_buffs[idx], desc->sizes[idx],
+                                      ACL_MEMCPY_DEVICE_TO_DEVICE,
+                                      memcopy_stream_));
+        }
     }
     ACLCHECK(aclrtSynchronizeStream(memcopy_stream_));
+    queue_item_num_ = 0;
 }
 
-void Distribution::swap(void *src_addr, void *recv_addr, size_t length,
-                        std::string dtype, uint32_t t_rank, bool send_first,
-                        aclrtStream stream) {
-    assert(stream == nullptr && "stream should not be nullptr");
-    if (send_first) {
-
-        HCCLCHECK(HcclSend(src_addr, length, NAME2DATATYPE.at(dtype), t_rank,
-                           hcclComm_, stream));
-
-        HCCLCHECK(HcclRecv(recv_addr, length, NAME2DATATYPE.at(dtype), t_rank,
-                           hcclComm_, stream));
-
-    } else {
-
-        HCCLCHECK(HcclRecv(recv_addr, length, NAME2DATATYPE.at(dtype), t_rank,
-                           hcclComm_, stream));
-
-        HCCLCHECK(HcclSend(src_addr, length, NAME2DATATYPE.at(dtype), t_rank,
-                           hcclComm_, stream));
-    }
-
-    ACLCHECK(aclrtSynchronizeStream(stream));
+size_t Distribution::get_recv_buff_maxsize() {
+    return expert_size_ * queue_size_;
 }
 
 void Distribution::allgather(void *src_addr, void *recv_addr, size_t length,

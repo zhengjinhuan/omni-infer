@@ -29,66 +29,23 @@
 
 namespace py = pybind11;
 
-void ExpertWeights::swap(Distribution *dist_ptr, size_t t_rank, bool send_first,
-                         aclrtStream stream) {
-
-    if (stream == nullptr) {
-        ACLCHECK(aclrtCreateStream(&stream));
-    }
-    for (auto &weight : weights_) {
-        size_t data_size = weight.get_total_size();
-        std::string dtype = weight.get_dtype();
-        // std::cout<<"length: "<< weight.get_length()<<" dtype: "<<dtype<<" "<<
-        // std::endl;
-        void *recv_buf;
-        ACLCHECK(aclrtMalloc(&recv_buf, data_size, ACL_MEM_MALLOC_HUGE_FIRST));
-        void *send_buf = weight.get_data_ptr();
-        dist_ptr->swap(send_buf, recv_buf, data_size, dtype, t_rank, send_first,
-                       stream);
-        ACLCHECK(aclrtMemcpy(send_buf, data_size, recv_buf, data_size,
-                             ACL_MEMCPY_DEVICE_TO_DEVICE));
-    }
-}
-
 void ExpertWeights::enqueueSwapInformation(Distribution *dist_ptr,
-                                           size_t t_rank) {
-    std::vector<size_t>
-        lengths; // No pre-allocation needed; it will grow as required.
-    std::vector<std::string> dtypes;
-    std::vector<void *> address;
-    std::vector<size_t> sizes;
-    for (auto &weight : weights_) {
-        lengths.push_back(weight.get_length());
-        dtypes.push_back(weight.get_dtype());
-        address.push_back(weight.get_data_ptr());
-        sizes.push_back(weight.get_total_size());
-    }
-    TransDesc expert_trans_desc;
-    expert_trans_desc.address = address;
-    expert_trans_desc.lengths = lengths;
-    expert_trans_desc.dtypes = dtypes;
-    expert_trans_desc.sizes = sizes;
-    dist_ptr->enqueue(&expert_trans_desc, t_rank, true);
-}
-
-void ExpertWeights::enqueueSwapInformation(Distribution *dist_ptr,
-                                           size_t t_rank, void *recv_buff,
-                                           bool need_enqueue_recv_buff,
-                                           size_t localExpertPositionOfsset) {
-    std::vector<size_t>
-        lengths; // No pre-allocation needed; it will grow as required.
+                                           size_t t_rank,
+                                           bool need_enqueue_recv_buff) {
+    std::vector<size_t> lengths;
     std::vector<std::string> dtypes;
     std::vector<void *> address;
     std::vector<size_t> sizes;
     std::vector<void *> recv_buffs;
-    uint8_t *tmp = static_cast<uint8_t *>(recv_buff);
+    std::vector<size_t> t_ranks;
     for (auto &weight : weights_) {
         lengths.push_back(weight.get_length());
         dtypes.push_back(weight.get_dtype());
         address.push_back(weight.get_data_ptr());
         sizes.push_back(weight.get_total_size());
-        recv_buffs.push_back((void *)tmp);
-        tmp += weight.get_total_size();
+        recv_buffs.emplace_back(dist_ptr->get_recv_buff_address(
+            need_enqueue_recv_buff, weight.get_total_size()));
+        t_ranks.push_back(t_rank);
     }
     TransDesc expert_trans_desc;
     expert_trans_desc.address = address;
@@ -96,8 +53,26 @@ void ExpertWeights::enqueueSwapInformation(Distribution *dist_ptr,
     expert_trans_desc.dtypes = dtypes;
     expert_trans_desc.sizes = sizes;
     expert_trans_desc.recv_buffs = recv_buffs;
-    expert_trans_desc.localExpertPositionOfsset = localExpertPositionOfsset;
-    dist_ptr->enqueue(&expert_trans_desc, t_rank, need_enqueue_recv_buff);
+    expert_trans_desc.t_rank = t_ranks;
+
+    dist_ptr->prepare_batch(need_enqueue_recv_buff, expert_trans_desc);
+}
+
+size_t MoEWeights::get_expert_itemnum() {
+    ExpertWeights expert = getExpert(0, 0);
+    return expert.get_weights().size();
+}
+
+void MoEWeights::replacement(Distribution *dist_ptr, size_t layer_idx,
+                             size_t source_rank, size_t source_global_position,
+                             size_t target_rank, size_t target_global_position,
+                             bool need_enqueue_recv_buff) {
+    size_t localExpPos =
+        source_rank == rank_ ? source_global_position : target_global_position;
+    localExpPos = localExpPos % getNumDeployExpertsPerRank();
+    ExpertWeights expert = getExpert(layer_idx, localExpPos);
+    size_t t_rank = (source_rank == rank_) ? target_rank : source_rank;
+    expert.enqueueSwapInformation(dist_ptr, t_rank, need_enqueue_recv_buff);
 }
 
 MoEWeights::MoEWeights(size_t num_experts) : num_experts_(num_experts) {
@@ -130,8 +105,9 @@ MoEWeights::MoEWeights(size_t num_experts, size_t rank, size_t world_size)
 MoEWeights::MoEWeights(size_t num_experts, size_t rank, size_t world_size,
                        const char *rankTableFile)
     : rank_(rank), world_size_(world_size), num_experts_(num_experts) {
-    dist_ptr_ = new Distribution(rank_, world_size_, rankTableFile,
-                                 HcclCommInitType::RankTableFile);
+    dist_ptr_ =
+        new Distribution(num_experts / world_size, rank_, world_size_,
+                         rankTableFile, HcclCommInitType::RankTableFile);
     dist_ptr_->printCommInfo();
     shm_ptr_ = nullptr;
     count_ptr_ = nullptr;
@@ -383,138 +359,5 @@ void MoEWeights::replicate_to_shared_memory() {
             }
             shm_ptr_current += expert_size;
         }
-    }
-}
-
-void MoEWeights::replacement(Distribution *dist_ptr, size_t layer_idx,
-                             size_t rank_a, size_t expert_position_a,
-                             size_t rank_b, size_t expert_position_b) {
-    // TODO: Disused on Next Version
-    size_t local_expert_idx;
-    size_t t_rank;
-    if (rank_ == rank_a) {
-        local_expert_idx = expert_position_a;
-        t_rank = rank_b;
-    } else if (rank_ == rank_b) {
-        local_expert_idx = expert_position_b;
-        t_rank = rank_a;
-    } else {
-        return;
-    }
-    local_expert_idx = local_expert_idx % getNumDeployExpertsPerRank();
-    ExpertWeights expert = getExpert(layer_idx, local_expert_idx);
-    expert.enqueueSwapInformation(dist_ptr, t_rank);
-}
-
-void MoEWeights::replacement(Distribution *dist_ptr, size_t layer_idx,
-                             size_t rank_a, size_t expert_position_a,
-                             size_t rank_b, size_t expert_position_b,
-                             void *recv_buff_start_address,
-                             bool need_enqueue_recv_buff) {
-    size_t local_expert_idx;
-    size_t t_rank;
-    if (rank_ == rank_a) {
-        local_expert_idx = expert_position_a;
-        t_rank = rank_b;
-    } else if (rank_ == rank_b) {
-        local_expert_idx = expert_position_b;
-        t_rank = rank_a;
-    } else {
-        return;
-    }
-    local_expert_idx = local_expert_idx % getNumDeployExpertsPerRank();
-    ExpertWeights expert = getExpert(layer_idx, local_expert_idx);
-    size_t localExpertPositionOfsset = getLocalExpertPositionOffset(
-        layer_idx, local_expert_idx); // 第几层的第几个位置
-    expert.enqueueSwapInformation(
-        dist_ptr, t_rank, recv_buff_start_address, need_enqueue_recv_buff,
-        localExpertPositionOfsset); // 往队里传入专家替换信息，
-                                    // 异步线程处理,不进行同步等待, TODO
-}
-
-void MoEWeights::replacement(Distribution *dist_ptr, aclrtStream stream,
-                             size_t layer_idx, size_t local_expert_idx,
-                             size_t t_rank) {
-
-    assert(dist_ptr != nullptr && "Distribution pointer is not initialized");
-    if (stream == nullptr) {
-        ACLCHECK(aclrtCreateStream(&stream));
-    }
-
-    // 获取当前层的所有专家权重
-    auto &layer_experts = npu_weights_[layer_idx];
-    ExpertWeights source_expert = layer_experts[local_expert_idx];
-    bool send_first = (rank_ < t_rank);
-    source_expert.swap(dist_ptr, t_rank, send_first, stream);
-}
-
-/**
- * @brief 将共享内存中的专家权重替换到 Weights指定层的指定本地专家位置
- *
- * 该函数从共享内存 (shm_ptr_) 中根据全局专家索引 (src_global_expert_idx)
- * 和层索引 (layer_idx) 定位源数据，并将其拷贝到 NPU 权重数组 (npu_weights_)
- * 中指定层(layer_idx)的本地专家位置 (dst_local_expert_idx)。
- *
- * @param layer_idx [in] 层索引，表示目标权重所在的层，必须小于
- * npu_weights_.size()
- * @param src_global_expert_idx [in]
- * 全局专家索引，用于计算共享内存中源数据的偏移量
- * @param dst_local_expert_idx [in]
- * 本地专家索引，表示当前层内的目标专家位置，必须小于该层的专家数
- * @throws std::runtime_error 如果 layer_idx 或 dst_local_expert_idx
- * 超出有效范围
- * @note 假设共享内存中的数据按层和专家顺序连续存储，且每个专家的权重大小为
- * weights_size_per_expert_
- */
-void MoEWeights::replacement(size_t layer_idx, size_t src_global_expert_id,
-                             size_t dst_local_expert_idx) {
-    // 将共享内存指针转换为 char* 以便按字节偏移
-    char *shm_ptr = static_cast<char *>(shm_ptr_);
-    char *shm_ptr_current = static_cast<char *>(shm_ptr_);
-
-    // // 检查层索引是否有效
-    if (layer_idx >= npu_weights_.size()) {
-        throw std::runtime_error(
-            "Invalid layer_idx: " + std::to_string(layer_idx) +
-            ", current weights only have " +
-            std::to_string(npu_weights_.size()) + " layers");
-    }
-
-    // 检查目标本地专家索引是否有效
-    if (src_global_expert_id >= num_experts_) {
-        throw std::runtime_error("Invalid src_global_expert_id: " +
-                                 std::to_string(src_global_expert_id) +
-                                 ", max:  " + std::to_string(num_experts_ - 1));
-    }
-
-    // 获取当前层的所有专家权重
-    auto &layer_experts = npu_weights_[layer_idx];
-
-    // 检查目标本地专家索引是否有效
-    if (dst_local_expert_idx >= layer_experts.size()) {
-        throw std::runtime_error(
-            "Invalid dst_local_expert_idx: " +
-            std::to_string(dst_local_expert_idx) +
-            ", max:  " + std::to_string(layer_experts.size() - 1));
-    }
-
-    ExpertWeights expert_weights = layer_experts[dst_local_expert_idx];
-
-    size_t expert_size = expert_weights.get_total_size();
-    shm_ptr_current +=
-        (layer_idx * num_experts_ + src_global_expert_id) * expert_size;
-
-    // 检查共享内存地址拷贝范围是否合法
-    if (not is_within_bounds(shm_ptr, shm_size_, shm_ptr_current,
-                             expert_size)) {
-        throw std::runtime_error(
-            "Target memory (shm_ptr_current) is unvalided!");
-    }
-
-    aclError ret = expert_weights.to_device(shm_ptr_current);
-
-    if (ret != ACL_SUCCESS) {
-        throw std::runtime_error("aclrtMemcpy failed, error code: " +
-                                 std::to_string(ret));
     }
 }

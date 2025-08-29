@@ -131,7 +131,8 @@ void Placement::initialize_components(char *root_info) {
     num_deploy_experts_ = mapping_->get_num_deploy_experts();
     num_deploy_experts_per_rank_ = num_deploy_experts_ / world_size_;
 
-    dist_ptr_ = new Distribution(rank_, hccl_comm_world_size_, root_info,
+    dist_ptr_ = new Distribution(num_deploy_experts_per_rank_, rank_,
+                                 hccl_comm_world_size_, root_info,
                                  HcclCommInitType::RootInfoString);
     moe_weight_ = new MoEWeights(num_deploy_experts_, rank_, world_size_);
     optimizer_ = new PlacementOptimizer(mapping_, activations_);
@@ -241,6 +242,266 @@ std::string convertInstructionToString(ChangeInstruction instruction) {
     return result;
 }
 
+bool Placement::is_mergeful_and_merged(std::vector<std::vector<int>> &rank_used,
+                                       int layer_1, int layer_2) {
+    for (size_t i = 0; i < world_size_; i++) {
+        if (rank_used[layer_1][i] + rank_used[layer_2][i] >
+            dist_ptr_->queue_size())
+            return false;
+    }
+
+    for (size_t i = 0; i < world_size_; i++) {
+        rank_used[layer_1][i] += rank_used[layer_2][i];
+    }
+    return true;
+}
+
+void Placement::merge_instructions(std::vector<ChangeInstruction> &in) {
+    stable_sort(in.begin(), in.end(), [](const auto &a, const auto &b) {
+        return a.layer_idx < b.layer_idx;
+    });
+    std::vector<std::vector<int>> rank_used(num_layers_,
+                                            std::vector<int>(world_size_));
+    size_t total_num = in.size();
+    for (size_t i = 0; i < total_num; i++) {
+        rank_used[in[i].layer_idx][in[i].target_rank]++;
+        in[i].round = -1;
+    }
+
+    int layer_round[num_layers_] = {0};
+    memset(layer_round, 0, sizeof(layer_round));
+    int cur_round = 1;
+    for (size_t start_layer = 0; start_layer < num_layers_; start_layer++) {
+        if (layer_round[start_layer] != 0)
+            continue;
+        layer_round[start_layer] = cur_round;
+        for (size_t merge_layer = start_layer + 1; merge_layer < num_layers_;
+             merge_layer++) {
+            if (layer_round[merge_layer] != 0)
+                continue;
+            if (is_mergeful_and_merged(rank_used, start_layer, merge_layer)) {
+                layer_round[merge_layer] = cur_round;
+            }
+        }
+        cur_round++;
+    }
+
+    for (size_t i = 0; i < total_num; i++) {
+        in[i].round = layer_round[in[i].layer_idx];
+    }
+}
+
+void Placement::reorder_instructions(std::vector<ChangeInstruction> in,
+                                     std::vector<ChangeInstruction> &out) {
+    merge_instructions(in);
+    stable_sort(in.begin(), in.end(),
+                [](const auto &a, const auto &b) { return a.round < b.round; });
+    size_t total_num = in.size();
+    if (total_num <= 0) {
+        out = std::move(in);
+        return;
+    }
+
+    size_t start_idx = 0;
+    std::unordered_map<int, int> rank_used;
+    std::vector<ChangeInstruction> round_inst;
+    // start: out: , round_inst:
+    // r1-r2,r1-r3,r1-r4,r2-r3,r2-r4,r3-r4,r2-r1,r4-r3, ps:queue size=2 round 0
+    // one batch: out:r1-r2,r3-r4; round_inst:
+    // r1-r3,r1-r4,r2-r3,r2-r4,r2-r1,r4-r3 one batch:
+    // out:r1-r2,r3-r4,r1-r3,r2-r4; round_inst: r1-r4,r2-r3,r2-r1,r4-r3 round 1
+    // one batch: out:r1-r2,r3-r4,r1-r3,r2-r4,r1-r4,r2-r3; round_inst:
+    // r2-r1,r4-r3 one batch:
+    // out:r1-r2,r3-r4,r1-r3,r2-r4,r1-r4,r2-r3,r2-r1,r4-r3; round_inst:; end
+    for (size_t i = 0; i < total_num; i++) {
+        ChangeInstruction inst = in[i];
+        round_inst.emplace_back(inst);
+        if (i == total_num - 1 || in[i + 1].round > inst.round) {
+            // one round end
+            size_t cur_idx = 0;
+            size_t round_num = round_inst.size();
+            size_t stop_idx = round_num - 1;
+            rank_used.clear();
+            while (cur_idx < round_num) {
+                if (cur_idx > stop_idx) {
+                    // one batch end
+                    rank_used.clear();
+                    stop_idx = round_num - 1;
+                }
+                ChangeInstruction one_inst = round_inst[cur_idx];
+                // split batch
+                if (rank_used.find(one_inst.source_rank) != rank_used.end() ||
+                    rank_used.find(one_inst.target_rank) != rank_used.end()) {
+                    // can not put into batch, so back to queue
+                    round_inst.emplace_back(one_inst);
+                    round_num++;
+                } else {
+                    // put into batch
+                    out.emplace_back(one_inst);
+                    rank_used[one_inst.source_rank] = 1;
+                    rank_used[one_inst.target_rank] = 1;
+                }
+                cur_idx++;
+            }
+            round_inst.clear();
+        }
+    }
+}
+
+bool Placement::check_instructions(std::vector<ChangeInstruction> insts) {
+    for (int idx = 0; idx < insts.size(); idx++) {
+        ChangeInstruction instr = insts[idx];
+        if (!mapping_->checkPositionIsConsistency(instr.layer_idx,
+                                                  instr.source_global_position,
+                                                  instr.source_expert_id) ||
+            !mapping_->checkPositionIsConsistency(instr.layer_idx,
+                                                  instr.target_global_position,
+                                                  instr.target_expert_id) ||
+            (instr.type != OperationType::ADD &&
+             instr.type != OperationType::REMOVE)) {
+            instr.print();
+            return false;
+        }
+    }
+    return true;
+}
+
+void Placement::placement_handle_one_batch(
+    std::vector<ChangeInstruction> changeInstructions) {
+    size_t instNum = changeInstructions.size();
+    if (instNum <= 0)
+        return;
+    dist_ptr_->clear_hccl_buffs();
+    size_t idx = 0;
+
+    for (idx = 0; idx < instNum; idx++) {
+        if (should_stop_) {
+            break;
+        }
+        ChangeInstruction inst = changeInstructions[idx];
+        int layer = inst.layer_idx;
+        int tgt_position_offset = mapping_->getGlobalPositionOffset(
+            layer, inst.target_global_position);
+        is_layer_update[layer] = true;
+        if (inst.type == OperationType::REMOVE) {
+            mapping_->update_pos_to_ep(layer, tgt_position_offset, -1);
+            continue;
+        } else if (inst.type == OperationType::ADD) {
+            mapping_->update_pos_to_ep(layer, tgt_position_offset,
+                                       inst.source_expert_id);
+        }
+
+        if (inst.source_rank != rank_ && inst.target_rank != rank_)
+            continue;
+
+        bool need_enqueue_recv_buff =
+            (inst.type == OperationType::ADD && inst.target_rank == rank_);
+
+        moe_weight_->replacement(dist_ptr_, inst.layer_idx, inst.source_rank,
+                                 inst.source_global_position, inst.target_rank,
+                                 inst.target_global_position,
+                                 need_enqueue_recv_buff);
+    }
+
+    if (dist_ptr_->hccl_buffs_size() > 0) {
+        dist_ptr_->hccl_batch_send();
+        dist_ptr_->clear_hccl_buffs();
+    }
+}
+
+void Placement::placement_handle_instrucions(
+    std::vector<ChangeInstruction> src_changeInstructions) {
+    size_t instNum = src_changeInstructions.size();
+    if (instNum <= 0)
+        return;
+    std::vector<ChangeInstruction> changeInstructions;
+    reorder_instructions(src_changeInstructions, changeInstructions);
+    dist_ptr_->reset_buff_cur();
+    dist_ptr_->clear_queue();
+    dist_ptr_->clear_hccl_buffs();
+    size_t max_ins_one_batch_one_rank = 1;
+
+    using clock = std::chrono::high_resolution_clock;
+    bool need_wait_main = false;
+    bool need_split_batch = false;
+    size_t cur_round = changeInstructions[0].round, cur_batch = 0;
+    int rank_used[world_size_] = {0};
+    memset(rank_used, 0, sizeof(rank_used));
+
+    int rank_src_used[world_size_] = {0};
+    int rank_tgt_used[world_size_] = {0};
+    memset(rank_src_used, 0, sizeof(rank_src_used));
+    memset(rank_tgt_used, 0, sizeof(rank_tgt_used));
+
+    std::vector<ChangeInstruction> changeInstructions_one_batch;
+    for (size_t idx = 0; idx < instNum; idx++) {
+        if (should_stop_) {
+            break;
+        }
+        ChangeInstruction inst = changeInstructions[idx];
+
+        changeInstructions_one_batch.emplace_back(inst);
+        if (inst.type != OperationType::REMOVE) {
+            rank_used[inst.source_rank]++;
+            rank_used[inst.target_rank]++;
+            rank_src_used[inst.source_rank]++;
+            rank_tgt_used[inst.target_rank]++;
+        }
+
+        if (inst.round > cur_round)
+            cur_batch = 0;
+        cur_round = inst.round;
+
+        if (idx >= (instNum - 1)) {
+            need_split_batch = true;
+            need_wait_main = true;
+        } else {
+            ChangeInstruction instNext = changeInstructions[idx + 1];
+            if (instNext.round > cur_round) {
+                need_split_batch = true;
+                need_wait_main = true;
+            } else if ((instNext.type != OperationType::REMOVE) &&
+                       (rank_used[instNext.source_rank] >=
+                            max_ins_one_batch_one_rank ||
+                        rank_used[instNext.target_rank] >=
+                            max_ins_one_batch_one_rank)) {
+                need_split_batch = true;
+            }
+        }
+
+        if (need_split_batch) {
+            dist_ptr_->sync_round_shakehand(cur_round, cur_batch);
+            placement_handle_one_batch(changeInstructions_one_batch);
+            cur_batch++;
+            memset(rank_used, 0, sizeof(rank_used));
+            memset(rank_src_used, 0, sizeof(rank_src_used));
+            memset(rank_tgt_used, 0, sizeof(rank_tgt_used));
+            changeInstructions_one_batch.clear();
+            need_split_batch = false;
+        }
+
+        if (need_wait_main) {
+            bool expected = false;
+            bool desired = true;
+            bool rst =
+                buf_ready_flag_.compare_exchange_strong(expected, desired);
+            if (!rst)
+                std::cout << "[handle ins][err] buf ready flag error 1."
+                          << "\n";
+
+            while (buf_ready_flag_.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+
+            need_wait_main = false;
+            dist_ptr_->reset_buff_cur();
+            memset(rank_used, 0, sizeof(rank_used));
+            memset(rank_src_used, 0, sizeof(rank_src_used));
+            memset(rank_tgt_used, 0, sizeof(rank_tgt_used));
+        }
+    }
+}
+
 void Placement::placement_manager(aclrtContext currentContext) {
     ACLCHECK(aclrtSetCurrentContext(currentContext));
     aclrtStream stream;
@@ -260,6 +521,7 @@ void Placement::placement_manager(aclrtContext currentContext) {
             moe_weight_->get_expert_size(); // 根据QueueSize 预分配 接受buffs
 
         dist_ptr->allocate_recv_buffs(expert_size);
+        dist_ptr->init_hccl_buffs(moe_weight_->get_expert_itemnum());
     }
 
     // 获取更新的 Mapping
@@ -290,187 +552,17 @@ void Placement::placement_manager(aclrtContext currentContext) {
 
         changeInstructions = optimizer_->optimize();
 
-        for (auto &instruction : changeInstructions) {
-            // if (instruction.layer_idx!=0) continue;
-            if (instruction.source_rank != rank_ &&
-                instruction.target_rank != rank_)
-                continue;
-            if (instruction.source_rank == rank_ &&
-                instruction.type == OperationType::REMOVE)
-                continue;
-            changeInstructions_this_rank.push_back(instruction);
-
-            // Log Infomation
-            if (instruction.source_rank == rank_) {
-                log_info += " S-L[" + std::to_string(instruction.layer_idx) +
-                            "]-T[" + std::to_string((int)instruction.type) +
-                            "]-TR[" + std::to_string(instruction.target_rank) +
-                            "]";
-            } else if (instruction.target_rank == rank_) {
-                log_info += " T-L[" + std::to_string(instruction.layer_idx) +
-                            "]-T[" + std::to_string((int)instruction.type) +
-                            "]-TR[" + std::to_string(instruction.target_rank) +
-                            "]";
-            }
+        std::cout << "[handle ins] placement worker before handle "
+                     "instructions. tatal cnt: "
+                  << changeInstructions.size() << "\n";
+        if (changeInstructions.size() > 0) {
+            TRACK_START();
+            if (check_instructions(changeInstructions))
+                placement_handle_instrucions(changeInstructions);
+            TRACK_POINT("[handle ins] process " +
+                        std::to_string(changeInstructions.size()) +
+                        " instructions.");
         }
-
-        std::string log_tile =
-            "Rank: " + std::to_string(rank_) + " , Exchanged Info: with nums[" +
-            std::to_string(changeInstructions_this_rank.size()) + "] \n";
-
-        // 下发入队, 下发成功并完成同步置于完成队列中
-        size_t idx = 0;
-        int fail_handshake_count = 0;
-        std::string rank_str = std::to_string(rank_);
-        while (idx < changeInstructions_this_rank.size()) {
-            if (should_stop_)
-                break;
-            ChangeInstruction instruction = changeInstructions_this_rank[idx];
-
-            int layer = instruction.layer_idx;
-            OperationType type = instruction.type;
-            bool need_enqueue_recv_buff = true;
-            int t_rank = (instruction.source_rank == rank_)
-                             ? instruction.target_rank
-                             : instruction.source_rank;
-            int global_position_id_this_layer =
-                (instruction.source_rank == rank_)
-                    ? instruction.source_global_position
-                    : instruction.target_global_position;
-            int expert_id = (instruction.source_rank == rank_)
-                                ? instruction.target_expert_id
-                                : instruction.source_expert_id;
-
-            // int expert_id = (instruction.rank_a == rank_) ?
-            // instruction.expert_idx_a : instruction.expert_idx_b; // UnitTest:
-            // 不要交换收益
-
-            int position_offset = mapping->getGlobalPositionOffset(
-                layer, global_position_id_this_layer);
-
-            if (type == OperationType::ADD &&
-                instruction.source_rank == rank_) {
-                need_enqueue_recv_buff = false;
-                position_offset = -1; // add的source端不更新
-            }
-
-            if (type == OperationType::REMOVE &&
-                instruction.target_rank == rank_) {
-                t_rank = rank_; // 自己跟自己握手
-                expert_id = -1; // 告诉该位置专家id修改为-1
-            }
-
-            bool flag = dist_ptr->performGlobalHandshake(
-                t_rank, position_offset, expert_id); // 对端握手成功， 准备下发
-            // mapping 有一把琐 要加在 deployed_mapping更新，
-            // 且保证权重入队完成后才解锁
-
-            if (flag) {
-                fail_handshake_count = 0;
-                bool positionIsConsistency;
-                if (type == OperationType::SWAP) {
-                    positionIsConsistency = mapping->checkPositionIsConsistency(
-                        layer, instruction.source_global_position,
-                        instruction.source_expert_id);
-                    if (!positionIsConsistency) {
-                        throw std::runtime_error("[Error]-rank[" +
-                                                 std::to_string(rank_) +
-                                                 "]  positionIsConsistency");
-                    }
-                    positionIsConsistency = mapping->checkPositionIsConsistency(
-                        layer, instruction.target_global_position,
-                        instruction.target_expert_id);
-                    if (!positionIsConsistency) {
-                        throw std::runtime_error("[Error]-rank[" +
-                                                 std::to_string(rank_) +
-                                                 "]  positionIsConsistency");
-                    }
-                } else if (type == OperationType::ADD) {
-                    positionIsConsistency = mapping->checkPositionIsConsistency(
-                        layer, instruction.source_global_position,
-                        instruction.source_expert_id);
-                    if (!positionIsConsistency) {
-                        throw std::runtime_error("[Error]-rank[" +
-                                                 std::to_string(rank_) +
-                                                 "]  positionIsConsistency");
-                    }
-                }
-            } else {
-                fail_handshake_count++;
-            }
-            std::unique_lock<std::mutex> lock = acquire_lock();
-            sub_thread_is_changing_ = true;
-            lock.unlock();
-
-            bool isUpdateValied =
-                mapping->update_globalDeployedPositionToLogisticsIdMapping(
-                    dist_ptr->getHandshakeStatus(), dist_ptr->get_info_length(),
-                    is_layer_update);
-            if (!isUpdateValied) {
-                std::cout << "[Error]-isUpdateValied \t layer_idx: "
-                          << instruction.layer_idx
-                          << " \t type: " << (int)instruction.type
-                          << " \t source_rank: " << instruction.source_rank
-                          << " \t target_rank: " << instruction.target_rank
-                          << " \t source_global_position: "
-                          << instruction.source_global_position
-                          << " \t target_global_position: "
-                          << instruction.target_global_position
-                          << " \t source_expert_id: "
-                          << instruction.source_expert_id
-                          << " \t target_expert_id: "
-                          << instruction.target_expert_id << std::endl;
-                throw std::runtime_error("[Error]-rank[" +
-                                         std::to_string(rank_) +
-                                         "] \t isUpdateValied: false");
-            }
-
-            if (type == OperationType::REMOVE) {
-                // remove no need to swap expert weights
-                sub_thread_is_changing_ = false;
-                idx++;
-                continue;
-            }
-
-            if (flag) {
-                void *recv_buff_address = dist_ptr->get_recv_buff_address();
-                moe_weights->replacement(
-                    dist_ptr, layer, instruction.source_rank,
-                    instruction.source_global_position, instruction.target_rank,
-                    instruction.target_global_position, recv_buff_address,
-                    need_enqueue_recv_buff);
-                sub_thread_is_changing_ = false;
-                idx++;
-            } else {
-                sub_thread_is_changing_ = false;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        }
-        // 所有Rank 完成本次Optimizer优化的同步等待
-        while (true) {
-            if (should_stop_)
-                break;
-            bool flag = dist_ptr->performGlobalHandshake(
-                -1, -1, -1); //所有rank 都是-1， return true
-            std::unique_lock<std::mutex> lock = acquire_lock();
-            sub_thread_is_changing_ = true;
-            lock.unlock();
-            bool isUpdateValied =
-                mapping->update_globalDeployedPositionToLogisticsIdMapping(
-                    dist_ptr->getHandshakeStatus(), dist_ptr->get_info_length(),
-                    is_layer_update);
-            sub_thread_is_changing_ = false;
-            if (!isUpdateValied)
-                throw std::runtime_error("[Error]-rank[" +
-                                         std::to_string(rank_) +
-                                         "] \t isUpdateValied: false");
-            if (flag)
-                break;
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(10)); // wait other ranks
-        }
-        std::cout << getTimestamp() << "rank[" << rank_ << "] finished"
-                  << std::endl;
 
         activations_->collect(dist_ptr,
                               stream); // Clear the old placement activations
@@ -507,15 +599,21 @@ void Placement::stop_thread() {
 }
 
 void do_placement_optimizer(Placement &placement) {
+    if (!placement.buf_ready_flag_.load())
+        return;
     Distribution *dist_ptr = placement.get_distribution();
     PlacementMapping *mapping = placement.get_mapping();
-    std::unique_lock<std::mutex> lock = placement.acquire_lock();
-    if (!placement.get_subthread_is_changing()) {
-        if (!placement.is_redundant_share_expert_rank())
-            dist_ptr->copyAllFromCompletedQueueToHBM();
-        mapping->update_selector(placement.get_layer_update());
-        placement.reset_layer_update();
-    }
+    if (!placement.is_redundant_share_expert_rank())
+        dist_ptr->copy_from_queue_to_hbm();
+    mapping->update_selector(placement.get_layer_update());
+    placement.reset_layer_update();
+
+    bool expected = true;
+    bool desired = false;
+    bool rst =
+        placement.buf_ready_flag_.compare_exchange_strong(expected, desired);
+    if (!rst)
+        std::cout << "[handle ins][err] buf ready flag error 3." << "\n";
 }
 
 pybind11::bytes GetPDRootInfo() {

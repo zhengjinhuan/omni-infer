@@ -475,6 +475,4 @@ void ClusterActivation::collect_from_txt(const std::string &txt_path) {
     file.close();
 }
 
-// 打印线程不再直接访问成员变量
-// FIXME: Plz Consider different rank
 void ClusterActivation::print_activations() {}

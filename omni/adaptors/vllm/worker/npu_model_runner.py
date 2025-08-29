@@ -47,6 +47,7 @@ from omni.adaptors.vllm.forward_context import set_forward_context
 from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
+from omni.models.common.layers.npu_sampler_cache import PenaltyCache, ProbCache
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
@@ -116,11 +117,29 @@ class NPUModelRunner(GPUModelRunner):
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
+        self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
+        self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
+        self.topk = vllm_config.additional_config.get("rejection_sampler_topk", 4)
+        num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens) 
         if self.use_spec_decode:
-            self.rejection_sampler = SimpleSampler(self.sampler)
+            self.rejection_sampler = SimpleSampler(AscendSamplerV1(), self.use_rejection_sampler, self.topk)
+            if self.use_penalty:
+                penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, self.device)
+                self.rejection_sampler.main_sampler.penalty_cache = penalty_cache
+            else:
+                self.rejection_sampler.main_sampler.penalty_cache = None
+            if self.use_rejection_sampler:
+                prob_cache = ProbCache(self.max_num_reqs, num_tokens_per_reqs_decode - 1, self.topk, self.device)
+                self.rejection_sampler.main_sampler.prob_cache = prob_cache
             self.drafter = PostDrafter(vllm_config, device, self)
         else:
             self.sampler = AscendSamplerV1()
+            if self.use_penalty:
+                penalty_cache = PenaltyCache(self.max_num_reqs, self.input_batch.vocab_size, self.device)
+                self.sampler.penalty_cache = penalty_cache
+            else:
+                self.sampler.penalty_cache = None
+
         self._init_graph_options()
 
         self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,
@@ -143,11 +162,10 @@ class NPUModelRunner(GPUModelRunner):
                                         device="cpu",
                                         pin_memory=is_pin_memory_available())
         self.seq_lens_np = self.seq_lens_cpu.numpy()
-        num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
+        
         self.chunk_next_tokens = torch.zeros(
             self.max_num_reqs * num_tokens_per_reqs_decode, dtype= torch.int64, device=self.device
         )
-        # TODO: support arbitrary spec tokens
         self.graph_block_tables = np.zeros(
             (self.max_num_reqs * num_tokens_per_reqs_decode,
              (self.model_config.max_model_len + self.block_size - 1) // self.block_size),
@@ -336,7 +354,7 @@ class NPUModelRunner(GPUModelRunner):
             # Get the number of draft tokens for each request.
             # Iterate over the dictionary rather than all requests since not all
             # requests have draft tokens.
-            sample_indices = torch.arange(total_num_scheduled_tokens, dtype=torch.int32, device=self.device)
+            sample_indices = total_num_scheduled_tokens
         else:
             sample_indices = cu_num_tokens - 1
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
@@ -576,12 +594,10 @@ class NPUModelRunner(GPUModelRunner):
         graph_pad_size = None
         sampled_tokens = None
         sample_indices = None
+        spec_tokens_tensor = None
 
         # cached return values
-        cached_sampled_token_ids = []
-        cached_spec_token = []
-        cached_logprobs = []
-        cached_prompt_logprobs_dict = []
+        cached_sampled_token_ids = None
         finished_sending = set()
         accepted_num = 0
         finished_recving = set()
@@ -597,10 +613,18 @@ class NPUModelRunner(GPUModelRunner):
                 attn_metadata, graph_pad_size, sample_indices, positions = self._prepare_inputs(scheduler_output)
             else:
                 attn_metadata, positions = self._simple_prepare_inputs(attn_metadata, positions,
-                        sampled_tokens, cached_spec_token[-1], accepted_num)
+                        sampled_tokens, spec_tokens_tensor, accepted_num)
             hidden_states, raw_hidden_states, input_ids, temp_finished_sending, temp_finished_recving = self._execute_model(scheduler_output,
                                                    attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
-
+            sampling_metadata = self.input_batch.sampling_metadata
+            if self.curr_step == 0:
+                if self.use_penalty:
+                    if self.use_spec_decode:
+                        self.rejection_sampler.main_sampler.penalty_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
+                    else:
+                        self.sampler.penalty_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
+                if self.use_rejection_sampler:
+                    self.rejection_sampler.main_sampler.prob_cache.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
             if temp_finished_sending is not None:
                 finished_sending.update(temp_finished_sending)
             if temp_finished_recving is not None:
@@ -609,12 +633,18 @@ class NPUModelRunner(GPUModelRunner):
             if tmp_loading_kv_failure is not None:
                 loading_kv_failure.update(tmp_loading_kv_failure)
             start_2 = time.time()
-            if hidden_states.shape[0] == sample_indices.shape[0]:
-                # assume indices=[x1,x2,...,xn], if xn >= n, we cannot slice,
-                # if xn < n, then indices=[0,1,...,n-1], no need to slice.
-                logits = self.model.compute_logits(hidden_states, None)
+            
+            if isinstance(sample_indices, int):
+                logits = self.model.compute_logits(hidden_states[:sample_indices], None)
+                if self.use_spec_decode:
+                    sample_indices = torch.arange(sample_indices, dtype=torch.int32, device=self.device)
             else:
-                logits = self.model.compute_logits(hidden_states[sample_indices], None)
+                if hidden_states.shape[0] == sample_indices.shape[0]:
+                    # assume indices=[x1,x2,...,xn], if xn >= n, we cannot slice,
+                    # if xn < n, then indices=[0,1,...,n-1], no need to slice.
+                    logits = self.model.compute_logits(hidden_states, None)
+                else:
+                    logits = self.model.compute_logits(hidden_states[sample_indices], None)
             start_3 = time.time()
             # Apply structured output bitmasks if present
             if scheduler_output.grammar_bitmask is not None:
@@ -657,7 +687,6 @@ class NPUModelRunner(GPUModelRunner):
             start_5 = time.time()
 
             # Sample the next token and get logprobs if needed.
-            sampling_metadata = self.input_batch.sampling_metadata
             if not self.use_spec_decode:
                 sampler_output = self.sampler(logits=logits, sampling_metadata=sampling_metadata)
             else:
@@ -706,21 +735,14 @@ class NPUModelRunner(GPUModelRunner):
                     self.input_batch.vocab_size,
                 )
             sampled_tokens = sampled_token_ids
-            spec_token_ids: list[list[int]] = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
-
-            # Mask out the sampled tokens that should not be sampled.
-            for i in discard_sampled_tokens_req_indices:
-                valid_sampled_token_ids[i].clear()
-                if spec_token_ids is not None:
-                    spec_token_ids[i].clear()
             # Clear KVConnector state after all KVs are generated.
             if has_kv_transfer_group():
                 get_kv_transfer_group().clear_connector_metadata()
 
-            cached_sampled_token_ids.append(valid_sampled_token_ids)
-            cached_spec_token.append(spec_tokens_tensor)
-            cached_logprobs.append(logprobs_lists)
-            cached_prompt_logprobs_dict.append({})
+            if cached_sampled_token_ids is None:
+                cached_sampled_token_ids = valid_sampled_token_ids
+            else:
+                _ = [x.extend(y) for x, y in zip(cached_sampled_token_ids, valid_sampled_token_ids)]
 
             cost_upd_states = start_1 - start
             cost_proc_reqs = start_2 - start_1
@@ -731,9 +753,14 @@ class NPUModelRunner(GPUModelRunner):
             cost_output = time.time() - start_6
             cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_output
             logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
-        return_spec_token = [None] * (self.total_step - 1)
-        return_spec_token.append(spec_token_ids)
 
+        spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
+
+        # Mask out the sampled tokens that should not be sampled.
+        for i in discard_sampled_tokens_req_indices:
+            cached_sampled_token_ids[i].clear()
+            if spec_token_tensor is not None:
+                spec_token_ids[i].clear()
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.async_save(scheduler_output)
 
@@ -741,9 +768,9 @@ class NPUModelRunner(GPUModelRunner):
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
             sampled_token_ids=cached_sampled_token_ids,
-            spec_token_ids=return_spec_token,
-            logprobs=cached_logprobs,
-            prompt_logprobs_dict=cached_prompt_logprobs_dict,
+            spec_token_ids=spec_token_ids,
+            logprobs=logprobs_lists,
+            prompt_logprobs_dict={},
             finished_sending=finished_sending,
             finished_recving=finished_recving,
             loading_kv_failure=loading_kv_failure,

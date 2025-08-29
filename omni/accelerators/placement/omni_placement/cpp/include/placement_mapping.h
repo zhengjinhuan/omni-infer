@@ -55,11 +55,7 @@ class PlacementMapping {
     std::vector<std::vector<std::vector<int>>>
         placement_pattern_vector_; // C++ representation of placement pattern
 
-    std::vector<int32_t>
-        globalDeployedPositionToLogisticsIdMappingHost_; // DRAM-全局部署专家对应逻辑专家映射
-                                                         // shape: [num_layers,
-                                                         // world_size_,
-                                                         // num_deploy_experts_per_device_]
+    std::vector<int32_t> pos_to_ep_;
 
     aclrtStream stream_; // 用于mapping同步更新的Stream
     std::vector<int32_t> expert_id_deployed_nums_host_;
@@ -137,32 +133,24 @@ class PlacementMapping {
      * @param expert_id 要替换为的逻辑专家ID
      * @param dist_ptr 通信工具
      */
-    bool update_globalDeployedPositionToLogisticsIdMapping(
-        std::vector<int> global_synchronize_mapping_info, size_t num_info,
-        std::vector<bool> &is_layer_update); // 子线程调用
     bool checkUpdateIsValied(size_t layer_id, int expert_id, int ops);
 
     int getGlobalPositionOffset(int layer_id,
                                 int global_position_id_this_layer);
     int get_num_redundant_per_rank() { return max_redundant_per_rank_; }
-    void printDeployedPositionToLogisticsIdMapping();
     bool checkPositionIsConsistency(size_t layer_id, size_t global_position,
                                     int expert_id);
 
     // 新增 getter 方法
     std::vector<int32_t>
     get_global_deployed_position_to_logistics_id_mapping() const {
-        return globalDeployedPositionToLogisticsIdMappingHost_;
+        return pos_to_ep_;
     }
-
-    void update_globalDeployedPositionToLogisticsIdMapping(int layer_id,
-                                                           size_t offset,
-                                                           int expert_id);
 
     int32_t get_expert_id(int layer_id, int global_position_id_this_layer) {
         size_t global_offset =
             getGlobalPositionOffset(layer_id, global_position_id_this_layer);
-        return globalDeployedPositionToLogisticsIdMappingHost_[global_offset];
+        return pos_to_ep_[global_offset];
     }
 
     int get_max_redundant_per_expert() const {
@@ -177,6 +165,7 @@ class PlacementMapping {
     Tensor get_selector() { return selector_; }
     void set_rank(int rank) { rank_ = rank; }
     void init_selector(size_t selector_ptr);
+    void update_pos_to_ep(int layer_id, int position_offset, int expert_id);
 };
 
 #endif // PLACEMENT_MAPPING_H

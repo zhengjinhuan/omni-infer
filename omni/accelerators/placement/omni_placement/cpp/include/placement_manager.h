@@ -129,6 +129,17 @@ class Placement {
         return std::unique_lock<std::mutex>(mtx_);
     }
     Distribution *get_distribution() const { return dist_ptr_; }
+    void placement_handle_instrucions(
+        std::vector<ChangeInstruction> changeInstructions_this_rank);
+    void placement_handle_one_batch(
+        std::vector<ChangeInstruction> changeInstructions);
+    bool check_instructions(std::vector<ChangeInstruction> insts);
+    void reorder_instructions(std::vector<ChangeInstruction> in,
+                              std::vector<ChangeInstruction> &out);
+    void merge_instructions(std::vector<ChangeInstruction> &in);
+    bool is_mergeful_and_merged(std::vector<std::vector<int>> &rank_used,
+                                int layer_1, int layer_2);
+    std::atomic<bool> buf_ready_flag_{false};
 };
 
 #endif // PLACEMENT_H
