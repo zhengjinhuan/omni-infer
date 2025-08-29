@@ -384,7 +384,7 @@ def omni_ranktable(inventory):
     cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/configs/generate_ranktable.yml"
     os.system(cmd)
 
-def maybe_start_ray(is_master, pod_info, role):
+def maybe_start_ray(is_master, pod_info, role, log_path):
 
     if role == "decode":
         return False, ""
@@ -396,15 +396,10 @@ def maybe_start_ray(is_master, pod_info, role):
     if num_server_in_pod > 1 and role == "prefill":
         if is_master:
             ray_cmd = f"""
-export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
-export RAY_CGRAPH_get_timeout=7200
 ray stop --force
-
-export RAY_USAGE_STATS_ENABLED=0
-ray start --head --num-gpus={num_servers}
+ray start --head --num-gpus={num_servers} >> {log_path}/omni_cli.log 2>&1
 sleep 10s
 """
-
         else:
              ray_cmd = f"""
 sleep 5s
@@ -499,10 +494,14 @@ def omni_cli_start(
         log_path = f"{log_path}/{host.replace('.', '_')}"
         env["LOG_PATH"] = log_path
         # check if start ray
-        need_start_ray, ray_cmd = maybe_start_ray(is_master, pod_info, role)
+        need_start_ray, ray_cmd = maybe_start_ray(is_master, pod_info, role, log_path)
+
         if need_start_ray:
             args.get("extra-args", {})["distributed-executor-backend"] = "ray"
-
+            env["RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"] = 1
+            env["RAY_CGRAPH_get_timeout"] = 7200
+            if is_master:
+                env["RAY_USAGE_STATS_ENABLED"] = 0
 
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
@@ -539,7 +538,6 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
 
             if need_start_ray:
                 tf.write(f"{ray_cmd}\n")
-                tf.write(f'echo "{json.dumps(ray_cmd)}" >> {log_path}/omni_cli.log\n')
                 if is_master:
                     tf.write(start_server_cmd)
             else:
