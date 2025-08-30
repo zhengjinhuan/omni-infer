@@ -51,7 +51,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     maybe_prefix)
 from omni.models.common.layers.layernorm import RMSNormFlashComm
 from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear
-from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
+from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding, QwenMRotaryEmbedding
 from omni.models.common.layers.fused_mlp import FusedMLP
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
@@ -156,7 +156,12 @@ class Qwen2Attention(nn.Module):
             is_prefill = False
         qkv, _ = self.qkv_proj(hidden_states, is_prefill=is_prefill)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k, cos, sin)
+
+        if type(self.rotary_emb) is QwenMRotaryEmbedding:
+            q, k = self.rotary_emb(positions, q, k)
+        else:
+            q, k = self.rotary_emb(positions, q, k, cos, sin)
+
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output, reduce_type="AR")
         return output
@@ -340,12 +345,15 @@ class Qwen2Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
-        sin = torch.index_select(self.full_sin, dim=0, index=positions)
-
-        attn_metadata = get_forward_context().attn_metadata
-        if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache and self.tp_size > 1:
-            hidden_states, residual, aux_hidden_states = self.forward_layers_prefill_microbatch_tp8_allreduce(positions, hidden_states, residual, kv_caches, cos, sin)
+        cos, sin = None, None
+        if type(self.layers[0].self_attn.rotary_emb) is not QwenMRotaryEmbedding:
+            cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
+            sin = torch.index_select(self.full_sin, dim=0, index=positions)
+            attn_metadata = get_forward_context().attn_metadata
+            if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache and self.tp_size > 1:
+                hidden_states, residual, aux_hidden_states = self.forward_layers_prefill_microbatch_tp8_allreduce(positions, hidden_states, residual, kv_caches, cos, sin)
+            else:
+                hidden_states, residual, aux_hidden_states = self.forward_layers(positions, hidden_states, residual, kv_caches, cos, sin)
         else:
             hidden_states, residual, aux_hidden_states = self.forward_layers(positions, hidden_states, residual, kv_caches, cos, sin)
 
