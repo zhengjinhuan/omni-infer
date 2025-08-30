@@ -620,43 +620,64 @@ class AscendAttentionBackendImpl(AttentionImpl):
         if hasattr(layer, 'quant_method'):
             pass
         # V0-Style scheduler situation.
-        elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
-            if attn_metadata is None:
-                raise RuntimeError("attn_metadata must not be None")
+        elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:             
+            if not (os.getenv("ENABLE_PREFILL_TND", "0") == "1"):
+                if attn_metadata is None:
+                    raise RuntimeError("attn_metadata must not be None")
 
-            if len(attn_metadata.query_lens_list) == 1:
-                attn_output = torch_npu.npu_fused_infer_attention_score(
-                    query.unsqueeze(0),
-                    key.unsqueeze(0),
-                    value.unsqueeze(0),
-                    num_heads=self.num_heads,
-                    num_key_value_heads=self.num_kv_heads,
-                    input_layout="BSND",
-                    scale=self.scale,
-                    sparse_mode=3,
-                    actual_seq_lengths=attn_metadata.query_lens_list,
-                    actual_seq_lengths_kv=attn_metadata.seq_lens_list,
-                    atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                )[0].view(-1, self.num_heads, self.head_size)
+                if len(attn_metadata.query_lens_list) == 1:
+                    attn_output = torch_npu.npu_fused_infer_attention_score(
+                        query.unsqueeze(0),
+                        key.unsqueeze(0),
+                        value.unsqueeze(0),
+                        num_heads=self.num_heads,
+                        num_key_value_heads=self.num_kv_heads,
+                        input_layout="BSND",
+                        scale=self.scale,
+                        sparse_mode=3,
+                        actual_seq_lengths=attn_metadata.query_lens_list,
+                        actual_seq_lengths_kv=attn_metadata.seq_lens_list,
+                        atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                    )[0].view(-1, self.num_heads, self.head_size)
 
-                output = output.view_as(attn_output)
-                output.copy_(attn_output)
+                    output = output.view_as(attn_output)
+                    output.copy_(attn_output)
+                else:
+                    actual_seq_qlen = np.array(attn_metadata.query_lens).cumsum().tolist()
+                    actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
+
+                    attn_output = torch_npu.npu_fusion_attention(
+                        query[:actual_seq_qlen[-1], :],
+                        key[:actual_seq_qlen[-1], :],
+                        value[:actual_seq_qlen[-1], :],
+                        head_num=self.num_heads,
+                        input_layout="TND",
+                        scale=self.scale,
+                        atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                        sparse_mode=3,
+                        actual_seq_qlen=actual_seq_qlen,
+                        actual_seq_kvlen=actual_seq_kvlen)[0]
+
+                    output[:actual_seq_qlen[-1], :].copy_(attn_output)
             else:
+                if attn_metadata is None:
+                    raise RuntimeError("attn_metadata must not be None")
                 actual_seq_qlen = np.array(attn_metadata.query_lens).cumsum().tolist()
                 actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
-
-                attn_output = torch_npu.npu_fusion_attention(
-                    query[:actual_seq_qlen[-1], :],
-                    key[:actual_seq_qlen[-1], :],
-                    value[:actual_seq_qlen[-1], :],
-                    head_num=self.num_heads,
-                    input_layout="TND",
-                    scale=self.scale,
-                    atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                    sparse_mode=3,
-                    actual_seq_qlen=actual_seq_qlen,
-                    actual_seq_kvlen=actual_seq_kvlen)[0]
-
+                attn_output = torch_npu.npu_fused_infer_attention_score(
+                    query[:actual_seq_qlen[-1],:,:], 
+                    key[:actual_seq_qlen[-1],:,:],
+                    value[:actual_seq_qlen[-1],:,:],
+                    num_heads = self.num_heads,
+                    num_key_value_heads =  self.num_kv_heads,
+                    input_layout = "TND",
+                    scale = self.scale,
+                    sparse_mode = 3,
+                    actual_seq_lengths = actual_seq_qlen,
+                    actual_seq_lengths_kv =  actual_seq_kvlen,
+                    atten_mask = AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                )[0].view(-1, self.num_heads, self.head_size)
+                
                 output[:actual_seq_qlen[-1], :].copy_(attn_output)
 
         elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:

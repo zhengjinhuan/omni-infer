@@ -56,6 +56,9 @@ from omni.models.common.layers.fused_mlp import FusedMLP
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 
 
+# if use weight nz, this config must be True
+torch.npu.config.allow_internal_format = True
+
 logger = init_logger(__name__)
 
 class Qwen2MLP(FusedMLP):
