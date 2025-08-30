@@ -109,7 +109,7 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    >
    > --ssh_common_args：SSH通用参数，默认为"-o StrictHostKeyChecking=no -o IdentitiesOnly=yes"
    >
-   >  --master-ip：主节点，默认为当前添加的节点自己，用于多机组服务。主节点无需设置，从节点需要配置主节点，例如，d0.
+   >  --master-node：主节点名称，默认为当前添加的节点自己，用于多机组服务。主节点无需设置，从节点需要配置主节点，例如，d0.
 
    使用示例：
 
