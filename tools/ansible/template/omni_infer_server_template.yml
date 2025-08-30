@@ -549,7 +549,7 @@
         path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: sync_code
+      tags: run_docker
 
     - name: Create a directory to store the code.
       ansible.builtin.file:
