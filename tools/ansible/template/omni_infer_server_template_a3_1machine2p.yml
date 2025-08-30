@@ -277,7 +277,12 @@
       cd /root/omniinfer/omni/accelerators/placement && python setup.py bdist_wheel >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log
       rm -rf *.egg-info/
       pip install /root/omniinfer/omni/accelerators/placement/dist/omni_*.whl >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log
-      python /root/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+
+      if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then
+        python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+      else
+        python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+      fi
 
       cd /root/omniinfer/tools/scripts
       bash /root/omniinfer/tools/scripts/pd_run.sh \
@@ -567,13 +572,13 @@
       when: "'C' in group_names"
       tags:
         - run_docker
-        -
+        
     - name: Create a directory to store the log.
       ansible.builtin.file:
         path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: sync_code
+      tags: run_docker
 
     - name: Create a directory to store the code.
       ansible.builtin.file:
