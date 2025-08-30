@@ -117,9 +117,14 @@ class NPUModelRunner(GPUModelRunner):
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
-        self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
-        self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
-        self.topk = vllm_config.additional_config.get("rejection_sampler_topk", 4)
+        if vllm_config.additional_config is not None:
+            self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
+            self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
+            self.topk = vllm_config.additional_config.get("rejection_sampler_topk", 4)
+        else:
+            self.use_rejection_sampler = False
+            self.use_penalty = False
+            self.topk = 4
         num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens) 
         if self.use_spec_decode:
             self.rejection_sampler = SimpleSampler(AscendSamplerV1(), self.use_rejection_sampler, self.topk)
