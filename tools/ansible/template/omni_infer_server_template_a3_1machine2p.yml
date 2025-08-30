@@ -277,7 +277,11 @@
       # install omni_placement
       pip uninstall omni_placement -y
 
-      python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+      if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then
+        python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+      else
+        python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+      fi
 
       cd /workspace/omniinfer/tools/scripts
       bash /workspace/omniinfer/tools/scripts/pd_run.sh \
@@ -562,7 +566,7 @@
         path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: sync_code
+      tags: run_docker
 
     - name: Create a directory to store the code.
       ansible.builtin.file:
