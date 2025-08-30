@@ -886,7 +886,7 @@ def install_code(
         git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm
         bash bash_install_code.sh
         pip uninstall vllm -y
-        pip uninstall omniinfer -y
+        pip uninstall omni_infer -y
         cd vllm
         SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation
         cd ../../
