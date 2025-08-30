@@ -67,11 +67,11 @@ def add_node(args):
 
     # Set container name prefix based on role
     if args.role == 'P':
-        container_name_prefix = "you_name_omni_infer_prefill"
+        container_name_prefix = "omni_infer_prefill"
     elif args.role == 'D':
-        container_name_prefix = "you_name_omni_infer_decode"
+        container_name_prefix = "omni_infer_decode"
     elif args.role == 'C':
-        container_name_prefix = "you_name_omni_infer_proxy"
+        container_name_prefix = "omni_infer_proxy"
 
     # Create node information dictionary
     node = {

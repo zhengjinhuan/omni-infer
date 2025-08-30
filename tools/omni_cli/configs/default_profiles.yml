@@ -13,7 +13,7 @@ profiles:
           MASTER_PORT: 8000
           VLLM_LLMDATADIST_ZMQ_PORT: 5568
           TNG_HOST_COPY: 1
-          MODEL_LEN_MAX_PREFILL: 30016
+          MODEL_LEN_MAX_PREFILL: 32768
           LOCAL_DECODE_SERVER_IP_LIST: ""
           ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           MODEL_PATH: ""
@@ -112,7 +112,7 @@ profiles:
             kv_parallel_size: "$((PREFILL_POD_NUM + 1))"
           gpu-util: "0.92"
           extra-args:
-            max-num-batched-tokens: 30016
+            max-num-batched-tokens: 32768
             enforce-eager: ""
             enable-expert-parallel: ""
             disable-log-requests: ""
