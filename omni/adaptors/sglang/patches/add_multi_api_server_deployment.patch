@@ -7,7 +7,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/python/sglang/srt/disaggregation/launch_lb.py b/python/sglang/srt/disaggregation/launch_lb.py
 --- a/python/sglang/srt/disaggregation/launch_lb.py	(revision e6fcf3f656eab95e8d3c57a6c08ecf10b4e77aa7)
-+++ b/python/sglang/srt/disaggregation/launch_lb.py	(revision 9b454a0c75ea6cc41e1ac6bcfeb7a6ad3829e44e)
++++ b/python/sglang/srt/disaggregation/launch_lb.py	(revision 13a8669b7a5acef0f19dc3f804d8ef0fa402f88a)
 @@ -44,16 +44,14 @@
          parser.add_argument(
              "--prefill",
@@ -34,7 +34,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/python/sglang/srt/entrypoints/engine.py b/python/sglang/srt/entrypoints/engine.py
 --- a/python/sglang/srt/entrypoints/engine.py	(revision e6fcf3f656eab95e8d3c57a6c08ecf10b4e77aa7)
-+++ b/python/sglang/srt/entrypoints/engine.py	(revision 9b454a0c75ea6cc41e1ac6bcfeb7a6ad3829e44e)
++++ b/python/sglang/srt/entrypoints/engine.py	(revision 13a8669b7a5acef0f19dc3f804d8ef0fa402f88a)
 @@ -694,14 +694,16 @@
      )
  
@@ -151,7 +151,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/python/sglang/srt/managers/detokenizer_manager.py b/python/sglang/srt/managers/detokenizer_manager.py
 --- a/python/sglang/srt/managers/detokenizer_manager.py	(revision e6fcf3f656eab95e8d3c57a6c08ecf10b4e77aa7)
-+++ b/python/sglang/srt/managers/detokenizer_manager.py	(revision 9b454a0c75ea6cc41e1ac6bcfeb7a6ad3829e44e)
++++ b/python/sglang/srt/managers/detokenizer_manager.py	(revision 13a8669b7a5acef0f19dc3f804d8ef0fa402f88a)
 @@ -73,14 +73,24 @@
          server_args: ServerArgs,
          port_args: PortArgs,
@@ -209,7 +209,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
 --- a/python/sglang/srt/managers/scheduler.py	(revision e6fcf3f656eab95e8d3c57a6c08ecf10b4e77aa7)
-+++ b/python/sglang/srt/managers/scheduler.py	(revision 9b454a0c75ea6cc41e1ac6bcfeb7a6ad3829e44e)
++++ b/python/sglang/srt/managers/scheduler.py	(revision 13a8669b7a5acef0f19dc3f804d8ef0fa402f88a)
 @@ -260,29 +260,55 @@
              self.send_to_tokenizer = get_zmq_socket(
                  context, zmq.PUSH, port_args.tokenizer_ipc_name, False
@@ -272,7 +272,7 @@ diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/manager
  
          if self.current_scheduler_metrics_enabled():
              self.send_metrics_from_scheduler = get_zmq_socket(
-@@ -964,18 +990,27 @@
+@@ -964,18 +990,28 @@
                  recv_reqs = []
  
                  while True:
@@ -286,13 +286,14 @@ diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/manager
 +                        pass
                      try:
                          recv_req = self.recv_from_tokenizer.recv_pyobj(zmq.NOBLOCK)
++                        recv_reqs.append(recv_req)
                      except zmq.ZMQError:
 -                        break
+-                    recv_reqs.append(recv_req)
 +                        count +=1
-+                        if count == 2:
++                        if count == 2 or not self.server_args.enable_multi_api_server:
 +                            break
-                     recv_reqs.append(recv_req)
--
+ 
                  while True:
                      try:
                          recv_rpc = self.recv_from_rpc.recv_pyobj(zmq.NOBLOCK)
@@ -303,7 +304,7 @@ diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/manager
              else:
                  recv_reqs = None
          else:
-@@ -1068,7 +1103,10 @@
+@@ -1068,7 +1104,10 @@
                      if self.recv_from_rpc is not None:
                          self.recv_from_rpc.send_pyobj(output)
                  else:
@@ -315,7 +316,7 @@ diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/manager
  
      def handle_generate_request(
          self,
-@@ -1804,7 +1842,10 @@
+@@ -1804,7 +1843,10 @@
              # This is used to prevent the health check signal being blocked by long context prefill.
              # However, one minor issue is that this code path does not check the status of detokenizer manager.
              self.return_health_check_ct -= 1
@@ -334,7 +335,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/python/sglang/srt/managers/scheduler_output_processor_mixin.py b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
 --- a/python/sglang/srt/managers/scheduler_output_processor_mixin.py	(revision e6fcf3f656eab95e8d3c57a6c08ecf10b4e77aa7)
-+++ b/python/sglang/srt/managers/scheduler_output_processor_mixin.py	(revision 9b454a0c75ea6cc41e1ac6bcfeb7a6ad3829e44e)
++++ b/python/sglang/srt/managers/scheduler_output_processor_mixin.py	(revision 13a8669b7a5acef0f19dc3f804d8ef0fa402f88a)
 @@ -669,37 +669,68 @@
          if rids:
              if self.model_config.is_multimodal_gen:
@@ -463,7 +464,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
 --- a/python/sglang/srt/managers/tokenizer_manager.py	(revision e6fcf3f656eab95e8d3c57a6c08ecf10b4e77aa7)
-+++ b/python/sglang/srt/managers/tokenizer_manager.py	(revision 9b454a0c75ea6cc41e1ac6bcfeb7a6ad3829e44e)
++++ b/python/sglang/srt/managers/tokenizer_manager.py	(revision 13a8669b7a5acef0f19dc3f804d8ef0fa402f88a)
 @@ -255,14 +255,31 @@
                  )
  
@@ -835,7 +836,7 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
 --- a/python/sglang/srt/server_args.py	(revision e6fcf3f656eab95e8d3c57a6c08ecf10b4e77aa7)
-+++ b/python/sglang/srt/server_args.py	(revision 9b454a0c75ea6cc41e1ac6bcfeb7a6ad3829e44e)
++++ b/python/sglang/srt/server_args.py	(revision 13a8669b7a5acef0f19dc3f804d8ef0fa402f88a)
 @@ -102,6 +102,7 @@
      dist_timeout: Optional[int] = None  # timeout for torch.distributed
      download_dir: Optional[str] = None
