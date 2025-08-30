@@ -208,7 +208,7 @@ int32_t PlacementMapping::get_position_expert_id(int32_t layer_id,
     // 计算三维数组的线性化偏移量
     int64_t offset = (layer_id * get_num_deploy_experts()) + position_id;
 
-    return globalDeployedPositionToLogisticsIdMappingHost_[offset];
+    return pos_to_ep_[offset];
 }
 
 int32_t PlacementMapping::get_redundant_count(int32_t layer_id,
@@ -232,7 +232,7 @@ void PlacementMapping::init_DeployedPositionToLogisticsIdMapping() {
                                          0);
 
     size_t length = num_layers_ * num_deploy_experts_;
-    globalDeployedPositionToLogisticsIdMappingHost_.resize(length, -1);
+    pos_to_ep_.resize(length, -1);
 
     for (int32_t layer = 0; layer < num_layers_; ++layer) {
         for (int32_t rank = 0; rank < world_size_; ++rank) {
@@ -254,8 +254,7 @@ void PlacementMapping::init_DeployedPositionToLogisticsIdMapping() {
                                     global_position_id_per_layer;
 
                     // Set the expert_id on offset Position
-                    globalDeployedPositionToLogisticsIdMappingHost_[offset] =
-                        expert;
+                    pos_to_ep_[offset] = expert;
 
                     local_position_id++;
                 }
@@ -264,61 +263,20 @@ void PlacementMapping::init_DeployedPositionToLogisticsIdMapping() {
     }
 }
 
-void PlacementMapping::printDeployedPositionToLogisticsIdMapping() {
-    // 打印 vector 的大小
-    std::cout << "globalDeployedPositionToLogisticsIdMappingHost_ size: "
-              << globalDeployedPositionToLogisticsIdMappingHost_.size()
-              << std::endl;
-
-    // 打印 vector 的所有值
-    std::cout << "globalDeployedPositionToLogisticsIdMappingHost_ values: ";
-
-    std::string log_info = "";
-    for (int32_t layer_id = 0; layer_id < num_layers_; ++layer_id) {
-        for (int32_t position_id_this_layer = 0;
-             position_id_this_layer < num_deploy_experts_;
-             ++position_id_this_layer) {
-            int offset =
-                getGlobalPositionOffset(layer_id, position_id_this_layer);
-            log_info +=
-                std::to_string(position_id_this_layer) + ":" +
-                std::to_string(
-                    globalDeployedPositionToLogisticsIdMappingHost_[offset]) +
-                ", ";
-        }
-        log_info += "\n";
-        break;
-    }
-    std::cout << log_info << std::endl;
-}
-
-void PlacementMapping::update_globalDeployedPositionToLogisticsIdMapping(
-    int layer_id, size_t offset, int expert_id) {
-    if (globalDeployedPositionToLogisticsIdMappingHost_[offset] != -1) {
-        checkUpdateIsValied(
-            layer_id, globalDeployedPositionToLogisticsIdMappingHost_[offset],
-            -1);
-    }
-    if (expert_id != -1) {
-        checkUpdateIsValied(layer_id, expert_id, 1);
-    }
-    globalDeployedPositionToLogisticsIdMappingHost_[offset] = expert_id;
-}
-
 bool PlacementMapping::checkPositionIsConsistency(size_t layer_id,
                                                   size_t global_position,
                                                   int expert_id) {
+    if (global_position == -1 || expert_id == -1)
+        return true;
     size_t position_offset =
         layer_id * get_num_deploy_experts() + global_position;
-    if (globalDeployedPositionToLogisticsIdMappingHost_[position_offset] ==
-        expert_id) {
+    if (pos_to_ep_[position_offset] == expert_id) {
         return true;
     } else {
-        std::cout
-            << "[Error]-layer[" << layer_id << "]-global_position["
-            << global_position << "]-expert_id["
-            << globalDeployedPositionToLogisticsIdMappingHost_[position_offset]
-            << "]-InstructionExpertId[" << expert_id << "]\n";
+        std::cout << "[Error]-layer[" << layer_id << "]-global_position["
+                  << global_position << "]-expert_id["
+                  << pos_to_ep_[position_offset] << "]-InstructionExpertId["
+                  << expert_id << "]\n";
         return false;
     }
 }
@@ -336,34 +294,20 @@ bool PlacementMapping::checkUpdateIsValied(size_t layer_id, int expert_id,
                   << "] on Deployed Mapping Update !!!!!!!!!! with\t layer_id["
                   << layer_id << "] expert_id[" << expert_id << "] nums["
                   << expert_id_deployed_nums_host_[offset] << "]" << std::endl;
-        ;
         return false;
     }
     return true;
 }
 
-bool PlacementMapping::update_globalDeployedPositionToLogisticsIdMapping(
-    std::vector<int> global_synchronize_mapping_info, size_t num_info,
-    std::vector<bool> &is_layer_update) {
-    bool isUpdateValied;
-    for (int32_t rank = 0; rank < world_size_; ++rank) {
-        size_t offset = rank * num_info;
-        int t_rank = global_synchronize_mapping_info[offset];
-        int position_offset = global_synchronize_mapping_info[offset + 1]; //
-        int expert_id = global_synchronize_mapping_info[offset + 2];
-
-        if (t_rank == -1 || t_rank == world_size_)
-            continue;
-        // 对端与当前Rank握手，才发生更新
-        if (position_offset != -1 &&
-            global_synchronize_mapping_info[t_rank * num_info] == rank) {
-            size_t layer_id = position_offset / get_num_deploy_experts();
-            is_layer_update[layer_id] = true;
-            update_globalDeployedPositionToLogisticsIdMapping(
-                layer_id, position_offset, expert_id);
-        }
+void PlacementMapping::update_pos_to_ep(int layer_id, int offset,
+                                        int expert_id) {
+    if (pos_to_ep_[offset] != -1) {
+        checkUpdateIsValied(layer_id, pos_to_ep_[offset], -1);
     }
-    return true;
+    if (expert_id != -1) {
+        checkUpdateIsValied(layer_id, expert_id, 1);
+    }
+    pos_to_ep_[offset] = expert_id;
 }
 
 int PlacementMapping::getGlobalPositionOffset(
@@ -401,9 +345,7 @@ void PlacementMapping::update_selector_layer(
 
     for (int pos_id = 0; pos_id < num_deploy_experts_; ++pos_id) {
 
-        int logit_expert_id =
-            globalDeployedPositionToLogisticsIdMappingHost_[position_offset +
-                                                            pos_id];
+        int logit_expert_id = pos_to_ep_[position_offset + pos_id];
 
         if (logit_expert_id == -1)
             continue;
@@ -451,9 +393,7 @@ void PlacementMapping::update_selector_layer(int layer_id) {
     std::vector<int32_t> cur_count(get_num_experts(), 0);
 
     for (int pos_id = 0; pos_id < num_deploy_experts_; ++pos_id) {
-        int logit_expert_id =
-            globalDeployedPositionToLogisticsIdMappingHost_[position_offset +
-                                                            pos_id];
+        int logit_expert_id = pos_to_ep_[position_offset + pos_id];
         if (logit_expert_id == -1)
             continue;
 

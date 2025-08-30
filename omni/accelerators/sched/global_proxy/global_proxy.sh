@@ -362,9 +362,10 @@ function nginx_set_upstream() {
         "pd_score_balance")
             if [ "$upstream_name" = "prefill_servers" ]; then
                 lb_sdk_line="pd_score_balance prefill;"
+                lb_sdk_extra="pd_score_balance_max_num_seqs ${prefill_max_num_seqs};"
             elif [ "$upstream_name" = "decode_servers" ]; then
                 lb_sdk_line="pd_score_balance decode;"
-                lb_sdk_extra="pd_score_balance_decode_req_limit 25;"
+                lb_sdk_extra="pd_score_balance_max_num_seqs ${decode_max_num_seqs};"
             fi
             ;;
         "least_total_load")
@@ -604,8 +605,6 @@ function nginx_set_location_metrics() {
                 inserted=1
                 in_server=0
             }
-            print
-            next
         }
         print
     }
@@ -615,16 +614,109 @@ function nginx_set_location_metrics() {
     mv "${nginx_conf_file}.tmp" "$nginx_conf_file"
 }
 
+function nginx_set_location_internal_metrics() {
+    local nginx_conf_file="$1"
+
+    local location_block="
+        # match /internal/metrics for internal metrics endpoint
+        location /internal/metrics {
+            # This location is handled by the internal metrics module
+        }"
+    
+    awk -v block="$location_block" '
+    BEGIN { in_server=0; brace_depth=0; inserted=0 }
+    {
+        # Detect entering server block
+        if ($0 ~ /^[[:space:]]*server[[:space:]]*{/) {
+            in_server=1
+            brace_depth=1
+            print
+            next
+        }
+        # Inside server block
+        if (in_server) {
+            # Count braces to track nesting
+            brace_depth += gsub(/{/, "{")
+            brace_depth -= gsub(/}/, "}")
+            # If at top level and see closing }, insert block before it
+            if (brace_depth == 0 && !inserted) {
+                print block
+                inserted=1
+                in_server=0
+            }
+        }
+        print
+    }
+    ' "${nginx_conf_file}" > "${nginx_conf_file}.tmp"
+
+    # Move back
+    mv "${nginx_conf_file}.tmp" "$nginx_conf_file"
+}
+
+function nginx_set_enable_internal_metrics() {
+    local nginx_conf_file="$1"
+    local enable_internal_metrics="$2"
+
+    if [[ -z "$enable_internal_metrics" ]]; then
+        return
+    fi
+
+    local enable_internal_metrics_line="enable_internal_metrics $enable_internal_metrics;"
+
+    # Add the directive to the location block that uses prefill
+    awk -v directive="$enable_internal_metrics_line" '
+    BEGIN { in_location=0; brace_depth=0; inserted=0 }
+    {
+        # Detect entering location block with prefill directive
+        if ($0 ~ /^[[:space:]]*location.*{/) {
+            in_location=1
+            brace_depth=1
+            print
+            next
+        }
+        # Inside location block
+        if (in_location) {
+            # Count braces to track nesting
+            brace_depth += gsub(/{/, "{")
+            brace_depth -= gsub(/}/, "}")
+            
+            # If we see a prefill directive, add our directive after it
+            if ($0 ~ /^[[:space:]]*prefill[[:space:]]/ && !inserted) {
+                print
+                print "            " directive
+                inserted=1
+                next
+            }
+            
+            # If exiting location block, reset
+            if (brace_depth == 0) {
+                in_location=0
+            }
+        }
+        print
+    }
+    ' "${nginx_conf_file}" > "${nginx_conf_file}.tmp"
+
+    mv "${nginx_conf_file}.tmp" "$nginx_conf_file"
+}
+
 function nginx_set_load_modules() {
     local nginx_conf_file="$1"
     local prefill_lb_sdk="$2"
     local decode_lb_sdk="$3"
+    local enable_internal_metrics="$4"
 
     local load_module_set_request_id_line="load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;"
     local load_module_prefill_line="load_module /usr/local/nginx/modules/ngx_http_prefill_module.so;"
 
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
     sed -i "2i ${load_module_prefill_line}" "$nginx_conf_file"
+
+    # Add internal metrics module if enabled
+    if [[ -n "$enable_internal_metrics" ]]; then
+        local load_module_internal_metrics_line="load_module /usr/local/nginx/modules/ngx_http_internal_metrics_module.so;"
+        sed -i "3i ${load_module_internal_metrics_line}" "$nginx_conf_file"
+    fi
 
     function _load_lb_sdk_module() {
         local lb_sdk="$1"
@@ -664,7 +756,7 @@ function nginx_set_load_modules() {
         [[ -n "$mod" ]] && [[ ! " ${unique_lb_modules[@]} " =~ " $mod " ]] && unique_lb_modules+=("$mod")
     done
 
-    local insert_line=3
+    local insert_line=4
     for mod in "${unique_lb_modules[@]}"; do
         sed -i "${insert_line}i ${mod}" "$nginx_conf_file"
         insert_line=$((insert_line+1))
@@ -673,12 +765,19 @@ function nginx_set_load_modules() {
 
 function nginx_set_load_modules_framework() {
     local nginx_conf_file="$1"
+    local enable_internal_metrics="$2"
     local load_module_set_request_id_line="load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;"
     local load_module_prefill_refactor_line="load_module /usr/local/nginx/modules/ngx_http_prefill_refactor_module.so;"
 
     # Add all load module at the top
     sed -i "1i ${load_module_set_request_id_line}" "$nginx_conf_file"
     sed -i "2i ${load_module_prefill_refactor_line}" "$nginx_conf_file"
+    
+    # Add internal metrics module if enabled
+    if [[ -n "$enable_internal_metrics" ]]; then
+        local load_module_internal_metrics_line="load_module /usr/local/nginx/modules/ngx_http_internal_metrics_module.so;"
+        sed -i "3i ${load_module_internal_metrics_line}" "$nginx_conf_file"
+    fi
 }
 
 function nginx_configuration() {
@@ -693,6 +792,7 @@ function nginx_configuration() {
     local prefill_lb_sdk="$9"
     local decode_lb_sdk="${10}"
     local metrics_servers_list="${11}"
+    local enable_internal_metrics="${12}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
@@ -713,7 +813,11 @@ function nginx_configuration() {
     if [[ -n "$metrics_servers_list" ]]; then
         nginx_set_location_metrics $nginx_conf_file
     fi
-    nginx_set_load_modules $nginx_conf_file $prefill_lb_sdk $decode_lb_sdk
+    if [[ -n "$enable_internal_metrics" ]]; then
+        nginx_set_enable_internal_metrics $nginx_conf_file "$enable_internal_metrics"
+        nginx_set_location_internal_metrics $nginx_conf_file
+    fi
+    nginx_set_load_modules $nginx_conf_file $prefill_lb_sdk $decode_lb_sdk "$enable_internal_metrics"
 }
 
 function nginx_configuration_refactor() {
@@ -728,6 +832,7 @@ function nginx_configuration_refactor() {
     local prefill_lb_sdk="$9"
     local decode_lb_sdk="${10}"
     local metrics_servers_list="${11}"
+    local enable_internal_metrics="${12}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
@@ -747,7 +852,11 @@ function nginx_configuration_refactor() {
     if [[ -n "$metrics_servers_list" ]]; then
         nginx_set_location_metrics $nginx_conf_file
     fi
-    nginx_set_load_modules_framework $nginx_conf_file
+    if [[ -n "$enable_internal_metrics" ]]; then
+        nginx_set_enable_internal_metrics $nginx_conf_file "$enable_internal_metrics"
+        nginx_set_location_internal_metrics $nginx_conf_file
+    fi
+    nginx_set_load_modules_framework $nginx_conf_file "$enable_internal_metrics"
 }
 
 function rollback_nginx_config() {
@@ -797,6 +906,9 @@ log_file=""
 log_level=""
 prefill_lb_sdk="pd_score_balance"
 decode_lb_sdk="pd_score_balance"
+prefill_max_num_seqs=16
+decode_max_num_seqs=32
+enable_internal_metrics=""
 
 print_help() {
     echo "Usage:"
@@ -815,8 +927,11 @@ print_help() {
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
     echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"pd_score_balance\""
     echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"pd_score_balance\""
+    echo "  --prefill-max-num-seqs <N>                 Prefill servers' setups for max-num-seqs"
+    echo "  --decode-max-num-seqs <N>                  Decode servers' setups for max-num-seqs"
     echo "  --engine-type <string>                     Engine type: vllm or sglang. Default: \"vllm\""
     echo "  --bootstrap-port <PORT>                    Bootstrap port(s) (optional). Default: empty, one port or a list of"
+    echo "  --enable-internal-metrics [size]          Enable internal metrics with optional shared memory size (default: 128k)"
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
@@ -829,7 +944,14 @@ print_help() {
     echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
     echo "       --metrics-servers-list 127.0.0.1:9090 \\"
     echo "       --client-body-buffer-size 256K \\"
+    echo "       --enable-internal-metrics \\"
     echo "       --log-file /var/log/proxy.log --log-level info"
+    echo ""
+    echo "  Start global proxy with custom metrics size:"
+    echo "    $0 --listen-port 8080 \\"
+    echo "       --prefill-servers-list 127.0.0.1:8001,127.0.0.1:8002 \\"
+    echo "       --decode-servers-list 127.0.0.1:9001,127.0.0.1:9002 \\"
+    echo "       --enable-internal-metrics 1m"
     echo ""
     echo "  Start global proxy with SGLang engine and bootstrap port:"
     echo "    $0 --listen-port 8080 \\"
@@ -890,6 +1012,14 @@ while [[ $# -gt 0 ]]; do
             decode_lb_sdk="$2"
             shift 2
             ;;
+        --prefill-max-num-seqs)
+            prefill_max_num_seqs="$2"
+            shift 2
+            ;;
+        --decode-max-num-seqs)
+            decode_max_num_seqs="$2"
+            shift 2
+            ;;
         --engine-type)
             engine_type="$2"
             shift 2
@@ -897,6 +1027,15 @@ while [[ $# -gt 0 ]]; do
         --bootstrap-port)
             bootstrap_port="$2"
             shift 2
+            ;;
+        --enable-internal-metrics)
+            if [[ -n "$2" && "$2" != --* ]]; then
+                enable_internal_metrics="$2"
+                shift 2
+            else
+                enable_internal_metrics="128k"
+                shift 1
+            fi
             ;;
         --client-body-buffer-size)
             client_body_buffer_size="$2"
@@ -956,9 +1095,9 @@ function do_start() {
     # TODO: Currently only sglang is supported in the refactor implementation.
     # vllm support will be added later.
     if [ "$engine_type" = "vllm" ]; then
-        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list"
+        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics"
     elif [ "$engine_type" = "sglang" ]; then
-        nginx_configuration_refactor "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"  "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list"
+        nginx_configuration_refactor "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"  "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics"
     fi
     if [ "$dry_run" = true ]; then
         echo "Dry run complete. Configuration generated at $nginx_conf_file."

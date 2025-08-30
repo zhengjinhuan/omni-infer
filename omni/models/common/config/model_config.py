@@ -34,7 +34,6 @@ class ModelOperatorOptConfig:
     enable_prefill_micro_batch: bool = False
     use_mlaprolog: bool = False
     opt_w2_scale_cast: bool = False
-    enable_mc2_v2: bool = False
     decode_gear_list: list[int] = field(default_factory=lambda: [1])
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
 
@@ -51,6 +50,7 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
     c8_calib_path: str = None # 计算faquant的scale采集的kv_cache的calib地址，在test_config_prefill.json赋值
+    use_tnd_pa: bool = False  # 稠密模型使用新CANN包FIA算子，以TND+PA格式计算attention
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path

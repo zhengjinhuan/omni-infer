@@ -26,6 +26,26 @@ GreedyExpertLoadBalancer::GreedyExpertLoadBalancer(
     }
 }
 
+void GreedyExpertLoadBalancer::reset_infomation() {
+    for (size_t idx = 0; idx < logit_expert_info_ptrs_.size(); ++idx)
+        delete logit_expert_info_ptrs_[idx];
+    for (size_t idx = 0; idx < rankinfo_ptrs_.size(); ++idx)
+        delete rankinfo_ptrs_[idx];
+
+    logit_expert_info_ptrs_.clear();
+    rankinfo_ptrs_.clear();
+
+    for (int layer_id = 0; layer_id < num_layers_; ++layer_id) {
+        for (int rank = 0; rank < world_size_; ++rank) {
+            rankinfo_ptrs_.emplace_back(new RankActivateInformation(
+                rank, num_deployed_experts_per_rank_));
+        }
+        for (int expert_id = 0; expert_id < num_experts_; ++expert_id) {
+            logit_expert_info_ptrs_.emplace_back(new LogitExpertInformation);
+        }
+    }
+}
+
 void GreedyExpertLoadBalancer::init_infomation(
     int layer_id, const std::vector<int> &placement,
     const std::vector<int64_t> &activations) {
@@ -60,7 +80,7 @@ void GreedyExpertLoadBalancer::init_infomation(
     // 输入的 激活值是0 的清空， 不进行已有的激活值累加更新
     if (ratio == 1)
         return;
-
+    reset_infomation();
     // float keep_ratio = 1-1/ratio; // 新来的数据越不均衡，
     // 原数据保留的越多；预防波动
     float keep_ratio = alpha_;
@@ -665,4 +685,64 @@ GreedyExpertLoadBalancer::optimize_and_generate_instructions(
     if (rank_ == 0)
         std::cout << logging << std::endl;
     return instructions;
+}
+
+// Apply instructions to current placement for a layer
+std::vector<int> GreedyExpertLoadBalancer::apply_layer_instructions(
+    const std::vector<int> &current_placement,
+    const std::vector<ChangeInstruction> &instructions) {
+    std::vector<int> new_placement = current_placement;
+    for (const auto &instr : instructions) {
+        if (instr.type == OperationType::SWAP) {
+            int source_idx = instr.source_global_position;
+            int target_idx = instr.target_global_position;
+            std::swap(new_placement[source_idx], new_placement[target_idx]);
+        } else if (instr.type == OperationType::ADD) {
+            int target_idx = instr.target_global_position;
+            new_placement[target_idx] = instr.source_expert_id;
+        } else if (instr.type == OperationType::REMOVE) {
+            int target_idx = instr.target_global_position;
+            new_placement[target_idx] = -1;
+        }
+    }
+    return new_placement;
+}
+
+// New method that returns optimized placement instead of instructions
+std::vector<int> GreedyExpertLoadBalancer::optimize_placement(
+    const std::vector<int> &placement,
+    const std::vector<int64_t> &activations) {
+
+    // Call existing optimize_and_generate_instructions to get all instructions
+    std::vector<ChangeInstruction> all_instructions =
+        optimize_and_generate_instructions(placement, activations);
+
+    // Group instructions by layer
+    std::vector<std::vector<ChangeInstruction>> instructions_per_layer(
+        num_layers_);
+    for (const auto &instr : all_instructions) {
+        if (instr.layer_idx >= 0 && instr.layer_idx < num_layers_) {
+            instructions_per_layer[instr.layer_idx].push_back(instr);
+        }
+    }
+
+    // Apply instructions to get optimized placement
+    std::vector<int> optimized_placement = placement;
+    for (int layer_id = 0; layer_id < num_layers_; ++layer_id) {
+        int layer_offset = layer_id * num_deployed_experts_;
+        std::vector<int> layer_placement(
+            optimized_placement.begin() + layer_offset,
+            optimized_placement.begin() + layer_offset + num_deployed_experts_);
+
+        // Apply this layer's instructions
+        std::vector<int> new_layer_placement = apply_layer_instructions(
+            layer_placement, instructions_per_layer[layer_id]);
+
+        // Copy back to optimized_placement
+        for (int i = 0; i < num_deployed_experts_; ++i) {
+            optimized_placement[layer_offset + i] = new_layer_placement[i];
+        }
+    }
+
+    return optimized_placement;
 }

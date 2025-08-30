@@ -9,7 +9,25 @@ ROLE=${ROLE:-P}
 
 mkdir -p "$(dirname "$LOG_FILE")" && >"$LOG_FILE"
 
-free_cpus=({0..319})
+# check total number of CPUs
+max_cpu=$(lscpu -p=CPU | grep -v '^#' | awk 'BEGIN{max=0} {if($1>max)max=$1} END{print max}')
+if [[ $max_cpu -ge 319 ]]; then
+    total_cpu=320
+elif [[ $max_cpu -ge 179 ]]; then
+    total_cpu=180
+else
+    total_cpu=$((max_cpu+1))
+fi
+free_cpus=($(seq 0 $((total_cpu-1))))
+
+# remove 0,20,40,..., suit for CPU_AFFINITY_MODE=2
+for ((i=0; i<total_cpu; i+=20)); do
+    for idx in "${!free_cpus[@]}"; do
+        [[ ${free_cpus[$idx]} -eq $i ]] && unset 'free_cpus[idx]'
+    done
+done
+free_cpus=("${free_cpus[@]}") # updata free cpus
+
 declare -A idx_map
 for i in "${!free_cpus[@]}"; do idx_map[${free_cpus[i]}]=$i; done
 
@@ -42,14 +60,14 @@ done < <(
         [[ $pid =~ ^[0-9]+$ ]] || continue
         [[ -n ${keep_pids[$pid]} ]] && continue
         mask=$(taskset -pc "$pid" 2>/dev/null | awk -F':' '/current affinity list/ {print $2}' || true)
-        [[ -z $mask || "$mask" == " 0-319" ]] && continue   # 未绑核或全核，空格不能删" 0-319"
+        [[ -z $mask || "$mask" == " 0-319" || "$mask" == " 0-179" ]] && continue   # 未绑核或全核，空格不能删
         echo "$mask" | tr ',' '\n' | while read -r range; do
             if [[ $range =~ ^([0-9]+)-([0-9]+)$ ]]; then
                 for ((c=${BASH_REMATCH[1]}; c<=${BASH_REMATCH[2]}; c++)); do
-                    [[ $c -ge 0 && $c -le 319 ]] && echo "$c"
+                    [[ $c -ge 0 && $c -le $((total_cpu-1)) ]] && echo "$c"
                 done
             else
-                [[ $range -ge 0 && $range -le 319 ]] && echo "$range"
+                [[ $range -ge 0 && $range -le $((total_cpu-1)) ]] && echo "$range"
             fi
         done
     done | sort -nu
@@ -84,7 +102,9 @@ while IFS='|' read -r pid tag lr; do
     [[ $tag == "Worker" && -n $lr ]] || continue
     [[ -z ${processed[$pid]} ]] || continue      
     processed[$pid]=1
-    start=$(( (lr/2)*40 )); end=$(( start + 39 ))
+    # local_rank = 0 -> cpu 0-19, ...
+    start=$(( lr*20 )); end=$(( start + 19 ))
+    [[ $end -ge $((total_cpu-1)) ]] && end=$((total_cpu-1))
     cpu=""
     for ((c=end; c>=start; c--)); do
         [[ -n ${idx_map[$c]} ]] && { cpu=$c; break; }

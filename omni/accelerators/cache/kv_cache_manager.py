@@ -205,6 +205,7 @@ class OmniKVCacheManager:
         num_draft_tokens: int = 0,
         num_lookahead_tokens: int = 0,
         delay_cache_blocks: bool = False,
+        is_swap: bool = False,
     ) -> Optional[OmniKVCacheBlocks]:
         """Add slots for a request with new tokens to append.
 
@@ -241,7 +242,7 @@ class OmniKVCacheManager:
         Returns:
             A list of new allocated blocks.
         """
-        if num_new_tokens == 0:
+        if num_new_tokens == 0 and not is_swap:
             raise ValueError("num_new_tokens must be greater than 0")
 
         if new_computed_blocks is not None:
@@ -417,7 +418,6 @@ class OmniKVCacheManager:
             A list of lists of integers. The outer list corresponds to KV Cache groups,
             where the first is full attention group.
         """
-        assert request_id in self.single_type_manager.req_to_blocks
         group_block_ids: list[list[int]] = []
         for mgr in self.hybrid_managers:
             if request_id in mgr.req_to_blocks:

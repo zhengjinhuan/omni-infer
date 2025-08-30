@@ -232,6 +232,12 @@ class GreedyExpertLoadBalancer {
     std::vector<ChangeInstruction>
     generate_swap_add_instructions_per_layer(int layer_id);
     bool isInvalidOffloadRatio(float ratio) const { return ratio > 300; }
+    void reset_infomation();
+
+    // 新增：应用指令到placement
+    std::vector<int> apply_layer_instructions(
+        const std::vector<int> &current_placement,
+        const std::vector<ChangeInstruction> &instructions);
 
   public:
     GreedyExpertLoadBalancer(int num_layers, int world_size, int num_experts,
@@ -241,5 +247,8 @@ class GreedyExpertLoadBalancer {
     std::vector<ChangeInstruction>
     optimize_and_generate_instructions(const std::vector<int> &placement,
                                        const std::vector<int64_t> &activations);
+    std::vector<int>
+    optimize_placement(const std::vector<int> &placement,
+                       const std::vector<int64_t> &activations);
 };
 #endif // DYNAMIC_EPLB_GREEDY_H
