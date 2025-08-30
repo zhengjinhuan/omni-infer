@@ -802,7 +802,7 @@ class NPUModelRunner(GPUModelRunner):
         # Mask out the sampled tokens that should not be sampled.
         for i in discard_sampled_tokens_req_indices:
             cached_sampled_token_ids[i].clear()
-            if spec_token_tensor is not None:
+            if spec_token_ids is not None:
                 spec_token_ids[i].clear()
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.async_save(scheduler_output)
