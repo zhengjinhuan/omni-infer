@@ -151,6 +151,100 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         w2 = layer.w2_weight.data.transpose(1, 2).contiguous()
         layer.w2_weight = torch.nn.Parameter(w2, requires_grad=False)
 
+    def apply_all2all_decode(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            router_logits: torch.Tensor,
+            top_k: int,
+            renormalize: bool,
+            use_grouped_topk: bool = False,
+            topk_group: Optional[int] = None,
+            num_expert_group: Optional[int] = None,
+            global_num_experts: int = -1,
+            custom_routing_function: Optional[Callable] = None,
+            scoring_func: str = 'softmax',
+            e_score_correction_bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        topk_weights, topk_ids = FusedMoE.select_experts(
+            hidden_states=x,
+            router_logits=router_logits,
+            use_grouped_topk=use_grouped_topk,
+            top_k=top_k,
+            renormalize=renormalize,
+            topk_group=topk_group,
+            num_expert_group=num_expert_group,
+            custom_routing_function=custom_routing_function,
+            scoring_func=scoring_func,
+            e_score_correction_bias=e_score_correction_bias,
+            indices_type=None
+        )
+        topk_ids = topk_ids.int()
+
+        tp_world_size = 1
+        expand_x, dynamic_scales, expand_idx, expert_token_nums, ep_recv_counts, tp_recv_counts, expand_scales = torch_npu.npu_moe_distribute_dispatch_v2(
+            x=x,
+            expert_ids=topk_ids,
+            group_ep=layer.moe_all_to_all_group_name,
+            group_tp=layer.moe_rs_group_name,
+            ep_world_size=layer.all2all_world_size,
+            tp_world_size=tp_world_size,
+            ep_rank_id=layer.all2all_global_rank // tp_world_size,
+            tp_rank_id=layer.all2all_global_rank % tp_world_size,
+            expert_shard_type=0,
+            shared_expert_rank_num=0,
+            moe_expert_num=global_num_experts,
+            scales=None,
+            quant_mode=0,  # 0: 非量化; 1: 静态量化; 2: 动态量化
+            global_bs=0
+        )
+        group_list = expert_token_nums.to(torch.int64)
+
+        gate_up_proj = torch_npu.npu_grouped_matmul(
+            [expand_x],
+            [layer.w13_weight],
+            bias=None,
+            group_list=group_list,
+            split_item=3,
+            output_dtype=x.dtype,
+            group_type=0,
+            group_list_type=1
+        )[0]
+        inter_states = torch_npu.npu_swiglu(
+            gate_up_proj
+        )
+        hidden_states_ordered_by_experts = torch_npu.npu_grouped_matmul(
+            [inter_states],
+            [layer.w2_weight],
+            bias=None,
+            group_list=group_list,
+            split_item=3,
+            output_dtype=x.dtype,
+            group_type=0,
+            group_list_type=1
+        )[0]
+
+        output_combine = torch_npu.npu_moe_distribute_combine_v2(
+            expand_x=hidden_states_ordered_by_experts,
+            expert_ids=topk_ids,
+            assist_info_for_combine=expand_idx,
+            ep_send_counts=ep_recv_counts,
+            tp_send_counts=tp_recv_counts,
+            expert_scales=topk_weights.to(torch.float32),
+            group_ep=layer.moe_all_to_all_group_name,
+            group_tp=layer.moe_rs_group_name,
+            ep_world_size=layer.all2all_world_size,
+            tp_world_size=tp_world_size,
+            ep_rank_id=layer.all2all_global_rank // tp_world_size,
+            tp_rank_id=layer.all2all_global_rank % tp_world_size,
+            expert_shard_type=0,
+            shared_expert_rank_num=0,
+            moe_expert_num=global_num_experts,
+            global_bs=0,
+        )
+
+        return output_combine
+
     def apply(
         self,
         layer: torch.nn.Module,
@@ -185,6 +279,19 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         else:
             x = get_ep_group().all_gather(x, dim=0)
             router_logits = get_ep_group().all_gather(router_logits, dim=0)
+            return self.apply_all2all_decode(
+                x,
+                router_logits,
+                top_k,
+                renormalize,
+                use_grouped_topk,
+                topk_group,
+                num_expert_group,
+                global_num_experts,
+                custom_routing_function,
+                scoring_func,
+                e_score_correction_bias
+            )
 
         topk_weights, topk_ids = FusedMoE.select_experts(
             hidden_states=x,
