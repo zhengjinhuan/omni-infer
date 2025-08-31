@@ -92,7 +92,7 @@ from sglang.srt.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.two_batch_overlap import (
     MaybeTboDeepEPDispatcher,
@@ -134,6 +134,8 @@ if _is_cuda:
         dsv3_router_gemm,
         merge_state_v2,
     )
+elif _is_npu:
+    import torch_npu
 elif _is_cpu and _is_cpu_amx_available:
     pass
 elif _is_hip:
@@ -466,6 +468,7 @@ class DeepseekV2MoE(nn.Module):
         forward_batch: Optional[ForwardBatch] = None,
         can_fuse_mlp_allreduce: bool = False,
         use_reduce_scatter: bool = False,
+        **kwargs,
     ) -> torch.Tensor:
         if not self._enable_deepep_moe:
             DUAL_STREAM_TOKEN_THRESHOLD = 1024
@@ -483,7 +486,9 @@ class DeepseekV2MoE(nn.Module):
                 )
         else:
             if _is_npu:
-                return self.forward_deepep_npu(hidden_states, forward_batch)
+                return self.forward_deepep_npu(
+                    hidden_states, forward_batch, kwargs.get("next_attn_weights")
+                )
             return self.forward_deepep(hidden_states, forward_batch)
 
     def forward_normal_dual_stream(
@@ -656,12 +661,22 @@ class DeepseekV2MoE(nn.Module):
         return final_hidden_states
 
     def forward_deepep_npu(
-        self, hidden_states: torch.Tensor, forward_batch: ForwardBatch
+        self,
+        hidden_states: torch.Tensor,
+        forward_batch: ForwardBatch,
+        next_attn_weights: Dict = None,
     ) -> torch.Tensor:
         pad_size = None
         forward_mode = forward_batch.forward_mode
         shared_output = None
         if is_non_idle_and_non_empty(forward_mode, hidden_states):
+            if forward_batch.forward_mode.is_decode() and forward_batch.can_run_graph:
+                torch_npu.npu_prefetch(
+                    self.experts.w13_weight,
+                    hidden_states,
+                    self.experts.w13_weight.numel(),
+                    0,
+                )
             # router_logits: (num_tokens, n_experts)
             router_logits = self.gate(hidden_states)
             shared_output = self._forward_shared_experts(hidden_states)
@@ -705,8 +720,33 @@ class DeepseekV2MoE(nn.Module):
             hidden_states=hidden_states,
             expert_tokens=expert_tokens,
             dynamic_scale=dynamic_scale,
+            can_run_graph=forward_batch.can_run_graph,
         )
         if self.ep_size > 1:
+            if (
+                forward_batch.can_run_graph
+                and forward_batch.forward_mode.is_decode()
+                and next_attn_weights is not None
+            ):
+                attn_prefetch_size = 96 * 1024 * 1024
+                torch_npu.npu_prefetch(
+                    next_attn_weights["fused_qkv_a_proj_with_mqa"],
+                    final_hidden_states,
+                    attn_prefetch_size,
+                    0,
+                )
+                torch_npu.npu_prefetch(
+                    next_attn_weights["q_b_proj"],
+                    final_hidden_states,
+                    attn_prefetch_size,
+                    0,
+                )
+                torch_npu.npu_prefetch(
+                    next_attn_weights["w_kc"],
+                    final_hidden_states,
+                    attn_prefetch_size,
+                    0,
+                )
             final_hidden_states = self.deepep_dispatcher._inners[
                 0
             ]._normal_dispatcher.combine(
@@ -753,7 +793,7 @@ class DeepseekV2MoE(nn.Module):
         hidden_states = state.hidden_states_mlp_input
 
         if router_logits is not None:
-            with get_global_expert_distribution_recorder().with_current_layer(
+            with get_global_expert_distribution_recorder(_is_npu).with_current_layer(
                 self.layer_id
             ):
                 state.topk_weights_local, state.topk_idx_local, _ = self.topk(
@@ -784,7 +824,7 @@ class DeepseekV2MoE(nn.Module):
 
     def op_dispatch_b(self, state):
         if self.ep_size > 1:
-            with get_global_expert_distribution_recorder().with_current_layer(
+            with get_global_expert_distribution_recorder(_is_npu).with_current_layer(
                 self.layer_id
             ):
                 state.dispatch_output = self.experts.deepep_dispatcher.dispatch_b(
@@ -1433,6 +1473,20 @@ class DeepseekV2AttentionMLA(nn.Module):
                 torch.bfloat16,
             )
             attn_bmm_output = attn_bmm_output.transpose(0, 1).flatten(1, 2)
+        elif _is_npu:
+            attn_bmm_output = torch.empty(
+                (self.num_local_heads, attn_output.shape[0], self.v_head_dim),
+                dtype=attn_output.dtype,
+                device=attn_output.device,
+            )
+            torch.bmm(
+                attn_output.transpose(0, 1),
+                self.w_vc,
+                out=attn_bmm_output,
+            )
+            attn_bmm_output = attn_bmm_output.transpose(0, 1).reshape(
+                -1, self.num_local_heads * self.v_head_dim
+            )
         else:
             attn_bmm_output = torch.empty(
                 (attn_output.shape[0], self.num_local_heads * self.v_head_dim),
@@ -1978,6 +2032,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor],
         zero_allocator: BumpAllocator,
+        **kwargs,
     ) -> torch.Tensor:
 
         hidden_states, residual = self.layer_communicator.prepare_attn(
@@ -2000,7 +2055,9 @@ class DeepseekV2DecoderLayer(nn.Module):
             and not (self.enable_dp_attention and self.speculative_algorithm.is_eagle())
             and not self.is_nextn
         )
-
+        hidden_states = self.mlp(
+            hidden_states, forward_batch, can_fuse_mlp_allreduce, **kwargs
+        )
         # For DP with padding, reduce scatter can be used instead of all-reduce.
         use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
             forward_batch
@@ -2155,14 +2212,30 @@ class DeepseekV2Model(nn.Module):
             else total_num_layers
         )
         for i in range(normal_num_layers):
-            with get_global_expert_distribution_recorder().with_current_layer(i):
+            with get_global_expert_distribution_recorder(_is_npu).with_current_layer(i):
                 layer = self.layers[i]
+                if (
+                    _is_npu
+                    and i < total_num_layers - 1
+                    and i >= self.first_k_dense_replace
+                ):
+                    next_layer = self.layers[i + 1]
+                    kwargs = {
+                        "next_attn_weights": {
+                            "fused_qkv_a_proj_with_mqa": next_layer.self_attn.fused_qkv_a_proj_with_mqa.weight,
+                            "q_b_proj": next_layer.self_attn.q_b_proj.weight,
+                            "w_kc": next_layer.self_attn.w_kc,
+                        }
+                    }
+                else:
+                    kwargs = {}
                 hidden_states, residual = layer(
                     positions,
                     hidden_states,
                     forward_batch,
                     residual,
                     zero_allocator,
+                    **kwargs,
                 )
 
         if normal_num_layers != total_num_layers:
@@ -2279,6 +2352,7 @@ class DeepseekV2ForCausalLM(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
+        pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
 
