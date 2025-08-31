@@ -22,10 +22,16 @@ def register_model():
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3_a2:DeepseekV3ForCausalLM")
+        ModelRegistry.register_model(
+            "PanguUltraMoEForCausalLM",
+            "omni.models.pangu.pangu_ultra_moe_a2:PanguUltraMoEForCausalLM")
     else:
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
+        ModelRegistry.register_model(
+            "PanguUltraMoEForCausalLM",
+            "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
 
     ModelRegistry.register_model(
         "DeepSeekMTPModel",
@@ -59,10 +65,6 @@ def register_model():
         "Qwen3MoeForCausalLM",
         "omni.models.qwen.qwen3_moe:Qwen3MoeForCausalLM"
     )
-
-    ModelRegistry.register_model(
-        "PanguUltraMoEForCausalLM",
-        "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
 
     ModelRegistry.register_model(
         "PanguUltraMoEMTPModel",
