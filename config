@@ -14,6 +14,7 @@ ngx_module_srcs="$ngx_addon_dir/ngx_http_omni_proxy_module.c \
                  $ngx_addon_dir/omni_utils.c \
                  $ngx_addon_dir/omni_tokenizer.c \
                  $ngx_addon_dir/omni_tokenizer_worker.c \
+                 $ngx_addon_dir/omni_radix_tree.c \
                  $ngx_addon_dir/omni_apc.c \
                  $ngx_addon_dir/omni_zmq_handler.c" 
 

@@ -520,7 +520,7 @@ def _preprocess_chat_batch(
     # Phase 1: Template application (sequential to maintain exact vLLM behavior)
     for request in requests:
         messages = request["messages"]
-        add_generation_prompt = request.get("add_generation_prompt", False)
+        add_generation_prompt = request.get("add_generation_prompt", True)
         tools, tool_choice = parse_tools_and_tool_choice(request)
         
         # Extract multi-modal data from messages (vLLM's mm_data handling)
@@ -696,11 +696,8 @@ if __name__ == "__main__":
         msgs = [s.encode('utf-8') for s in msgs]
         tokenizer = load_tokenizer(model_path)
 
-        # prompts, input_ids, multi_modal_data = batch_chat_encode(msgs)
         prompts, input_ids, block_hashes, multi_modal_data = batch_chat_encode_bytes(msgs)
                       
-        # conversations, prompts, input_ids, multi_modal_data = preprocess_chat_batch(model_path, test_requests)
-        # print(f"Processed {len(conversations)} requests successfully")
         print(f"Multi-modal data found: {any(multi_modal_data)}")
 
         for prompt, ids, block_hash, mm_data in zip(prompts, input_ids, block_hashes, multi_modal_data):
