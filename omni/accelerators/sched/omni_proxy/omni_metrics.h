@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <omni_tokenizer.h>
 #include <omni_zmq_handler.h>
+#include <omni_radix_tree.h>
 
 #define NUM_PREFILL_BATCH_METRICS_HIS 10
 #define NUM_DECODE_BATCH_METRICS_HIS 10
@@ -132,6 +133,8 @@ typedef struct omni_upstream_prefill_s
     uint32_t expected_next_schedule_time;
     omni_batch_metrics_his_t his;
     omni_zmq_handler_t kv_handler;
+    ngx_slab_pool_t *radix_pool;
+    omni_radix_tree_t *radix_tree;
 } omni_upstream_prefill_t;
 
 typedef struct omni_upstream_decode_s
@@ -144,6 +147,8 @@ typedef struct omni_upstream_decode_s
     uint32_t expected_next_schedule_time;
     omni_batch_metrics_his_t his;
     omni_zmq_handler_t kv_handler;
+    ngx_slab_pool_t *radix_pool;
+    omni_radix_tree_t *radix_tree;
 } omni_upstream_decode_t;
 
 typedef enum omni_proxy_pd_policy_s

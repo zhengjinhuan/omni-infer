@@ -1191,7 +1191,7 @@ static void omni_proxy_init_req_groups(omni_req_group_t groups[])
     ngx_shmtx_create(&local_state.g_shmtx, &g_state->lock,
                      (u_char *)"omni_proxy_lock");
 
-    printf("shared memory initialed\n");
+    printf("shared memory initialed: %p\n", zone->shm.addr);
 
     return NGX_OK;
 }
@@ -1336,12 +1336,103 @@ static ngx_int_t ngx_http_omni_init_upstreams()
     return NGX_OK;
 }
 
+static ngx_int_t omni_proxy_apc_shm_initialized(ngx_shm_zone_t *shm_zone, void *data)
+{
+    if (local_state.num_prefill_endpoints > g_state->num_prefill_endpoints)
+    {
+        g_state->prefill_states[g_state->num_prefill_endpoints].radix_pool = (ngx_slab_pool_t *)shm_zone->shm.addr;
+        g_state->num_prefill_endpoints++;
+    }
+    else if (local_state.num_decode_endpoints > g_state->num_decode_endpoints)
+    {
+        g_state->decode_states[g_state->num_decode_endpoints].radix_pool = (ngx_slab_pool_t *)shm_zone->shm.addr;
+        g_state->num_decode_endpoints++;
+    }
+    else
+    {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
+{
+    ngx_http_upstream_main_conf_t *umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
+    ngx_http_upstream_srv_conf_t **uscfp;
+    ngx_uint_t i, j;
+
+    if (umcf == NULL)
+    {
+        return NGX_ERROR;
+    }
+
+    uscfp = umcf->upstreams.elts;
+
+    for (i = 0; i < umcf->upstreams.nelts; i++)
+    {
+        ngx_http_upstream_srv_conf_t *uscf = uscfp[i];
+        if (uscf == NULL)
+        {
+            continue;
+        }
+
+        if (ngx_strncmp(uscf->host.data, PREFILL_ENDPOINTS, sizeof(PREFILL_ENDPOINTS) - 1) == 0)
+        {
+            local_state.num_prefill_endpoints = uscf->servers->nelts;
+        }
+        else if (ngx_strncmp(uscf->host.data, DECODE_ENDPOINTS, sizeof(DECODE_ENDPOINTS) - 1) == 0)
+        {
+            local_state.num_decode_endpoints = uscf->servers->nelts;
+        }
+
+        int count = 0;
+        if (uscf->servers)
+        {
+            ngx_http_upstream_server_t *servers = uscf->servers->elts;
+
+            for (j = 0; j < uscf->servers->nelts; j++, count++)
+            {
+                ngx_http_upstream_server_t *server = &servers[j];
+                ngx_shm_zone_t *shm_zone;
+                ngx_str_t shm_name;
+
+                u_char *buffer = ngx_pcalloc(cf->pool, 64);
+                u_char *end = ngx_snprintf(buffer, sizeof(buffer), "omni_proxy_%d",
+                                           count);
+                *end = 0;
+
+                shm_name.data = buffer;
+                shm_name.len = end - buffer;
+
+                shm_zone = ngx_shared_memory_add(cf, &server->name, 20 * 1024 * 1024,
+                                                 &ngx_http_omni_proxy_module);
+                if (shm_zone == NULL)
+                {
+                    ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                                       "Failed to create shared memory for server %V",
+                                       &servers[j].addrs->name);
+                    continue;
+                }
+
+                shm_zone->init = omni_proxy_apc_shm_initialized;
+
+                ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+                                   "    Created 20MB shared memory zone: %V",
+                                   &shm_name);
+            }
+        }
+    }
+}
+
 static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
 {
     if (omni_proxy_init_global_state(cf) != NGX_OK)
     {
         return NGX_ERROR;
     }
+
+    omni_proxy_init_apc_shm(cf);
 
     omni_proxy_init_req_groups(local_state.groups);
 
@@ -1471,8 +1562,7 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
         return NGX_OK;
     }
 
-    ngx_core_conf_t *ccf;
-    ccf = (ngx_core_conf_t *)ngx_get_conf(ngx_cycle->conf_ctx, ngx_core_module);
+    ngx_core_conf_t *ccf = (ngx_core_conf_t *)ngx_get_conf(ngx_cycle->conf_ctx, ngx_core_module);
     for (int i = 0; i < g_state->num_prefill_endpoints; i++)
     {
         omni_upstream_prefill_t *prefill = &g_state->prefill_states[i];
@@ -1480,15 +1570,26 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
 
         if (i % ccf->worker_processes == ngx_worker)
         {
+            prefill->radix_tree = omni_radix_tree_init(prefill->radix_pool);
+            if (prefill->radix_tree == NULL)
+            {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                              "Failed to create radix hash_tree");
+                return NGX_ERROR;
+            }
+
+            printf("Start radix tree unit test...\n");
+            omni_radix_tree_test(prefill->radix_tree);
+            printf("Radix tree unit test done.\n");
+
             u_char *buf = ngx_palloc(cycle->pool, 64);
             u_char *last = ngx_snprintf((u_char *)buf, 64, "%s:%d",
                                         prefill->address.ip,
                                         prefill->address.port + local_state.loc_conf->vllm_kv_port_offset);
 
             printf("address: %s\n", buf);
-            ngx_str_t addr;
-            addr.data = buf;
-            addr.len = last - buf;
+            ngx_str_t addr = {last - buf, buf};
+
             ngx_str_t topic = ngx_string("");
             omni_zmq_handler_init(cycle, &prefill->kv_handler, addr, topic, zmq_test_handler);
         }
@@ -1520,7 +1621,7 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
 
     omni_register_worker(g_state, &g_state->shmtx);
 
-    printf("Init timer, pid: %u, worker: %lu\n", ngx_pid, ngx_worker);
+    printf("Init timer, pid: %u, worker: %lu, g_state:%p\n", ngx_pid, ngx_worker, g_state);
 
     ngx_add_timer(&local_state.omni_proxy_timer_event, TIMER_INTERVAL);
 

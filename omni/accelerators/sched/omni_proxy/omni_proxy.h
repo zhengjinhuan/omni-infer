@@ -41,6 +41,9 @@ typedef struct omni_worker_local_state_s
     pid_t pid;
     uint32_t worker;
 
+    uint32_t num_prefill_endpoints;
+    uint32_t num_decode_endpoints;
+
     ngx_omni_tokenize_worker_t tokenize_worker;
     ngx_event_t omni_proxy_timer_event;
     ngx_http_output_body_filter_pt ngx_http_next_body_filter;
