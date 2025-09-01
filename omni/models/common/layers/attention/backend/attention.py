@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionLayer, AttentionType)
 from vllm.attention.backends.utils import CommonAttentionState
+from vllm.model_executor.layers.rotary_embedding import DynamicNTKScalingRotaryEmbedding
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.utils import (direct_register_custom_op, supports_dynamo)
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -38,6 +39,7 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.worker.block_table import BlockTable
 from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
+from omni.models.common.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.config.model_config import model_extra_config
@@ -121,6 +123,17 @@ class AscendMetadata:
     sin: Optional[torch.Tensor] = None
     is_pd_seperate_d: bool = False
     kv_index: Optional[torch.Tensor] = None
+
+    @staticmethod
+    def advance_step(metadata, positions, block_size, pad_mask, model_layer):
+        block_table = metadata.block_tables
+        block_indices = block_table.gather(dim=1, index=(positions // block_size).reshape(-1, 1)).view(-1)
+        block_offsets = positions % block_size
+        metadata.slot_mapping[:] = torch.where(
+            pad_mask,
+            metadata.slot_mapping,
+            block_indices * block_size + block_offsets)
+        metadata.seq_lens[:] = (positions + 1).to(metadata.seq_lens.dtype)
 
 class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
 
@@ -295,7 +308,14 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             
         slot_indices = torch.stack([slot_mapping // self.block_size, slot_mapping % self.block_size], dim=1)
 
-        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+        if hasattr(self.runner.model, 'language_model') and hasattr(self.runner.model.language_model, 'model'):
+            Rotary_List = [QwenMRotaryEmbedding, DynamicNTKScalingRotaryEmbedding]
+            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) in Rotary_List:
+                cos, sin = None, None
+            else:
+                cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+        else:
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
@@ -336,7 +356,14 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
 
         fake_positions = torch.zeros(max_pad_size, dtype=torch.int64, device=self.device)
 
-        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+        if hasattr(self.runner.model, 'language_model') and hasattr(self.runner.model.language_model, 'model'):
+            Rotary_List = [QwenMRotaryEmbedding, DynamicNTKScalingRotaryEmbedding]
+            if type(self.runner.model.language_model.model.layers[0].self_attn.rotary_emb) in Rotary_List:
+                cos, sin = None, None
+            else:
+                cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+        else:
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
@@ -593,43 +620,64 @@ class AscendAttentionBackendImpl(AttentionImpl):
         if hasattr(layer, 'quant_method'):
             pass
         # V0-Style scheduler situation.
-        elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
-            if attn_metadata is None:
-                raise RuntimeError("attn_metadata must not be None")
+        elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:             
+            if not (os.getenv("ENABLE_PREFILL_TND", "0") == "1"):
+                if attn_metadata is None:
+                    raise RuntimeError("attn_metadata must not be None")
 
-            if len(attn_metadata.query_lens_list) == 1:
-                attn_output = torch_npu.npu_fused_infer_attention_score(
-                    query.unsqueeze(0),
-                    key.unsqueeze(0),
-                    value.unsqueeze(0),
-                    num_heads=self.num_heads,
-                    num_key_value_heads=self.num_kv_heads,
-                    input_layout="BSND",
-                    scale=self.scale,
-                    sparse_mode=3,
-                    actual_seq_lengths=attn_metadata.query_lens_list,
-                    actual_seq_lengths_kv=attn_metadata.seq_lens_list,
-                    atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                )[0].view(-1, self.num_heads, self.head_size)
+                if len(attn_metadata.query_lens_list) == 1:
+                    attn_output = torch_npu.npu_fused_infer_attention_score(
+                        query.unsqueeze(0),
+                        key.unsqueeze(0),
+                        value.unsqueeze(0),
+                        num_heads=self.num_heads,
+                        num_key_value_heads=self.num_kv_heads,
+                        input_layout="BSND",
+                        scale=self.scale,
+                        sparse_mode=3,
+                        actual_seq_lengths=attn_metadata.query_lens_list,
+                        actual_seq_lengths_kv=attn_metadata.seq_lens_list,
+                        atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                    )[0].view(-1, self.num_heads, self.head_size)
 
-                output = output.view_as(attn_output)
-                output.copy_(attn_output)
+                    output = output.view_as(attn_output)
+                    output.copy_(attn_output)
+                else:
+                    actual_seq_qlen = np.array(attn_metadata.query_lens).cumsum().tolist()
+                    actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
+
+                    attn_output = torch_npu.npu_fusion_attention(
+                        query[:actual_seq_qlen[-1], :],
+                        key[:actual_seq_qlen[-1], :],
+                        value[:actual_seq_qlen[-1], :],
+                        head_num=self.num_heads,
+                        input_layout="TND",
+                        scale=self.scale,
+                        atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                        sparse_mode=3,
+                        actual_seq_qlen=actual_seq_qlen,
+                        actual_seq_kvlen=actual_seq_kvlen)[0]
+
+                    output[:actual_seq_qlen[-1], :].copy_(attn_output)
             else:
+                if attn_metadata is None:
+                    raise RuntimeError("attn_metadata must not be None")
                 actual_seq_qlen = np.array(attn_metadata.query_lens).cumsum().tolist()
                 actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
-
-                attn_output = torch_npu.npu_fusion_attention(
-                    query[:actual_seq_qlen[-1], :],
-                    key[:actual_seq_qlen[-1], :],
-                    value[:actual_seq_qlen[-1], :],
-                    head_num=self.num_heads,
-                    input_layout="TND",
-                    scale=self.scale,
-                    atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                    sparse_mode=3,
-                    actual_seq_qlen=actual_seq_qlen,
-                    actual_seq_kvlen=actual_seq_kvlen)[0]
-
+                attn_output = torch_npu.npu_fused_infer_attention_score(
+                    query[:actual_seq_qlen[-1],:,:], 
+                    key[:actual_seq_qlen[-1],:,:],
+                    value[:actual_seq_qlen[-1],:,:],
+                    num_heads = self.num_heads,
+                    num_key_value_heads =  self.num_kv_heads,
+                    input_layout = "TND",
+                    scale = self.scale,
+                    sparse_mode = 3,
+                    actual_seq_lengths = actual_seq_qlen,
+                    actual_seq_lengths_kv =  actual_seq_kvlen,
+                    atten_mask = AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                )[0].view(-1, self.num_heads, self.head_size)
+                
                 output[:actual_seq_qlen[-1], :].copy_(attn_output)
 
         elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
