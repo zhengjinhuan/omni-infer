@@ -770,6 +770,26 @@ def get_rope(
                         is_neox_style,
                         scaling_factor, 
                         dtype)
+        elif scaling_type == "default":
+            if "mrope_section" in rope_scaling:
+                rotary_emb = QwenMRotaryEmbedding(
+                    head_size,
+                    rotary_dim,
+                    max_position,
+                    base,
+                    is_neox_style,
+                    dtype,
+                    mrope_section=rope_scaling["mrope_section"],
+                )
+            else:
+                rotary_emb = RotaryEmbeddingTorchNpu(
+                    head_size,
+                    rotary_dim,
+                    max_position,
+                    base,
+                    is_neox_style,
+                    dtype,
+                )
         else:
             scaling_type = rope_scaling["type"]
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}, only support linear and dynamic now")
