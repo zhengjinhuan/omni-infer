@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-
 #include <float.h>
 #include <ngx_config.h>
 #include <ngx_core.h>
@@ -10,22 +9,12 @@
 #include <ngx_atomic.h>
 #include <stdlib.h>
 #include <math.h>
-
+#include "ngx_http_upstream_least_total_load_module.h"
 
 typedef struct {
     ngx_flag_t enable;
     ngx_uint_t batch_size;
 } ngx_http_least_total_load_conf_t;
-
-typedef struct {
-    ngx_atomic_t total_length_sum;
-    ngx_atomic_t total_request_sum;
-} ngx_http_least_total_load_shm_peer_t;
-
-typedef struct {
-    ngx_uint_t peer_count;
-    ngx_http_least_total_load_shm_peer_t peers[1];
-} prefill_upstream_info_t;
 
 typedef struct {
     ngx_http_upstream_rr_peer_data_t *rrp;
@@ -129,7 +118,15 @@ ngx_module_t ngx_http_upstream_least_total_load_module = {
     NULL,
     NGX_MODULE_V1_PADDING};
 
-static ngx_int_t
+double least_total_load_get_score(
+    ngx_uint_t length_sum_workers, ngx_uint_t request_sum_workers,
+    double least_total_load_batch_size) {
+    return length_sum_workers *
+            ((ceil(request_sum_workers / least_total_load_batch_size) + 1.0) /
+             2.0);
+}
+
+ngx_int_t
 least_total_load_select_solver(prefill_upstream_info_t *prefill_shm,
                                ngx_uint_t worker_num, ngx_uint_t req_length,
                                ngx_uint_t *chosen)
@@ -146,10 +143,9 @@ least_total_load_select_solver(prefill_upstream_info_t *prefill_shm,
             ngx_atomic_fetch_add(&(prefill_shm->peers[i].total_length_sum), 0);
         ngx_uint_t request_sum_workers =
             ngx_atomic_fetch_add(&(prefill_shm->peers[i].total_request_sum), 0);
-        double score =
-            length_sum_workers *
-            ((ceil(request_sum_workers / least_total_load_batch_size) + 1.0) /
-             2.0);
+        double score = least_total_load_get_score(
+            length_sum_workers, request_sum_workers, 
+            least_total_load_batch_size);
         if (count == 0 || score < min_score) {
             min_score = score;
             count = 0;
