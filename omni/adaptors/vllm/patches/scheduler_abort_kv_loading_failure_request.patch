@@ -57,7 +57,7 @@ diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
 +            outputs.append(
 +                EngineCoreOutput(
 +                    request_id=req_id,
-+                    new_tokens_ids=[0],
++                    new_token_ids=[0],
 +                    finish_reason=request.get_finished_reason(),
 +                    stop_reason=request.stop_reason,
 +                )
