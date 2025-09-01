@@ -247,6 +247,10 @@ class NPUWorker(WorkerBase):
         self.model_runner.profile_run()
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
+        is_pd_seperate_d = self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
+        if is_pd_seperate_d and os.getenv("ASCEND_PLATFORM", "A3") == "A2":
+            NPUPlatform.empty_cache()
+
         free_npu_memory, total_npu_memory = NPUPlatform.mem_get_info()
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
