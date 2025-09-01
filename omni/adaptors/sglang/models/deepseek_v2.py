@@ -2055,15 +2055,12 @@ class DeepseekV2DecoderLayer(nn.Module):
             and not (self.enable_dp_attention and self.speculative_algorithm.is_eagle())
             and not self.is_nextn
         )
-        hidden_states = self.mlp(
-            hidden_states, forward_batch, can_fuse_mlp_allreduce, **kwargs
-        )
         # For DP with padding, reduce scatter can be used instead of all-reduce.
         use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
             forward_batch
         )
         hidden_states = self.mlp(
-            hidden_states, forward_batch, can_fuse_mlp_allreduce, use_reduce_scatter
+            hidden_states, forward_batch, can_fuse_mlp_allreduce, use_reduce_scatter, **kwargs
         )
 
         if can_fuse_mlp_allreduce:
