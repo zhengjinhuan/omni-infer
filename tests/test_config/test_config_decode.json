@@ -17,7 +17,6 @@
         "use_super_kernel": false,
         "use_mlaprolog": false,
         "opt_w2_scale_cast": true,
-        "enable_mc2_v2": false,
         "control_accept_rate": -1,
         "use_prefetch": true,
         "expert_gate_up_prefetch": 50,
