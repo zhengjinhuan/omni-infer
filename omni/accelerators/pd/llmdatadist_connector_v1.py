@@ -388,7 +388,8 @@ class DecodeConnectorScheduler:
         if self.async_pull_kv:
             self.context = zmq.Context()
             self.pub = self.context.socket(zmq.PUB)
-            self.pub.bind(f"ipc:///tmp/sched-pub-{vllm_config.parallel_config.data_parallel_rank_local}")
+            kv_rank = self.vllm_config.kv_transfer_config.kv_rank
+            self.pub.bind(f"ipc:///tmp/sched-pub--{kv_rank}-{vllm_config.parallel_config.data_parallel_rank_local}")
 
     def get_num_new_matched_tokens(
             self, request: "Request",
@@ -559,7 +560,8 @@ class DecodeConnectorWorker:
     def on_fast_path_req(self):
         context = zmq.Context()
         sub = context.socket(zmq.SUB)
-        sub.connect(f"ipc:///tmp/sched-pub-{self.vllm_config.parallel_config.data_parallel_rank_local}")
+        kv_rank = self.vllm_config.kv_transfer_config.kv_rank
+        sub.connect(f"ipc:///tmp/sched-pub-{kv_rank}-{self.vllm_config.parallel_config.data_parallel_rank_local}")
         sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
         while True:

@@ -763,6 +763,11 @@ def moe_infer_fusion(
     ep_size = get_ep_group().world_size
     combine_tokens = combine_tokens.view(2, ep_size, -1).sum(2)
     all_tokens = combine_tokens[0].sum()
+
+    # prune
+    if model_extra_config.operator_opt_config.experts_pruning:
+        all_input_tokens = combine_tokens[1].sum().item()
+
     combine_tokens_cpu = combine_tokens.cpu().tolist()
     # alltoall input splits, the total number of tokens routed from the current rank to other ranks
     input_splits = combine_tokens_cpu[1]
@@ -772,9 +777,33 @@ def moe_infer_fusion(
     gathered_tokens = expanded_x.new_empty(
         all_tokens.item(), expanded_x.shape[1]
     )
-    dist.all_to_all_single(gathered_tokens, expanded_x, output_splits, input_splits, group=group)
     gathered_pertoken_scale = pertoken_scale.new_empty(gathered_tokens.shape[0])
-    dist.all_to_all_single(gathered_pertoken_scale, pertoken_scale, output_splits, input_splits, group=group)
+
+    if model_extra_config.operator_opt_config.experts_pruning:
+        x_view=torch.narrow(expanded_x, 0, 0,all_input_tokens)
+        scale_view = torch.narrow(pertoken_scale, 0, 0, all_input_tokens)
+        dist.all_to_all_single(
+            gathered_tokens, x_view, output_splits, input_splits, group=group)
+        dist.all_to_all_single(
+            gathered_pertoken_scale,
+            scale_view, 
+            output_splits, 
+            input_splits, 
+            group=group)
+        
+    else:
+        dist.all_to_all_single(
+            gathered_tokens, 
+            expanded_x, 
+            output_splits, 
+            input_splits, 
+            group=group)
+        dist.all_to_all_single(
+            gathered_pertoken_scale, 
+            pertoken_scale, 
+            output_splits, 
+            input_splits, 
+            group=group)
     # reroute
     # Tokens merged by experts, scales merged by experts, indices for FinalizeRouting, number of tokens processed by each expert
     hidden_states_sorted_by_experts, gathered_pertoken_scale, gathered_idxs_unsort, tokens_per_local_expert = torch_npu.npu_moe_re_routing(
@@ -792,9 +821,27 @@ def moe_infer_fusion(
 
     new_x = torch.index_select(hidden_states_ordered_by_experts, 0,
                                gathered_idxs_unsort.to(torch.float32).argsort().to(torch.int32))
-    gathered_tokens = new_x.new_empty(*expanded_x.shape)
-
-    dist.all_to_all_single(gathered_tokens, new_x, input_splits, output_splits, group=group)
+    
+    # prune 3
+    if model_extra_config.operator_opt_config.experts_pruning:
+        gathered_tokens = new_x.new_zeros(*expanded_x.shape)
+        gathered_view = torch.narrow(gathered_tokens, 0, 0, all_input_tokens)
+        dist.all_to_all_single(gathered_view, 
+                               new_x, 
+                               input_splits, 
+                               output_splits, 
+                               group=group)
+        expanded_row_idx[expanded_row_idx==-1] = torch.arange(
+            all_input_tokens, expanded_row_idx.shape[0],
+            device=expanded_row_idx.device,   # 同设备
+            dtype=expanded_row_idx.dtype  )
+    else:
+        gathered_tokens = new_x.new_empty(*expanded_x.shape)
+        dist.all_to_all_single(gathered_tokens, 
+                               new_x, 
+                               input_splits, 
+                               output_splits, 
+                               group=group)
     return hidden_states, gathered_tokens, topk_weight, expanded_row_idx
 
 
@@ -901,13 +948,10 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
+            "x_active_mask": mc2_mask,
         })
 
-        if model_extra_config.operator_opt_config.enable_mc2_v2:
-            output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
-        else:
-            output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
+        output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
         group_list = expert_token_nums.to(torch.int64)
@@ -930,7 +974,7 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
         kwargs = {
             "expand_x": hidden_states_experts,
             "expert_ids": topk_ids,  # [n*topk]
-            "expand_idx": expand_idx,
+            "assist_info_for_combine": expand_idx,
             "expert_scales": topk_weights.to(torch.float32),  # weight [n*topk]
             "expert_shard_type": 0,
             "shared_expert_rank_num": shared_expert_rank_num,
@@ -947,16 +991,11 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
+            "x_active_mask": mc2_mask,
         }
         kwargs.update(stage3_kwargs)
 
-        if model_extra_config.operator_opt_config.enable_mc2_v2:
-            expand_idx = kwargs.pop('expand_idx', None)
-            kwargs['assist_info_for_combine'] = expand_idx
-            hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
-        else:
-            hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
+        hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
     else:
         raise ValueError("ep number should be greater than 1.")
     return hidden_states_route

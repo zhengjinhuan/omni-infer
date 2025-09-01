@@ -143,6 +143,18 @@ class ReplicatedDeepseekMLP(nn.Module):
         x, _ = self.down_proj.forward(x)
         return x
 
+def DynamicPruningUnsorted(topk_weights: torch.Tensor, 
+                           topk_ids: torch.Tensor, 
+                           thresholds: torch.Tensor):
+    invalid_id = 512
+    topk_weight_sorted, sorted_indices = torch.sort(topk_weights, dim=1, descending=True)
+    topk_id_sorted = torch.gather(topk_ids, dim=1, index=sorted_indices)
+
+    topk_weight_sum = torch.sum(topk_weight_sorted, dim=1, keepdim=True)
+    mask = (topk_weight_sorted < topk_weight_sum * thresholds).to(topk_ids.dtype)
+    new_topk_weights = topk_weight_sorted * (1-mask)
+    new_topk_ids = topk_id_sorted * (1-mask) + invalid_id*  mask
+    return new_topk_weights, new_topk_ids
 
 class DeepseekMoE(nn.Module):
 
@@ -279,6 +291,12 @@ class DeepseekMoE(nn.Module):
         self.tuning_config = None
         if model_extra_config.operator_opt_config.gmm_nz:
             self.tuning_config = model_extra_config.operator_opt_config.decode_gear_list[:1]
+        
+        self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
+                                model_extra_config.operator_opt_config.prefill_moe_all_to_all)
+        if self.experts_pruning:
+            self.experts_pruning_threshold = torch.tensor(
+                    [0, 0.01, 0.01, 0.01, 0.0665, 0.086, 0.125, 0.135])
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         if self.redundancy_shared_expert_num > 0:
@@ -318,6 +336,12 @@ class DeepseekMoE(nn.Module):
                                                                     layer=self.experts  # ENABLE_OMNI_PLANNER
                                                                     )
         topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids)
+
+        if self.experts_pruning:
+            topk_weights, topk_ids = DynamicPruningUnsorted(topk_weights, 
+                                                            topk_ids, 
+                                                            self.experts_pruning_threshold)
+
         if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
             topk_all = get_world_group().all_gather(topk_cat, dim=0)
@@ -487,13 +511,10 @@ class DeepseekMoE(nn.Module):
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
+            "x_active_mask": mc2_mask,
         })
 
-        if model_extra_config.operator_opt_config.enable_mc2_v2:
-            output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
-        else:
-            output = torch_npu.npu_moe_distribute_dispatch(**kwargs)
+        output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
         group_list = expert_token_nums.to(torch.int64)
@@ -589,7 +610,7 @@ class DeepseekMoE(nn.Module):
         kwargs = {
             "expand_x": hidden_states_experts,
             "expert_ids": topk_ids,  # [n*topk]
-            "expand_idx": expand_idx,
+            "assist_info_for_combine": expand_idx,
             "expert_scales": topk_weights.to(torch.float32),  # weight [n*topk]
             "expert_shard_type": 0,
             "shared_expert_rank_num": shared_expert_rank_num,
@@ -606,7 +627,7 @@ class DeepseekMoE(nn.Module):
             "group_tp": layer.moe_rs_group_name,
             "tp_world_size": experts_tp_size,
             "tp_rank_id": global_rank % experts_tp_size,
-            "x_active_mask": mc2_mask if model_extra_config.operator_opt_config.enable_mc2_v2 else None,
+            "x_active_mask": mc2_mask,
         }
         kwargs.update(stage3_kwargs)
 
@@ -627,12 +648,7 @@ class DeepseekMoE(nn.Module):
                 torch_npu.npu_prefetch(next_attention_weights['q_b_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
                 torch_npu.npu_prefetch(next_attention_weights['W_UK'], attn_prefetch_flag, attn_prefetch_size)
 
-        if model_extra_config.operator_opt_config.enable_mc2_v2:
-            expand_idx = kwargs.pop('expand_idx', None)
-            kwargs['assist_info_for_combine'] = expand_idx
-            hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
-        else:
-            hidden_states_route = torch_npu.npu_moe_distribute_combine(**kwargs)
+        hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
 
         if shared_output is not None:
             final_hidden_states = (hidden_states_route, shared_output)

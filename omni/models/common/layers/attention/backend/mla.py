@@ -194,6 +194,19 @@ class AscendMLAMetadata:
     def __post_init__(self):
         pass
 
+    @staticmethod
+    def advance_step(metadata, positions, block_size, pad_mask, model_layer):
+        block_table = metadata.decode.block_table
+        block_indices = block_table.gather(dim=1, index=(positions // block_size).reshape(-1, 1)).view(-1)
+        block_offsets = positions % block_size
+        metadata.slot_mapping[:] = torch.where(
+            pad_mask,
+            metadata.slot_mapping,
+            block_indices * block_size + block_offsets)
+        metadata.decode.seq_lens[:] = (positions + 1).to(metadata.decode.seq_lens.dtype)
+        cos, sin = model_layer.self_attn.rotary_emb.get_cos_sin(metadata.decode.input_positions)
+        metadata.decode.cos = cos
+        metadata.decode.sin = sin
 
 M = TypeVar("M", bound=AscendMLAMetadata)
 

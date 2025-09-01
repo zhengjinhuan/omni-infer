@@ -172,14 +172,6 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
 
         return False
 
-@support_torch_compile
-class DeepseekMultiTokenPredictorLayerDuo(DeepseekMultiTokenPredictorLayer):
-    pass
-
-@support_torch_compile
-class DeepseekMultiTokenPredictorLayerTres(DeepseekMultiTokenPredictorLayer):
-    pass
-
 class DeepseekMultiTokenPredictor(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -189,13 +181,12 @@ class DeepseekMultiTokenPredictor(nn.Module):
         self.mtp_start_layer_idx = self.config.num_hidden_layers
         self.num_mtp_layers = self.config.num_nextn_predict_layers
         self.ignore_share_weight = True # TODO get from config
-        if self.num_mtp_layers > 3:
-            raise ValueError(f"Only support 3 mtp layers at most, while get num_nextn_predict_layers = {self.num_mtp_layers}.")
-        mtp_class_list = [DeepseekMultiTokenPredictorLayer, DeepseekMultiTokenPredictorLayerDuo, DeepseekMultiTokenPredictorLayerTres]
         self.layers = nn.ModuleDict({
             str(i + self.mtp_start_layer_idx):
-            mtp_class_list[i](vllm_config=vllm_config,
-                              prefix=f"{prefix}.layers.{i + self.mtp_start_layer_idx}")
+            DeepseekMultiTokenPredictorLayer(
+                vllm_config=vllm_config,
+                prefix=f"{prefix}.layers.{i + self.mtp_start_layer_idx}",
+            )
             for i in range(min(self.num_mtp_layers, vllm_config.speculative_config.num_speculative_tokens))
         })
         self.logits_processor = LogitsProcessor(self.config.vocab_size, logits_as_input=True)
@@ -226,7 +217,6 @@ class DeepseekMultiTokenPredictor(nn.Module):
             selected_indices=selected_indices,
         )
 
-
 class DeepseekV3MTP(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -235,6 +225,7 @@ class DeepseekV3MTP(nn.Module):
         self.cache_config = vllm_config.cache_config
         self.quant_config = vllm_config.quant_config
         self.model = DeepseekMultiTokenPredictor(vllm_config=vllm_config, prefix=f"model")
+        self.n_predictor = self.config.num_nextn_predict_layers
     
     def set_share_weight(self, target_model):
         self.model.set_share_weight(target_model)
@@ -257,7 +248,7 @@ class DeepseekV3MTP(nn.Module):
             attn_metadata=attn_metadata,
             previous_hidden_states=previous_hidden_states,
             selected_indices=selected_indices,
-            mtp_layer_idx=mtp_layer_idx,
+            mtp_layer_idx=min(self.n_predictor - 1, mtp_layer_idx),
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
