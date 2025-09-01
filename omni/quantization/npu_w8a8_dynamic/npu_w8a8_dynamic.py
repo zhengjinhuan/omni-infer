@@ -59,10 +59,10 @@ class NpuW8A8DynamicConfig(QuantizationConfig):
     def __init__(
         self,
         ignored_layers: Optional[List[str]] = None,
-        ignored: Optional[List[str]] = None
+        ignore: Optional[List[str]] = None
     ) -> None:
         self.ignored_layers = ignored_layers or []
-        self.ignored = ignored
+        self.ignore = ignore
 
     @classmethod
     def get_name(cls) -> str:
@@ -92,8 +92,8 @@ class NpuW8A8DynamicConfig(QuantizationConfig):
     def from_config(cls, config: Dict[str, Any]) -> "NpuW8A8DynamicConfig":
         quant_method = cls.get_from_keys(config, ['quant_method'])
         ignored_layers = cls.get_from_keys_or(config, ['ignored_layers'], None)
-        ignored = cls.get_from_keys_or(config, ['ignore'], [])
-        return cls(ignored_layers=ignored_layers, ignored=ignored)
+        ignore = cls.get_from_keys_or(config, ['ignore'], [])
+        return cls(ignored_layers=ignored_layers, ignore=ignore)
 
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
