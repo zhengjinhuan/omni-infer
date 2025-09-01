@@ -39,42 +39,22 @@ from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
 from omni_cli.omni_inspect import print_node_config
 
+INFO    = "\033[92m[INFO]\033[0m"      # green
+WARNING = "\033[93m[WARNING]\033[0m"   # yellow
+ERROR   = "\033[91m[ERROR]\033[0m"     # red
+
 @dataclass
 class ClusterInfo:
     inventory: Dict[str, Any]
     allhosts: List[Tuple[str, Dict[str, Any]]] = field(init=False)  # [(host, hostvars), ...]
 
-    # {master_host: {"kv_rank": kv_rank,
-    #                "pod_hosts": [host1, host2, ...],
-    #                "device_count": {host1:16, host2:16, ...},
-    #                "server_offset": {host1:0, host2:16, ...},
-    #                "num_dp": 32,
-    #                "num_servers": 1  # API Server for the specific host,  1 for P, 16 for D
-    #
-    #               },
-    # ...}
     p_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
     d_pod_info: Dict[str, Dict[str, Any]] = field(init=False)
 
-    master_ip2master_host: Dict[str, str] = field(init=False)  # master_ip@master_port -> master_host
-
     def __post_init__(self):
-        self.allhosts = _walk_hosts(self.inventory)
-        self._get_master_ip2master_host()
+        self.allhosts = _walk_hosts(self.inventory.get("all", self.inventory))
         self._create_pod_info()
         self._update_pod_info()
-
-    def _get_master_ip2master_host(self):
-        """Get the master_ip@port to master host mapping."""
-        self.master_ip2master_host = {}
-        for host, hv in self.allhosts:
-            master_ip = hv.get('host_ip', None)
-            master_port = hv.get('env', {}).get('MASTER_PORT', None)
-            ansible_ip = hv.get('ansible_host')
-            if ansible_ip == master_ip:
-                # get the first one as master host
-                if self.master_ip2master_host.get(f"{master_ip}@{master_port}", None) is None:
-                    self.master_ip2master_host[f"{master_ip}@{master_port}"] = host
 
     def _new_pod_info(self) -> Dict[str, Any]:
         """Create a fresh pod-info dict."""
@@ -82,7 +62,10 @@ class ClusterInfo:
             "pod_hosts": [],
             "device_count": {},
             "server_offset": {},
+            "master_ip": None,
+            "master_port": None,  # all nodes in the pod use the same master port
             "num_dp": None,
+            "tp": None,
             "num_servers": None,
             "kv_rank": None,
         }
@@ -92,10 +75,8 @@ class ClusterInfo:
         self.p_pod_info, self.d_pod_info = {}, {}
 
         for host, hv in self.allhosts:
-            master_ip = hv.get('host_ip', None)
-            master_port = hv.get('env', {}).get('MASTER_PORT', None)
             role = hv.get('env', {}).get('ROLE', None)
-            master_host = self.master_ip2master_host.get(f"{master_ip}@{master_port}", None)
+            master_host = hv.get("master_node", None)
             device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
             if master_host:
                 if role == "prefill":
@@ -104,19 +85,24 @@ class ClusterInfo:
                     pod_vars = self.d_pod_info.setdefault(master_host, self._new_pod_info())
                 else:
                     continue
+                if host == master_host:  # master node
+                    pod_vars["master_port"] = hv.get('env', {}).get('MASTER_PORT', None)
+                    pod_vars["master_ip"] = hv.get('ansible_host', None)
                 pod_vars["pod_hosts"].append(host)
                 pod_vars["device_count"][host] = device_count
 
     def _update_pod_info(self):
         """Calculate the KV rank, server offset, num dp, etc. for P/D POD."""
         rank_count = 0
+        dp = 1
         for master_host, pod_vars in self.p_pod_info.items():
             pod_vars["kv_rank"] = rank_count
             rank_count += 1
             for i, host in enumerate(pod_vars["pod_hosts"]):
                 pod_vars["server_offset"][host] = 0   # for P always 0
-            pod_vars["num_dp"] = 1  # for P always 1
+            pod_vars["num_dp"] = dp  # for P always 1
             pod_vars["num_servers"] = 1  # for P always 1
+            pod_vars["tp"] = sum(pod_vars["device_count"].values()) // dp
 
         for master_host, pod_vars in self.d_pod_info.items():
             tp = 1
@@ -128,6 +114,7 @@ class ClusterInfo:
                 offset += pod_vars["device_count"][host]
             pod_vars["num_dp"] = sum(pod_vars["device_count"].values()) // tp
             pod_vars["num_servers"] = pod_vars["device_count"][host]
+            pod_vars["tp"] = tp
 
     @property
     def prefill_pod_num(self):
@@ -137,7 +124,8 @@ class ClusterInfo:
     def decode_pod_num(self):
         return len(self.d_pod_info)
 
-
+    def __repr__(self):
+        return f"<PodInfo(p_pod_info={self.p_pod_info}, d_pod_info={self.d_pod_info})>"
 
 
 def execute_command(command):
@@ -149,7 +137,7 @@ def execute_command(command):
 
     return_code = process.wait()
     if return_code != 0:
-        print(f"[ERROR] Deployment failed with return code {return_code}")
+        print(f"{ERROR} Deployment failed with return code {return_code}")
 
     return return_code
 
@@ -241,13 +229,14 @@ def _build_args_line(args: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 def _verify_and_fix_env_vars(
+    cluster_info: ClusterInfo,
     inventory: Dict[str, Any],
     inventory_path: str = None,
 ) -> List[str]:
     """
     Detect port conflicts per machine (same IP). If conflicts found, bump by `offset` repeatedly until unique.
     """
-    print("[INFO] verifying and fixing environment variables...")
+    print(f"{INFO} verifying and fixing environment variables...")
     port_vars = ["API_PORT", "MASTER_PORT", "VLLM_LLMDATADIST_ZMQ_PORT"]
     offset: int = 16
     all_hosts = _walk_hosts(inventory.get("all", inventory))  # {host: {vars}}
@@ -270,9 +259,9 @@ def _verify_and_fix_env_vars(
                 port = int(env.get(pv)) if pv in env and str(env.get(pv)).isdigit() else None
                 if port is None:
                     if env.get("ROLE", None) in ["prefill", "decode"]:
-                        print(f"[WARNING] host={host} has no {pv}; skipped.")
+                        print(f"{WARNING} host={host} has no {pv}; skipped.")
                     elif env.get("ROLE", None) in ["proxy"] and pv == "API_PORT":
-                        print(f"[WARNING] host={host} has no {pv} (proxy port); please fix manually.")
+                        print(f"{WARNING} host={host} has no {pv} (proxy port); please fix manually.")
                     continue
                 if port in used_ports:
                     conflicts.append((host, env, port))
@@ -287,117 +276,131 @@ def _verify_and_fix_env_vars(
                     if new_port not in used_ports:
                         env[pv] = str(new_port)
                         used_ports[new_port] = host
-                        print(f"[WARNING] ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
+                        print(f"{WARNING} ip={ip} {pv} conflict: host={host} {original_port} -> {new_port}")
                         break
     need_overwrite_inv = len(conflicts) > 0
 
     # calculate pod num, server ip list and server offset, kv rank
-    kv_rank_dict, kv_rank = {}, 0
-    prefill_pod_num = 0
-    server_offset_dict, server_offset = {}, 0
     server_ip_list_temp = []
-    host_ip_dict = {}
-    num_server_dict, num_dp_dict_p, num_dp_dict_d = {}, {}, {}
-    total_dp_d = 0
-    master_port_p_dict, master_port_d_dict = {}, {}
-    for host, hv in inventory['all']['children']['P']['hosts'].items():
-        ip = hv.get('ansible_host', None)
-        host_ip = hv.get('host_ip', None)
-        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
-        tp = int(hv.get('args', {}).get('tp', 16))
-        prefill_pod_num += 1
-        server_offset_dict[host] = server_offset  # for P always 0
-        host_ip_dict[host] = host_ip
-        kv_rank_dict[host] = kv_rank
-        kv_rank += 1
-        num_server_dict[host] = device_count // tp
-        num_dp_dict_p[host] = device_count // tp
-        if host_ip is not None and ip == host_ip:
-            master_port_p_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
     for host, hv in inventory['all']['children']['D']['hosts'].items():
         ip = hv.get('ansible_host', None)
-        host_ip = hv.get('host_ip', None)
-        device_count = hv.get('ascend_rt_visible_devices','').count(',') + 1
-        tp = int(hv.get('args', {}).get('tp', 1))
         if ip:
             server_ip_list_temp.append(f"{ip}")
-        server_offset_dict[host] = server_offset
-        server_offset += device_count
-        host_ip_dict[host] = host_ip
-        kv_rank_dict[host] = kv_rank
-        num_server_dict[host] = device_count // tp
-        total_dp_d += device_count // tp
-        num_dp_dict_d[host] = total_dp_d
-        if host_ip is not None and ip == host_ip:
-            master_port_d_dict[host_ip] = hv.get('env', {}).get('MASTER_PORT', None)
 
     # update num_dp_dict
-    num_dp_dict_d = {k: total_dp_d for k in num_dp_dict_d.keys()}
-    num_dp_dict = {**num_dp_dict_p, **num_dp_dict_d}
     server_ip_list = ','.join(server_ip_list_temp)
 
     ## update inventory
     need_overwrite_inv = False
     for host, hv in all_hosts:
+        master_host = hv.get("master_node", None)
+        role = hv.get("env", {}).get("ROLE", None)
+        if role not in ["prefill", "decode"]:
+            continue
+        pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
+        pod_info = pod_info.get(master_host, None)
+        if pod_info is None:
+            print(f"{WARNING} host={host} can not find POD_INFO")
+            continue
+
+        if master_host is None:
+            print(f"{ERROR} host={host} can not find master node")
+            raise RuntimeError(f"host={host} can not find master node")
+
         if "PREFILL_POD_NUM" in hv.get("env", {}):
-            if hv.get("env", {}).get("PREFILL_POD_NUM") != prefill_pod_num:
+            if hv.get("env", {}).get("PREFILL_POD_NUM") != cluster_info.prefill_pod_num:
                 need_overwrite_inv = True
-                hv.get("env", {})["PREFILL_POD_NUM"] = prefill_pod_num
-                print(f"[INFO] host={host} PREFILL_POD_NUM set to {prefill_pod_num}")
+                hv.get("env", {})["PREFILL_POD_NUM"] = cluster_info.prefill_pod_num
+                print(f"{INFO} host={host} PREFILL_POD_NUM set to {cluster_info.prefill_pod_num}")
+        if "DECODE_POD_NUM" in hv.get("env", {}):
+            if hv.get("env", {}).get("DECODE_POD_NUM") != cluster_info.decode_pod_num:
+                need_overwrite_inv = True
+                hv.get("env", {})["DECODE_POD_NUM"] = cluster_info.decode_pod_num
+                print(f"{INFO} host={host} DECODE_POD_NUM set to {cluster_info.decode_pod_num}")
+        if  "RANK_TABLE_FILE_PATH" in hv.get("env", {}):
+            need_overwrite_inv = True
+            rank_table_save_path = hv.get("env", {})["RANKTABLE_SAVE_PATH"]
+            if role == 'prefill':
+                if len(pod_info["pod_hosts"]) > 1:
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_p/{pod_info['master_ip']}/local_*merge.json)"
+                else:
+                    prefill_server_list = hv.get("ascend_rt_visible_devices", "").replace(',', '')
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/prefill_config/local_*{prefill_server_list}.json)"
+            if role == 'decode':
+                if len(pod_info["pod_hosts"]) > 1:
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/global/collect_files_d/local_*merge.json)"
+                else:
+                    hv.get("env", {})["RANK_TABLE_FILE_PATH"] = f"$(ls {rank_table_save_path}/decode_config/local_*.json)"
+            print(f"{INFO} host={host} RANK_TABLE_FILE_PATH set to {hv.get('env', {})['RANK_TABLE_FILE_PATH']}")
         if "SERVER_IP_LIST" in hv.get("env", {}):
             if hv.get("env", {}).get("SERVER_IP_LIST") != server_ip_list:
                 need_overwrite_inv = True
                 hv.get("env", {})["SERVER_IP_LIST"] = server_ip_list
-                print(f"[INFO] host={host} SERVER_IP_LIST set to {server_ip_list}")
+                print(f"{INFO} host={host} SERVER_IP_LIST set to {server_ip_list}")
         if "SERVER_OFFSET" in hv.get("env", {}):
-            server_offset = server_offset_dict.get(host, None)
+            server_offset = pod_info.get("server_offset", {}).get(host, None)
             if server_offset is not None and hv.get("env", {}).get("SERVER_OFFSET") != server_offset:
                 hv.get("env", {})["SERVER_OFFSET"] = server_offset
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} SERVER_OFFSET set to {server_offset}")
+                print(f"{INFO} host={host} SERVER_OFFSET set to {server_offset}")
         if "KV_RANK" in hv.get("env", {}):
-            kv_rank = kv_rank_dict.get(host, None)
+            kv_rank = pod_info.get("kv_rank", None)
             if kv_rank is not None and hv.get("env", {}).get("KV_RANK") != kv_rank:
                 hv.get("env", {})["KV_RANK"] = kv_rank
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} KV_RANK set to {kv_rank}")
+                print(f"{INFO} host={host} KV_RANK set to {kv_rank}")
         if "HOST_IP" in hv.get("env", {}):
-            host_ip = host_ip_dict.get(host, None)
+            host_ip = pod_info.get("master_ip", None)
             if host_ip is not None and hv.get("env", {}).get("HOST_IP") != host_ip:
                 hv.get("env", {})["HOST_IP"] = host_ip
                 need_overwrite_inv = True
-                print(f"[INFO] host={host} HOST_IP set to {host_ip}")
-        if "num-servers" in hv.get("args", {}):
-            num_server = num_server_dict.get(host, None)
-            if num_server is not None and hv.get("args", {}).get("num-servers") != num_server:
-                hv.get("args", {})["num-servers"] = num_server
-                need_overwrite_inv = True
-                print(f"[INFO] host={host} num-servers set to {num_server}")
-        if "num-dp" in hv.get("args", {}):
-            num_dp = num_dp_dict.get(host, None)
-            if num_dp is not None and hv.get("args", {}).get("num-dp") != num_dp:
-                hv.get("args", {})["num-dp"] = num_dp
-                need_overwrite_inv = True
-                print(f"[INFO] host={host} num-dp set to {num_dp}")
+                print(f"{INFO} host={host} HOST_IP set to {host_ip}")
         # set master port same as host_ip's master port
         if "MASTER_PORT" in hv.get("env", {}):
-            role = hv.get("env", {}).get("ROLE", None)
-            master_port_dict = master_port_p_dict if role == "prefill" else master_port_d_dict
             if role == "prefill" or role == "decode":
-                master_port = master_port_dict.get(host_ip, None)
+                master_port = pod_info.get("master_port", None)
                 if master_port is None:
-                    print(f"[WARNING] host={host} with master ip={host_ip} can not find MASTER_PORT")
+                    print(f"{WARNING} host={host} with master node={master_host} can not find MASTER_PORT")
                 if master_port is not None and hv.get("env", {}).get("MASTER_PORT") != master_port:
                     hv.get("env", {})["MASTER_PORT"] = master_port
                     need_overwrite_inv = True
-                    print(f"[INFO] host={host} MASTER_PORT set to {master_port}")
+                    print(f"{INFO} host={host} MASTER_PORT set to {master_port}")
+        if "num-servers" in hv.get("args", {}):
+            num_server = pod_info.get("num_servers", None)
+            if num_server is not None and hv.get("args", {}).get("num-servers") != num_server:
+                hv.get("args", {})["num-servers"] = num_server
+                need_overwrite_inv = True
+                print(f"{INFO} host={host} num-servers set to {num_server}")
+        if "num-dp" in hv.get("args", {}):
+            num_dp = pod_info.get("num_dp", None)
+            if num_dp is not None and hv.get("args", {}).get("num-dp") != num_dp:
+                hv.get("args", {})["num-dp"] = num_dp
+                need_overwrite_inv = True
+                print(f"{INFO} host={host} num-dp set to {num_dp}")
+        if "tp" in hv.get("args", {}):
+            tp = pod_info.get("tp", None)
+            if tp is not None and hv.get("args", {}).get("tp") != tp:
+                hv.get("args", {})["tp"] = tp
+                need_overwrite_inv = True
+                print(f"{INFO} host={host} tp set to {tp}")
+        if "PREFILL_TENSOR_PARALLEL_SIZE" in hv.get("env", {}) and role == "prefill":
+            tp = pod_info.get("tp", None)
+            if tp is not None and hv.get("env", {}).get("PREFILL_TENSOR_PARALLEL_SIZE") != tp:
+                hv.get("env", {})["PREFILL_TENSOR_PARALLEL_SIZE"] = tp
+                need_overwrite_inv = True
+                print(f"{INFO} host={host} PREFILL_TENSOR_PARALLEL_SIZE set to {tp}")
+        if "MODEL_LEN_MAX_PREFILL" in hv.get("env", {}) and role == "prefill":
+            model_len_max = hv.get("env", {}).get("MODEL_LEN_MAX_PREFILL")
+            tp = pod_info.get("tp", None)
+            if model_len_max % tp != 0:
+                print(f"{WARNING} host={host} MODEL_LEN_MAX_PREFILL is not a multiple of TP size!")
 
     if need_overwrite_inv:
         with open(inventory_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(inventory, f, default_flow_style=False, sort_keys=False)
-        print(f"[INFO] inventory written back to {inventory_path}")
+        print(f"{INFO} inventory written back to {inventory_path}")
     else:
-        print(f"[INFO] inventory at {inventory_path} has passed verification")
+        print(f"{INFO} inventory at {inventory_path} has passed verification")
 
 
 
@@ -406,6 +409,50 @@ def omni_ranktable(inventory):
     cmd = "ansible-playbook -i " + str(inventory) + " " + str(cur_dir) + "/configs/generate_ranktable.yml"
     os.system(cmd)
 
+def maybe_start_ray(is_master, pod_info, role, log_path):
+
+    if role == "decode":
+        return False, ""
+
+    ## if >1 servers for Prefill, ray is needed
+    num_server_in_pod = len(pod_info.get("pod_hosts", []))
+    num_servers = pod_info.get("num_servers", 1)
+    master_ip = pod_info.get("master_ip", None)
+    if num_server_in_pod > 1 and role == "prefill":
+        if is_master:
+            ray_cmd = f"""
+ray stop --force
+ray start --head --num-gpus={num_servers} >> {log_path}/omni_cli.log 2>&1
+sleep 10s
+"""
+        else:
+             ray_cmd = f"""
+sleep 5s
+command="ray start --address='{master_ip}:6379' --num-gpus={num_servers} &> /dev/null"
+echo $command >> {log_path}/omni_cli.log
+cost_time=0
+end_time=300
+while true; do
+    if [ $cost_time -ge $end_time ]; then
+    echo "error, conneciton timeout" >> {log_path}/omni_cli.log
+    exit 1
+    fi
+
+    eval $command
+    if [ $? -eq 0 ]; then
+    echo "succeed to connect to ray head node" >> {log_path}/omni_cli.log
+    break
+    else
+    echo "failed to connect to ray head node, wait 5s....." >> {log_path}/omni_cli.log
+    sleep 5
+    cost_time=$((cost_time + 5))
+    fi
+done
+"""
+        return True, ray_cmd
+    else:
+        return False, ""
+
 def omni_cli_start(
     inventory_path: str = "./server_profiles.yml",
     host_pattern: Optional[str] = None,   # e.g., "127.0.0.1"
@@ -413,25 +460,32 @@ def omni_cli_start(
     python_bin: str = "python",
     entry_py: str = "start_api_servers.py",
     skip_verify_config: bool = False,
-    dev: bool = False
+    dev: bool = False,
+    proxy_only: bool = False
 ) -> None:
     """
     Read inventory YAML, generate a per-host bash script, and run it via:
       ansible <host> -i <inventory> -m script -a <script_path>
     """
     if not inventory_path:
-        print("[ERROR] Inventory path is required.")
+        print(f"{ERROR} Inventory path is required.")
         return
     else:
-        print("[INFO] Use inventory at:", inventory_path)
+        print(f"{INFO} Use inventory at:", inventory_path)
     if not dev:
         omni_ranktable(inventory_path)
+
+    if proxy_only:
+        omni_cli.proxy.omni_run_proxy(inventory_path)
+        return
 
     inv_file = Path(inventory_path).expanduser().resolve()
     with open(inventory_path, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
+
+    cluster_info = ClusterInfo(inv)
     if not skip_verify_config:
-        _verify_and_fix_env_vars(inv, inv_file)
+        _verify_and_fix_env_vars(cluster_info, inv, inv_file)
 
     if not dev:
         omni_cli.proxy.omni_run_proxy(inventory_path)
@@ -454,14 +508,37 @@ def omni_cli_start(
         env: Dict[str, Any] = hv.get("env", {}) or {}
         args: Dict[str, Any] = hv.get("args", {}) or {}
         container_name: str = hv.get("container_name")
+        role = env.get("ROLE", None)
+        master_node = hv.get("master_node", None)
+        pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
+        pod_info = pod_info.get(master_node, None)
+        is_master = host == master_node
 
         code_path = str(env.get("CODE_PATH") or "").strip()
         log_path = str(env.get("LOG_PATH") or "").strip()
         log_path = f"{log_path}/{host.replace('.', '_')}"
         env["LOG_PATH"] = log_path
+        # check if start ray
+        need_start_ray, ray_cmd = maybe_start_ray(is_master, pod_info, role, log_path)
+
+        if need_start_ray:
+            args.get("extra-args", {})["distributed-executor-backend"] = "ray"
+            env["RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"] = 1
+            env["RAY_CGRAPH_get_timeout"] = 7200
+            if is_master:
+                env["RAY_USAGE_STATS_ENABLED"] = 0
 
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
+
+
+        start_server_cmd = f"""
+# Exec the command
+cd {_double_quotes(code_path)}/tools/scripts
+echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
+{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &
+echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
+"""
 
         with tempfile.NamedTemporaryFile(
             "w", delete=False,
@@ -484,11 +561,12 @@ def omni_cli_start(
             tf.write(export_block + "\n\n")
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
 
-            tf.write("# Exec the command\n")
-            tf.write(f"cd {_double_quotes(code_path)}/tools/scripts\n\n")
-            tf.write(f'echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log\n\n')
-            tf.write(f"{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &\n")
-            tf.write(f'echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log\n')
+            if need_start_ray:
+                tf.write(f"{ray_cmd}\n")
+                if is_master:
+                    tf.write(start_server_cmd)
+            else:
+                tf.write(start_server_cmd)
             tf.write("EOF\n")
 
         os.chmod(script_path, 0o755)
@@ -508,7 +586,7 @@ def omni_cli_start(
                         + ":" + str(vars.get('env').get('API_PORT', '')))
                     print("\n\n")
             else:
-                print(f"[error] ansible command failed with return code {return_code}")
+                print(f"{ERROR} ansible command failed with return code {return_code}")
         finally:
             try:
                 script_path.unlink(missing_ok=True)
@@ -557,6 +635,7 @@ def omni_cli_stop(
             tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
             tf.write("pkill -9 python || true\n")
             tf.write("pkill -9 vllm   || true\n")
+            tf.write("pkill -9 -f ray || true\n")
             tf.write("EOF\n")
         os.chmod(script_path, 0o755)
 
@@ -612,7 +691,7 @@ def sync_code(
 ) -> None:
     """Sync code to all relevant hosts and containers with minimal output"""
     if not code_path:
-        print("[ERROR] code_path is required")
+        print(f"{ERROR} code_path is required")
         return
 
     # Read inventory file
@@ -652,7 +731,7 @@ def sync_code(
         if host_ip not in p_d_ips:
             c_hosts_to_process.add(host)
         else:
-            print("[INFO] Node C is skipped because it has the same IP address as a P or D node")
+            print("{INFO} Node C is skipped because it has the same IP address as a P or D node")
 
     # All hosts that need processing
     all_target_hosts = p_hosts | d_hosts | c_hosts_to_process
@@ -710,27 +789,27 @@ show_spinner() {
 
             log_path = env.get("LOG_PATH")
             if log_path:
-                tf.write(f"echo \"[INFO] Creating log directory \"{log_path}/{host}\" on {host}\"\n")
+                tf.write(f"echo \"{INFO} Creating log directory \"{log_path}/{host}\" on {host}\"\n")
                 tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {log_path}/{host}\" >/dev/null 2>&1\n\n")
             else:
-                tf.write(f"echo \"[WARN] LOG_PATH not defined for host {host}, skipping log directory creation\"\n\n")
+                tf.write(f"echo \"{WARNING} LOG_PATH not defined for host {host}, skipping log directory creation\"\n\n")
 
-            tf.write(f"echo \"[INFO] Creating code directory \'{code_path}\' on {host}\"\n")
+            tf.write(f"echo \"{INFO} Creating code directory \'{code_path}\' on {host}\"\n")
             tf.write(f"{ssh_prefix} {host_addr} \"mkdir -p {code_path}\" >/dev/null 2>&1\n\n")
 
-            tf.write(f"echo \"[INFO] Syncing code from executor from \'{code_path}/omniinfer/\' to \'{host}:{code_path}/omniinfer/\' \"\n")
-            tf.write(f"echo -n \"[INFO] Progress: \"\n")
+            tf.write(f"echo \"{INFO} Syncing code from executor from \'{code_path}/omniinfer/\' to \'{host}:{code_path}/omniinfer/\' \"\n")
+            tf.write(f"echo -n \"{INFO} Progress: \"\n")
             tf.write(f"{rsync_prefix} {code_path}/omniinfer/ {host_addr}:{code_path}/omniinfer/ & show_spinner\n")
             tf.write(f"echo \"Done\"\n\n")
 
             # Handle docker cp for all hosts that need it
             container_name = host_vars.get("container_name", "")
             if container_name:
-                tf.write(f"echo \"[INFO] Docker cp code to container on {host}, from {code_path}/omniinfer to {container_name}:/workspace/\"\n")
+                tf.write(f"echo \"{INFO} Docker cp code to container on {host}, from {code_path}/omniinfer to {container_name}:/workspace/\"\n")
                 tf.write(f"{ssh_prefix} {host_addr} \"docker cp {code_path}/omniinfer {container_name}:/workspace/\" >/dev/null 2>&1\n")
-                tf.write(f"echo \"[INFO] Container copy completed\"\n\n")
+                tf.write(f"echo \"{INFO} Container copy completed\"\n\n")
             else:
-                tf.write(f"echo \"[WARN] Missing container_name for host {host}\"\n\n")
+                tf.write(f"echo \"{WARNING} Missing container_name for host {host}\"\n\n")
 
     # Set script execution permissions
     os.chmod(script_path, 0o755)
@@ -807,7 +886,7 @@ def install_code(
         git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm
         bash bash_install_code.sh
         pip uninstall vllm -y
-        pip uninstall omniinfer -y
+        pip uninstall omni_infer -y
         cd vllm
         SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps --no-build-isolation
         cd ../../
@@ -841,10 +920,10 @@ def install_code(
 
         # Check the necessary variables
         if not log_path:
-            print(f"[WARNING] LOG_PATH not defined for host {host}, skipping")
+            print(f"{WARNING} LOG_PATH not defined for host {host}, skipping")
             continue
         if not container_name:
-            print(f"[WARNING] container_name not defined for host {host}, skipping")
+            print(f"{WARNING} container_name not defined for host {host}, skipping")
             continue
 
         # Create a temporary script file
@@ -928,7 +1007,7 @@ def get_default_deploy_path(current_cmd):
             with open(deploy_path, "w") as f:
                 yaml.dump(default_inventory, f)
 
-            print(f"[INFO] Created default inventory file at: {deploy_path}")
+            print(f"{INFO} Created default inventory file at: {deploy_path}")
         else:
             raise FileNotFoundError("server_profiles.yml not found, please confirm the workspace or reinitialize using add_node")
     # Save as absolute path
@@ -989,7 +1068,7 @@ def run_docker_containers(
     host_groups = get_host_groups(inv)
 
     if not all_hosts:
-        print("[WARNING] No hosts found in inventory.")
+        print(f"{WARNING} No hosts found in inventory.")
         return
 
     # Base Docker command template without LOG_PATH or MODEL_PATH
@@ -1035,15 +1114,15 @@ def run_docker_containers(
 
         # Check required variables
         if not log_path:
-            print(f"[WARNING] LOG_PATH not defined for host {host}, skipping")
+            print(f"{WARNING} LOG_PATH not defined for host {host}, skipping")
             continue
         if not docker_image_id:
-            print(f"[WARNING] DOCKER_IMAGE_ID not defined for host {host}, skipping")
+            print(f"{WARNING} DOCKER_IMAGE_ID not defined for host {host}, skipping")
             continue
 
         # For P and D roles, MODEL_PATH is required
         if role in ['P', 'D'] and not model_path:
-            print(f"[WARNING] MODEL_PATH not defined for host {host} (role {role}), skipping")
+            print(f"{WARNING} MODEL_PATH not defined for host {host} (role {role}), skipping")
             continue
 
         # Create temporary script file
@@ -1115,7 +1194,7 @@ def run_docker_containers(
                 try:
                     script_path.unlink(missing_ok=True)
                 except Exception as e:
-                    print(f"[WARNING] Failed to delete temp file: {e}")
+                    print(f"{WARNING} Failed to delete temp file: {e}")
         else:
             # In dry-run mode, just show what command would be executed
             print(f"DRY RUN: Would execute for host {host}:")
@@ -1146,6 +1225,7 @@ def main():
         help='Start in normal mode with config file'
     )
     start_parser.add_argument("--skip-verify-config", action="store_true", help="Skip verification of config")
+    start_parser.add_argument("--proxy-only", action="store_true", help="Start the proxy only")
     start_group = start_parser.add_mutually_exclusive_group()
     start_group.add_argument(
         "--normal",
@@ -1199,7 +1279,10 @@ def main():
     addnode_parser.add_argument("--user", default="root", help="ansible_user")
     addnode_parser.add_argument("--ssh_common_args", default="-o StrictHostKeyChecking=no -o IdentitiesOnly=yes", help="ssh_common_args")
     addnode_parser.add_argument("--ssh_private_key_file", required=True, help="ssh_private_key_file")
-    addnode_parser.add_argument("--master_ip", help="master_ip:The default value is set to host_ip")
+    addnode_parser.add_argument("--master-node",
+                                metavar="<master-node>, e.g. d0",
+                                default=None,
+                                help="The default value is set to current node name.")
     addnode_parser.add_argument("--docker_image_id", required=True, help="docker_image_id")
     addnode_parser.set_defaults(func=add_node)
 
@@ -1218,7 +1301,7 @@ def main():
     run_docker_parser = subparsers.add_parser("run_docker", help="Run Docker containers based on inventory")
     run_docker_parser.add_argument(
         "--config_path", "-i",
-        default=str(default_deploy_path),
+        default=None,
         help=f"Path to server_profiles.yml (default: {default_deploy_path})"
     )
     run_docker_parser.add_argument(
@@ -1278,7 +1361,7 @@ def main():
         args.func(args)
         return
     else:
-        if args.config_path is None and args.normal is None:
+        if not hasattr(args, 'config_path') or (args.config_path is None and args.normal is None):
             args.deploy_path = get_default_deploy_path(args.command)
             default_deploy_path = args.deploy_path
         else:
@@ -1294,31 +1377,37 @@ def main():
         if args.config_path is None:
             args.config_path = default_deploy_path
         if args.normal:
-            print("[INFO] Starting omni service in Normal mode...")
-            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=False)
+            print(f"{INFO} Starting omni service in Normal mode...")
+            omni_cli_start(inventory_path=args.config_path,
+                           skip_verify_config=args.skip_verify_config,
+                           dev=False,
+                           proxy_only=args.proxy_only)
         elif args.run_dev:
-            print("[INFO] Starting omni service in Developer mode...")
-            omni_cli_start(inventory_path=args.config_path, skip_verify_config=args.skip_verify_config, dev=True)
+            print(f"{INFO} Starting omni service in Developer mode...")
+            omni_cli_start(inventory_path=args.config_path,
+                           skip_verify_config=args.skip_verify_config,
+                           dev=True,
+                           proxy_only=args.proxy_only)
     elif args.command == "stop":
-        print("[INFO] Stopping omni service...")
+        print(f"{INFO} Stopping omni service...")
         omni_cli_stop(inventory_path=default_deploy_path)
     elif args.command == "cfg":
         node_type, node_name = parse_node_name(args.name[0])
         sections = parse_remaining_args(node_type, node_name, args.set, args.remaining_args, default_deploy_path)
         if args.set:
-            print("[INFO] Set configuration.")
+            print(f"{INFO} Set configuration.")
             cfg_set_process(node_type, node_name, args, sections, default_deploy_path)
         elif args.delete:
-            print("[INFO] Delete configuration.")
+            print(f"{INFO} Delete configuration.")
             cfg_delete_process(node_type, node_name, args, sections, default_deploy_path)
     elif args.command == "inspect":
-        print("[INFO] Inspect configuration.")
+        print(f"{INFO} Inspect configuration.")
         print_node_config(default_deploy_path, args.name[0])
     elif args.command == "upgrade":
-        print("[INFO] Upgrade packages")
+        print(f"{INFO} Upgrade packages")
         upgrade_packages()
     elif args.command == "collect_log":
-        print("[INFO] Fetch logs")
+        print(f"{INFO} Fetch logs")
         collect_logs()
 
 if __name__ == "__main__":
