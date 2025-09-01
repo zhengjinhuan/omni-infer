@@ -278,6 +278,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
             router_logits = torch.cat(router_logits_output_list)
         else:
             return self.apply_all2all_decode(
+                layer,
                 x,
                 router_logits,
                 top_k,
