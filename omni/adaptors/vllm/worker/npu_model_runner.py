@@ -54,7 +54,7 @@ from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
 
-MTP_METHOD_NAME = "deepseek_mtp"
+MTP_METHOD_NAME_LIST = ["deepseek_mtp", "pangu_ultra_moe_mtp"]
 
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
@@ -677,7 +677,7 @@ class NPUModelRunner(GPUModelRunner):
             if not self.use_spec_decode:
                 # Speculative decoding is not enabled.
                 spec_tokens_tensor = None
-            elif self.speculative_config.method == MTP_METHOD_NAME:
+            elif self.speculative_config.method in MTP_METHOD_NAME_LIST:
                 spec_tokens_tensor = self.drafter.propose(
                     num_tokens=input_ids.numel(),
                     positions=positions,
@@ -971,7 +971,7 @@ class NPUModelRunner(GPUModelRunner):
             decode_gear_list = self.decode_gear_list
             graph_num = len(decode_gear_list)
             use_spec_decode = False if not self.vllm_config.speculative_config else (
-                    self.vllm_config.speculative_config.method == MTP_METHOD_NAME)
+                    self.vllm_config.speculative_config.method in MTP_METHOD_NAME_LIST)
             base_time = 4
             min_time = base_time * graph_num
             max_time = 2 * base_time * graph_num
