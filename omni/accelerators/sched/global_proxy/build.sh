@@ -31,7 +31,7 @@ CFLAGS="-O2" ./configure --sbin-path=${NGINX_SBIN_PATH} \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_pd_score_balance_module \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_auto_balance_controller_module \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_least_total_load_module \
-    --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_prefix_cache_affinity_least_total_load_module \
+    --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_prefix_cache_affinity_module \
     --without-http_gzip_module \
     --with-ld-opt="-lm"
 make -j16
