@@ -8,6 +8,7 @@
 #include <omni_tokenizer.h>
 #include <stdbool.h>
 #include <omni_apc.h>
+#include <omni_metrics.h>
 
 ngx_module_t ngx_http_omni_proxy_module;
 #define PREFILL_ENDPOINTS "prefill_endpoints"
@@ -1260,6 +1261,11 @@ static char *ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *ch
         conf->vllm_kv_port_offset = (prev->vllm_kv_port_offset != NGX_CONF_UNSET) ? prev->vllm_kv_port_offset : NGX_CONF_UNSET;
     }
 
+    if (conf->metrics_enabled == NGX_CONF_UNSET)
+    {
+        conf->metrics_enabled = (prev->metrics_enabled != NGX_CONF_UNSET) ? prev->metrics_enabled : NGX_CONF_UNSET;
+    }
+
     if (conf->model_path.len != 0 || conf->vllm_kv_port_offset != NGX_CONF_UNSET || conf->pd_policy != NGX_CONF_UNSET)
     {
         local_state.loc_conf = conf;
@@ -1425,6 +1431,53 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
     }
 }
 
+static ngx_int_t ngx_http_omni_proxy_metrics_handler(ngx_http_request_t *r)
+{
+    ngx_http_omni_loc_conf_t *plcf;
+    ngx_int_t rc;
+    ngx_buf_t *b;
+    ngx_chain_t out;
+
+    plcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
+
+    if (!plcf || !plcf->metrics_enabled)
+    {
+        return NGX_DECLINED;
+    }
+
+    ngx_str_t metrics = omni_metrics_export(g_state);
+
+    r->headers_out.status = NGX_HTTP_OK;
+    r->headers_out.content_length_n = metrics.len;
+
+    r->headers_out.content_type.len = sizeof("text/plain") - 1;
+    r->headers_out.content_type.data = (u_char *)"text/plain";
+    r->headers_out.content_type_len = sizeof("text/plain") - 1;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK)
+    {
+        return rc;
+    }
+
+    b = ngx_calloc_buf(r->pool);
+    if (b == NULL)
+    {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    b->pos = metrics.data;
+    b->last = metrics.data + metrics.len;
+    b->memory = 1;
+    b->last_buf = 1;
+    b->last_in_chain = 1;
+
+    out.buf = b;
+    out.next = NULL;
+
+    return ngx_http_output_filter(r, &out);
+}
+
 static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
 {
     if (omni_proxy_init_global_state(cf) != NGX_OK)
@@ -1435,6 +1488,15 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
     omni_proxy_init_apc_shm(cf);
 
     omni_proxy_init_req_groups(local_state.groups);
+
+    ngx_http_core_main_conf_t *cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+
+    ngx_http_handler_pt *h = ngx_array_push(&cmcf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
+    if (h == NULL)
+    {
+        return NGX_ERROR;
+    }
+    *h = ngx_http_omni_proxy_metrics_handler;
 
     return NGX_OK;
 }
@@ -1643,7 +1705,11 @@ static void omni_proxy_exit_process(ngx_cycle_t *cycle)
         ngx_free_connection(local_state.tokenize_worker.resp_connection);
     }
 
-    omni_tokenizer_worker_exit(&local_state.tokenize_worker);
+    if (local_state.loc_conf->model_path.len == 0)
+    {
+        omni_tokenizer_worker_exit(&local_state.tokenize_worker);
+    }
+
     ngx_log_error(NGX_LOG_INFO, cycle->log, 0,
                   "Omni proxy process exited, tokenizer worker cleaned up");
 }
@@ -1723,6 +1789,14 @@ static char *ngx_http_omni_proxy_model_path(ngx_conf_t *cf, ngx_command_t *cmd, 
     return NGX_CONF_OK;
 }
 
+static char *omni_proxy_metrics(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_omni_loc_conf_t *plcf = conf;
+
+    plcf->metrics_enabled = 1;
+    return NGX_CONF_OK;
+}
+
 static ngx_command_t omni_proxy_commands[] = {
 
     {ngx_string("omni_proxy"),
@@ -1730,6 +1804,13 @@ static ngx_command_t omni_proxy_commands[] = {
      omni_proxy_init_conf,
      NGX_HTTP_LOC_CONF_OFFSET,
      0,
+     NULL},
+
+    {ngx_string("omni_proxy_metrics"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_FLAG, // Now takes an argument
+     omni_proxy_metrics,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, metrics_enabled),
      NULL},
 
     {ngx_string("omni_proxy_pd_policy"),
