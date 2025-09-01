@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <ngx_atomic.h>
-#include <omni_metrics.h>
+#include <omni_shared_state.h>
 #include <omni_tokenizer_worker.h>
 
 typedef struct
@@ -18,6 +18,7 @@ typedef struct
     ngx_int_t pd_policy;
     ngx_str_t model_path;
     ngx_int_t vllm_kv_port_offset;
+    ngx_int_t metrics_enabled;
     ngx_int_t kv_block_size;
     ngx_http_upstream_srv_conf_t *upstream;
 } ngx_http_omni_loc_conf_t;

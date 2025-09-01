@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <omni_metrics.h>
+#include <omni_shared_state.h>
 #include <omni_proxy.h>
 
 #define BIT(n) (1U << (n))
