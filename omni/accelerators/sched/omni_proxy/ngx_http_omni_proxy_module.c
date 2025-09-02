@@ -148,7 +148,6 @@ static void omni_proxy_remove_req_from_groups(omni_req_t *req)
     {
         omni_proxy_request_phase_t phase = phases[i];
         ngx_shmtx_lock(&g_state->shmtx);
-        omni_remove_req_from_group_by_req_index(req->slot_index, &g_state->groups[phases[i]]);
 
         if (phase == PHASE_PREFILLING)
         {
@@ -165,7 +164,7 @@ static void omni_proxy_remove_req_from_groups(omni_req_t *req)
             {
                 ps->num_tokens = 0;
             }
-            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+            ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                           "[Prefill Release Stats] req %d prompt_tokens=%ui, decoded_tokens=%ui; "
                           "prefill idx=%d num_running=%ui, num_tokens(after)=%ui",
                           req->slot_index,
@@ -191,7 +190,7 @@ static void omni_proxy_remove_req_from_groups(omni_req_t *req)
             {
                 ds->num_tokens = 0;
             }
-            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+            ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                           "[Decode Release Stats] req %d prompt_tokens=%ui, decoded_tokens=%ui; "
                           "decode idx=%d num_running=%ui, num_tokens(after)=%ui",
                           req->slot_index,
@@ -201,6 +200,8 @@ static void omni_proxy_remove_req_from_groups(omni_req_t *req)
                           ds->num_running,
                           ds->num_tokens);
         }
+        omni_remove_req_from_group_by_req_index(req->slot_index, &g_state->groups[phase]);
+
         ngx_shmtx_unlock(&g_state->shmtx);
 
         omni_remove_req_from_group_by_req_index(req->slot_index, &local_state.groups[phase]);
@@ -518,7 +519,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
                  ngx_current_msec - req->metrics.time_last_reponse) /
                 req->metrics.decoded_tokens;
         }
-        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                       "[Decode Update Stats]  req %d prompt_tokens= %ui decoded_tokens= %ui; decode upstream %d num_tokens=%ui",
                       req->slot_index,
                       req->metrics.prompt_num_tokens,
@@ -534,7 +535,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
         ngx_uint_t decode_idx = req->decode_upstream_endpoint_idx;
         ngx_atomic_fetch_add(&g_state->decode_states[decode_idx].num_tokens, 1);
 
-        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                       "[Decode Update Stats]  req %d prompt_tokens= %ui decoded_tokens= %ui; decode upstream %d num_tokens=%ui",
                       req->slot_index,
                       req->metrics.prompt_num_tokens,
@@ -1157,7 +1158,7 @@ static void omni_proxy_timer_handler(ngx_event_t *ev)
 
     ngx_add_timer(&local_state.omni_proxy_timer_event, TIMER_INTERVAL);
 
-    // print_summary();
+    print_summary();
 }
 
 static void omni_proxy_init_req_groups(omni_req_group_t groups[])
