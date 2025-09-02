@@ -394,6 +394,7 @@ common_operations() {
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
+    --enable-mtp \
     --extra-args "$EXTRA_ARGS"
 }
 

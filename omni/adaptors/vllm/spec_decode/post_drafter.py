@@ -53,8 +53,8 @@ class PostDrafter(EagleProposer):
         self.positions = None
         self.hidden_states = None
         self.arange = None
-        if self.method not in ('deepseek_mtp',):
-            raise ValueError(f"Speculative method should be one of ('deepseek_mtp',), while get {self.method}.")
+        if self.method not in ('deepseek_mtp', 'pangu_ultra_moe_mtp'):
+            raise ValueError(f"Speculative method should be one of ('deepseek_mtp','pangu_ultra_moe_mtp'), while get {self.method}.")
     
     def load_model(self, target_model: nn.Module) -> None:
         draft_model_config = \
