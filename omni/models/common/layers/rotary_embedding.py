@@ -669,6 +669,13 @@ class QwenMRotaryEmbedding(GPUMRotaryEmbedding):
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
         return query, key
 
+class GemmaMRotaryEmbedding(GPUMRotaryEmbedding):
+    """Rotary Embedding with Multimodal Sections."""
+
+    def __init__(self, *args, **kwargs):
+        
+        super().__init__(*args, **kwargs)
+
 
 _ROPE_DICT: Dict[Tuple, nn.Module] = {}
 
@@ -772,7 +779,7 @@ def get_rope(
                         dtype)
         elif scaling_type == "default":
             if "mrope_section" in rope_scaling:
-                rotary_emb = QwenMRotaryEmbedding(
+                rotary_emb = GemmaMRotaryEmbedding(
                     head_size,
                     rotary_dim,
                     max_position,

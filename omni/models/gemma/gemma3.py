@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections.abc import Iterable
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import torch
 import torch.nn.functional as F
@@ -23,7 +23,7 @@ from torch import nn
 from transformers import Gemma3TextConfig
 
 from vllm.forward_context import get_forward_context
-from vllm.attention import Attention
+from vllm.attention import Attention, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import (
@@ -135,6 +135,7 @@ class Gemma3Attention(nn.Module):
         else:
             assert tp_size % self.total_num_kv_heads == 0
 
+        self.layer_name = f'{prefix}.attn'
         self.num_kv_heads = max(1, self.total_num_kv_heads // tp_size)
         self.head_dim = head_dim
         self.q_size = self.num_heads * self.head_dim
@@ -206,6 +207,7 @@ class Gemma3Attention(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
+        kv_cache: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
         attn_metadata = get_forward_context().attn_metadata
@@ -223,7 +225,7 @@ class Gemma3Attention(nn.Module):
         k = self.k_norm(k)
         k = k.flatten(-2, -1)
 
-        q, k = self.rotary_emb(positions, q, k)
+        q, k = self.rotary_emb(positions, q, k, layer_name=self.layer_name)
         attn_output = self.attn(q, k, v)
 
         if not kwargs.get("has_images", False):
@@ -329,6 +331,7 @@ class Gemma3DecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
+        kv_cache: Optional[torch.Tensor],
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
@@ -339,6 +342,7 @@ class Gemma3DecoderLayer(nn.Module):
         hidden_states = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
+            kv_cache=kv_cache,
             **kwargs,
         )
 
@@ -369,7 +373,10 @@ class Gemma3Model(nn.Module):
         self.start_layer, self.end_layer, self.layers = make_layers(
             config.num_hidden_layers,
             lambda prefix: Gemma3DecoderLayer(
-                config, cache_config, quant_config, prefix=prefix),
+                                config, 
+                                cache_config, 
+                                quant_config, 
+                                prefix=prefix),
             prefix=f"{prefix}.layers")
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -386,7 +393,9 @@ class Gemma3Model(nn.Module):
         self,
         input_ids: Optional[torch.Tensor],
         positions: torch.Tensor,
-        intermediate_tensors: Optional[IntermediateTensors],
+        kv_caches: List[torch.Tensor] = None,
+        attn_metadata: AttentionMetadata = None,
+        intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Union[torch.Tensor, IntermediateTensors]:
@@ -400,11 +409,13 @@ class Gemma3Model(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
-        for layer in self.layers[self.start_layer:self.end_layer]:
+        for layer_idx in range(self.start_layer, self.end_layer):
+            layer = self.layers[layer_idx]
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
                 residual,
+                kv_caches[layer_idx] if kv_caches is not None else None,
                 **kwargs,
             )
         if not get_pp_group().is_last_rank:
@@ -507,12 +518,19 @@ class Gemma3ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
+        kv_caches: List[torch.Tensor] = None,
+        attn_metadata: AttentionMetadata = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        hidden_states = self.model(input_ids, positions, intermediate_tensors,
-                                   inputs_embeds, **kwargs)
+        hidden_states = self.model(input_ids, 
+                                   positions, 
+                                   kv_caches=kv_caches,
+                                   attn_metadata=attn_metadata,
+                                   intermediate_tensors=intermediate_tensors,
+                                   inputs_embeds=inputs_embeds, 
+                                   **kwargs)
         return hidden_states
 
     def compute_logits(

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Literal, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict, List
 
 import torch
 from torch import nn
@@ -11,6 +11,7 @@ from transformers.models.gemma3.processing_gemma3 import Gemma3ProcessorKwargs
 import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.attention import Attention, AttentionMetadata
 from vllm.model_executor.layers.layernorm import GemmaRMSNorm
 from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.model_executor.sampling_metadata import SamplingMetadata
@@ -593,6 +594,8 @@ class Gemma3ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
     def forward(self,
                 input_ids: torch.Tensor,
                 positions: torch.Tensor,
+                kv_caches: List[torch.Tensor] = None,
+                attn_metadata: AttentionMetadata = None,
                 intermediate_tensors: Optional[IntermediateTensors] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 **kwargs: object) -> IntermediateTensors:
@@ -601,7 +604,9 @@ class Gemma3ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
 
         hidden_states = self.language_model.model(input_ids,
                                                   positions,
-                                                  intermediate_tensors,
+                                                  kv_caches=kv_caches,
+                                                  attn_metadata=attn_metadata,
+                                                  intermediate_tensors=intermediate_tensors,
                                                   inputs_embeds=inputs_embeds,
                                                   **kwargs)
 
