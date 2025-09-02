@@ -778,7 +778,7 @@ def get_rope(
                         scaling_factor, 
                         dtype)
             
-        elif scaling_type == "default":
+        elif scaling_type == "gemma_default":
             if "mrope_section" in rope_scaling:
                 rotary_emb = GemmaMRotaryEmbedding(
                     head_size,
