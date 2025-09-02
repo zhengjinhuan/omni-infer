@@ -21,16 +21,16 @@
 
   environment:
     # Global Configuration 
-    LOG_PATH: "/data/c00938203" #目标机路径
+    LOG_PATH: "/data/log_path_c00938203" #目标机路径
     MODEL_PATH: "/data/models/DeepSeek-R1-w8a8-fusion"
-    LOG_PATH_IN_EXECUTOR: "/data/c00938203" # 执行机日志
+    LOG_PATH_IN_EXECUTOR: "/data/log_path_c00938203_in_executor" # 执行机日志
     CODE_PATH: "/data/c00938203"
 
     # Configuration for containers 
     DOCKER_IMAGE_ID: "registry-cbu.huawei.com/sglang_wr:0825moon"
-    DOCKER_NAME_P: "wangrui_sglang_prefill"
-    DOCKER_NAME_D: "wangrui_sglang_decode"
-    DOCKER_NAME_C: "wangrui_sglang_proxy"
+    DOCKER_NAME_P: "c00938203_sglang_prefill"
+    DOCKER_NAME_D: "c00938203_sglang_decode"
+    DOCKER_NAME_C: "c00938203_sglang_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path_c00938203"
     GLOO_SOCKET_IFNAME: "enp23s0f3"
 
@@ -115,7 +115,7 @@
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
 
-      python3 sgl-start_api_servers.py \
+      python3 /workspace/omniinfer/tools/scripts/start_api_servers_sgl.py \
         --model-path ${MODEL_PATH} \
         --device npu \
         --trust-remote-code \
@@ -234,8 +234,8 @@
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
-    docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/sglang $DOCKER_NAME_P:/workspace/omniinfer/infer_engines/"
-    docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/sglang $DOCKER_NAME_D:/workspace/omniinfer/infer_engines/"
+    docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
+    docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
     docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/sglang && cd sglang && git checkout -f && cd .. && bash bash_install_sglang.sh && pip uninstall sglang -y && pip uninstall omniinfer -y && cd sglang && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 SGLANG_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
     docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/sglang && cd sglang && git checkout -f && cd .. && bash bash_install_sglang.sh && pip uninstall sglang -y && pip uninstall omniinfer -y && cd sglang && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 SGLANG_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
 
@@ -380,7 +380,6 @@
       delegate_to: localhost
       tags: 
         - sync_code
-        - always
 
     - name: Extract the first valid IP address. #9、从ip_output中获取第一个有效ip，并保存在executor_ip
       set_fact:
@@ -389,21 +388,18 @@
       delegate_to: localhost
       tags: 
         - sync_code
-        - always
 
     - name: Delete the old code on the target machine. #10、删除非执行机上CODE_PATH/sglang路径下的所有文件
       command: /bin/bash -c "rm -rf {{ ansible_env.CODE_PATH }}/sglang/*"
       when: hostvars[inventory_hostname].ansible_host != executor_ip
       tags:
         - sync_code
-        - always
 
     - name: Delete the old log on the target machine. #11、删除所有机器上LOG_PATH路径下的所有文件
       command: /bin/bash -c "rm -rf {{ ansible_env.LOG_PATH }}/*"
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags:
         - sync_code
-        - always
 
     - name: Create a directory to store the code. #12、若不存在CODE_PATH目录，则创建
       ansible.builtin.file:
@@ -411,11 +407,10 @@
         state: directory
       tags: 
         - sync_code
-        - always
 
     - name: The executor synchronizes code to all instances. #13、仅在非执行节点上，且属于 P/D 组或 C 组但不在 P/D 组中的主机上，将代码从执行节点同步到目标主机的 CODE_PATH 目录中
       synchronize:
-        src: "{{ ansible_env.CODE_PATH }}/sglang"
+        src: "{{ ansible_env.CODE_PATH }}/omniinfer"
         dest: "{{ ansible_env.CODE_PATH }}/"
       when: >
         hostvars[inventory_hostname].ansible_host != executor_ip and 
@@ -432,7 +427,6 @@
         )
       tags: 
         - sync_code
-        - always
 
     - name: Copy the code from the host machine into the container (prefill).
       command: bash -c "{{ docker_cp_prefill_code_cmd }}"
