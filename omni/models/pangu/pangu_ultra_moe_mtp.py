@@ -181,7 +181,7 @@ class PanguUltraMoEMultiTokenPredictorLayer(PanguUltraMoEDecoderLayer):
 
         return False
 
-class DeepseekMultiTokenPredictor(nn.Module):
+class PanguUltraMoEMultiTokenPredictor(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         self.config = vllm_config.model_config.hf_config
@@ -236,7 +236,7 @@ class PanguUltraMoEMTP(nn.Module):
         self.config = vllm_config.model_config.hf_config
         self.cache_config = vllm_config.cache_config
         self.quant_config = vllm_config.quant_config
-        self.model = DeepseekMultiTokenPredictor(vllm_config=vllm_config, prefix=f"model")
+        self.model = PanguUltraMoEMultiTokenPredictor(vllm_config=vllm_config, prefix=f"model")
     
     def set_share_weight(self, target_model):
         self.model.set_share_weight(target_model)
