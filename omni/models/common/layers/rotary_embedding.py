@@ -777,6 +777,7 @@ def get_rope(
                         is_neox_style,
                         scaling_factor, 
                         dtype)
+            
         elif scaling_type == "default":
             if "mrope_section" in rope_scaling:
                 rotary_emb = GemmaMRotaryEmbedding(

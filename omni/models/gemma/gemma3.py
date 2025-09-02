@@ -29,15 +29,13 @@ from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import (
     get_pp_group, 
     get_tensor_model_parallel_world_size, 
-    get_tensor_model_parallel_rank, 
-    tensor_model_parallel_all_reduce, 
-    tensor_model_parallel_reduce_scatter)
+    get_tensor_model_parallel_rank)
 from vllm.logger import init_logger
 
 from vllm.model_executor.layers.activation import GeluAndMul
 from vllm.model_executor.layers.layernorm import GemmaRMSNorm
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.quantization.base_config import QuantizationConfig, QuantizeMethodBase
+from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import (
@@ -57,7 +55,6 @@ from vllm.model_executor.models.utils import (
 from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear, MergedColumnParallelFlashCommLinear
 from omni.models.common.layers.rotary_embedding import get_rope
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
-from omni.models.common.layers.fused_mlp.layer import FusedMLPMethodBase, UnquantizedFusedMLPMethod
 
 logger = init_logger(__name__)
 
@@ -520,6 +517,7 @@ class Gemma3ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         positions: torch.Tensor,
         kv_caches: List[torch.Tensor] = None,
         attn_metadata: AttentionMetadata = None,
+        selected_indices: Optional[torch.Tensor] = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs,
