@@ -12,6 +12,7 @@ class ModelParallelConfig:
     dense_mlp_tp_size: int = 1
     dp_size: int = 1
     o_proj_tp_size: int = 1
+    attn_sp_size: int = 1
     
     redundancy_shared_expert_num: int = 0
 
