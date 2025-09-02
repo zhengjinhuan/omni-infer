@@ -17,60 +17,60 @@ all:
   vars:
     ansible_user: root
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
-    ansible_ssh_private_key_file: /data/wangrui/sgl/auth/my_key  # Private key path on the executor
+    ansible_ssh_private_key_file: /data/to/my_key  # Private key path on the executor
     global_port_base: 8000
     base_api_port: 9000
     proxy_port: 7024
     port_offset:
-      P: 0      # Actual port range for group P: 8000-8099
-      D: 164    # Actual port range for group D: 8100-8199
+      P: 0
+      D: 164
 
   children:
     P:
       hosts:
         p0:
-          ansible_host: "7.150.14.53"
+          ansible_host: "127.0.0.1"
           node_rank: 0
           kv_rank: 0
           node_port: "{{ global_port_base + port_offset.P + kv_rank }}"
           api_port: "{{ base_api_port + port_offset.P + kv_rank }}"
-          host_ip: "7.150.14.53"
+          host_ip: "127.0.0.1"
           ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
         p1:
-          ansible_host: "7.150.14.69"
+          ansible_host: "127.0.0.2"
           node_rank: 0
           kv_rank: 1
           node_port: "{{ global_port_base + port_offset.P + kv_rank }}"
           api_port: "{{ base_api_port + port_offset.P + kv_rank }}"
-          host_ip: "7.150.14.69"
+          host_ip: "127.0.0.2"
           ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
 
     D:
       hosts:
         d0:
-          ansible_host: "7.150.8.160"
+          ansible_host: "127.0.0.3"
           node_rank: 0
           node_port: "{{ global_port_base + port_offset.D }}"
           api_port: "{{ base_api_port + port_offset.D + node_rank }}"
-          host_ip: "7.150.8.160"
+          host_ip: "127.0.0.3"
           nnodes: 2
           ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
         d1:
-          ansible_host: "7.150.13.191"
+          ansible_host: "127.0.0.4"
           node_rank: 1
           node_port: "{{ global_port_base + port_offset.D }}"
           api_port: "{{ base_api_port + port_offset.D + node_rank }}"
-          host_ip: "7.150.8.160"
+          host_ip: "127.0.0.3"
           nnodes: 2
           ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
     C:
       hosts:
         c0:
-          ansible_host: "7.150.14.53"
+          ansible_host: "127.0.0.1"
           node_rank: 0
           node_port: "{{ proxy_port + node_rank }}"
           role: "C"
