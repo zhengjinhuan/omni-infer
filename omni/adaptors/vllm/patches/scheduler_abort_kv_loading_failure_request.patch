@@ -29,7 +29,7 @@ diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
 +            if not stopped and not aborted:
                  new_running.append(request)
 +        # KVTransfer: if loading kv failed, abort the requests
-+        self._abort_loading_kv_failure_reqs(model_runner_output)
++        self._abort_loading_kv_failure_reqs(model_runner_output, outputs)
 
          # P/D: update state for finished KV Transfers.
          self._update_from_kv_xfer_finished(model_runner_output)
