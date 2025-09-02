@@ -257,7 +257,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         # than a previous one whose cache is hit, this request will be considered
         # as 'decode' mistakenly.
         kv_transfer_config = self.runner.vllm_config.kv_transfer_config
-        if kv_transfer_config is not None and kv_transfer_config.kv_role == "kv_producer":
+        if kv_transfer_config is not None and kv_transfer_config.kv_role in ["kv_producer", "kv_both"]:
             self._num_decodes = 0
             self._num_prefills = len(input_batch.req_ids)
             self._num_decode_tokens = 0
