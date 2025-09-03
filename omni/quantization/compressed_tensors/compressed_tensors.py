@@ -31,6 +31,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsLinearMethod, CompressedTensorsKVCacheMethod
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import CompressedTensorsScheme
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
+from omni.models.common.layers.fused_mlp import FusedMLP, W8A8DynamicFusedMLPMethod
 from omni.adaptors.vllm.utils import ASCEND_COMPRESSED_TENSORS
 from .schemes.compressed_tensors_w8a8_int8 import AscendCompressedTensorsW8A8Int8LinearMethod
 from .schemes.compressed_tensors_w4a8_int8 import AscendCompressedTensorsW4A8Int8LinearMethod
@@ -249,7 +250,9 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
         if isinstance(layer, LinearBase):
             scheme = self.get_scheme(layer=layer, layer_name=prefix)
             layer.scheme = scheme
-            return CompressedTensorsLinearMethod(self)
+            return AscendCompressedTensorsLinearMethod(self)
+        elif isinstance(layer, FusedMLP):
+            return W8A8DynamicFusedMLPMethod(self)
         elif isinstance(layer, FusedMoE):
             layer.weight_num_bits = 0
             moe_method, weight_num_bits = self.get_moe_method(prefix)
@@ -259,3 +262,26 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
 
     def get_scaled_act_names(self) -> List[str]:
         return []
+
+
+class AscendCompressedTensorsLinearMethod(CompressedTensorsLinearMethod):
+    def apply(self,
+              layer: torch.nn.Module,
+              x: torch.Tensor,
+              bias: Optional[torch.Tensor] = None,
+              module_name: Optional[str] = "",
+              x_transform: Optional[str] = None,
+              is_prefill: Optional[bool] = True
+              ):
+        """
+        Use the output of create_weights and the CompressedTensorsScheme
+        associated with the layer to apply the forward pass with the
+        layer input.  See LinearMethodBase for param details
+
+        """
+
+        scheme = layer.scheme
+        if scheme is None:
+            raise ValueError("A scheme must be defined for each layer")
+        return scheme.apply_weights(layer, x, bias=bias, module_name=module_name,
+                                    x_transform=x_transform, is_prefill=is_prefill)

@@ -922,7 +922,7 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
         else:
             return torch.matmul(x, layer.weight)
 
-class FlashCommLinearBase(torch.nn.Module):
+class FlashCommLinearBase(LinearBase):
 
     def __init__(
         self,
@@ -935,7 +935,7 @@ class FlashCommLinearBase(torch.nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
-        super().__init__()
+        super().__init__(input_size, output_size, skip_bias_add, params_dtype, quant_config, prefix)
 
         # Keep input parameters
         self.input_size = input_size
@@ -1012,7 +1012,9 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
             loaded_weight = loaded_weight.narrow(input_dim, start_idx,
                                                  shard_size)
 
-        loaded_weight = torch.squeeze(loaded_weight)
+        is_2_dims = getattr(param, "is_2_dims", False)
+        if not is_2_dims:
+            loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
@@ -1109,7 +1111,9 @@ class ColumnParallelFlashCommLinear(FlashCommLinearBase):
             loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                  shard_size)
 
-        loaded_weight = torch.squeeze(loaded_weight)
+        is_2_dims = getattr(param, "is_2_dims", False)
+        if not is_2_dims:
+            loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
@@ -1218,7 +1222,9 @@ class QKVParallelFlashCommLinear(ColumnParallelFlashCommLinear):
         loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                 shard_size)
 
-        loaded_weight = torch.squeeze(loaded_weight)
+        is_2_dims = getattr(param, "is_2_dims", False)
+        if not is_2_dims:
+            loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
@@ -1273,7 +1279,9 @@ class MergedColumnParallelFlashCommLinear(ColumnParallelFlashCommLinear):
         loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                 shard_size)
 
-        loaded_weight = torch.squeeze(loaded_weight)
+        is_2_dims = getattr(param, "is_2_dims", False)
+        if not is_2_dims:
+            loaded_weight = torch.squeeze(loaded_weight)
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator

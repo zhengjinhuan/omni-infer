@@ -38,7 +38,7 @@ from vllm.model_executor.parameter import (
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.distributed import get_tp_group, get_dp_group, get_ep_group
 
-from omni.models.common.layers.fused_mlp import FusedMLP, FusedMLPMethodBase
+from omni.models.common.layers.fused_mlp import FusedMLP, FusedMLPMethodBase, W8A8DynamicFusedMLPMethod
 from omni.models.common.layers.linear import (
     FlashCommLinearMethodBase,
     UnquantizedFlashCommLinearMethod,
@@ -102,7 +102,7 @@ class NpuW8A8DynamicConfig(QuantizationConfig):
                 return UnquantizedFlashCommLinearMethod()
             return NpuW8A8DynamicLinearMethod(self)
         elif isinstance(layer, FusedMLP):
-            return NpuW8A8DynamicFusedMLPMethod(self)
+            return W8A8DynamicFusedMLPMethod(self)
         elif isinstance(layer, FusedMoE):
             return NpuW8A8DynamicFusedMoEMethod(self)
         return None
@@ -206,75 +206,6 @@ class NpuW8A8DynamicLinearMethod(FlashCommLinearMethodBase):
             output_dtype=layer.orig_dtype
         )
         return y
-
-
-class NpuW8A8DynamicFusedMLPMethod(FusedMLPMethodBase):
-    """Apply dequant_swiglu_quant fused kernel.
-
-    Args:
-        quant_config: The quantization config.
-    """
-
-    def __init__(self, quant_config: NpuW8A8DynamicConfig):
-        self.quant_config = quant_config
-
-    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        layer.gate_up_proj.weight_scale = torch.nn.Parameter(
-            layer.gate_up_proj.weight_scale.data.float(), requires_grad=False)
-
-    def apply(
-            self,
-            layer: torch.nn.Module,
-            x: torch.Tensor,
-            x_transform: str = None,
-            is_prefill: bool = True,
-    ) -> torch.Tensor:
-        bias = layer.gate_up_proj.bias if not layer.gate_up_proj.skip_bias_add else None
-        x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
-        scale_parallel = os.environ.get('SCALE_PARALLEL', '0') == '1'
-        if x_transform is not None:
-            if x_transform == 'AG':
-                if is_prefill or (not scale_parallel):
-                    x_scale = get_tp_group().all_gather(x_scale, dim=0)
-                else:
-                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
-                        x_scale = get_tp_group().all_gather(x_scale, dim=0)
-                x = get_tp_group().all_gather(x, dim=0)
-            elif x_transform == 'A2A':
-                if is_prefill or (not scale_parallel):
-                    x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
-                else:
-                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
-                        x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
-                x = get_tp_group().all_to_all(x)
-        y_int32 = torch_npu.npu_quant_matmul(
-            x1=x,
-            x2=layer.gate_up_proj.weight,
-            scale=layer.gate_up_proj.weight_scale,
-            pertoken_scale=None,
-            bias=None,
-            output_dtype=torch.int32
-        )
-        int_int32, int_scale = torch_npu.npu_dequant_swiglu_quant(
-            y_int32,
-            weight_scale=layer.gate_up_proj.weight_scale,
-            activation_scale=x_scale,
-            bias=bias,
-            activate_left=True,
-            quant_mode=1,
-        )
-
-        bias = None if (layer.down_proj.tp_rank > 0 or layer.down_proj.skip_bias_add) else layer.down_proj.bias
-        output = torch_npu.npu_quant_matmul(
-            x1=int_int32,
-            x2=layer.down_proj.weight,
-            scale=layer.down_proj.weight_scale,
-            pertoken_scale=int_scale,
-            bias=bias,
-            output_dtype=layer.down_proj.orig_dtype
-        )
-
-        return output
 
 
 class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
