@@ -335,11 +335,11 @@ index 9a017bf315..9943500623 100644
 +                if req_data.req_id not in self.finished_req_ids:
 +                    self._cached_reqs_data[req_data.req_id].append(req_data)
 +
-+            self.running = new_running
 +            engine_core_outputs = EngineCoreOutputs(
 +                outputs=outputs,
 +                scheduler_stats=self.make_stats(spec_decoding_stats),
 +            )
++            self.running = new_running
 +            if self.include_finished_set:
 +                #TODO currently sending duplicates here, improve this
 +                engine_core_outputs.finished_requests = (
