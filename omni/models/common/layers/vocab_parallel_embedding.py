@@ -212,6 +212,15 @@ class ParallelLMHead(VocabParallelEmbedding):
         else:
             self.register_parameter("bias", None)
 
+    def tie_weights(self, embed_tokens: VocabParallelEmbedding):
+        """Tie the weights with word embeddings."""
+        # GGUF quantized embed_tokens.
+        if self.quant_config and self.quant_config.get_name() == "gguf":
+            return embed_tokens
+        else:
+            self.weight = embed_tokens.weight
+            return self
+
     def forward(self, hidden_states, embedding_bias):
         if model_extra_config.parall_config.dp_size > 1:
             hidden_states = get_local_world_group().all_gather(hidden_states, dim=0)

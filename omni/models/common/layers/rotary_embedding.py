@@ -682,10 +682,13 @@ def get_rope(
         is_neox_style: bool = True,
         rope_scaling: Optional[Dict[str, Any]] = None,
         dtype: Optional[torch.dtype] = None,
+        partial_rotary_factor: float = 1.0,
         dual_chunk_attention_config: Optional[dict[str, Any]] = None,
 ):
     if dtype is None:
         dtype = torch.get_default_dtype()
+    if partial_rotary_factor < 1.0:
+        rotary_dim = int(rotary_dim * partial_rotary_factor)
 
     if rope_scaling is not None:
         rope_scaling_tuple = {

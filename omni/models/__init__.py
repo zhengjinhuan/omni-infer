@@ -67,6 +67,10 @@ def register_model():
     )
 
     ModelRegistry.register_model(
+        "LlamaForCausalLM",
+        "omni.models.llama.llama:LlamaForCausalLM")
+
+    ModelRegistry.register_model(
         "Qwen2_5_VLForConditionalGeneration",
         "omni.models.qwen.qwen2_5_vl:Qwen2_5_VLForConditionalGeneration")
 
