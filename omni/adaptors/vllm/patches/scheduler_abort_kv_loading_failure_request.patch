@@ -9,30 +9,30 @@ diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
 --- a/vllm/v1/core/sched/scheduler.py	(revision edb1279bb033e3dff7b7c42fe2a29d6e43a4675a)
 +++ b/vllm/v1/core/sched/scheduler.py	(date 1755246093199)
 @@ -806,6 +806,12 @@
-                         kv_transfer_params = self._free_request(request)
-                         del new_token_ids[num_new:]  # Trim new tokens if needed.
-                         break
-+                # KVTransfer: if loading kv failed, abort the running request
-+                aborted = False
-+                if req_id in (model_runner_output.loading_kv_failure or ()):
-+                    request.stop_reason = "Abort for KV loading failure"
-+                    self.finish_requests(req_id, RequestStatus.FINISHED_ABORTED)
-+                    aborted = True
- 
-                 # Extract sample logprobs if needed.
-                 if request.sampling_params.logprobs is not None and logprobs:
+             if stopped:
+                 kv_transfer_params = self._free_request(request)
+                 del new_token_ids[num_new:]  # Trim new tokens if needed.
++            # KVTransfer: if loading kv failed, abort the running request
++            aborted = False
++            if req_id in (model_runner_output.loading_kv_failure or ()):
++                request.stop_reason = "Abort for KV loading failure"
++                self.finish_requests(req_id, RequestStatus.FINISHED_ABORTED)
++                aborted = True
+
+             # Extract sample logprobs if needed.
+             if request.sampling_params.logprobs is not None and logprobs:
 @@ -853,8 +859,10 @@
-                     # Invariant: EngineCore returns no partial prefill outputs.
-                     assert not prompt_logprobs_tensors
- 
--                if not stopped:
-+                if not stopped and not aborted:
-                     new_running.append(request)
-+            # KVTransfer: if loading kv failed, abort the requests
-+            self._abort_loading_kv_failure_reqs(model_runner_output)
- 
-             # P/D: update state for finished KV Transfers.
-             self._update_from_kv_xfer_finished(model_runner_output)
+                 # Invariant: EngineCore returns no partial prefill outputs.
+                 assert not prompt_logprobs_tensors
+
+-            if not stopped:
++            if not stopped and not aborted:
+                 new_running.append(request)
++        # KVTransfer: if loading kv failed, abort the requests
++        self._abort_loading_kv_failure_reqs(model_runner_output)
+
+         # P/D: update state for finished KV Transfers.
+         self._update_from_kv_xfer_finished(model_runner_output)
 @@ -1056,3 +1064,21 @@
              logger.debug("Finished sending KV transfer for request %s", req_id)
              if req_id in self.requests:

@@ -1,9 +1,12 @@
+import os
 import torch
+import torch_npu
+import torchair
+
 from abc import abstractmethod
 from typing import Optional
 from vllm.model_executor.layers.quantization.base_config import (QuantizationConfig, 
                                                                  QuantizeMethodBase)
-from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.distributed import (
     get_tensor_model_parallel_world_size,
     get_tensor_model_parallel_rank,
@@ -12,6 +15,7 @@ from vllm.distributed import (
     tensor_model_parallel_reduce_scatter,
     get_tp_group
 )
+from omni.models.common.layers.activation import SiluAndMul
 from omni.models.common.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
 
 class FusedMLPMethodBase(QuantizeMethodBase):
@@ -119,4 +123,73 @@ class FusedMLP(torch.nn.Module):
                 output = tensor_model_parallel_all_reduce(output)
             elif reduce_type == "RS":
                 output = tensor_model_parallel_reduce_scatter(output)
+        return output
+
+
+class W8A8DynamicFusedMLPMethod(FusedMLPMethodBase):
+    """Apply dequant_swiglu_quant fused kernel.
+
+    Args:
+        quant_config: The quantization config.
+    """
+
+    def __init__(self, quant_config):
+        self.quant_config = quant_config
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        layer.gate_up_proj.weight_scale = torch.nn.Parameter(
+            layer.gate_up_proj.weight_scale.data.float(), requires_grad=False)
+
+    def apply(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            x_transform: str = None,
+            is_prefill: bool = True,
+    ) -> torch.Tensor:
+        bias = layer.gate_up_proj.bias if not layer.gate_up_proj.skip_bias_add else None
+        x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
+        scale_parallel = os.environ.get('SCALE_PARALLEL', '0') == '1'
+        if x_transform is not None:
+            if x_transform == 'AG':
+                if is_prefill or (not scale_parallel):
+                    x_scale = get_tp_group().all_gather(x_scale, dim=0)
+                else:
+                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
+                        x_scale = get_tp_group().all_gather(x_scale, dim=0)
+                x = get_tp_group().all_gather(x, dim=0)
+            elif x_transform == 'A2A':
+                if is_prefill or (not scale_parallel):
+                    x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
+                else:
+                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
+                        x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
+                x = get_tp_group().all_to_all(x)
+        y_int32 = torch_npu.npu_quant_matmul(
+            x1=x,
+            x2=layer.gate_up_proj.weight,
+            scale=layer.gate_up_proj.weight_scale,
+            pertoken_scale=None,
+            bias=None,
+            output_dtype=torch.int32
+        )
+        int_int32, int_scale = torch_npu.npu_dequant_swiglu_quant(
+            y_int32,
+            weight_scale=layer.gate_up_proj.weight_scale,
+            activation_scale=x_scale,
+            bias=bias,
+            activate_left=True,
+            quant_mode=1,
+        )
+
+        bias = None if (layer.down_proj.tp_rank > 0 or layer.down_proj.skip_bias_add) else layer.down_proj.bias
+        output = torch_npu.npu_quant_matmul(
+            x1=int_int32,
+            x2=layer.down_proj.weight,
+            scale=layer.down_proj.weight_scale,
+            pertoken_scale=int_scale,
+            bias=bias,
+            output_dtype=layer.down_proj.orig_dtype
+        )
+
         return output

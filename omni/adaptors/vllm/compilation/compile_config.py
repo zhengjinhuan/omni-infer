@@ -1,5 +1,5 @@
 import hashlib
-
+import os
 from typing import Any, Callable, Optional, Union
 
 import torch
@@ -20,7 +20,8 @@ BLOCK_NUM_FLOATING_RANGE = 30
 def get_torchair_config():
     patch_for_hcom()
     config = torchair.CompilerConfig()
-    config.experimental_config.frozen_parameter = True
+    if os.environ.get("FROZEN_PARAMETER_DISABLED", "0") == "0":
+        config.experimental_config.frozen_parameter = True
     config.experimental_config.tiling_schedule_optimize = True
     torch.npu.set_compile_mode(jit_compile=False)
     return config

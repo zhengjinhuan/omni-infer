@@ -20,7 +20,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from vllm.attention.layer import Attention
 from vllm.config import VllmConfig, get_layers_from_vllm_config
@@ -58,6 +58,8 @@ class PostDrafter(EagleProposer):
         self.method = self.vllm_config.speculative_config.method
         self.mark_static = False
         self.rejection_sampler = runner.rejection_sampler
+        self.use_rejection_sampler = runner.use_rejection_sampler
+        self.topk = runner.topk
 
         # eagle proposer set dtype as int32, while we need int64
         self.input_ids = torch.zeros(self.max_num_tokens,
@@ -68,8 +70,13 @@ class PostDrafter(EagleProposer):
         self.arange = None
 
         # TODO check model type
-        if self.method not in ('deepseek_mtp', 'eagle', 'eagle3'):
-            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle', 'eagle3'), while get {self.method}.")
+        if self.method not in ('deepseek_mtp', 'eagle', 'eagle3', 'pangu_ultra_moe_mtp'):
+            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle', 'eagle3', 'pangu_ultra_moe_mtp'), while get {self.method}.")
+
+        self.n_predictor = self.vllm_config.model_config.hf_config.num_nextn_predict_layers if self.method == 'deepseek_mtp' else 1
+        self.is_autogressive = self.speculative_config.num_speculative_tokens > self.n_predictor
+
+        self.minus_one = -torch.ones(1, device=device)
 
     def load_model(self, target_model: nn.Module) -> None:
         draft_model_config = \
@@ -117,6 +124,23 @@ class PostDrafter(EagleProposer):
     def prepare_dummy_input(self, input_ids):
         self.input_ids[:input_ids.numel() - 1] = input_ids[1:]
 
+    def _simple_advance_step(
+            self,
+            positions,
+            attn_metadata,
+            block_size,
+            model_layer,
+    ):
+        if isinstance(attn_metadata, Dict):
+            # suppose that types of attn in layers of drafter is same, and share one attn_metadata
+            attn_metadata = attn_metadata[self.attn_layer_names[0]]
+
+        pad_mask = attn_metadata.slot_mapping == self.minus_one
+        positions[:] = torch.where(pad_mask, positions, positions + 1)
+
+        attn_metadata.advance_step(attn_metadata, positions, block_size, pad_mask, model_layer)
+
+
     @torch.inference_mode()
     def propose(self,
                 num_tokens,
@@ -159,7 +183,12 @@ class PostDrafter(EagleProposer):
             with set_forward_context(attn_metadata, self.vllm_config):
                 is_dummy = (last_accepted_index is None) or (sample_indices is None)
                 for i in range(self.speculative_config.num_speculative_tokens):
-                    drafter_logits, previous_hidden_states = self.model(
+                    if i >= self.n_predictor:
+                        if attn_state == AscendAttentionState.DecodeOnly:
+                            self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size, next(iter(self.model.model.layers.values())))
+                        else:
+                            break
+                    drafter_logits, next_hidden_states = self.model(
                         input_ids=input_ids,
                         positions=positions,
                         kv_caches=kv_caches,
@@ -172,21 +201,32 @@ class PostDrafter(EagleProposer):
                     if not is_dummy:
                         if drafter_logits is None:
                             # keep same with computation in model runner
-                            if previous_hidden_states.shape[0] == sample_indices.shape[0]:
-                                drafter_logits = self.model.compute_logits(previous_hidden_states, None)
+                            if next_hidden_states.shape[0] == sample_indices.shape[0]:
+                                drafter_logits = self.model.compute_logits(next_hidden_states, None)
                             else:
-                                drafter_logits = self.model.compute_logits(previous_hidden_states[sample_indices], None)
-                        draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
-                        draft_forward_tokens_list.append(draft_forward_tokens)
+                                drafter_logits = self.model.compute_logits(next_hidden_states[sample_indices], None)
+                        if self.use_rejection_sampler:
+                            mtp_probs = torch.nn.functional.softmax(drafter_logits[last_accepted_index], dim=-1)
+                            batch_size = last_accepted_index.numel()
+                            mtp_topk_token_probs, mtp_topk_token_ids = torch.topk(mtp_probs, self.topk, dim=1)
+                            mtp_topk_token_ids = mtp_topk_token_ids.view(batch_size, -1)
+                            mtp_topk_token_probs = mtp_topk_token_probs.view(batch_size, -1)
+                            self.rejection_sampler.main_sampler.prob_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, i)
+                            draft_forward_tokens = mtp_topk_token_ids[:, 0].view(-1)
+                            draft_forward_tokens_list.append(draft_forward_tokens)
+                        else:
+                            draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
+                            draft_forward_tokens_list.append(draft_forward_tokens)
                     if i == self.speculative_config.num_speculative_tokens - 1:
                         break
+                    self.input_ids[:num_tokens] = torch.roll(input_ids, -1, -1)
                     if not is_dummy:
-                        input_ids = torch.roll(input_ids, -1, -1)
                         if attn_state == AscendAttentionState.DecodeOnly:
                             input_ids[last_accepted_index] = draft_forward_tokens
                         else: # prefill
                             input_ids[sample_indices] = draft_forward_tokens
-            if last_accepted_index is None:
+                    previous_hidden_states = next_hidden_states
+            if is_dummy:
                 return None
             else:
                 return torch.stack(draft_forward_tokens_list, dim=1)
