@@ -86,6 +86,15 @@ def register_model():
         "PanguEmbeddedForCausalLM",
         "omni.models.pangu.pangu_dense:PanguEmbeddedForCausalLM")
 
+    ModelRegistry.register_model(
+        "Gemma3ForCausalLM",
+        "omni.models.gemma.gemma3:Gemma3ForCausalLM")
+
+    ModelRegistry.register_model(
+        "Gemma3ForConditionalGeneration",
+        "omni.models.gemma.gemma3_mm:Gemma3ForConditionalGeneration")
+
+
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
         int(os.getenv("CAPTURE_MODE", default='0')) or
