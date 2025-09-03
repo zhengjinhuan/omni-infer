@@ -44,7 +44,7 @@ from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 from omni.adaptors.vllm.forward_context import set_forward_context
-from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
+from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.models.common.layers.npu_sampler_cache import PenaltyCache, ProbCache
@@ -174,12 +174,6 @@ class NPUModelRunner(GPUModelRunner):
         self.attn_state = None
         self.max_num_blocks_per_req = cdiv(self.model_config.max_model_len,
                                            self.block_size)
-
-        mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", "2048")
-        self.attn_mask_len = min(self.model_config.max_model_len,
-                                 int(mask_len))
-        self.attn_mask_builder = AttentionMaskBuilder.initialize_from_len(
-            self.attn_mask_len, self.dtype)
 
         self.model_mark_static = False
         self.dummy_model_mark_static = False
@@ -830,7 +824,6 @@ class NPUModelRunner(GPUModelRunner):
         fake_input = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
         fake_positions = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
         input_ids, positions = fake_input, fake_positions
-        self.attn_mask = None
         self.attn_state = AscendAttentionState.DecodeOnly
 
         # Build dummy attn_metadata
@@ -841,8 +834,6 @@ class NPUModelRunner(GPUModelRunner):
             if not isinstance(builder, DummyAttentionMetadataBuilder):
                 raise ValueError(f"{builder} does not implement DummyAttentionMetadataBuilder")
             attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
-            if self.enable_torchair_graph_mode and is_pd_seperate_d:
-                builder.mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
                 attn_metadata[layer_name] = attn_metadata_i
 
@@ -860,6 +851,8 @@ class NPUModelRunner(GPUModelRunner):
                     if isinstance(self.model, GraphCompileConfiguration):
                         self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                     else:
+                        for _, attn_metadata_i in attn_metadata.items():
+                            builder.mark_static_for_attn_metadata(attn_metadata_i)
                         mark_static_for_graph_default(input_ids, positions, self.kv_caches)
                     self.dummy_model_mark_static = True
             else:
