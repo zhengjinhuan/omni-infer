@@ -99,7 +99,7 @@ typedef struct omni_batch_metrics_s
     uint32_t time_taken; // Since the oldest request responded in this batch
     uint32_t first_response_receive_time;
     uint32_t last_response_receive_time;
-    uint32_t average_delta;
+    double average_delta;
 } omni_batch_metrics_t;
 
 typedef struct omni_batch_metrics_his_s

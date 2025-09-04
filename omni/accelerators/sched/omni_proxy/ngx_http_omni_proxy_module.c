@@ -230,6 +230,7 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
     omni_req_t *req = omni_req_init(r);
     if (req == NULL)
     {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: allocate omni req failed.");
         ngx_http_finalize_request(r, NGX_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -299,7 +300,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
 
     if (rc != NGX_OK)
     {
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "[Prefill-%d] subrequest failed with code %i", req->slot_index, rc);
         ngx_http_finalize_request(r->main, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return rc;
@@ -399,6 +400,7 @@ static ngx_int_t ngx_http_prefill_wakeup(omni_req_t *req)
     u_char *prefill_uri = ngx_pnalloc(r->pool, prelen + 1);
     if (prefill_uri == NULL)
     {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: allocate prefill uri failed.");
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -428,6 +430,7 @@ static ngx_int_t ngx_http_prefill_wakeup(omni_req_t *req)
                                        NGX_HTTP_SUBREQUEST_IN_MEMORY);
     if (rc != NGX_OK)
     {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "omni_proxy: create subrequest failed.");
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return rc;
     }
@@ -486,6 +489,7 @@ static ngx_int_t omni_proxy_upstream_init(ngx_http_request_t *r, ngx_http_upstre
                   req->slot_index, req->phase_state);
 
     ngx_http_upstream_t *u = r->upstream;
+    u->conf->send_lowat = 0;
     ngx_http_upstream_rr_peer_data_t *rrp;
     if (ngx_http_upstream_init_round_robin_peer(r, uscf) != NGX_OK)
     {
@@ -519,7 +523,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
                  ngx_current_msec - req->metrics.time_last_reponse) /
                 req->metrics.decoded_tokens;
         }
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+        ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
                       "[Decode Update Stats]  req %d prompt_tokens= %ui decoded_tokens= %ui; decode upstream %d num_tokens=%ui",
                       req->slot_index,
                       req->metrics.prompt_num_tokens,
@@ -535,7 +539,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
         ngx_uint_t decode_idx = req->decode_upstream_endpoint_idx;
         ngx_atomic_fetch_add(&g_state->decode_states[decode_idx].num_tokens, 1);
 
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+        ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
                       "[Decode Update Stats]  req %d prompt_tokens= %ui decoded_tokens= %ui; decode upstream %d num_tokens=%ui",
                       req->slot_index,
                       req->metrics.prompt_num_tokens,
@@ -693,6 +697,8 @@ static ngx_int_t ngx_http_omni_process_header(ngx_http_request_t *r)
             h = ngx_list_push(&r->headers_out.headers);
             if (h == NULL)
             {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "omni_proxy: push header failed.");
                 return NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
 
@@ -848,6 +854,8 @@ static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
     olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
     if (olcf->upstream == NULL)
     {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "omni_proxy: no upstream in loc conf");
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -855,6 +863,7 @@ static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
 
     u->conf = olcf->upstream->srv_conf[ngx_http_upstream_module.ctx_index];
     u->conf->buffer_size = 8192;
+    u->conf->send_lowat = 0;
 
     u->create_request = ngx_http_omni_create_request;
     u->reinit_request = ngx_http_omni_reinit_request;
@@ -917,6 +926,8 @@ static ngx_int_t ngx_http_decode_wakeup(omni_req_t *req)
         return NGX_OK;
     }
 
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "omni_proxy: start decode upstream failed.");
     ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
     return NGX_OK;
 }
