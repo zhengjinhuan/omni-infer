@@ -296,7 +296,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     r->write_event_handler = ngx_http_request_empty_handler;
 
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                  "[Prefill-%d] Done from %d", req->slot_index, req->decode_upstream_endpoint_idx);
+                  "[Prefill-%d] Done from %d", req->slot_index, req->prefill_upstream_endpoint_idx);
 
     if (rc != NGX_OK)
     {
@@ -340,8 +340,9 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     *p = '\0';
     ctx->prefill_response_body_size = total;
 
-    omni_upstream_prefill_t *us = &g_state->prefill_states[req->decode_upstream_endpoint_idx];
+    omni_upstream_prefill_t *us = &g_state->prefill_states[req->prefill_upstream_endpoint_idx];
     us->num_running--;
+    us->num_tokens -= req->metrics.prompt_num_tokens;
 
     omni_batch_metrics_t *batch = &us->his.his[us->his.head];
     uint32_t delta = ngx_current_msec - batch->last_response_receive_time;
