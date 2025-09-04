@@ -22,6 +22,7 @@ def get_torchair_config():
     config = torchair.CompilerConfig()
     config.experimental_config.frozen_parameter = True
     config.experimental_config.tiling_schedule_optimize = True
+    config.ge_config.optimization_switch = "InplaceAddRmsNormFusionPass:off"
     torch.npu.set_compile_mode(jit_compile=False)
     return config
 

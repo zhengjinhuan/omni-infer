@@ -32,6 +32,12 @@ from omni.models.common.layers.attention.backend.attention_dummy_builder import 
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
 from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
 
+from vllm.distributed.parallel_state import (
+    get_tensor_model_parallel_world_size,
+    get_tensor_model_parallel_rank,
+)
+import math
+
 def group_request_list(seq_lens, query_lens, block_tables, threshold):
     s_lens_result = []
     q_lens_result = []
@@ -78,7 +84,7 @@ class AscendMLABackend(AttentionBackend):
     @staticmethod
     def get_kv_cache_shape(num_blocks: int, block_size: int, num_kv_heads: int,
                            head_size: int) -> tuple[int, ...]:
-        return (num_blocks, block_size, 1, 512 + 64)
+        return (num_blocks, block_size, 1, 512 + 64 + 128 + 1)
 
     @staticmethod
     def get_impl_cls() -> Type["MLAAttentionImpl"]:
@@ -104,11 +110,23 @@ class AscendMLABackend(AttentionBackend):
                             dtype=dtype,
                             pin_memory=True,
                             device=device)
+        layer_indexer_k_nope = torch.zeros(
+                        kv_cache_shape[:-2] +
+                        (1, 128, ),
+                        dtype=torch.int32,
+                        pin_memory=True,
+                        device=device)
+        layer_indexer_k_nope_scale = torch.zeros(
+                        kv_cache_shape[:-2] +
+                        (1, 1, ),
+                        dtype=torch.float32,
+                        pin_memory=True,
+                        device=device)
         if device != 'cpu':
             # force tensor format to ND
             layer_kv_cache_nope = torch_npu.npu_format_cast(layer_kv_cache_nope, 2)
             layer_kv_cache_pe = torch_npu.npu_format_cast(layer_kv_cache_pe, 2)
-        return (layer_kv_cache_nope, layer_kv_cache_pe)
+        return (layer_kv_cache_nope, layer_kv_cache_pe, layer_indexer_k_nope, layer_indexer_k_nope_scale)
 
     @staticmethod
     def swap_blocks(
@@ -141,6 +159,12 @@ class AscendMLAPrefillMetadata:
 
     cos: Optional[torch.Tensor] = None
     sin: Optional[torch.Tensor] = None
+
+    sp_split_list: Optional[list[int]] = None
+    sp_zigzag_index: Optional[list[int]] = None
+    sp_reverse_index: Optional[list[int]] = None
+    sp_reverse_split_list: Optional[list[int]] = None
+
 
 @dataclass
 class AscendMLADecodeMetadata:
@@ -355,6 +379,32 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             kv_index.append(index.reshape(-1)[:seq_len])
         return torch.tensor(np.concatenate(kv_index, axis=0), dtype=torch.long, device="cpu").npu()
 
+    def prepare_sp_split_indices(self, query_lens):
+        sp_size = get_tensor_model_parallel_world_size()
+        sp_rank = get_tensor_model_parallel_rank()
+        bsz = query_lens.shape[-1]
+
+        # get zigzag index
+        cp_piece_num = sp_size * 2
+        seq_per_batch = torch.ceil(query_lens / (cp_piece_num))   # seq_len for each batch and piece
+        split_list = seq_per_batch.repeat_interleave(cp_piece_num).int().tolist()
+        zigzag_index = []
+        for batch_id in range(bsz):
+            zigzag_index.extend([batch_id * cp_piece_num + sp_rank,
+                (batch_id + 1) * cp_piece_num - sp_rank - 1])
+        zigzag_index = zigzag_index[::2] + zigzag_index[1::2]
+        
+        # get zigzag reverse index
+        cp_reverse_index = []
+        for batch_id in range(bsz):
+            cp_reverse_index.extend(
+                list(range(batch_id * 2, cp_piece_num * bsz, 2 * bsz)) +\
+                list(range((sp_size - 1) * 2 * bsz + batch_id * 2 + 1, 0, -2 * bsz))
+            )
+        reverse_split_list = seq_per_batch.repeat_interleave(2).repeat(sp_size).view(-1).int().tolist()
+        reverse_split_list = reverse_split_list[::2] + reverse_split_list[1::2]
+        return split_list, zigzag_index, cp_reverse_index, reverse_split_list
+
     def build(self,
               num_reqs: int,
               num_actual_tokens: int,
@@ -414,9 +464,24 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
+            if model_extra_config.operator_opt_config.attn_sp_size > 1:
+                new_seq_qlen_group = []
+                for sub_list in seq_qlen_group:
+                    sub_list = [math.ceil(q_len / model_extra_config.operator_opt_config.attn_sp_size / 2) for q_len in sub_list]
+                    new_seq_qlen_group.append(sub_list)
+                seq_qlen_group = new_seq_qlen_group
+                new_seq_kvlen_group = []
+                sp_rank = get_tensor_model_parallel_rank()
+                for sub_list in seq_kvlen_group:
+                    sub_list = [math.ceil(kv_len / model_extra_config.operator_opt_config.attn_sp_size / 2) for kv_len in sub_list]
+                    new_seq_kvlen_group.append(sub_list)
+                seq_kvlen_group = new_seq_kvlen_group
 
             tmp_input_position = input_positions[tokens_start:]
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(tmp_input_position)
+
+            if model_extra_config.operator_opt_config.attn_sp_size > 1:
+                split_list, zigzag_index, cp_reverse_index, reverse_split_list = self.prepare_sp_split_indices(torch.tensor(query_lens_list[reqs_start:]))
 
             prefill_metadata = AscendMLAPrefillMetadata(
                 attn_mask=self.runner.attn_mask,
@@ -429,7 +494,11 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 seq_kvlen_group=seq_kvlen_group,
                 kv_index_list=kv_index_list,
                 sin=sin,
-                cos=cos
+                cos=cos,
+                sp_split_list=split_list if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
+                sp_zigzag_index=zigzag_index if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
+                sp_reverse_index=cp_reverse_index if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
+                sp_reverse_split_list=reverse_split_list if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
             )
 
         decode_metadata = None

@@ -51,6 +51,124 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 from omni.models.common.config.model_config import model_extra_config
 KVCACHE_NZ_DIM = 16
 
+import torch.nn.functional as F
+
+class LayerNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor):
+        return F.layer_norm(x, (self.dim,), self.weight, self.bias, self.eps)
+
+class Indexer(nn.Module):
+    def __init__(self, config, rotary_emb, quant_config: Optional[QuantizationConfig] = None,
+                 prefix: str = ""):
+        super().__init__()
+
+        self.dim: int = config.hidden_size  # 7168
+        self.n_heads: int = config.index_n_heads  # 64
+        self.head_dim: int = config.index_head_dim  # 128
+        self.rope_head_dim: int = config.qk_rope_head_dim  # 64
+        self.index_topk: int = config.index_topk  # 2048
+        self.q_lora_rank: int = config.q_lora_rank  # 1536
+        self.rotary_emb = rotary_emb
+
+        self.actual_seq_lengths = {}
+        for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
+            self.actual_seq_lengths[batch_size] = torch.tensor(list([1] * batch_size), dtype=torch.int64, device=current_platform.device_type)
+            torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
+
+        self.wq_b = ReplicatedLinear(self.q_lora_rank,
+                                        self.n_heads * self.head_dim,
+                                        bias=False,
+                                        quant_config=quant_config,
+                                        prefix=f"{prefix}.wq_b")  # [1536,64*128]
+        self.wk = ReplicatedLinear(self.dim,
+                                    self.head_dim,
+                                    bias=False,
+                                    params_dtype=torch.get_default_dtype(),
+                                    quant_config=quant_config,
+                                    prefix=f"{prefix}.wk") # [7168,128]
+        self.weights_proj = ReplicatedLinear(self.dim,
+                                            self.n_heads,
+                                            bias=False,
+                                            params_dtype=torch.get_default_dtype(),
+                                            quant_config=quant_config,
+                                            prefix=f"{prefix}.weights_proj")  # [7168,64]
+
+        self.k_norm = LayerNorm(self.head_dim)
+        self.softmax_scale = self.head_dim ** -0.5
+
+    def forward(self, x: torch.Tensor, qr: torch.Tensor,
+                positions: torch.Tensor,attn_metadata: AttentionMetadata,
+                kv_cache: torch.Tensor, is_prefill):
+        print(f"{x.shape=} {qr.shape=} {positions.shape=} {is_prefill=}", flush=True)
+        bsz, seq_len, _ = x.size()
+        q = self.wq_b(qr)[0]  # [b,s,1536] @ [1536,64*128] = [b,s,64*128]
+        q = q.reshape(bsz, seq_len, self.n_heads, self.head_dim)  # [b,s,64,128]
+        q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64,64+64]
+
+        k = self.wk(x)[0]  # [b,s,7168] @ [7168,128] = [b,s,128]
+        k = self.k_norm(k)
+        k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
+
+        cos, sin = self.rotary_emb.get_cos_sin(positions)
+
+        if is_prefill:
+            q_pe = q_pe.transpose(0, 1)
+            k_pe = k_pe.transpose(0, 1)
+
+        q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin)
+        
+        k_pe = torch_npu.npu_interleave_rope(k_pe.unsqueeze(2), cos, sin)
+        if is_prefill:
+            q_pe = q_pe.transpose(0, 1)
+            k_pe = k_pe.transpose(0, 1)
+
+        k_pe = k_pe.squeeze(2)
+
+        k = torch.cat([k_pe, k_nope], dim=-1).unsqueeze(1)  # [b,s,128]
+        q = torch.cat([q_pe, q_nope], dim=-1) # [b,s,64,128]
+
+        if isinstance(kv_cache, Dict):
+            kv_cache = kv_cache.get("kv_cache")
+        # TODO: update kcache
+        if kv_cache[2] is not None and kv_cache[3] is not None:
+            torch_npu.scatter_update_(kv_cache[2].view(-1, k.shape[-1]), attn_metadata.slot_mapping, k.view(-1, k.shape[-1]), -1)   # b, s, n, d
+
+        weights = self.weights_proj(x)[0]
+
+        actual_seq_lengths_query = None
+        actual_seq_lengths_key = None
+        block_table = None
+        key = None
+        if is_prefill:
+            actual_seq_lengths_query = torch.tensor(attn_metadata.prefill.query_lens).npu()
+            actual_seq_lengths_key = torch.tensor(attn_metadata.prefill.seq_lens).npu()
+            key = k
+        else:
+            actual_seq_lengths_query = self.actual_seq_lengths[q.shape[0]]
+            actual_seq_lengths_key = torch.tensor(attn_metadata.decode.seq_lens).npu()
+            key = kv_cache[2]
+            block_table = attn_metadata.decode.block_table
+
+        topk_indices = torch.ops.npu.npu_lighting_indexer(query=q,
+                                                          key=key,
+                                                          weights=weights,
+                                                          actual_seq_lengths_query=actual_seq_lengths_query,
+                                                          actual_seq_lengths_key=actual_seq_lengths_key,
+                                                          block_table=block_table,
+                                                          score_scale=self.n_heads **-0.5 * self.softmax_scale,
+                                                          layout_query="BSND",
+                                                          layout_key="PA_BSND",
+                                                          selected_count=2048,
+                                                          sparse_mode=3)
+
+        return topk_indices
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
     import math
@@ -89,7 +207,7 @@ class DeepseekMLA(nn.Module):
         self.q_lora_rank = q_lora_rank
         self.kv_lora_rank = kv_lora_rank
         self.num_heads = num_heads
-        self.tp_size = get_tensor_model_parallel_world_size() if model_extra_config.parall_config.attn_sp_size == 1 else 1
+        self.tp_size = get_tensor_model_parallel_world_size() if model_extra_config.operator_opt_config.prefill_mla_absorb == 1 else 1
         if num_heads % self.tp_size != 0:
             raise RuntimeError("num_heads % tp_size != 0")
         self.num_local_heads = num_heads // self.tp_size
@@ -123,7 +241,7 @@ class DeepseekMLA(nn.Module):
             self.q_a_layernorm = RMSNorm(self.q_lora_rank,
                                          eps=config.rms_norm_eps)
 
-            if model_extra_config.parall_config.attn_sp_size > 1:
+            if model_extra_config.operator_opt_config.prefill_mla_absorb > 1:
                 self.q_b_proj = ReplicatedLinear(q_lora_rank,
                                                  self.num_heads *
                                                  self.qk_head_dim,
@@ -153,7 +271,7 @@ class DeepseekMLA(nn.Module):
 
         self.kv_a_layernorm = RMSNorm(self.kv_lora_rank,
                                       eps=config.rms_norm_eps)
-        if model_extra_config.parall_config.attn_sp_size > 1:
+        if model_extra_config.operator_opt_config.prefill_mla_absorb > 1:
             self.kv_b_proj = ReplicatedLinear(
                 self.kv_lora_rank,
                 self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
@@ -201,18 +319,11 @@ class DeepseekMLA(nn.Module):
                                                 quant_config=quant_config,
                                                 prefix=f"{prefix}.o_proj")
         else:
-            if model_extra_config.parall_config.attn_sp_size > 1:
-                self.o_proj = ReplicatedLinear(self.num_heads * self.v_head_dim,
-                                               hidden_size,
-                                               bias=False,
-                                               quant_config=quant_config,
-                                               prefix=f"{prefix}.o_proj")
-            else:
-                self.o_proj = RowParallelLinearWithReduceScatter(self.num_heads * self.v_head_dim,
-                                                                self.hidden_size,
-                                                                bias=False,
-                                                                quant_config=quant_config,
-                                                                prefix=f"{prefix}.o_proj")
+            self.o_proj = RowParallelLinearWithReduceScatter(self.num_heads * self.v_head_dim,
+                                                            self.hidden_size,
+                                                            bias=False,
+                                                            quant_config=quant_config,
+                                                            prefix=f"{prefix}.o_proj")
 
         if rope_scaling:
             rope_scaling["rope_type"] = 'deepseek_yarn'
@@ -223,6 +334,8 @@ class DeepseekMLA(nn.Module):
                                    base=rope_theta,
                                    rope_scaling=rope_scaling,
                                    is_neox_style=rope_is_neox_style)
+
+        self.indexer = Indexer(config, self.rotary_emb, quant_config=quant_config, prefix=f"{prefix}.indexer")
 
         if rope_scaling:
             mscale_all_dim = rope_scaling.get("mscale_all_dim", False)
@@ -254,7 +367,7 @@ class DeepseekMLA(nn.Module):
             self.kv_scale = torch.nn.Parameter(torch.empty(1, dtype=torch.float32), requires_grad=False)
         self.vllm_attn = Attention(
             num_heads=self.num_local_heads,
-            head_size=kv_lora_rank_cache_size + self.qk_rope_head_dim,
+            head_size=kv_lora_rank_cache_size + self.qk_rope_head_dim + 128 + 1,
             scale=self.scale,
             use_mla=True,
             num_kv_heads=1,
@@ -272,14 +385,14 @@ class DeepseekMLA(nn.Module):
 
             expected_shape = (
                 self.kv_lora_rank,
-                self.num_heads * (self.qk_nope_head_dim + self.v_head_dim)
+                self.num_local_heads * (self.qk_nope_head_dim + self.v_head_dim)
             )
             if kv_b_proj_weight.shape != expected_shape:
                 raise RuntimeError(f"{kv_b_proj_weight.shape} != {expected_shape}")
 
             kv_b_proj_weight = kv_b_proj_weight.view(
                 self.kv_lora_rank,
-                self.num_heads,
+                self.num_local_heads,
                 self.qk_nope_head_dim + self.v_head_dim,
             )
             self.W_UK, self.W_UV = kv_b_proj_weight.split(
@@ -291,9 +404,10 @@ class DeepseekMLA(nn.Module):
             self.actual_seq_lengths = {}
             for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
                 self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
-                self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * self.tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+                # self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * self.tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+                self.actual_seq_lengths[batch_size] = list([1] * batch_size)
                 torch._dynamo.mark_static(self.norm_res[batch_size])
-                torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
+                # torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
         if self.quant_symbol and model_extra_config.operator_opt_config.use_mlaprolog:
             self.q_a_proj.weight_scale.data = self.q_a_proj.weight_scale.data.to(torch.float)
             self.q_b_proj.weight_scale.data = self.q_b_proj.weight_scale.data.to(torch.float)
@@ -319,7 +433,10 @@ class DeepseekMLA(nn.Module):
             if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and model_extra_config.operator_opt_config.pd_seperate_prefill:
                 output = self._forward_prefill_a2(positions, hidden_states, kv_cache, attn_metadata)
             else:
-                output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata, comm_group=comm_group)
+                if model_extra_config.operator_opt_config.prefill_mla_absorb > 1:
+                    output = self._forward_prefill_absorb(positions, hidden_states, kv_cache, attn_metadata, comm_group=comm_group)
+                else:
+                    output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata, comm_group=comm_group)
         else:
             output = self._forward_decode(
                 positions, hidden_states, kv_cache, attn_metadata,
@@ -373,7 +490,7 @@ class DeepseekMLA(nn.Module):
 
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim],  dim=-1)
         q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim).transpose(0, 1) # n, bs, d
-        print(f"q_nope:{q_nope.shape}", flush=True)
+
         q_nope = (
             torch.matmul(q_nope, self.W_UK)
             .transpose(1, 0)
@@ -386,7 +503,7 @@ class DeepseekMLA(nn.Module):
             cos, sin = self.rotary_emb.get_cos_sin(positions)
         else:
             cos, sin = attn_metadata.prefill.cos, attn_metadata.prefill.sin
-        print(f"{q_pe.shape=} {sin.shape=} {cos.shape=}", flush=True)
+
         q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin) # BNSD
         q_pe = q_pe.squeeze(2) #BSH
         q[..., self.qk_nope_head_dim:] = q_pe
@@ -427,7 +544,6 @@ class DeepseekMLA(nn.Module):
         
         if attn_metadata is not None:
             prefill_metadata = attn_metadata.prefill
-            computed_tokens = 0
 
             for iter, (actual_seq_qlen, actual_seq_kvlen) in enumerate(zip(
                 prefill_metadata.seq_qlen_group,
@@ -453,40 +569,29 @@ class DeepseekMLA(nn.Module):
                 prefill_kv_a = kv_a[:actual_seq_kvlen[-1]].view(-1, 1, self.kv_lora_rank)
                 prefill_k_pe = k_pe[:actual_seq_kvlen[-1]].view(-1, 1, self.qk_rope_head_dim)
 
-                if prefill_metadata.max_query_len > 1:
-                    attn_mask = self.attn_mask
-                    sparse_mode = 3
-                else:
-                    attn_mask = None
-                    sparse_mode = 0  # must be 0 if attn_mask is None
-                prefill_k_rope = prefill_k_pe.view(-1, 1, self.qk_rope_head_dim) #.repeat(1, self.num_local_heads, 1)
+                prefill_k_rope = prefill_k_pe.view(-1, 1, self.qk_rope_head_dim)
 
-                # adapted for NSA sliding window attention
-                # q_nope = q_nope.repeat(1,self.num_heads // q_nope.shape[1] ,1)
-                # q_pe = q_pe.repeat(1,self.num_heads // q_pe.shape[1] ,1)
-                #end
-
-                topk_indices = self.indexer(hidden_states.unsqueeze(0), qr, positions, max(actual_seq_qlen), attn_metadata,
-                                           kv_cache=kv_cache, mask=self.attn_mask, is_prefill=True)
+                hidden_states = mla_tensor_model_parallel_all_gather(hidden_states, dim=0)
+                topk_indices = self.indexer(hidden_states.unsqueeze(0), qr, positions, attn_metadata,
+                                            kv_cache=kv_cache, is_prefill=True)
                 print(f"{topk_indices.shape=} {topk_indices=}", flush=True)
-                # attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
-                #     query=q_nope.unsqueeze(0),
-                #     key=prefill_kv_a.unsqueeze(0),
-                #     value=prefill_kv_a.unsqueeze(0),
-                #     query_rope=q_pe.unsqueeze(0),
-                #     key_rope=prefill_k_rope.unsqueeze(0),
-                #     scale_value=self.scale,
-                #     topk_indices=topk_indices,
-                #     head_num=self.num_heads,
-                #     key_value_head_num=1,
-                #     page_block_size=0,
-                #     select_block_size=1,
-                #     select_block_count=2048,
-                #     layout="BSND",sparse_mode=3, atten_mask=None,
-                #     actual_seq_qlen=actual_seq_qlen,
-                #     actual_seq_kvlen=actual_seq_kvlen,
-                # ).squeeze(0)
-                attn_output = torch.zeros_like(q_nope.unsqueeze(0))
+                attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
+                    query=q_nope.unsqueeze(0),
+                    key=prefill_kv_a.unsqueeze(0),
+                    value=prefill_kv_a.unsqueeze(0),
+                    query_rope=q_pe.unsqueeze(0),
+                    key_rope=prefill_k_rope.unsqueeze(0),
+                    scale_value=self.scale,
+                    topk_indices=topk_indices,
+                    head_num=self.num_heads,
+                    key_value_head_num=1,
+                    page_block_size=0,
+                    select_block_size=1,
+                    select_block_count=2048,
+                    layout="BSND",sparse_mode=3, atten_mask=None,
+                    actual_seq_qlen=actual_seq_qlen,
+                    actual_seq_kvlen=actual_seq_kvlen,
+                ).squeeze(0)
                 
         else:
             attn_output = torch.zeros(
@@ -501,7 +606,6 @@ class DeepseekMLA(nn.Module):
         # if also set o_proj_tp_size means prefill o_proj tp to dp + tp
         print(f"{attn_output.shape=} {self.W_UV.shape=}, {attn_output=}", flush=True)
         # self.W_UV [8, 512, 128] attn_output [max_model_len, 128, 512]
-        # w_uv_weight = self.W_UV.repeat(self.tp_size, 1, 1)
 
         attn_output = attn_output.transpose(0, 1)
         attn_output = (
@@ -509,14 +613,13 @@ class DeepseekMLA(nn.Module):
                 .transpose(1, 0)
                 .reshape(-1,  self.num_heads * self.v_head_dim)
             )
-        attn_output = attn_output.view(-1, self.num_local_heads, self.tp_size, self.v_head_dim).mean(dim=2)
         attn_output = attn_output.view(-1, self.num_local_heads * self.v_head_dim)
 
         if model_extra_config.parall_config.o_proj_tp_size > 1:
             output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_local_heads, self.v_head_dim)
         else:
             output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
-        if model_extra_config.parall_config.attn_sp_size > 1:
+        if model_extra_config.operator_opt_config.prefill_mla_absorb > 1:
             sp_rank = get_tensor_model_parallel_rank()
             sp_size = get_tensor_model_parallel_world_size()
             stride = output.size(0) // sp_size
@@ -701,11 +804,6 @@ class DeepseekMLA(nn.Module):
                 output, _ = self.o_proj.forward(attn_output, q.shape[0], 1, self.num_local_heads, self.v_head_dim)
             else:
                 output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
-                if model_extra_config.parall_config.attn_sp_size > 1:
-                    sp_rank = get_tensor_model_parallel_rank()
-                    sp_size = get_tensor_model_parallel_world_size()
-                    stride = output.size(0) // sp_size
-                    output = output[sp_rank * stride:(sp_rank + 1) * stride, ...]
         return output
 
     def _forward_decode(
@@ -718,7 +816,7 @@ class DeepseekMLA(nn.Module):
     ) -> torch.Tensor:
         if use_rmsnorm_rope_cache:
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
-            key_cache, value_cache = kv_cache
+            key_cache, value_cache, _, _ = kv_cache
 
             q_len = 1
             dequant_scale_q_nope = None
@@ -769,8 +867,8 @@ class DeepseekMLA(nn.Module):
                     kv = self.kv_a_proj_with_mqa(hidden_states)[0]
 
                 if self.q_lora_rank is not None:
-                    q, _ = self.q_a_layernorm(q_lowrank, self.norm_res[q_lowrank.shape[0]])
-                    q = self.q_b_proj(q)[0]
+                    qr, _ = self.q_a_layernorm(q_lowrank, self.norm_res[q_lowrank.shape[0]])
+                    q = self.q_b_proj(qr)[0]
                 else:
                     q = q_lowrank
                 bsz, _ = q.shape
@@ -799,11 +897,11 @@ class DeepseekMLA(nn.Module):
                         cos, sin, tmp_slot_mapping,
                         value_cache, key_cache,
                         c_kv_scale=self.kv_scale_reci_tile,
-                        epsilon=self.kv_a_layernorm.variance_epsilon, cache_mode="PA_NZ") # adapter NZ
+                        epsilon=self.kv_a_layernorm.variance_epsilon, cache_mode="PA") # adapter NZ
 
                     # adapter nz
-                    k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // nz_block_size, block_size, nz_block_size)
-                    k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM)
+                    # k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // nz_block_size, block_size, nz_block_size)
+                    # k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM)
 
                     if model_extra_config.operator_opt_config.moe_multi_stream_tune:
                         tng.scope.npu_wait_tensor(q_pe, k_nope)
@@ -835,20 +933,30 @@ class DeepseekMLA(nn.Module):
                     actual_seq_kvlen=attn_metadata.decode.seq_lens
                 )
             else:
-                attn_output, _ = op_scope.npu_fused_infer_attention_score(
-                        q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
-                        num_heads=self.num_local_heads,
-                        num_key_value_heads=1, input_layout=input_layout,
-                        scale=self.scale,
-                        antiquant_mode=0, antiquant_scale=None,
-                        block_table=attn_metadata.decode.block_table,
-                        block_size=128,
-                        actual_seq_lengths=self.actual_seq_lengths[bsz],
-                        actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
-                        )
+                k_nope = k_nope.squeeze(2)
+                k_rope = k_rope.squeeze(2)
+                topk_indices = self.indexer(hidden_states.unsqueeze(1), qr.unsqueeze(1), positions, attn_metadata,
+                                            kv_cache=kv_cache, is_prefill=False)
+                attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
+                    query=q_nope.unsqueeze(1),
+                    key=k_nope,
+                    value=k_nope,
+                    query_rope=q_pe.unsqueeze(1),
+                    key_rope=k_rope,
+                    scale_value=self.scale,
+                    topk_indices=topk_indices,
+                    head_num=self.num_heads,
+                    key_value_head_num=1,
+                    page_block_size=0,
+                    select_block_size=1,
+                    select_block_count=2048,
+                    layout="BSND",sparse_mode=3, atten_mask=None,
+                    actual_seq_qlen=self.actual_seq_lengths[bsz],
+                    actual_seq_kvlen=attn_metadata.decode.seq_lens,
+                )
 
             # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-            attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+            attn_output = attn_output.squeeze(1).transpose(0, 1)
 
             attn_output = (
                 torch.matmul(attn_output, self.W_UV)
