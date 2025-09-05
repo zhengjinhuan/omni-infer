@@ -50,6 +50,12 @@ def patch_linear():
     from omni.models.common.layers.linear import AscendUnquantizedLinearMethod
     linear.UnquantizedLinearMethod = AscendUnquantizedLinearMethod
 
+def patch_scheduler():
+    from omni.adaptors.vllm.sched.sorted_scheduler import schedule
+    from vllm.v1.core.sched.scheduler import Scheduler
+    Scheduler.schedule = schedule
+    print("++++++++++++++++++++++patch_scheduler++++++++++++++++++++++++++++")
+
 _patch_done = False
 
 def patch_all():
@@ -63,6 +69,7 @@ def patch_all():
     patch_compilation()
     patch_pangu()
     patch_linear()
+    patch_scheduler()
     _patch_done = True
 
 patch_all() 
