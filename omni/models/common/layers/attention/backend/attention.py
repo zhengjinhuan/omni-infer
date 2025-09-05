@@ -595,7 +595,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 # (1) saving keys and values into kv_cache, and
                 # (2) GQA
                 # can run simultaneously in two streams
-                if not hasattr(layer, 'quant_method') and attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+                if self.kv_stream is not None and not hasattr(layer, 'quant_method') and attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
                     stream_for_reshape_and_cache = self.kv_stream
                     self.kv_stream.wait_stream(torch.npu.current_stream())
                 else:
