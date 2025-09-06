@@ -154,7 +154,8 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
                                                              )
             else:
                 if os.getenv("ASCEND_PLATFORM", "A3") == "A2":
-                    out = fused_experts_w8a8_allgather_ep_a2(hidden_states=x,
+                    out = fused_experts_w8a8_allgather_ep_a2(layer,
+                                                             hidden_states=x,
                                                              pertoken_scale=pertoken_scale,
                                                              w1=layer.w13_weight,
                                                              w2=layer.w2_weight,
