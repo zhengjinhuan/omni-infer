@@ -45,11 +45,15 @@ class MixRequest:
     is_running: bool
     is_protect: bool
     num_new_tokens: int
+
     def __init__(self, request: Request, is_running: bool):
         self.request = request
         self.is_running = is_running
         self.is_protect = False
-        self.num_new_tokens = request.num_tokens_with_spec - request.num_computed_tokens
+        self.num_new_tokens = 0
+
+    def __lt__(self, other: MixRequest) -> bool:
+        return self.num_new_tokens < other.num_new_tokens
 
 class PreemptionMode(enum.Enum):
     SWAP = enum.auto()
@@ -103,104 +107,72 @@ def schedule(self) -> SchedulerOutput:
         t1 = time.time()
         budget = self.max_num_scheduled_tokens
     
-        mix_requests = []
-        for req in self.running:
-            mix_requests.append({
-                'request_id': req.request_id,
-                'num_prompt_tokens': req.num_prompt_tokens,
-                'num_tokens_with_spec': req.num_tokens_with_spec,
-                'num_computed_tokens': req.num_computed_tokens,
-                'is_running': True,  # 标记是否为运行中的请求
-                'is_protect': False  # 标记是否是最后一个running请求，且长度较小
-            })
-        
-        for req in self.waiting:
-            mix_requests.append({
-                'request_id': req.request_id,
-                'num_prompt_tokens': req.num_prompt_tokens,
-                'num_tokens_with_spec': req.num_tokens_with_spec,
-                'num_computed_tokens': req.num_computed_tokens,
-                'is_running': False,  # 标记是否为等待中的请求
-                'is_protect': False  # 标记是否是最后一个running请求，且长度较小
-            })
-
+        mix_requests = [MixRequest(req, True) for req in self.running] + [MixRequest(req, False) for req in self.waiting]
 
         logger.info("------------------------------------------------------------------------------------------------------")
-        logger.info(f"waiting request id - token numbers: {[(req['request_id'], req['num_prompt_tokens']) for req in mix_requests if not req['is_running']]}")
+        logger.info(f"waiting request id - token numbers: {[(mix_req.request.request_id, mix_req.request.num_prompt_tokens) for mix_req in mix_requests if not mix_req.is_running]}")
         logger.info("------------------------------------------------------------------------------------------------------")
-        logger.info(f"running request id - token numbers: {[(req['request_id'], req['num_prompt_tokens']) for req in mix_requests if req['is_running']]}")
+        logger.info(f"running request id - token numbers: {[(mix_req.request.request_id, mix_req.request.num_prompt_tokens) for mix_req in mix_requests if mix_req.is_running]}")
 
         # 计算每个请求需要的新token数量
-        for req in mix_requests:
-            pre_scheduled[req['request_id']] = False
-            
-            if req['is_running']:
-                num_new_tokens = req['num_tokens_with_spec'] - req['num_computed_tokens']
-                
-                logger.info(f"in running {req['num_tokens_with_spec']} - {req['num_computed_tokens']} = {num_new_tokens}")
+        for mix_req in mix_requests:
+            pre_scheduled[mix_req.request.request_id] = False
+            if mix_req.is_running:
+                num_new_tokens = mix_req.request.num_tokens_with_spec - mix_req.request.num_computed_tokens
+                logger.info(f"in running {mix_req.request.num_tokens_with_spec} - {mix_req.request.num_computed_tokens} = {num_new_tokens}")
 
                 if self.async_schedule and num_new_tokens < 0:
                     num_new_tokens = 0
 
-                req['num_prompt_tokens'] = num_new_tokens
-
-                req['is_protect'] = True
+                mix_req.num_new_tokens = num_new_tokens
+                mix_req.is_protect = True
 
         # 按token数量排序
-        mix_requests.sort(key=lambda x: x['num_prompt_tokens'], reverse=False)
+        mix_requests.sort()
         logger.info("------------------------------------------------------------------------------------------------------")
-        logger.info(f"mix request id - token numbers: {[(req['request_id'], req['num_prompt_tokens']) for req in mix_requests]}")
+        logger.info(f"mix request id - token numbers: {[(mix_req.request.request_id, mix_req.num_new_tokens) for mix_req in mix_requests]}")
 
         # 调度逻辑
         schedule_num = 0
         protected_requests_to_move = [] 
-        for req in self.mix:
-            if budget - req['num_prompt_tokens'] < 0:
-                break 
+        for mix_req in mix_requests:
+            if budget - mix_req.num_new_tokens < 0:
+                break
 
-            if schedule_num >= 1 and req['is_protect'] == True:
-                protected_requests_to_move.append(req)
+            if schedule_num >= 1 and mix_req.is_protect:
+                protected_requests_to_move.append(mix_req)
                 continue 
 
-            if schedule_num > 0 and req['num_prompt_tokens'] > 2 ** (2 - schedule_num) * 1024:
+            if schedule_num > 0 and mix_req.num_new_tokens > 2 ** (2 - schedule_num) * 1024:
                 break
             
-            budget -= req['num_prompt_tokens']
-            self.preScheduling[req['request_id']] = True  
+            budget -= mix_req.num_new_tokens
+            pre_scheduled[mix_req.request.request_id] = True  
 
             schedule_num += 1
-            if (schedule_num >= self.max_num_running_reqs or req['is_protect'] == True or
-                budget < self.max_num_scheduled_tokens - 0.2 * min(len(self.mix), 5) * 16384):
+            if (schedule_num >= self.max_num_running_reqs or mix_req.is_protect or
+                budget < self.max_num_scheduled_tokens - 0.2 * min(len(mix_requests), 5) * 16384):
                 break
         
         if protected_requests_to_move:
-            for req in protected_requests_to_move:
-                if req in self.mix:
-                    self.mix.remove(req)
-            self.mix.extend(protected_requests_to_move)
+            for mix_req in protected_requests_to_move:
+                if mix_req in mix_requests:
+                    mix_requests.remove(mix_req)
+            mix_requests.extend(protected_requests_to_move)
 
         logger.info(f"Prefill scheduling completed in {time.time() - t1:.3f}s")
         t2 = time.time()
         logger.info(f"--------------------------------{t2 - t1:7.6f}s------------------------------------------------------------")
         logger.info(f"Scheduled {schedule_num} requests, remaining budget: {budget}")
-        logger.info(f"Final preScheduling : {[req_id for req_id, val in self.preScheduling.items() if val]}")
+        logger.info(f"Final preScheduling : {[req_id for req_id, is_pre_sched in pre_scheduled.items() if is_pre_sched]}")
 
     # First, schedule the RUNNING requests.
     if role == "prefill":
-        # 使用字典推导式更简洁
-        running_dict = {req.request_id: req for req in self.running}
-        
-        # 更清晰的变量命名
-        temp_running_list = []
-        for req in self.mix:
-            if req['request_id'] in running_dict:
-                temp_running_list.append(running_dict[req['request_id']])
-        
-        self.running = temp_running_list
+        self.running = [mix_req.request for mix_req in mix_requests if mix_req.is_running]
     req_index = 0
     while req_index < len(self.running) and token_budget > 0:
         request = self.running[req_index]
-        if( role == "prefill" and self.preScheduling[request.request_id] == False):
+        if( role == "prefill" and not pre_scheduled[request.request_id]):
             break
         num_new_tokens = (request.num_tokens_with_spec -
                             request.num_computed_tokens)
@@ -210,12 +182,10 @@ def schedule(self) -> SchedulerOutput:
             num_new_tokens = 0
 
         if role == "prefill":
-            is_protect =  self.scheduler_config.long_prefill_token_threshold <= num_new_tokens <= self.scheduler_config.long_prefill_token_threshold + 2048
-            logger.info(f" is_protect {is_protect} with num_new_tokens {num_new_tokens} <= {1.3 * self.scheduler_config.long_prefill_token_threshold}")
-            if is_protect == False:
-                if (0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens):
-                            num_new_tokens = (
-                                self.scheduler_config.long_prefill_token_threshold)
+            if (self.scheduler_config.long_prefill_token_threshold > 0 and
+                num_new_tokens > self.scheduler_config.long_prefill_token_threshold + 2048):
+                        num_new_tokens = (
+                            self.scheduler_config.long_prefill_token_threshold)
         else:
             if (0 < self.scheduler_config.long_prefill_token_threshold
                         < num_new_tokens):
@@ -350,18 +320,14 @@ def schedule(self) -> SchedulerOutput:
     # Next, schedule the WAITING requests.
     if not preempted_reqs:
         if role == "prefill":
-            waiting_dict = {req.request_id: req for req in self.waiting}
-            self_waiting_tmp = []
-            for req in self.mix:
-                if req['request_id'] in waiting_dict:
-                    self_waiting_tmp.append(waiting_dict[req['request_id']])
-            self.waiting = deque(self_waiting_tmp)
+            self.waiting = deque([mix_req.request for mix_req in mix_requests if not mix_req.is_running])
+
         while self.waiting and token_budget > 0:
             if len(self.running) == self.max_num_running_reqs:
                 break
 
             request = self.waiting[0]
-            if( role == "prefill" and self.preScheduling[request.request_id] == False):
+            if( role == "prefill" and not pre_scheduled[request.request_id]):
                 break
             # KVTransfer: skip request if still waiting for remote kvs.
             if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -438,22 +404,16 @@ def schedule(self) -> SchedulerOutput:
                 # requests, which have output tokens.
                 num_new_tokens = request.num_tokens_with_spec - num_computed_tokens
                 if role == "prefill":
-                    is_protect =  self.scheduler_config.long_prefill_token_threshold <= num_new_tokens <= self.scheduler_config.long_prefill_token_threshold + 2048
-                    logger.info(f" is_protect {is_protect} with num_new_tokens {num_new_tokens} <= {1.3 * self.scheduler_config.long_prefill_token_threshold}")
-                    if is_protect == False:
-                        if (0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens):
-                                    num_new_tokens = (
-                                        self.scheduler_config.long_prefill_token_threshold)
+                    if (self.scheduler_config.long_prefill_token_threshold > 0 and
+                        num_new_tokens > self.scheduler_config.long_prefill_token_threshold + 2048):
+                        num_new_tokens = (
+                            self.scheduler_config.long_prefill_token_threshold)
                 else:
                     if (0 < self.scheduler_config.long_prefill_token_threshold
                                 < num_new_tokens):
                         num_new_tokens = (
                                 self.scheduler_config.long_prefill_token_threshold)
-                    if FORCE_ENABLE_CHUNK_PREFILL:
-                        num_new_tokens = min(num_new_tokens, token_budget)
-                    elif num_new_tokens > token_budget:
-                        break
-                    logger.info(f"{num_new_tokens=}")
+
                 if FORCE_ENABLE_CHUNK_PREFILL:
                     num_new_tokens = min(num_new_tokens, token_budget)
                 elif num_new_tokens > token_budget:
