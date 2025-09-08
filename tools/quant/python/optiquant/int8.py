@@ -79,7 +79,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
         new_state_dict = {}
         for weight_name, weight in state_dict.items():
             if weight_name in disable_names:
-                print(weight_name, "bf16")
+                # print(weight_name, "bf16")
                 new_state_dict[weight_name] = weight
                 new_weight_map[weight_name] = file_name
                 continue
@@ -87,7 +87,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
             if scale_inv_name in weight_map or pangu_mode:
                 assert weight.element_size() == 2
                 quant_count += 1
-                print(weight_name, "int8")
+                # print(weight_name, "int8")
                 int8_weight, scale_inv = weight_quant(weight)
                 new_state_dict[weight_name] = int8_weight
                 new_scale_name = scale_inv_name.replace("_scale_inv", "_scale")
