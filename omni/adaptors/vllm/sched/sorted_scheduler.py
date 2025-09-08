@@ -15,7 +15,6 @@ from vllm.distributed.kv_transfer.kv_connector.factory import (
     KVConnectorFactory)
 from vllm.distributed.kv_transfer.kv_connector.v1 import (KVConnectorBase_V1,
                                                           KVConnectorRole)
-from vllm.logger import init_logger
 from vllm.utils import Device
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
@@ -25,6 +24,7 @@ from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
                                        SchedulerOutput)
 from vllm.v1.core.sched.utils import check_stop, add_token_and_check_stop
+from vllm.v1.core.sched.scheduler import logger
 from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
                             EngineCoreOutputs)
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -34,7 +34,6 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 
-logger = init_logger(__name__)
 role = os.getenv("ROLE", "NULL")
 
 reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
