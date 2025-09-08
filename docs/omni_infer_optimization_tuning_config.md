@@ -1,6 +1,6 @@
 # 一、DeepSeek模型部署  
 
-## 1、DeepSeek-R1-int8-A3-4P1D  
+## 1、DeepSeek-R1-int8-A3-4P8-1D32 
 ### 1.1 配置 omniinfer/tests/test_config/config_d.yaml:
     '''
 	pattern_path: "../../omni/accelerators/placement/patterns/base_patterns/DSV3_baseline_64_devices_58_MoE_Layers.npy"
@@ -25,7 +25,7 @@
         tags: sync_code
     '''
 
-## 2、DeepSeek-R1-int8-A2-1P1D 
+## 2、DeepSeek-R1-int8-A2-1P16-1D32
 
 ### 2.1 配置 omniinfer/tools/ansible/template/omni_infer_server_template.yml
     ```
@@ -120,7 +120,7 @@
             delegate_to: localhost
     ```       
     
-## 3、DeepSeek-R1-0528-BF16-A3-4机组P-2P1D
+## 3、DeepSeek-R1-0528-BF16-A3-2P32-1D32
 
 ### 3.1 配置 omniinfer/tests/test_config/config_p.yml                 
       
@@ -209,7 +209,7 @@
             bash ${CODE_PATH}/omniinfer/tools/scripts/pd_run.sh \
     ```
 
-## 4、DeepSeek-V3-INT4-A3-1机2P-8P1D
+## 4、DeepSeek-V3-INT4-A3-8P4-1D32
 
 ### 4.1 配置 omniinfer/tests/test_config/config_p.yml
     ```
@@ -392,7 +392,7 @@
 
 # 二、Qwen模型部署  
 
-## 1、Qwen2.5-7B-A2/A3-混部  
+## 1、Qwen2.5-7B-A2/A3-单机混部  
 
 ### 1.2 启动脚本：
     ```
@@ -424,7 +424,7 @@
         --max-num-seqs 128 \
         --additional-config '{"enable_hybrid_graph_mode": true, "graph_model_compile_config": {"level":1}}' 
     ```
-## 2、QwQ-32B-BF16-A3-1机2p-3p1d
+## 2、QwQ-32B-BF16-A2-3P8-1D8/A3-3P4-1D4
 ### 2.1 配置 omniinfer/tools/ansible/template/omni_infer_server_template.yml   
     ```
     environment:
@@ -934,7 +934,7 @@
                 - fetch_log---删除
     ```
 
-## 3、Qwen3-235B-int8-A3-4机组d-2p1d
+## 3、Qwen3-235B-int8-A3-2P8-1D32
 ### 3.1 配置 omniinfer/tests/test_config/test_config_prefill.json  
      ```
     "operator_optimizition_config":{
@@ -1010,7 +1010,7 @@
 
 # 三、Kimi模型部署  
 
-## 1、kimi-k2-int8-A3-2P1D  
+## 1、kimi-k2-int8-A3-2P8-1D16 
 ### 1.1 配置 omniinfer/tests/test_config/test_config_decode_k2.json:
     ```
     {
