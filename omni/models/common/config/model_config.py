@@ -51,7 +51,7 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall: bool = False
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
-    prefill_mla_absorb: bool = False
+    enable_fgsa: bool = False # 使能mla = Indexer + select FA
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path

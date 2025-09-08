@@ -84,7 +84,8 @@ class AscendMLABackend(AttentionBackend):
     @staticmethod
     def get_kv_cache_shape(num_blocks: int, block_size: int, num_kv_heads: int,
                            head_size: int) -> tuple[int, ...]:
-        return (num_blocks, block_size, 1, 512 + 64 + 128 + 1)
+        head_size = 512 + 64 + 128 + 1 if model_extra_config.operator_opt_config.enable_fgsa else 512 + 64
+        return (num_blocks, block_size, 1, head_size)
 
     @staticmethod
     def get_impl_cls() -> Type["MLAAttentionImpl"]:
@@ -110,23 +111,27 @@ class AscendMLABackend(AttentionBackend):
                             dtype=dtype,
                             pin_memory=True,
                             device=device)
-        layer_indexer_k_nope = torch.zeros(
-                        kv_cache_shape[:-2] +
-                        (1, 128, ),
-                        dtype=torch.int32,
-                        pin_memory=True,
-                        device=device)
-        layer_indexer_k_nope_scale = torch.zeros(
-                        kv_cache_shape[:-2] +
-                        (1, 1, ),
-                        dtype=torch.float32,
-                        pin_memory=True,
-                        device=device)
         if device != 'cpu':
             # force tensor format to ND
             layer_kv_cache_nope = torch_npu.npu_format_cast(layer_kv_cache_nope, 2)
             layer_kv_cache_pe = torch_npu.npu_format_cast(layer_kv_cache_pe, 2)
-        return (layer_kv_cache_nope, layer_kv_cache_pe, layer_indexer_k_nope, layer_indexer_k_nope_scale)
+        
+        if model_extra_config.operator_opt_config.enable_fgsa:
+            layer_indexer_k_nope = torch.zeros(
+                            kv_cache_shape[:-2] +
+                            (1, 128, ),
+                            dtype=dtype,
+                            pin_memory=True,
+                            device=device)
+            layer_indexer_k_nope_scale = torch.zeros(
+                            kv_cache_shape[:-2] +
+                            (1, 1, ),
+                            dtype=torch.float32,
+                            pin_memory=True,
+                            device=device)
+            return (layer_kv_cache_nope, layer_kv_cache_pe, layer_indexer_k_nope, layer_indexer_k_nope_scale)
+        else:
+            return (layer_kv_cache_nope, layer_kv_cache_pe)
 
     @staticmethod
     def swap_blocks(
@@ -464,23 +469,22 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
-            if model_extra_config.operator_opt_config.attn_sp_size > 1:
+            if model_extra_config.parall_config.attn_sp_size > 1:
                 new_seq_qlen_group = []
                 for sub_list in seq_qlen_group:
-                    sub_list = [math.ceil(q_len / model_extra_config.operator_opt_config.attn_sp_size / 2) for q_len in sub_list]
+                    sub_list = [math.ceil(q_len / model_extra_config.parall_config.attn_sp_size / 2) for q_len in sub_list]
                     new_seq_qlen_group.append(sub_list)
                 seq_qlen_group = new_seq_qlen_group
                 new_seq_kvlen_group = []
-                sp_rank = get_tensor_model_parallel_rank()
                 for sub_list in seq_kvlen_group:
-                    sub_list = [math.ceil(kv_len / model_extra_config.operator_opt_config.attn_sp_size / 2) for kv_len in sub_list]
+                    sub_list = [math.ceil(kv_len / model_extra_config.parall_config.attn_sp_size / 2) for kv_len in sub_list]
                     new_seq_kvlen_group.append(sub_list)
                 seq_kvlen_group = new_seq_kvlen_group
 
             tmp_input_position = input_positions[tokens_start:]
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(tmp_input_position)
 
-            if model_extra_config.operator_opt_config.attn_sp_size > 1:
+            if model_extra_config.parall_config.attn_sp_size > 1:
                 split_list, zigzag_index, cp_reverse_index, reverse_split_list = self.prepare_sp_split_indices(torch.tensor(query_lens_list[reqs_start:]))
 
             prefill_metadata = AscendMLAPrefillMetadata(
@@ -495,10 +499,10 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 kv_index_list=kv_index_list,
                 sin=sin,
                 cos=cos,
-                sp_split_list=split_list if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
-                sp_zigzag_index=zigzag_index if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
-                sp_reverse_index=cp_reverse_index if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
-                sp_reverse_split_list=reverse_split_list if model_extra_config.operator_opt_config.attn_sp_size > 1 else None,
+                sp_split_list=split_list if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                sp_zigzag_index=zigzag_index if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                sp_reverse_index=cp_reverse_index if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                sp_reverse_split_list=reverse_split_list if model_extra_config.parall_config.attn_sp_size > 1 else None,
             )
 
         decode_metadata = None
@@ -533,7 +537,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             decode_metadata = AscendMLADecodeMetadata(
                 input_positions=input_positions,
                 block_table=block_table,
-                seq_lens=seq_lens,
+                seq_lens=seq_lens.tolist(),
                 mc2_mask=self.mc2_mask,
                 cos=cos,
                 sin=sin,
@@ -601,7 +605,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             decode_metadata = AscendMLADecodeMetadata(
                 input_positions=input_positions,
                 block_table=block_table,
-                seq_lens=seq_lens,
+                seq_lens=seq_lens.tolist(),
                 mc2_mask=self.mc2_mask,
                 cos=cos.clone(),
                 sin=sin.clone(),
@@ -646,7 +650,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         decode_metadata = AscendMLADecodeMetadata(
                 input_positions=input_positions,
                 block_table=block_table,
-                seq_lens=seq_lens,
+                seq_lens=seq_lens.tolist(),
                 mc2_mask=self.mc2_mask,
                 cos=cos,
                 sin=sin,
@@ -676,8 +680,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             torch._dynamo.mark_static(attn_metadata.decode.best_topk)
         if attn_metadata.decode.block_table is not None:
             torch._dynamo.mark_static(attn_metadata.decode.block_table)
-        if attn_metadata.decode.seq_lens is not None:
-            torch._dynamo.mark_static(attn_metadata.decode.seq_lens)
+        # if attn_metadata.decode.seq_lens is not None:
+        #     torch._dynamo.mark_static(attn_metadata.decode.seq_lens)
         if attn_metadata.slot_mapping is not None:
             torch._dynamo.mark_static(attn_metadata.slot_mapping)
         self.already_mark_static = True

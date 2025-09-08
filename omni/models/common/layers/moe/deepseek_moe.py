@@ -432,10 +432,10 @@ class DeepseekMoE(nn.Module):
         hidden_states_3d = hidden_states.unsqueeze(1)
         hidden_states = hidden_states_3d.squeeze(1)
 
-        with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
-            hidden_states = tng.scope.npu_wait_tensor(hidden_states, router_logits)
+        # with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+        #     hidden_states = tng.scope.npu_wait_tensor(hidden_states, router_logits)
             # shared_experts w13
-            gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states)
+        gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states)
         wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
         
         # expert weight prefetch
@@ -520,9 +520,10 @@ class DeepseekMoE(nn.Module):
             else:
                 expand_x, pertoken_scale = torch_npu.npu_dynamic_quant(expand_x)
 
-        with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+        if True:
+        # with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
             wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
-            wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
+            # wait_gate = tng.scope.npu_wait_tensor(wait_gate, expand_x)
             if not isinstance(gate_up_share, torch.Tensor):
                 gate_up_share = (wait_gate, gate_up_share[1])
             intermediate_hiddenstates_share = self.shared_experts.act_fn(gate_up_share, self.shared_experts.quant_symbol)
@@ -610,12 +611,12 @@ class DeepseekMoE(nn.Module):
         }
         kwargs.update(stage3_kwargs)
 
-        with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
-            if isinstance(intermediate_hiddenstates_share, dict):
-                intermediate_hiddenstates_share['x_int8'] = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share.get('x_int8'), hidden_states_experts)
-            else:
-                intermediate_hiddenstates_share = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share, hidden_states_experts)
-            shared_output, _ = self.shared_experts.down_proj.forward(intermediate_hiddenstates_share)
+        # with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+        #     if isinstance(intermediate_hiddenstates_share, dict):
+        #         intermediate_hiddenstates_share['x_int8'] = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share.get('x_int8'), hidden_states_experts)
+        #     else:
+        #         intermediate_hiddenstates_share = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share, hidden_states_experts)
+        shared_output, _ = self.shared_experts.down_proj.forward(intermediate_hiddenstates_share)
 
         # prefetch weights for attention next layer
         if model_extra_config.operator_opt_config.attn_prefetch > 0 and next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
