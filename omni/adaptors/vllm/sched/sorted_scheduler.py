@@ -42,14 +42,14 @@ FORCE_ENABLE_CHUNK_PREFILL = os.getenv("FORCE_ENABLE_CHUNK_PREFILL", "0") == "1"
 class MixRequest:
     request: Request
     is_running: bool
-    is_protect: bool
+    is_isolated: bool
     num_new_tokens: int
 
     def __init__(self, request: Request, is_running: bool):
         self.request = request
         self.is_running = is_running
-        self.is_protect = False
-        self.num_new_tokens = 0
+        self.is_isolated = False
+        self.num_new_tokens = request.num_prompt_tokens
 
     def __lt__(self, other: MixRequest) -> bool:
         return self.num_new_tokens < other.num_new_tokens
@@ -124,7 +124,7 @@ def schedule(self) -> SchedulerOutput:
                     num_new_tokens = 0
 
                 mix_req.num_new_tokens = num_new_tokens
-                mix_req.is_protect = True
+                mix_req.is_isolated = True
 
         # 按token数量排序
         mix_requests.sort()
@@ -133,31 +133,31 @@ def schedule(self) -> SchedulerOutput:
 
         # 调度逻辑
         schedule_num = 0
-        protected_requests_to_move = [] 
-        for mix_req in mix_requests:
-            if budget - mix_req.num_new_tokens < 0:
-                break
+        if mix_requests and mix_requests[0].is_isolated:
+            pre_scheduled[mix_requests[0].request.request_id] = True
+        else:
+            isolated_requests = [mix_req for mix_req in mix_requests if mix_req.is_isolated]
+            for mix_req in mix_requests:
+                if budget - mix_req.num_new_tokens < 0:
+                    break
 
-            if schedule_num >= 1 and mix_req.is_protect:
-                protected_requests_to_move.append(mix_req)
-                continue 
+                if mix_req.is_isolated:
+                    continue 
 
-            if schedule_num > 0 and mix_req.num_new_tokens > 2 ** (2 - schedule_num) * 1024:
-                break
-            
-            budget -= mix_req.num_new_tokens
-            pre_scheduled[mix_req.request.request_id] = True  
+                if schedule_num > 0 and mix_req.num_new_tokens > 2 ** (2 - schedule_num) * 1024:
+                    break
+                
+                budget -= mix_req.num_new_tokens
+                pre_scheduled[mix_req.request.request_id] = True  
 
-            schedule_num += 1
-            if (schedule_num >= self.max_num_running_reqs or mix_req.is_protect or
-                budget < self.max_num_scheduled_tokens - 0.2 * min(len(mix_requests), 5) * 16384):
-                break
+                schedule_num += 1
+                if (schedule_num >= self.max_num_running_reqs or
+                    budget < self.max_num_scheduled_tokens - 0.2 * min(len(mix_requests), 5) * 16384):
+                    break
         
-        if protected_requests_to_move:
-            for mix_req in protected_requests_to_move:
-                if mix_req in mix_requests:
-                    mix_requests.remove(mix_req)
-            mix_requests.extend(protected_requests_to_move)
+            if isolated_requests:
+                mix_requests = [mix_req for mix_req in mix_requests if not mix_req.is_isolated]
+                mix_requests.extend(isolated_requests)
 
         logger.info(f"Prefill scheduling completed in {time.time() - t1:.3f}s")
         t2 = time.time()
@@ -326,7 +326,7 @@ def schedule(self) -> SchedulerOutput:
                 break
 
             request = self.waiting[0]
-            if( role == "prefill" and not pre_scheduled[request.request_id]):
+            if role == "prefill" and not pre_scheduled[request.request_id]:
                 break
             # KVTransfer: skip request if still waiting for remote kvs.
             if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
