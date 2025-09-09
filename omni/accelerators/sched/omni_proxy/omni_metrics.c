@@ -283,9 +283,11 @@ ngx_str_t omni_metrics_export(omni_global_state_t *global_state)
     }
 
 done:
-    ngx_str_t result;
-    result.data = buffer;
-    result.len = p - buffer;
+    {
+        ngx_str_t result;
+        result.data = buffer;
+        result.len = p - buffer;
 
-    return result;
+        return result;
+    }
 }
