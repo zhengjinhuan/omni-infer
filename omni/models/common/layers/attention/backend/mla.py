@@ -470,16 +470,10 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
             if model_extra_config.parall_config.attn_sp_size > 1:
-                new_seq_qlen_group = []
-                for sub_list in seq_qlen_group:
-                    sub_list = [math.ceil(q_len / model_extra_config.parall_config.attn_sp_size / 2) for q_len in sub_list]
-                    new_seq_qlen_group.append(sub_list)
-                seq_qlen_group = new_seq_qlen_group
-                new_seq_kvlen_group = []
-                for sub_list in seq_kvlen_group:
-                    sub_list = [math.ceil(kv_len / model_extra_config.parall_config.attn_sp_size / 2) for kv_len in sub_list]
-                    new_seq_kvlen_group.append(sub_list)
-                seq_kvlen_group = new_seq_kvlen_group
+                query_lens = query_lens_list[reqs_start:]
+                query_lens = [math.ceil(q_len / model_extra_config.parall_config.attn_sp_size / 2) for q_len in query_lens]
+                seq_lens_list = [math.ceil(kv_len / model_extra_config.parall_config.attn_sp_size / 2) for kv_len in seq_lens_list]
+
 
             tmp_input_position = input_positions[tokens_start:]
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(tmp_input_position)
@@ -487,9 +481,10 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             if model_extra_config.parall_config.attn_sp_size > 1:
                 split_list, zigzag_index, cp_reverse_index, reverse_split_list = self.prepare_sp_split_indices(torch.tensor(query_lens_list[reqs_start:]))
 
+            query_lens = list(itertools.accumulate(query_lens))
             prefill_metadata = AscendMLAPrefillMetadata(
                 attn_mask=self.runner.attn_mask,
-                query_lens=query_lens_list[reqs_start:],
+                query_lens=query_lens,
                 seq_lens=seq_lens_list,
                 input_positions=tmp_input_position,
                 block_table=block_table[reqs_start:, ...],

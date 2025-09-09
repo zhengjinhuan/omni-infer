@@ -79,8 +79,9 @@ class Indexer(nn.Module):
 
         self.actual_seq_lengths = {}
         for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
-            self.actual_seq_lengths[batch_size] = torch.tensor(list([1] * batch_size), dtype=torch.int64, device=current_platform.device_type)
-            torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
+            # self.actual_seq_lengths[batch_size] = torch.tensor(list([1] * batch_size), dtype=torch.int64, device=current_platform.device_type)
+            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+            # torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
 
         self.wq_b = ReplicatedLinear(self.q_lora_rank,
                                         self.n_heads * self.head_dim,
@@ -107,28 +108,22 @@ class Indexer(nn.Module):
                 positions: torch.Tensor,attn_metadata: AttentionMetadata,
                 kv_cache: torch.Tensor, is_prefill):
         print(f"{x.shape=} {qr.shape=} {positions.shape=} {is_prefill=}", flush=True)
-        bsz, seq_len, _ = x.size()
-        q = self.wq_b(qr)[0]  # [b,s,1536] @ [1536,64*128] = [b,s,64*128]
-        q = q.reshape(bsz, seq_len, self.n_heads, self.head_dim)  # [b,s,64,128]
+        q = self.wq_b(qr)[0]  # [b*s,1536] @ [1536,64*128] = [b*s,64*128]
+        q = q.reshape(-1, self.n_heads, self.head_dim)  # [b*s,64,128]
         q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64,64+64]
 
-        k = self.wk(x)[0]  # [b,s,7168] @ [7168,128] = [b,s,128]
-        k = self.k_norm(k)
+        k = self.wk(x)[0]  # [b*s,7168] @ [7168,128] = [b*s,128]
+        k = self.k_norm(k).unsqueeze(1)
         k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
 
         cos, sin = self.rotary_emb.get_cos_sin(positions)
 
-        if is_prefill:
-            q_pe = q_pe.transpose(0, 1)
-            k_pe = k_pe.transpose(0, 1)
-
+        q_pe = q_pe.unsqueeze(2)  # [b,s,1,64]
         q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin)
+        q_pe = q_pe.squeeze(2)
         
-        k_pe = torch_npu.npu_interleave_rope(k_pe.unsqueeze(2), cos, sin)
-        if is_prefill:
-            q_pe = q_pe.transpose(0, 1)
-            k_pe = k_pe.transpose(0, 1)
-
+        k_pe = k_pe.unsqueeze(2)
+        k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
         k_pe = k_pe.squeeze(2)
 
         k = torch.cat([k_pe, k_nope], dim=-1).unsqueeze(1)  # [b,s,128]
@@ -146,10 +141,12 @@ class Indexer(nn.Module):
         actual_seq_lengths_key = None
         block_table = None
         if is_prefill:
+            # todo 在build阶段转tensor
             actual_seq_lengths_query = torch.tensor(attn_metadata.prefill.query_lens).npu()
             actual_seq_lengths_key = torch.tensor(attn_metadata.prefill.seq_lens).npu()
             block_table = attn_metadata.prefill.block_table
         else:
+            # todo 在build阶段转tensor
             actual_seq_lengths_query = self.actual_seq_lengths[q.shape[0]]
             actual_seq_lengths_key = torch.tensor(attn_metadata.decode.seq_lens).npu()
             block_table = attn_metadata.decode.block_table
@@ -161,7 +158,7 @@ class Indexer(nn.Module):
                                                           actual_seq_lengths_key=actual_seq_lengths_key,
                                                           block_table=block_table,
                                                           score_scale=self.n_heads **-0.5 * self.softmax_scale,
-                                                          layout_query="BSND",
+                                                          layout_query="TND",
                                                           layout_key="PA_BSND",
                                                           selected_count=2048,
                                                           sparse_mode=3)
@@ -407,8 +404,8 @@ class DeepseekMLA(nn.Module):
             self.actual_seq_lengths = {}
             for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
                 self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
-                # self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * self.tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
-                self.actual_seq_lengths[batch_size] = list([1] * batch_size)
+                self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+                # self.actual_seq_lengths[batch_size] = list([1] * batch_size)
                 torch._dynamo.mark_static(self.norm_res[batch_size])
                 # torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
         if self.quant_symbol and model_extra_config.operator_opt_config.use_mlaprolog:
@@ -462,46 +459,42 @@ class DeepseekMLA(nn.Module):
         
         if attn_metadata is not None:
             prefill_metadata = attn_metadata.prefill
+            actual_seq_kvlen = prefill_metadata.seq_lens
+            actual_seq_qlen = prefill_metadata.query_lens
+            if model_extra_config.parall_config.attn_sp_size > 1:
+                sp_size = model_extra_config.parall_config.attn_sp_size
+                sp_rank = get_tensor_model_parallel_rank()
+                if is_second_attn:
+                    actual_seq_kvlen = [kvlen * (sp_size * 2 - sp_rank) for kvlen in actual_seq_kvlen]
+                else:
+                    actual_seq_kvlen = [kvlen * (sp_rank + 1) for kvlen in actual_seq_kvlen]
 
-            for iter, (actual_seq_qlen, actual_seq_kvlen) in enumerate(zip(
-                prefill_metadata.seq_qlen_group,
-                prefill_metadata.seq_kvlen_group)
-            ):
-                if model_extra_config.parall_config.attn_sp_size > 1:
-                    sp_size = model_extra_config.parall_config.attn_sp_size
-                    sp_rank = get_tensor_model_parallel_rank()
-                    if is_second_attn:
-                        actual_seq_kvlen = [kvlen * (sp_size * 2 - sp_rank) for kvlen in actual_seq_kvlen]
-                    else:
-                        actual_seq_kvlen = [kvlen * (sp_rank + 1) for kvlen in actual_seq_kvlen]
+            if model_extra_config.parall_config.attn_sp_size == 1:
+                hidden_states = mla_tensor_model_parallel_all_gather(hidden_states, dim=0)
 
-                if model_extra_config.parall_config.attn_sp_size == 1:
-                    hidden_states = mla_tensor_model_parallel_all_gather(hidden_states, dim=0)
-                # todo indexer only support bsnd
-                topk_indices = self.indexer(hidden_states.unsqueeze(0), qr, positions, attn_metadata,
-                                           kv_cache=kv_cache, is_prefill=True)
-                print(f"{topk_indices.shape=} {topk_indices=}", flush=True)
-                # todo current only support bsnd
-                k_nope = k_nope.squeeze(2)
-                k_rope = k_rope.squeeze(2)
-                attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
-                    query=q_nope.unsqueeze(0),
-                    key=k_nope,
-                    value=k_nope,
-                    query_rope=q_pe.unsqueeze(0),
-                    key_rope=k_rope,
-                    scale_value=self.scale,
-                    topk_indices=topk_indices,
-                    head_num=self.num_heads,
-                    key_value_head_num=1,
-                    page_block_size=128,
-                    block_table=prefill_metadata.block_table,
-                    select_block_size=1,
-                    select_block_count=2048,
-                    layout="BSND",sparse_mode=3, atten_mask=None,
-                    actual_seq_qlen=actual_seq_qlen,
-                    actual_seq_kvlen=actual_seq_kvlen,
-                ).squeeze(0)
+            topk_indices = self.indexer(hidden_states, qr, positions, attn_metadata,
+                                        kv_cache=kv_cache, is_prefill=True)
+
+            k_nope = k_nope.squeeze(2)
+            k_rope = k_rope.squeeze(2)
+            attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
+                query=q_nope,
+                key=k_nope,
+                value=k_nope,
+                query_rope=q_pe,
+                key_rope=k_rope,
+                scale_value=self.scale,
+                topk_indices=topk_indices,
+                head_num=self.num_heads,
+                key_value_head_num=1,
+                page_block_size=128,
+                block_table=prefill_metadata.block_table,
+                select_block_size=1,
+                select_block_count=2048,
+                layout="TND",sparse_mode=3, atten_mask=None,
+                actual_seq_qlen=actual_seq_qlen,
+                actual_seq_kvlen=actual_seq_kvlen,
+            )
                 
         else:
             attn_output = torch.zeros(
@@ -988,13 +981,13 @@ class DeepseekMLA(nn.Module):
                 k_nope = k_nope.squeeze(2)
                 k_rope = k_rope.squeeze(2)
                 # todo indexer only support bsnd
-                topk_indices = self.indexer(hidden_states.unsqueeze(1), qr.unsqueeze(1), positions, attn_metadata,
+                topk_indices = self.indexer(hidden_states, qr, positions, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)
                 attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
-                    query=q_nope.unsqueeze(1),
+                    query=q_nope,
                     key=k_nope,
                     value=k_nope,
-                    query_rope=q_pe.unsqueeze(1),
+                    query_rope=q_pe,
                     key_rope=k_rope,
                     scale_value=self.scale,
                     topk_indices=topk_indices,
@@ -1004,7 +997,7 @@ class DeepseekMLA(nn.Module):
                     block_table=attn_metadata.decode.block_table,
                     select_block_size=1,
                     select_block_count=2048,
-                    layout="BSND",sparse_mode=3, atten_mask=None,
+                    layout="TND",sparse_mode=3, atten_mask=None,
                     actual_seq_qlen=self.actual_seq_lengths[bsz],
                     actual_seq_kvlen=attn_metadata.decode.seq_lens,
                 )
