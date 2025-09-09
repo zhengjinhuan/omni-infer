@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass
 import os
 
+os.environ["VLLM_PLUGINS"] = ""
 os.environ["RAYON_NUM_THREADS"] = os.environ.get("RAYON_NUM_THREADS", "2")
 os.environ["TOKENIZERS_PARALLELISM"] = os.environ.get("TOKENIZERS_PARALLELISM", "true")
 os.environ["RAYON_MIN_CHUNK_SIZE"] = os.environ.get("RAYON_MIN_CHUNK_SIZE", "1024")
@@ -20,7 +21,7 @@ print(f"Tokenizers parallelism set to: {os.environ['TOKENIZERS_PARALLELISM']}")
 print(f"Rayon minimum chunk size: {os.environ['RAYON_MIN_CHUNK_SIZE']}")
 
 from transformers import PreTrainedTokenizer, AutoTokenizer
-from vllm.transformers_utils.tokenizer import get_tokenizer
+# from vllm.transformers_utils.tokenizer import get_tokenizer
 # from vllm.utils import sha256
 # from vllm.v1.core import kv_cache_utils
 
@@ -42,21 +43,27 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizer:
     Returns:
         PreTrainedTokenizer: Loaded tokenizer instance
     """
-    try:
-        # Use vllm's get_tokenizer with identical parameters
-        tokenizer = get_tokenizer(
-            model_path, 
-            trust_remote_code=True,
-            tokenizer_mode="auto"
-        )
+    # try:
+    #     # Use vllm's get_tokenizer with identical parameters
+    #     tokenizer = get_tokenizer(
+    #         model_path, 
+    #         trust_remote_code=True,
+    #         tokenizer_mode="auto"
+    #     )
 
-    except Exception:
-        # Fallback identical to vLLM
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path, 
-            trust_remote_code=True,
-            local_files_only=True
-        )
+    # except Exception:
+    #     # Fallback identical to vLLM
+    #     tokenizer = AutoTokenizer.from_pretrained(
+    #         model_path, 
+    #         trust_remote_code=True,
+    #         local_files_only=True
+    #     )
+    tokenizer = AutoTokenizer.from_pretrained(
+       model_path, 
+       trust_remote_code=True,
+       local_files_only=True
+    )
+    
     
     # Set padding token identical to vLLM
     if tokenizer.pad_token is None:
@@ -619,9 +626,10 @@ def sha256(input) -> int:
 
 def hash_block_tokens(token_ids: List[int], block_size: int = 128) -> List[int]:
     block_hashes= []
-    NONE_HASH = sha256(os.environ.get("PYTHONHASHSEED"))
+    NONE_HASH = int(sha256(os.environ.get("PYTHONHASHSEED")))
 
     parent_block_hash_value = NONE_HASH
+    # print(f"parent_block_hash_value is {parent_block_hash_value}")
     hash_function = hash
 
     for start in range(0, len(token_ids), block_size):
@@ -630,7 +638,7 @@ def hash_block_tokens(token_ids: List[int], block_size: int = 128) -> List[int]:
         if len(block_token_ids) < block_size:
             break
 
-        block_hash = hash_function((parent_block_hash_value, tuple(block_token_ids), None))
+        block_hash = hash_function((parent_block_hash_value, tuple(block_token_ids), 0))
         block_hashes.append(block_hash)
         parent_block_hash_value = block_hash 
 
