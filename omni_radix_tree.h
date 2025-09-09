@@ -15,6 +15,7 @@ struct omni_radix_node_s
     uint64_t hash_key;
     omni_radix_node_t *first_child;
     omni_radix_node_t *next_sibling;
+    omni_radix_node_t *parent; /* 新增：指向父节点，便于 unlink */
 };
 
 typedef struct
@@ -38,8 +39,14 @@ ngx_int_t omni_radix_tree_add_chain(omni_radix_tree_t *tree,
 ngx_uint_t omni_radix_tree_match(omni_radix_tree_t *tree,
                                 uint64_t *hash_chain,
                                 ngx_uint_t chain_len);
-ngx_uint_t omni_radix_tree_match_optimistic(omni_radix_tree_t *tree, uint64_t *hash_chain,
+
+ngx_uint_t omni_radix_tree_match_optimistic(omni_radix_tree_t *tree,
+                                            uint64_t *hash_chain,
                                             ngx_uint_t chain_len);
+
+/* Remove all nodes whose node->hash_key == hash_to_remove (and their subtrees).
+   Returns NGX_OK if at least one node removed; NGX_ERROR if none found.
+*/
 ngx_int_t omni_radix_tree_remove(omni_radix_tree_t *tree,
                                 uint64_t hash_to_remove);
 
