@@ -80,14 +80,93 @@ static inline omni_req_context_t *omni_get_req_ctx(ngx_http_request_t *r)
 {
     return ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 }
+static omni_req_info_t *find_req_info_in_group(uint32_t slot_index, omni_req_group_t *group)
+{
+    for (uint32_t i = 0; i < group->watermark; ++i)
+    {
+        omni_req_info_t *info = &group->requests[i];
+        if (info->in_use && info->slot_index == slot_index)
+        {
+            return info;
+        }
+    }
+    return NULL;
+}
 
 static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 {
     return omni_get_req_ctx(r)->req;
 }
 
+//Copy the pointer first -> Release the lock -> Perform calculations -> Write back
+
 static void omni_proxy_post_tokenized(omni_req_t *req)
 {
+    omni_req_group_t *group;
+    omni_req_info_t *info;
+
+    / * 1) Acquire the info pointer and the required radix_tree pointer snapshot under the global lock */
+    ngx_shmtx_lock(&g_state->shmtx);
+    group = &g_state->groups[PHASE_TOKENIZING];
+    info = find_req_info_in_group(req->slot_index, group);
+    
+    if (info == NULL)
+    {
+        ngx_shmtx_unlock(&g_state->shmtx);
+        goto phase_transition;
+    }
+
+    
+    uint16_t num_prefill = g_state->num_prefill_endpoints;
+    omni_radix_tree_t *local_trees[MAX_PREFILL_UPSTREAMS];
+    uint16_t local_num = 0;
+
+    for (uint16_t i = 0; i < num_prefill; ++i)
+    {
+        omni_upstream_prefill_t *prefill = &g_state->prefill_states[i];
+        local_trees[local_num++] = prefill->radix_tree; 
+    }
+    ngx_shmtx_unlock(&g_state->shmtx);
+
+    / * 2) Perform matching without holding a global lock (operations that are time-consuming or may acquire a tree lock) */
+    ngx_uint_t local_match_depths[MAX_PREFILL_UPSTREAMS];
+    ngx_uint_t max_match_depth = 0;
+
+    for (uint16_t i = 0; i < local_num; ++i)
+    {
+        omni_radix_tree_t *tree = local_trees[i];
+        ngx_uint_t match_depth = 0;
+
+        if (tree != NULL)
+        {
+            match_depth = omni_radix_tree_match_optimistic(tree,
+                                                           (uint64_t *)req->tokenizer_req.block_hashes,
+                                                           req->tokenizer_req.block_hashes_len);
+        }
+
+        local_match_depths[i] = match_depth;
+        if (match_depth > max_match_depth)
+        {
+            max_match_depth = match_depth;
+        }
+    }
+
+    /* 3) Write the computation results back to shared memory (requires a lock). */
+    ngx_shmtx_lock(&g_state->shmtx);
+    /* Search for info again (to prevent changes in the group structure during the period), or directly use the previous info pointer if stability is ensured. */
+    group = &g_state->groups[PHASE_TOKENIZING];
+    info = find_req_info_in_group(req->slot_index, group);
+    if (info)
+    {
+        for (uint16_t i = 0; i < local_num && i < MAX_PREFILL_UPSTREAMS; ++i)
+        {
+            info->match_depths[i] = local_match_depths[i];
+        }
+        info->weight = max_match_depth;
+    }
+    ngx_shmtx_unlock(&g_state->shmtx);
+
+phase_transition:
     omni_phase_transition_all(req, 0, PHASE_PREFILL_WAITING_SCHEDULE);
     req->metrics.time_enter_wait_prefill = ngx_current_msec;
 
@@ -1179,7 +1258,7 @@ static void omni_proxy_timer_handler(ngx_event_t *ev)
 
     ngx_add_timer(&local_state.omni_proxy_timer_event, TIMER_INTERVAL);
 
-    print_summary();
+    // print_summary();
 }
 
 static void omni_proxy_init_req_groups(omni_req_group_t groups[])
@@ -1621,7 +1700,7 @@ static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-void zmq_test_handler(struct omni_zmq_handler_s *handler,
+static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
                       const char *topic,
                       const void *message,
                       size_t length)
@@ -1629,13 +1708,69 @@ void zmq_test_handler(struct omni_zmq_handler_s *handler,
     KVEventBatch *batch = parse_kv_event_batch(message, length);
     if (!batch)
     {
+        ngx_log_error(NGX_LOG_INFO, handler->log, 0, "Failed to parse KV event batch");
         return;
     }
 
-    printf("[%ld - %ld] Received KV event batch with %ld events\n",
+    ngx_log_error(NGX_LOG_INFO, handler->log, 0, "[%ld - %ld] Received KV event batch with %ld events",
            handler->index, ngx_worker, batch->events_count);
 
-    // print_kv_event_batch(batch);
+    omni_upstream_prefill_t *prefill = &g_state->prefill_states[handler->index];
+    if (!prefill->radix_tree)
+    {
+        ngx_log_error(NGX_LOG_WARN, handler->log, 0, "Radix tree for prefill %d is not initialized", handler->index);
+        free_kv_event_batch(batch);
+        return;
+    }
+
+    for (size_t i = 0; i < batch->events_count; i++)
+    {
+        KVCacheEvent *event = (KVCacheEvent *)batch->events[i];
+        if (!event)
+            continue;
+
+        switch (event->type)
+        {
+        case KV_EVENT_BLOCK_STORED:
+        {
+            struct stored_data
+            {
+                int64_t *block_hashes;
+                size_t block_hashes_count;
+                int64_t parent_block_hash;
+            } * stored = (struct stored_data *)&event->data.block_stored;
+            for (size_t i = 0; i < stored->block_hashes_count; ++i) {
+                ngx_log_error(NGX_LOG_INFO, handler->log, 0,
+                    "block_hashes[%zu] = %" PRId64, i, stored->block_hashes[i]);
+            }
+
+            if (stored->block_hashes_count > 0)
+            {
+                omni_radix_tree_add_chain(prefill->radix_tree,
+                                          (uint64_t *)stored->block_hashes,
+                                          stored->block_hashes_count);
+            }
+            break;
+        }
+        case KV_EVENT_BLOCK_REMOVED:
+        {
+            // With optimistic matching, we can just increment the version
+            // to invalidate in-flight reads, instead of performing a costly remove.
+            ngx_atomic_fetch_add(&prefill->radix_tree->version, 1);
+            break;
+        }
+        case KV_EVENT_ALL_BLOCKS_CLEARED:
+        {
+            // Re-initialize the radix tree for this upstream
+            omni_radix_tree_destroy(prefill->radix_tree);
+            prefill->radix_tree = omni_radix_tree_init(prefill->radix_pool);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
     free_kv_event_batch(batch);
 }
 
@@ -1662,9 +1797,9 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
                 return NGX_ERROR;
             }
 
-            printf("Start radix tree unit test...\n");
-            omni_radix_tree_test(prefill->radix_tree);
-            printf("Radix tree unit test done.\n");
+            // printf("Start radix tree unit test...\n");
+            // omni_radix_tree_test(prefill->radix_tree);
+            // printf("Radix tree unit test done.\n");
 
             u_char *buf = ngx_palloc(cycle->pool, 64);
             u_char *last = ngx_snprintf((u_char *)buf, 64, "%s:%d",
@@ -1675,13 +1810,24 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
             ngx_str_t addr = {last - buf, buf};
 
             ngx_str_t topic = ngx_string("");
-            omni_zmq_handler_init(cycle, &prefill->kv_handler, addr, topic, zmq_test_handler);
+            omni_zmq_handler_init(cycle, &prefill->kv_handler, addr, topic, omni_proxy_kv_event_handler);
         }
     }
 }
 
 static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
 {
+    // struct sigaction sa;
+    // sa.sa_handler = SIG_IGN;
+    // sa.sa_flags = 0;
+    // sigemptyset(&sa.sa_mask);
+
+    // if (sigaction(SIGCHLD, &sa, NULL) == -1)
+    // {
+    //     perror("sigaction");
+    //     exit(EXIT_FAILURE);
+    // }
+
     local_state.pid = ngx_pid;
     local_state.worker = ngx_worker;
 
