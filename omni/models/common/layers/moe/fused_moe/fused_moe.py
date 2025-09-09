@@ -1128,7 +1128,7 @@ def fused_experts_w8a8_allgather_ep_a2(layer: torch.nn.Module,
                                           device="npu")
 
         if model_extra_config.operator_opt_config.use_omni_placement:
-            group_list = expert_token_nums.to(torch.int64)
+            group_list = expert_tokens.to(torch.int64)
             layer.planner.record_activation(layer.moe_layer_idx, group_list,
                                             support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
                                                 not is_prefill))

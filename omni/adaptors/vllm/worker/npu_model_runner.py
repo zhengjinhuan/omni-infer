@@ -54,6 +54,7 @@ from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profili
 from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
+from omni.adaptors.vllm.utils import get_attr_by_names
 
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
@@ -909,9 +910,11 @@ class NPUModelRunner(GPUModelRunner):
             logger.info("Loading model weights took %.4f GB", m.consumed_memory / float(2**30))
 
         if model_extra_config.operator_opt_config.use_omni_placement:
+            first_k_dense_replace_names = ['num_dense_layers', 'first_k_dense_replace']
+            first_k_dense_replace = get_attr_by_names(self.model.config, first_k_dense_replace_names, 3)
             param_dict = dict(self.model.named_parameters())
             self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
-            self.planner.init_dram_weights(param_dict, first_k_dense_replace=self.model.config.first_k_dense_replace)
+            self.planner.init_dram_weights(param_dict, first_k_dense_replace=first_k_dense_replace)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
