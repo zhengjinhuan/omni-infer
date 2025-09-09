@@ -49,7 +49,7 @@ GET_META_MSG = b"get_meta_msg"
 logger = init_logger(__name__)
 
 thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
-BLOCK_RELEASE_DELAY = 30  # seconds, use to free blocks when the request is finished for a long time 
+BLOCK_RELEASE_DELAY = os.environ.get("BLOCK_RELEASE_DELAY", 7200)  # seconds, use to free blocks when the request is finished for a long time 
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
 
