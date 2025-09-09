@@ -514,6 +514,56 @@ ngx_int_t omni_proxy_prepare_prefill_subrequest(
     u_char *body_data = ctx->origin_body_data;
     ngx_buf_t *b;
 
+    // Parse original body to extract max_tokens if present
+    jsmn_parser parser;
+    jsmntok_t   tokens[256];
+    int         ntok;
+    omni_req_t *req;
+
+    req = ctx->req;
+    if (req == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "prefill: ctx->req is NULL, can not get max_tokens");
+        return NGX_ERROR;
+    }
+
+    jsmn_init(&parser);
+    ntok = jsmn_parse(&parser,
+                      (char *)body_data,
+                      len,
+                      tokens,
+                      sizeof(tokens)/sizeof(tokens[0]));
+    if (ntok < 0) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "prefill: jsmn_parse fail, error=%d", ntok);
+    } else {
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                      "prefill: jsmn_parse return %d tokens", ntok);
+
+        int key_idx = find_jsmn_key(r, (char *)body_data, tokens, ntok, "max_tokens");
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                      "prefill: find_jsmn_key returned %d", key_idx);
+
+        if (key_idx != -1 && key_idx + 1 < ntok) {
+            jsmntok_t *val_t = &tokens[key_idx + 1];
+            char buf[32];
+            json_token_tostr((char *)body_data, val_t, buf, sizeof(buf));
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                          "prefill: max_tokens token string = '%s'", buf);
+
+            req->metrics.max_tokens = (uint32_t)strtoul(buf, NULL, 10);
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                          "prefill: req->metrics.max_tokens = %ui",
+                          (ngx_uint_t)req->metrics.max_tokens);
+        }
+        else {
+            req->metrics.max_tokens = 1;
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                          "prefill: can not find max_tokens，set a default value %ui",
+                          (ngx_uint_t)req->metrics.max_tokens);
+        }
+    }
+
     // Parse JSON from the temporary copy
     size_t str_len = 0;
     gen_prefill_json_str_jsmn(sr, ctx, (char *)body_data, len, &modified_json_str, &str_len);

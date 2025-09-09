@@ -32,6 +32,7 @@ typedef struct omni_request_metrics_s
 {
     uint32_t prompt_num_tokens;
     uint32_t decoded_tokens;
+    uint32_t max_tokens;
 
     uint32_t time_received;
     uint32_t time_contents_received;

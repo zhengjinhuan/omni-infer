@@ -73,44 +73,39 @@ static void update_prefill_weights(omni_req_group_t *group)
 
 static void update_decode_weights(omni_req_group_t *group)
 {
-    uint32_t max_prompt_tokens = 1;
+    uint32_t max_total_tokens = 1;
 
-    for (uint32_t i = 0; i < group->watermark; i++)
-    {
+    for (uint32_t i = 0; i < group->watermark; i++) {
         omni_req_info_t *info = &group->requests[i];
-        if (!info->in_use)
-            continue;
+        if (!info->in_use) continue;
         omni_req_t *req = omni_info_to_req(info);
-        if (req->metrics.prompt_num_tokens > max_prompt_tokens)
-        {
-            max_prompt_tokens = req->metrics.prompt_num_tokens;
+        if ((req->metrics.prompt_num_tokens + req->metrics.max_tokens) > max_total_tokens) {
+            max_total_tokens = req->metrics.prompt_num_tokens + req->metrics.max_tokens;
         }
     }
 
-    for (uint32_t i = 0; i < group->watermark; i++)
-    {
+    for (uint32_t i = 0; i < group->watermark; i++) {
         omni_req_info_t *info = &group->requests[i];
-        if (!info->in_use)
-            continue;
+        if (!info->in_use) continue;
         omni_req_t *req = omni_info_to_req(info);
-        info->weight = (double)req->metrics.prompt_num_tokens / max_prompt_tokens;
+        info->weight = ((double)req->metrics.prompt_num_tokens + (double)req->metrics.max_tokens)/ max_total_tokens;
     }
 
     omni_sort_compact_group(group);
 
-    for (uint32_t idx = 0; idx < group->num_requests; idx++)
-    {
+    for (uint32_t idx = 0; idx < group->num_requests; idx++) {
         omni_req_info_t *info = &group->requests[idx];
-        if (!info->in_use)
-        {
+        if (!info->in_use) {
             continue;
         }
         omni_req_t *req = omni_info_to_req(info);
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
-                      "[Decode-Sort] Order %ui: slot=%ui tokens=%ui weight=%.2f",
+                      "[Decode-Sort] Order %ui: slot=%ui total_tokens=%ui prompt_num_tokens=%ui max_tokens=%ui weight=%.2f",
                       idx,
                       info->slot_index,
+                      req->metrics.prompt_num_tokens + req->metrics.max_tokens,
                       req->metrics.prompt_num_tokens,
+                      req->metrics.max_tokens,
                       info->weight);
     }
 }
