@@ -344,39 +344,47 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     us->num_running--;
     us->num_tokens -= req->metrics.prompt_num_tokens;
 
-    omni_batch_metrics_t *batch = &us->his.his[us->his.head];
-    uint32_t delta = ngx_current_msec - batch->last_response_receive_time;
+    omni_batch_metrics_t *current_batch = &us->his.his[us->his.head];
+    uint32_t delta = (current_batch->last_response_receive_time > 0) ? 
+                     (ngx_current_msec - current_batch->last_response_receive_time) : 
+                     (21); // If first，force delta > 20 to get a new batch
 
     // Need a smarter value from statistics or work out by the number of tokens scheduled
     if (delta > 20)
     {
-        // An new batch comes back
-        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS - 1)
-        {
+        // 1. **calculate last batch**
+        if (current_batch->num_requests > 0) 
+        { // not a empty batch
+            current_batch->time_taken += current_batch->last_response_receive_time - current_batch->first_response_receive_time;
+             ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
+                          "[Prefill-Batch-End] Batch at head %ui finalized. Duration: %ui ms, Tokens: %ui",
+                          us->his.head, current_batch->time_taken, current_batch->num_tokens);
+        }
+
+        // 2. **start a new batch**
+        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS) { 
             us->his.count++;
         }
+        us->his.head = (us->his.head + 1) % NUM_PREFILL_BATCH_METRICS_HIS;
 
-        us->his.head++;
-        if (us->his.head == NUM_PREFILL_BATCH_METRICS_HIS)
-        {
-            us->his.head = 0;
-        }
+        omni_batch_metrics_t *new_batch = &us->his.his[us->his.head];
+        ngx_memzero(new_batch, sizeof(omni_batch_metrics_t));
 
-        batch = &us->his.his[us->his.head];
-        ngx_memzero(batch, sizeof(omni_batch_metrics_t));
-
-        batch->first_response_receive_time = ngx_current_msec;
-        batch->last_response_receive_time = ngx_current_msec;
-        batch->num_requests = 1;
-        batch->num_tokens = req->metrics.prompt_num_tokens;
+        new_batch->first_response_receive_time = ngx_current_msec;
+        new_batch->last_response_receive_time = ngx_current_msec;
+        new_batch->num_requests = 1;
+        new_batch->num_tokens = req->metrics.prompt_num_tokens;
+        new_batch->time_taken = ngx_current_msec - req->metrics.time_to_prefill;
     }
     else
     {
-        batch->average_delta = batch->average_delta * (batch->num_requests - 1) +
-                               delta / (batch->num_requests);
-        batch->last_response_receive_time = ngx_current_msec;
-        batch->num_requests++;
-        batch->num_tokens += req->metrics.prompt_num_tokens;
+        // **add to current batch**
+        current_batch->last_response_receive_time = ngx_current_msec;
+        current_batch->num_requests++;
+        current_batch->num_tokens += req->metrics.prompt_num_tokens;
+        // average_delta 
+        current_batch->average_delta = current_batch->average_delta * (current_batch->num_requests - 1) +
+                                       delta / (current_batch->num_requests);
     }
 
     // check policy
