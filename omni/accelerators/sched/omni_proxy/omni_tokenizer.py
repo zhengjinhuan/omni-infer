@@ -43,21 +43,6 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizer:
     Returns:
         PreTrainedTokenizer: Loaded tokenizer instance
     """
-    # try:
-    #     # Use vllm's get_tokenizer with identical parameters
-    #     tokenizer = get_tokenizer(
-    #         model_path, 
-    #         trust_remote_code=True,
-    #         tokenizer_mode="auto"
-    #     )
-
-    # except Exception:
-    #     # Fallback identical to vLLM
-    #     tokenizer = AutoTokenizer.from_pretrained(
-    #         model_path, 
-    #         trust_remote_code=True,
-    #         local_files_only=True
-    #     )
     tokenizer = AutoTokenizer.from_pretrained(
        model_path, 
        trust_remote_code=True,
