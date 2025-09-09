@@ -171,7 +171,7 @@ index 59f85d501..15251c574 100644
 +                                           cpu_kv_cache_spec.page_size_bytes // len(cpu_kv_cache_config.tensors))
 +
 +            cpu_kv_cache_manager = KVCacheManager(
-+                kv_cache_config=kv_cache_config,
++                kv_cache_config=cpu_kv_cache_config,
 +                max_model_len=self.max_model_len,
 +                enable_caching=False,
 +            )
@@ -279,7 +279,7 @@ index 59f85d501..15251c574 100644
          assert request.is_finished()
          assert request.request_id not in self._cached_reqs_data
 +        if self.scheduler_config.preemption_mode == "swap":
-+           logger.info("Request {request.request_id} free cpu blocks")
++           logger.info(f"Request {request.request_id} free cpu blocks")
 +           self.cpu_npu_kv_cache_manager.free(request, Device.CPU)
 +
          self.kv_cache_manager.free(request)
