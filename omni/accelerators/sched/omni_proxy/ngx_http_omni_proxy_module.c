@@ -98,25 +98,33 @@ static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
     return omni_get_req_ctx(r)->req;
 }
 
-//Copy the pointer first -> Release the lock -> Perform calculations -> Write back
 
 static void omni_proxy_post_tokenized(omni_req_t *req)
 {
     omni_req_group_t *group;
     omni_req_info_t *info;
 
-    / * 1) Acquire the info pointer and the required radix_tree pointer snapshot under the global lock */
+
     ngx_shmtx_lock(&g_state->shmtx);
     group = &g_state->groups[PHASE_TOKENIZING];
     info = find_req_info_in_group(req->slot_index, group);
-    
+
+
     if (info == NULL)
     {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                      "omni_proxy_post_tokenized: missing omni_req_info_t for slot %u; shared state is corrupted. Aborting.",
+                      req->slot_index);
+
+        /* unlock before aborting to avoid leaving the mutex locked (best effort) */
         ngx_shmtx_unlock(&g_state->shmtx);
-        goto phase_transition;
+
+        /* Fail fast: assert to catch in debug, then abort to avoid continuing in bad state */
+        assert(info != NULL && "omni_proxy_post_tokenized: missing omni_req_info_t (shared state corrupted)");
+        abort();
+        /* unreachable */
     }
 
-    
     uint16_t num_prefill = g_state->num_prefill_endpoints;
     omni_radix_tree_t *local_trees[MAX_PREFILL_UPSTREAMS];
     uint16_t local_num = 0;
@@ -126,9 +134,9 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
         omni_upstream_prefill_t *prefill = &g_state->prefill_states[i];
         local_trees[local_num++] = prefill->radix_tree; 
     }
+
     ngx_shmtx_unlock(&g_state->shmtx);
 
-    / * 2) Perform matching without holding a global lock (operations that are time-consuming or may acquire a tree lock) */
     ngx_uint_t local_match_depths[MAX_PREFILL_UPSTREAMS];
     ngx_uint_t max_match_depth = 0;
 
@@ -151,9 +159,7 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
         }
     }
 
-    /* 3) Write the computation results back to shared memory (requires a lock). */
     ngx_shmtx_lock(&g_state->shmtx);
-    /* Search for info again (to prevent changes in the group structure during the period), or directly use the previous info pointer if stability is ensured. */
     group = &g_state->groups[PHASE_TOKENIZING];
     info = find_req_info_in_group(req->slot_index, group);
     if (info)
@@ -1716,10 +1722,22 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
            handler->index, ngx_worker, batch->events_count);
 
     omni_upstream_prefill_t *prefill = &g_state->prefill_states[handler->index];
+    // assert(!prefill->radix_tree==null)
     if (!prefill->radix_tree)
     {
-        ngx_log_error(NGX_LOG_WARN, handler->log, 0, "Radix tree for prefill %d is not initialized", handler->index);
+        ngx_log_error(NGX_LOG_EMERG, handler->log, 0,
+                      "omni_proxy_kv_event_handler: Radix tree for prefill %d is not initialized; shared state corrupted. Aborting.",
+                      handler->index);
+
         free_kv_event_batch(batch);
+
+        /* Best-effort unlock if global mutex held elsewhere; unlocking here reduces chance of leaving a mutex locked.
+           Note: if g_state itself is corrupted this may be a no-op or unsafe, but we attempt to be tidy. */
+        ngx_shmtx_unlock(&g_state->shmtx);
+
+        /* Ensure failure is loud in both debug and release builds */
+        assert(prefill->radix_tree != NULL && "omni_proxy_kv_event_handler: radix_tree for prefill not initialized");
+        abort();
         return;
     }
 
@@ -1733,30 +1751,40 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
         {
         case KV_EVENT_BLOCK_STORED:
         {
-            struct stored_data
-            {
-                int64_t *block_hashes;
-                size_t block_hashes_count;
-                int64_t parent_block_hash;
-            } * stored = (struct stored_data *)&event->data.block_stored;
-            for (size_t i = 0; i < stored->block_hashes_count; ++i) {
-                ngx_log_error(NGX_LOG_INFO, handler->log, 0,
-                    "block_hashes[%zu] = %" PRId64, i, stored->block_hashes[i]);
-            }
-
-            if (stored->block_hashes_count > 0)
+            int64_t *block_hashes = event->data.block_stored.block_hashes;
+            size_t block_hashes_count = event->data.block_stored.block_hashes_count;
+            int64_t parent_block_hash = event->data.block_stored.parent_block_hash;
+            if (block_hashes_count > 0 && block_hashes != NULL)
             {
                 omni_radix_tree_add_chain(prefill->radix_tree,
-                                          (uint64_t *)stored->block_hashes,
-                                          stored->block_hashes_count);
+                                          (uint64_t *)block_hashes,
+                                          (ngx_uint_t)block_hashes_count);
             }
             break;
         }
         case KV_EVENT_BLOCK_REMOVED:
         {
-            // With optimistic matching, we can just increment the version
-            // to invalidate in-flight reads, instead of performing a costly remove.
-            ngx_atomic_fetch_add(&prefill->radix_tree->version, 1);
+            int64_t *hashes = event->data.block_removed.block_hashes;
+            size_t count = event->data.block_removed.block_hashes_count;
+            if (hashes && count > 0)
+            {
+                for (size_t k = 0; k < count; ++k)
+                {
+                    uint64_t h = (uint64_t)hashes[k];
+                    if (omni_radix_tree_remove(prefill->radix_tree, h) == NGX_OK)
+                    {
+                        ngx_log_error(NGX_LOG_INFO, handler->log, 0,
+                                      "Removed block hash %" PRIu64 " from radix tree (prefill %d)",
+                                      h, handler->index);
+                    }
+                    else
+                    {
+                        ngx_log_error(NGX_LOG_DEBUG, handler->log, 0,
+                                      "Block hash %" PRIu64 " not found in radix tree (prefill %d)",
+                                      h, handler->index);
+                    }
+                }
+            }
             break;
         }
         case KV_EVENT_ALL_BLOCKS_CLEARED:
@@ -1797,9 +1825,9 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
                 return NGX_ERROR;
             }
 
-            // printf("Start radix tree unit test...\n");
-            // omni_radix_tree_test(prefill->radix_tree);
-            // printf("Radix tree unit test done.\n");
+            printf("Start radix tree unit test...\n");
+            omni_radix_tree_test(prefill->radix_tree);
+            printf("Radix tree unit test done.\n");
 
             u_char *buf = ngx_palloc(cycle->pool, 64);
             u_char *last = ngx_snprintf((u_char *)buf, 64, "%s:%d",
@@ -1817,16 +1845,6 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
 
 static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
 {
-    // struct sigaction sa;
-    // sa.sa_handler = SIG_IGN;
-    // sa.sa_flags = 0;
-    // sigemptyset(&sa.sa_mask);
-
-    // if (sigaction(SIGCHLD, &sa, NULL) == -1)
-    // {
-    //     perror("sigaction");
-    //     exit(EXIT_FAILURE);
-    // }
 
     local_state.pid = ngx_pid;
     local_state.worker = ngx_worker;
