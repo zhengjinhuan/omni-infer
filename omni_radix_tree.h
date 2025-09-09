@@ -38,7 +38,8 @@ ngx_int_t omni_radix_tree_add_chain(omni_radix_tree_t *tree,
 ngx_uint_t omni_radix_tree_match(omni_radix_tree_t *tree,
                                 uint64_t *hash_chain,
                                 ngx_uint_t chain_len);
-
+ngx_uint_t omni_radix_tree_match_optimistic(omni_radix_tree_t *tree, uint64_t *hash_chain,
+                                            ngx_uint_t chain_len);
 ngx_int_t omni_radix_tree_remove(omni_radix_tree_t *tree,
                                 uint64_t hash_to_remove);
 
