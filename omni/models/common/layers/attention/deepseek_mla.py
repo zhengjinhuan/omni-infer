@@ -104,46 +104,28 @@ class Indexer(nn.Module):
         self.k_norm = LayerNorm(self.head_dim)
         self.softmax_scale = self.head_dim ** -0.5
 
-    def forward(self, x: torch.Tensor, qr: torch.Tensor,
-                positions: torch.Tensor,attn_metadata: AttentionMetadata,
-                kv_cache: torch.Tensor, is_prefill):
-        print(f"{x.shape=} {qr.shape=} {positions.shape=} {is_prefill=}", flush=True)
-        q = self.wq_b(qr)[0]  # [b*s,1536] @ [1536,64*128] = [b*s,64*128]
-        q = q.reshape(-1, self.n_heads, self.head_dim)  # [b*s,64,128]
-        q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64,64+64]
-
-        k = self.wk(x)[0]  # [b*s,7168] @ [7168,128] = [b*s,128]
-        k = self.k_norm(k).unsqueeze(1)
-        k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
-
-        cos, sin = self.rotary_emb.get_cos_sin(positions)
-
-        q_pe = q_pe.unsqueeze(2)  # [b,s,1,64]
-        q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin)
-        q_pe = q_pe.squeeze(2)
-        
-        k_pe = k_pe.unsqueeze(2)
-        k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
-        k_pe = k_pe.squeeze(2)
-
-        k = torch.cat([k_pe, k_nope], dim=-1).unsqueeze(1)  # [b,s,128]
-        q = torch.cat([q_pe, q_nope], dim=-1) # [b,s,64,128]
-
-        if isinstance(kv_cache, Dict):
-            kv_cache = kv_cache.get("kv_cache")
-        # TODO: update kcache
-        if kv_cache[2] is not None and kv_cache[3] is not None:
-            torch_npu.scatter_update_(kv_cache[2].view(-1, k.shape[-1]), attn_metadata.slot_mapping, k.view(-1, k.shape[-1]), -1)   # b, s, n, d
-
-        weights = self.weights_proj(x)[0]
-
+    def _apply_lightning_indexer(self,
+                                 q,
+                                 weights,
+                                 attn_metadata,
+                                 kv_cache,
+                                 is_prefill,
+                                 is_second=False):
         actual_seq_lengths_query = None
         actual_seq_lengths_key = None
         block_table = None
         if is_prefill:
             # todo 在build阶段转tensor
+            actual_seq_kvlen = attn_metadata.prefill.seq_lens
+            if model_extra_config.parall_config.attn_sp_size > 1:
+                sp_size = model_extra_config.parall_config.attn_sp_size
+                sp_rank = get_tensor_model_parallel_rank()
+                if is_second:
+                    actual_seq_kvlen = [kvlen * (sp_size * 2 - sp_rank) for kvlen in actual_seq_kvlen]
+                else:
+                    actual_seq_kvlen = [kvlen * (sp_rank + 1) for kvlen in actual_seq_kvlen]
             actual_seq_lengths_query = torch.tensor(attn_metadata.prefill.query_lens).npu()
-            actual_seq_lengths_key = torch.tensor(attn_metadata.prefill.seq_lens).npu()
+            actual_seq_lengths_key = torch.tensor(actual_seq_kvlen).npu()
             block_table = attn_metadata.prefill.block_table
         else:
             # todo 在build阶段转tensor
@@ -162,6 +144,61 @@ class Indexer(nn.Module):
                                                           layout_key="PA_BSND",
                                                           selected_count=2048,
                                                           sparse_mode=3)
+        return topk_indices
+
+    def forward(self, x: torch.Tensor, qr: torch.Tensor,
+                positions: torch.Tensor,attn_metadata: AttentionMetadata,
+                kv_cache: torch.Tensor, is_prefill, is_second_forward=False):
+        print(f"{x.shape=} {qr.shape=} {positions.shape=} {is_prefill=}", flush=True)
+        q = self.wq_b(qr)[0]  # [b*s,1536] @ [1536,64*128] = [b*s,64*128]
+        q = q.reshape(-1, self.n_heads, self.head_dim)  # [b*s,64,128]
+        q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64,64+64]
+
+        k = self.wk(x)[0]  # [b*s,7168] @ [7168,128] = [b*s,128]
+        k = self.k_norm(k).unsqueeze(1)
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            k = mla_tensor_model_parallel_all_gather(k, dim=0)
+            k_list = list(torch.split(k, attn_metadata.prefill.sp_reverse_split_list, dim=0))
+            k = torch.cat([k_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
+        k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
+
+        cos_q, sin_q = self.rotary_emb.get_cos_sin(positions)
+        if is_prefill:
+            cos, sin = attn_metadata.prefill.cos, attn_metadata.prefill.sin
+        else:
+            cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
+        q_pe = q_pe.unsqueeze(2)
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q) # BNSD
+        else:
+            q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q)
+        q_pe = q_pe.squeeze(2)
+        
+        k_pe = k_pe.unsqueeze(2)
+        k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
+        k_pe = k_pe.squeeze(2)
+
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            q_nope, q_nope_2 = torch.split(q_nope, q_nope.size(0) // 2, dim=0)
+            q_pe, q_pe_2 = torch.split(q_pe, q_pe.size(0) // 2, dim=0)
+            q2 = torch.cat([q_nope_2, q_pe_2], dim=-1)
+
+        k = torch.cat([k_pe, k_nope], dim=-1)  # [b*s,128]
+        q = torch.cat([q_pe, q_nope], dim=-1)  # [b*s,64,128]
+
+        if isinstance(kv_cache, Dict):
+            kv_cache = kv_cache.get("kv_cache")
+        # TODO: update kcache
+        if kv_cache[2] is not None and kv_cache[3] is not None:
+            torch_npu.scatter_update_(kv_cache[2].view(-1, k.shape[-1]), attn_metadata.slot_mapping, k.view(-1, k.shape[-1]), -1)   # b, s, n, d
+
+        weights = self.weights_proj(x)[0]
+
+        topk_indices = self._apply_lightning_indexer(q, weights, attn_metadata, kv_cache, is_prefill)
+
+        if model_extra_config.parall_config.attn_sp_size > 1 and is_second_forward:
+            topk_indices_2 = self._apply_lightning_indexer(q2, weights, attn_metadata, kv_cache, is_prefill, is_second_forward)
+            return topk_indices_2
 
         return topk_indices
 
@@ -473,7 +510,7 @@ class DeepseekMLA(nn.Module):
                 hidden_states = mla_tensor_model_parallel_all_gather(hidden_states, dim=0)
 
             topk_indices = self.indexer(hidden_states, qr, positions, attn_metadata,
-                                        kv_cache=kv_cache, is_prefill=True)
+                                        kv_cache=kv_cache, is_prefill=True, is_second_forward=is_second_attn)
 
             k_nope = k_nope.squeeze(2)
             k_rope = k_rope.squeeze(2)

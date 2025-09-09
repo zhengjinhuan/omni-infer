@@ -469,8 +469,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
             seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
+            query_lens = query_lens_list[reqs_start:]
             if model_extra_config.parall_config.attn_sp_size > 1:
-                query_lens = query_lens_list[reqs_start:]
                 query_lens = [math.ceil(q_len / model_extra_config.parall_config.attn_sp_size / 2) for q_len in query_lens]
                 seq_lens_list = [math.ceil(kv_len / model_extra_config.parall_config.attn_sp_size / 2) for kv_len in seq_lens_list]
 
