@@ -67,6 +67,8 @@ typedef struct omni_request_s
     uint16_t decode_upstream_endpoint_idx;
     omni_request_metrics_t metrics;
     omni_tokenizer_request tokenizer_req;
+    uint32_t match_depths[MAX_PREFILL_UPSTREAMS];
+    uint32_t max_match_depth;
 } omni_req_t;
 
 typedef struct omni_request_pool_s
@@ -84,8 +86,6 @@ typedef struct omni_req_info_s
     uint32_t in_use;
     uint32_t slot_index;
     double weight;
-    uint32_t max_match_depth;                       // Maximum match depth across all endpoints
-    uint32_t match_depths[MAX_PREFILL_UPSTREAMS]; // Per-endpoint match depth
 } omni_req_info_t;
 
 typedef struct omni_req_group_s
