@@ -98,7 +98,6 @@ static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
     return omni_get_req_ctx(r)->req;
 }
 
-
 static void omni_proxy_post_tokenized(omni_req_t *req)
 {
     omni_req_group_t *group;
@@ -219,8 +218,46 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
     }
 }
 
+static void omni_proxy_req_body_handler(ngx_http_request_t *r)
+{
+    omni_req_t *req = omni_get_req(r);
+    omni_req_context_t *ctx = omni_get_req_ctx(r);
+    req->metrics.time_contents_received = ngx_current_msec;
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Prefill-%d]: request body received", req->slot_index);
 
-static void omni_proxy_remove_req_from_groups(omni_req_t *req)
+    omni_proxy_save_origin_body(r, ctx);
+
+    req->metrics.prompt_num_tokens = ctx->origin_body_tokens_size;
+
+    if (!g_state->has_tokenizer)
+    {
+        omni_proxy_post_tokenized(req);
+        return;
+    }
+
+    req->tokenizer_req.input_data = ctx->origin_body_data;
+    req->tokenizer_req.input_len = ctx->origin_body_data_size;
+
+    // Chat template expansion buffer
+    req->tokenizer_req.prompt_buf_size = req->tokenizer_req.input_len + 512;
+    req->tokenizer_req.prompt = ngx_palloc(r->pool, req->tokenizer_req.prompt_buf_size);
+
+    req->tokenizer_req.input_ids_buf_size = req->tokenizer_req.prompt_buf_size;
+    req->tokenizer_req.input_ids = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.input_ids_buf_size);
+
+    req->tokenizer_req.block_hashes_buf_size = req->tokenizer_req.input_ids_buf_size / local_state.loc_conf->kv_block_size;
+    req->tokenizer_req.block_hashes = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.block_hashes_buf_size);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                  "buf sizes: prompt %zu, input_ids %zu, block_hashes %zu, %p, %p, %p\n",
+                  req->tokenizer_req.prompt_buf_size,
+                  req->tokenizer_req.input_ids_buf_size,
+                  req->tokenizer_req.block_hashes_buf_size,
+                  req->tokenizer_req.prompt,
+                  req->tokenizer_req.input_ids,
+                  req->tokenizer_req.block_hashes);
+    omni_tokenizer_worker_submit(&local_state.tokenize_worker, req->slot_index);
+}
+static inline void omni_proxy_cleanup_req(omni_req_t *req)
 {
     omni_proxy_request_phase_t phases[PHASE_MAX];
     size_t count = 0;
@@ -427,24 +464,23 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     us->num_tokens -= req->metrics.prompt_num_tokens;
 
     omni_batch_metrics_t *current_batch = &us->his.his[us->his.head];
-    ngx_current_msec delta = (current_batch->last_response_receive_time > 0) ? 
-                     (ngx_current_msec - current_batch->last_response_receive_time) : 
-                     (21); // If first，force delta > 20 to get a new batch
+    ngx_current_msec delta = (current_batch->last_response_receive_time > 0) ? (ngx_current_msec - current_batch->last_response_receive_time) : (21); // If first，force delta > 20 to get a new batch
 
     // Need a smarter value from statistics or work out by the number of tokens scheduled
     if (delta > 20)
     {
         // 1. **calculate last batch**
-        if (current_batch->num_requests > 0) 
+        if (current_batch->num_requests > 0)
         { // not a empty batch
             current_batch->time_taken += current_batch->last_response_receive_time - current_batch->first_response_receive_time;
-             ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
+            ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                           "[Prefill-Batch-End] Batch at head %ui finalized. Duration: %ui ms, Tokens: %ui",
                           us->his.head, current_batch->time_taken, current_batch->num_tokens);
         }
 
         // 2. **start a new batch**
-        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS) { 
+        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS)
+        {
             us->his.count++;
         }
         us->his.head = (us->his.head + 1) % NUM_PREFILL_BATCH_METRICS_HIS;
@@ -464,7 +500,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
         current_batch->last_response_receive_time = ngx_current_msec;
         current_batch->num_requests++;
         current_batch->num_tokens += req->metrics.prompt_num_tokens;
-        // average_delta 
+        // average_delta
         current_batch->average_delta = current_batch->average_delta * (current_batch->num_requests - 1) +
                                        delta / (current_batch->num_requests);
     }
@@ -1704,9 +1740,9 @@ static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
 }
 
 static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
-                      const char *topic,
-                      const void *message,
-                      size_t length)
+                                        const char *topic,
+                                        const void *message,
+                                        size_t length)
 {
     KVEventBatch *batch = parse_kv_event_batch(message, length);
     if (!batch)
@@ -1716,7 +1752,7 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
     }
 
     ngx_log_error(NGX_LOG_INFO, handler->log, 0, "[%ld - %ld] Received KV event batch with %ld events",
-           handler->index, ngx_worker, batch->events_count);
+                  handler->index, ngx_worker, batch->events_count);
 
     omni_upstream_prefill_t *prefill = &g_state->prefill_states[handler->index];
     // assert(!prefill->radix_tree==null)
