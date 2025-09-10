@@ -12,7 +12,7 @@ import os
 from unittest.mock import MagicMock, patch
 import torch.nn.functional as F
 
-from ..omni_placement.optim.ada_router_optimizer import AdaRouter
+from omni.accelerators.placement.omni_placement.optim.ada_router_optimizer import AdaRouter
 
 class TestAdaRouter(unittest.TestCase):
     def setUp(self):

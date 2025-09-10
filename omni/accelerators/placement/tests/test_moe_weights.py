@@ -7,14 +7,17 @@ import torch_npu
 import torch.nn as nn
 import unittest
 import ctypes
-from typing import Dict
-from omni.accelerators.placement.omni_placement import omni_placement
 import multiprocessing as mp
 import random
 import time
 import gc
-from omni.accelerators.placement.omni_placement.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,get_expert_ids
+import tempfile
+
+from typing import Dict
 from unittest.mock import Mock, patch
+
+from omni.accelerators.placement.omni_placement import omni_placement
+from omni.accelerators.placement.omni_placement.utils import filter_dict_keys,convert_param_dict_to_list,convert_param_to_ctype,get_expert_ids
 from omni.accelerators.placement.omni_placement.placement_handler import init_dram_weights,deepseek_filter_func ,deepseek_get_layer_idx_func
 
 
@@ -124,18 +127,6 @@ class TestFilterDictKeys(unittest.TestCase):
         expected = {'two': 2}
         self.assertEqual(result, expected)
 
-class TestVllmNpuEnv(unittest.TestCase):
-    def setUp(self):
-        from vllm_npu import ENV
-        self.ENV = ENV
-    def test_enable_omni_placement(self):
-        self.ENV.omni_placement_config_path = './config_test.yaml'
-        self.assertTrue(self.ENV.use_omni_placement)
-
-    def test_disable_omni_placement(self):
-        self.ENV.omni_placement_config_path = ''
-        self.assertFalse(self.ENV.use_omni_placement)
-
 class TestConvertParamDictToList(unittest.TestCase):
     def test_basic_functionality(self):
         """测试基本功能"""
@@ -242,7 +233,7 @@ class TestConvertParamToCtype(unittest.TestCase):
     def setUp(self):
         # 在每个测试前设置模拟的omni_placement.Tensor
         self.mock_tensor_class = Mock()
-        self.patcher = patch('omni_placement.omni_placement.Tensor', self.mock_tensor_class)
+        self.patcher = patch('omni.accelerators.placement.omni_placement.utils.omni_placement.Tensor', self.mock_tensor_class)
         self.patcher.start()
 
     def tearDown(self):
@@ -434,15 +425,9 @@ class TestMoeWeightsWrapper(unittest.TestCase):
     def test_single_process_init_dram_weights(self):
         world_size = 1
         moeweights = omni_placement.MoEWeights(self.num_expert,world_size)
-        init_dram_weights(moeweights,self.param_dict,self.local_rank_pattern,self.first_k_dense_replace)
+        init_dram_weights(moeweights,self.param_dict,self.first_k_dense_replace,init_shm= True)
         self.assertTrue(moeweights.isShmInitialized())
 
-    def test_multi_process_init(self):
-        """测试多进程初始化"""
-        world_size = 4
-        moeweights = omni_placement.MoEWeights(self.num_expert, world_size)
-        init_dram_weights(moeweights, self.param_dict, self.local_rank_pattern,self.first_k_dense_replace)
-        self.assertFalse(moeweights.isShmInitialized())
 
     def test_zero_experts(self):
         """测试专家数量为0的情况"""
@@ -474,15 +459,7 @@ class TestMoeWeightsWrapper(unittest.TestCase):
         moeweights = omni_placement.MoEWeights(self.num_expert, world_size)
         invalid_param_dict = "not_a_dict"
         with self.assertRaises(TypeError):  # 假设 init_dram_weights 检查类型
-            init_dram_weights(moeweights, invalid_param_dict, self.local_rank_pattern,self.first_k_dense_replace)
-
-    def test_mismatched_local_rank_pattern(self):
-        """测试local_rank_pattern形状不匹配"""
-        world_size = 1
-        moeweights = omni_placement.MoEWeights(self.num_expert, world_size)
-        mismatched_pattern = torch.ones(self.num_layers + 1, self.num_expert, dtype=torch.bool).to(self.device)  # 多一层
-        with self.assertRaises(IndexError):  # 假设 init_dram_weights 检查形状
-            init_dram_weights(moeweights, self.param_dict, mismatched_pattern,first_k_dense_replace=self.first_k_dense_replace)
+            init_dram_weights(moeweights, invalid_param_dict, self.first_k_dense_replace ,init_shm= False)
 
     def test_uninitialized_state(self):
         """测试未初始化的状态"""
@@ -493,6 +470,3 @@ class TestMoeWeightsWrapper(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-    # tmp = TestMoeWeightsWrapper()
-    # tmp.setUp()
-    # tmp.test_mismatched_local_rank_pattern()

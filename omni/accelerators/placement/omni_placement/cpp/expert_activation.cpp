@@ -93,7 +93,7 @@ ClusterActivation::ClusterActivation(
     }
 
     // Since local tokens global experts -> glocal tokens local experts,
-    // npu_coun_.get_length() must be less than
+    // npu_count_.get_length() must be less than
     // get_num_layers()*(size_t)get_num_deploy_experts_per_rank()
     if (npu_count_.get_length() >
         get_num_layers() * (size_t)get_num_deploy_experts_per_rank()) {
