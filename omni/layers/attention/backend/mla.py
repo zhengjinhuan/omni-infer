@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.worker.gpu_input_batch import InputBatch
 
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
@@ -267,7 +267,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self.base_block = self.block_size * np.ones([1, self.block_size])
         self.kv_cache_spec = kv_cache_spec
         self.block_table = block_table
-        self.decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
+        self.decode_gear_list = model_extra_config.task_config.decode_gear_list
         if self.decode_gear_list:
             self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device=current_platform.device_type)
         self.already_mark_static = False

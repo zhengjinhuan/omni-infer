@@ -22,8 +22,7 @@ from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear
 )
-from vllm.model_executor.models.utils import extract_layer_index
-from vllm.distributed import get_world_group
+from vllm.distributed import get_world_group, get_dp_group
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.distributed.communication_op import (
     tensor_model_parallel_all_gather)
@@ -35,7 +34,7 @@ from vllm.distributed.parallel_state import (
 from vllm.platforms import current_platform
 
 from omni.adaptors.vllm.utils import current_stream
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.rotary_embedding import get_rope
 from omni.layers.linear import (
     MergedReplicatedLinear,
@@ -54,7 +53,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_npu_device_count,
     get_local_group_from_list
 )
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.utils import ConditionalTNGScope
 if model_extra_config.operator_opt_config.enable_dsa:
     import custom_ops
@@ -438,8 +437,8 @@ class DeepseekMLA(nn.Module):
         self.is_init = True
         self.W_UK = None
         self.W_UV = None
-        # use mla absorb
-        if model_extra_config.parall_config.dp_size > 1 or model_extra_config.operator_opt_config.enable_dsa:
+        # decode use mla absorb
+        if get_dp_group().world_size > 1 or model_extra_config.operator_opt_config.enable_dsa:
             kv_b_proj_weight = self.kv_b_proj.weight.T
 
             expected_shape = (
@@ -461,7 +460,7 @@ class DeepseekMLA(nn.Module):
             self.is_init = False
             self.norm_res = {}
             self.actual_seq_lengths = {}
-            for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
+            for batch_size in model_extra_config.task_config.decode_gear_list:
                 self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
                 self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * self.tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
         if self.quant_symbol and model_extra_config.operator_opt_config.use_mlaprolog:
@@ -565,7 +564,7 @@ class DeepseekMLA(nn.Module):
             self.kv_scale_reci_tile = torch.nn.Parameter(
                 torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(1, -1), requires_grad=False)
         if attn_metadata is None or attn_metadata.prefill is not None:
-            if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and model_extra_config.operator_opt_config.pd_seperate_prefill:
+            if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and os.getenv('ROLE', None)=='prefill':
                 output = self._forward_prefill_a2(positions, hidden_states, kv_cache, attn_metadata)
             else:
                 if model_extra_config.operator_opt_config.enable_dsa:
@@ -845,7 +844,7 @@ class DeepseekMLA(nn.Module):
                     prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
                     prefix_event = None
 
-                if model_extra_config.parall_config.dp_size > 1:
+                if get_dp_group().world_size > 1:
                     self.kv_b_proj.weight = torch.nn.Parameter(torch.cat((self.W_UK.permute(2,0,1), self.W_UV.transpose(0,1)), dim=-1) \
                                                                     .view(self.kv_lora_rank,-1).T, requires_grad=False)
                     kv = self.kv_b_proj.forward(prefill_kv_a)[0]

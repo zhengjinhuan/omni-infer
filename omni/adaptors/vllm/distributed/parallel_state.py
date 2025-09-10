@@ -27,7 +27,7 @@ from vllm.distributed import (
 )
 from vllm.logger import logger
 from vllm.config import get_current_vllm_config
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 import os
 
 initialize_model_parallel_default = parallel_state.initialize_model_parallel
@@ -172,26 +172,20 @@ def initialize_model_parallel(
         initialize_o_proj_dp_group(backend)
 
     if is_device_a2 or not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
-        if model_extra_config.operator_opt_config.two_stage_comm:
-            initialize_cross_comm_group_list(backend)
-            initialize_local_comm_group_list(backend)
-        else:
+
+        if not model_extra_config.operator_opt_config.two_stage_comm:
             initialize_world_comm_group_list(backend)
-            initialize_local_comm_group_list(backend)
-            initialize_cross_comm_group_list(backend)
+        
+        initialize_cross_comm_group_list(backend)
+        initialize_local_comm_group_list(backend)
 
-        if model_extra_config.operator_opt_config.enable_round_pipeline_comm:
-            num_nodes = torch.distributed.get_world_size() // get_npu_device_count()
-            if num_nodes == 4:
-                initialize_round_cross_comm_group_list(backend)
-                model_extra_config.operator_opt_config.enable_pipeline_comm = 0
-            else:
-                model_extra_config.operator_opt_config.enable_pipeline_comm = 1
-                model_extra_config.operator_opt_config.enable_round_pipeline_comm = 0
+        num_nodes = torch.distributed.get_world_size() // get_npu_device_count()
+        if num_nodes == 4 and model_extra_config.operator_opt_config.enable_round_pipeline_comm:
+            initialize_round_cross_comm_group_list(backend)
 
-            if model_extra_config.operator_opt_config.enable_pipeline_comm:
-                initialize_far_cross_comm_group_list(backend)
-                initialize_near_cross_comm_group_list(backend)
+        if model_extra_config.operator_opt_config.enable_pipeline_comm:
+            initialize_far_cross_comm_group_list(backend)
+            initialize_near_cross_comm_group_list(backend)
 
     scale_parallel = model_extra_config.operator_opt_config.enable_scale_parallel
     if scale_parallel:

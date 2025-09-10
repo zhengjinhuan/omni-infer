@@ -471,7 +471,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
         "omni_placement_config_path": null,     # omni placement配置文件
         "use_super_kernel": false,              # 是否使用super kernel融合算子，仅图模式可用，开启提升2ms性能
         "use_mlaprolog": false,                 # 暂未使能，默认关闭
-        "opt_w2_scale_cast": false,             # 是否将w2_scale权重转换为float32，默认false
+        "cast_w2_scale_f32": false,             # 是否将w2_scale权重转换为float32，默认false
         "enable_mc2_v2": false,                 # 是否使用npu_moe_distribute_dispatch_v2版本，默认关闭，0714后的主线CANN需要打开
         "decode_gear_list": [1],                # 图模式挡位，decode节点图模式下使用
         "control_accept_rate": -1,              # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值

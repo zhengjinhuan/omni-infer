@@ -55,7 +55,7 @@ from omni.layers.linear import (RowParallelFlashCommLinear,
                                               QKVParallelFlashCommLinear)
 from omni.layers.rotary_embedding import get_rope
 from omni.layers.attention.backend.attention import AscendAttentionState
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 
 logger = init_logger(__name__)

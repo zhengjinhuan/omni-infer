@@ -17,7 +17,7 @@ from vllm.distributed import (
 )
 from omni.layers.activation import SiluAndMul
 from omni.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 class FusedMLPMethodBase(QuantizeMethodBase):
     """Base method for FusedMLP
 

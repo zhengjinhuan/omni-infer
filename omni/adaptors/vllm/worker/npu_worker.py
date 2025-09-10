@@ -47,7 +47,7 @@ from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.adaptors.vllm.utils import (
     check_torchair_cache_exists, check_block_num_cache_exist, read_block_num_from_file, write_block_num_to_file, delete_torchair_cache_file, clear_var
 )
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config, call_config_updater
 
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
@@ -150,6 +150,8 @@ class NPUWorker(WorkerBase):
             info = f"Not support device type: {self.device_config.device}"
             logger.error(info)
             raise RuntimeError(info)
+        # Initialize the model best practice configs.
+        self._init_model_best_practice_configs()
         # Initialize the distributed environment.
         self._init_worker_distributed_environment()
         # Set random seed.
@@ -165,6 +167,39 @@ class NPUWorker(WorkerBase):
 
         self.enable_torchair_graph_mode = (self.vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
         self.use_cached_npu_graph = self.vllm_config.npu_compilation_config.use_ge_graph_cached
+
+    def _init_model_best_practice_configs(self):
+
+        hardware_platform = "A2" if torch_npu.npu.get_device_name(0).startswith("Ascend910B") else "A3"
+        if int(os.getenv("VLLM_DP_SIZE", 1)) == 288:
+            hardware_platform = hardware_platform + '_288die'
+        is_pd_disaggregation = False
+        is_prefill_node = None
+        if os.getenv('ROLE', None):
+            is_pd_disaggregation = True
+            is_prefill_node = True if os.getenv('ROLE', None)=='prefill' else False
+        enable_chunked_prefill = self.scheduler_config.enable_chunked_prefill
+        enable_omni_placement = self.vllm_config.additional_config.get("enable_omni_placement", False)
+
+        max_num_reqs = self.scheduler_config.max_num_seqs
+        self.decode_gear_list = self.vllm_config.npu_compilation_config.decode_gear_list
+        if self.decode_gear_list is None:
+            self.decode_gear_list = []
+            self.decode_gear_list.append(max_num_reqs if not self.vllm_config.speculative_config else max_num_reqs * \
+                                            (1 + self.vllm_config.speculative_config.num_speculative_tokens))
+        call_config_updater(
+            config_updater_name = 'update_task_config',
+            hf_config = self.model_config.hf_config,
+            hardware_platform = hardware_platform,
+            is_pd_disaggregation = is_pd_disaggregation,
+            is_prefill_node = is_prefill_node,
+            prefill_nodes_num = int(os.getenv("PREFILL_POD_NUM", 1)),
+            decode_nodes_num = int(os.getenv("DECODE_POD_NUM", 1)),
+            enable_chunked_prefill = enable_chunked_prefill,
+            enable_omni_placement = enable_omni_placement,
+            decode_gear_list=self.decode_gear_list,
+            enable_graph_mode=self.enable_torchair_graph_mode
+        )
 
     def page_size_bytes(self) -> int:
         # For MLA we only store a single latent vector
@@ -183,7 +218,7 @@ class NPUWorker(WorkerBase):
         if not self.enable_torchair_graph_mode:
             clear_var()
             # Only For Prefill Stage
-            if model_extra_config.operator_opt_config.use_omni_placement:
+            if model_extra_config.task_config.enable_omni_placement:
                 self.model_runner.planner.start_dynamic_optimize_expert_load_balance()
             return cur_npu_kv_cache_bytes
 
@@ -338,7 +373,7 @@ class NPUWorker(WorkerBase):
 
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             self.model_runner.planner.place_experts()
 
     def add_lora(self, lora_request: LoRARequest) -> bool:

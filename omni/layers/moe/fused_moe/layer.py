@@ -16,7 +16,7 @@ from vllm.model_executor.layers.fused_moe.layer import FusedMoeWeightScaleSuppor
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
 from omni.adaptors.vllm.distributed.parallel_state import GroupCoordinator
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.moe.fused_moe.fused_moe import (
     fused_topk,
     grouped_topk
@@ -72,7 +72,7 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
         else:
             topk_ids = topk_ids.int()
         max_num_deployed_expert = 256
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
+        if model_extra_config.task_config.enable_omni_placement and layer.moe_layer_idx < 58:
             max_num_deployed_expert = layer.planner.get_max_num_deployed_expert_per_rank() * get_world_group().world_size
         expert_range = [0, max_num_deployed_expert]
         expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
@@ -116,7 +116,7 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
             per_token_scales=None
         )
         group_list = tokens_per_local_expert.to(torch.int64)
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             layer.planner.record_activation(layer.moe_layer_idx, group_list,
                                             support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
                                                 not is_prefill))
@@ -226,7 +226,7 @@ class FusedMoE(torch.nn.Module):
 
         # ENABLE_OMNI_PLANNER
         num_of_redundant_experts = 0
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             num_of_redundant_experts = self.planner.get_num_of_redundant_experts(moe_layer_idx=self.moe_layer_idx,
                                                                                  num_expert_per_device_origin=num_experts,
                                                                                  rank_device=get_ep_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num)
@@ -406,7 +406,7 @@ class FusedMoE(torch.nn.Module):
         if get_ep_group().world_size > 1:
             ep_rank = get_ep_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num
             # ENABLE_OMNI_PLANNER
-            if model_extra_config.operator_opt_config.use_omni_placement:
+            if model_extra_config.task_config.enable_omni_placement:
                 # OMNI_PLANNER: determine the expert deployment based on the pattern
                 exists_locally, local_pos = self.planner.is_expert_on_current_rank(self.moe_layer_idx, expert_id,
                                                                                    ep_rank, self.num_experts)

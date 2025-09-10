@@ -127,7 +127,6 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
         # redundant_enable_per_layer, True is redundant layer, False is Origin Layer
         self.redundant_enable_per_layer = self.expert_mapping.get_redundant_enable_per_layer()
-        
         print(self,flush=True)
     
     def __str__(self):

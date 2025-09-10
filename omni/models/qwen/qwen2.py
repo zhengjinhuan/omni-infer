@@ -34,7 +34,7 @@ from vllm.forward_context import get_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
 from vllm.compilation.decorators import support_torch_compile
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from vllm.distributed import (
     get_pp_group,
     get_tp_group,

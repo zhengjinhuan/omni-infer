@@ -5,6 +5,7 @@
 from typing import Optional, Tuple
 import torch_npu
 import torch
+import os
 import torchair as tng
 import numpy as np
 import torch.distributed as dist
@@ -18,7 +19,7 @@ from vllm.distributed import (
     get_dp_group,
     get_ep_group
 )
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 
 def fused_topk(
@@ -768,7 +769,7 @@ def moe_infer_fusion(
         per_token_scales=gathered_pertoken_scale
     )
     group_list = tokens_per_local_expert.to(torch.int64)
-    if model_extra_config.operator_opt_config.use_omni_placement:
+    if model_extra_config.task_config.enable_omni_placement:
         layer.planner.record_activation(layer.moe_layer_idx, group_list,
                                         support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
                                             not is_prefill))
@@ -840,7 +841,7 @@ def moe_expert_quant_forward(layer, sorted_tokens, expert_tokens, act_dtype, dyn
             quant_scale=scale_2, quant_offset=None,
             group_index=expert_tokens, activate_left=True, quant_mode=1)
 
-        if not model_extra_config.operator_opt_config.opt_w2_scale_cast:
+        if not model_extra_config.operator_opt_config.cast_w2_scale_f32:
             w2_scale = layer.w2_weight_scale.to(torch.bfloat16)
         else:
             w2_scale = layer.w2_weight_scale
@@ -859,7 +860,7 @@ def moe_expert_quant_forward(layer, sorted_tokens, expert_tokens, act_dtype, dyn
                                                     activation_input=None, activation_quant_scale=None,
                                                     activation_quant_offset=None, split_item=3, group_type=0,
                                                     group_list_type=1, act_type=0,
-                                                    tuning_config=model_extra_config.operator_opt_config.decode_gear_list[
+                                                    tuning_config=model_extra_config.task_config.decode_gear_list[
                                                                   0:], output_dtype=torch.bfloat16)[0]
 
         fake_scale = torch.ones(layer.w13_weight_int4_scale.shape, dtype=torch.float32, device="npu").view(-1, layer.w13_weight_int4_scale.shape[-1])
@@ -875,7 +876,7 @@ def moe_expert_quant_forward(layer, sorted_tokens, expert_tokens, act_dtype, dyn
                                            group_list=expert_tokens, split_item=3, output_dtype=act_dtype,
                                            group_type=0,
                                            group_list_type=1,
-                                           tuning_config=model_extra_config.operator_opt_config.decode_gear_list[0:])[0]
+                                           tuning_config=model_extra_config.task_config.decode_gear_list[0:])[0]
         return out
     else:
         raise NotImplementedError(f"Unsupported compress tensor type. num bits: {layer.weight_num_bits}")
@@ -933,7 +934,7 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
 
         group_list = expert_token_nums.to(torch.int64)
 
-        if model_extra_config.operator_opt_config.use_omni_placement and is_route_expert:
+        if model_extra_config.task_config.enable_omni_placement and is_route_expert:
             layer.planner.record_activation(layer.moe_layer_idx, group_list,
                                             support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
                                                 not is_prefill))
@@ -1054,7 +1055,7 @@ def fused_experts_allgather_ep_a2(layer: torch.nn.Module,
         experts_end_idx = experts_start_idx + n_routed_experts
         expert_range = [experts_start_idx, experts_end_idx]
 
-        row_idx_type = 0 if model_extra_config.operator_opt_config.pd_seperate_prefill else 1
+        row_idx_type = 0 if os.getenv('ROLE', None) == 'prefill' else 1
         sorted_tokens, expanded_x_idx, expert_tokens, dynamic_quant_scale = \
             torch_npu.npu_moe_init_routing_v2(hidden_states, topk_ids, scale=pertoken_scale, offset=None,
                                               active_num=topk_ids.numel(),
@@ -1067,7 +1068,7 @@ def fused_experts_allgather_ep_a2(layer: torch.nn.Module,
             dynamic_quant_scale = dynamic_quant_scale[:expert_tokens.sum()]
 
         if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
-            if not model_extra_config.operator_opt_config.pd_seperate_prefill:
+            if not os.getenv('ROLE', None)=='prefill':
                 range1 = torch.arange(0, expanded_x_idx.shape[0], dtype=torch.int32, device="npu")
                 range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
                 mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
@@ -1103,7 +1104,7 @@ def fused_experts_allgather_ep_a2(layer: torch.nn.Module,
                 share_input = torch.zeros((batch_size // expert_parallel_size, hidden_size), dtype=torch.bfloat16,
                                           device="npu")
 
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             group_list = expert_tokens.to(torch.int64)
             layer.planner.record_activation(layer.moe_layer_idx, group_list,
                                             support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
@@ -1120,7 +1121,7 @@ def fused_experts_allgather_ep_a2(layer: torch.nn.Module,
                                                                               quant_offset=None, group_index=expert_tokens,
                                                                               activate_left=True, quant_mode=1)
 
-            if model_extra_config.operator_opt_config.pd_seperate_prefill:
+            if os.getenv('ROLE', None)=='prefill':
                 out = torch_npu.npu_grouped_matmul([gate_up_proj], [layer.w2_weight], scale=[layer.w2_weight_scale],
                                                    per_token_scale=[pertoken_scale], bias=None,
                                                    group_list=expert_tokens, split_item=3, output_dtype=torch.bfloat16,
