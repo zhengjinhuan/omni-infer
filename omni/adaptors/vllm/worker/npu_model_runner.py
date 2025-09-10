@@ -876,12 +876,13 @@ class NPUModelRunner(GPUModelRunner):
 
         # Build dummy attn_metadata
         attn_metadata = {}
-        is_pd_seperate_d = self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
         for kv_cache_group_id, kv_cache_group_spec in enumerate(self.kv_cache_config.kv_cache_groups):
             builder = self.attn_metadata_builders[kv_cache_group_id]
             if not isinstance(builder, DummyAttentionMetadataBuilder):
                 raise ValueError(f"{builder} does not implement DummyAttentionMetadataBuilder")
             attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
+            if self.enable_torchair_graph_mode:
+                builder.mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
                 attn_metadata[layer_name] = attn_metadata_i
 
@@ -891,16 +892,13 @@ class NPUModelRunner(GPUModelRunner):
             "selected_indices": None
         }
         with set_forward_context(attn_metadata, self.vllm_config):
-            is_not_pd_seperate_and_capture_model = self.vllm_config.kv_transfer_config is None and is_capture_model
-            use_compile = self.enable_torchair_graph_mode and (is_pd_seperate_d or is_not_pd_seperate_and_capture_model)
+            use_compile = self.enable_torchair_graph_mode
             if use_compile:
                 logger.debug("Start running dummy compiled model.")
                 if not self.dummy_model_mark_static:
                     if isinstance(self.model, GraphCompileConfiguration):
                         self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                     else:
-                        for _, attn_metadata_i in attn_metadata.items():
-                            builder.mark_static_for_attn_metadata(attn_metadata_i)
                         mark_static_for_graph_default(input_ids, positions, self.kv_caches)
                     self.dummy_model_mark_static = True
             else:
