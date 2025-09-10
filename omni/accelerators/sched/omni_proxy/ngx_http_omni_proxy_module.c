@@ -104,75 +104,111 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
     omni_req_group_t *group;
     omni_req_info_t *info;
 
-
+    /* 1) snapshot pointers under lock */
     ngx_shmtx_lock(&g_state->shmtx);
+
     group = &g_state->groups[PHASE_TOKENIZING];
     info = find_req_info_in_group(req->slot_index, group);
-
 
     if (info == NULL)
     {
         ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                      "omni_proxy_post_tokenized: missing omni_req_info_t for slot %u; shared state is corrupted. Aborting.",
-                      req->slot_index);
-
-        /* unlock before aborting to avoid leaving the mutex locked (best effort) */
+                      "omni_proxy_post_tokenized: cannot find req info for slot %u (shared state corrupted)", req->slot_index);
         ngx_shmtx_unlock(&g_state->shmtx);
-
-        /* Fail fast: assert to catch in debug, then abort to avoid continuing in bad state */
-        assert(info != NULL && "omni_proxy_post_tokenized: missing omni_req_info_t (shared state corrupted)");
+        assert(info != NULL && "missing req info in omni_proxy_post_tokenized");
         abort();
-        /* unreachable */
     }
 
+    /* snapshot number of prefill endpoints and radix_tree pointers */
     uint16_t num_prefill = g_state->num_prefill_endpoints;
-    omni_radix_tree_t *local_trees[MAX_PREFILL_UPSTREAMS];
-    uint16_t local_num = 0;
+    /* cap to MAX_PREFILL_UPSTREAMS just in case */
+    if (num_prefill > MAX_PREFILL_UPSTREAMS)
+        num_prefill = MAX_PREFILL_UPSTREAMS;
 
+    /* allocate local array of radix_tree pointers on stack (fits: 128 pointers) */
+    omni_radix_tree_t *local_trees[MAX_PREFILL_UPSTREAMS];
     for (uint16_t i = 0; i < num_prefill; ++i)
     {
-        omni_upstream_prefill_t *prefill = &g_state->prefill_states[i];
-        local_trees[local_num++] = prefill->radix_tree; 
+        local_trees[i] = g_state->prefill_states[i].radix_tree;
     }
 
+    /* Keep a copy of the info pointer index in case group compacts; we'll re-find later */
+    uint32_t slot_index = req->slot_index;
+
+    /* release lock before heavy/locking ops */
     ngx_shmtx_unlock(&g_state->shmtx);
 
-    ngx_uint_t local_match_depths[MAX_PREFILL_UPSTREAMS];
-    ngx_uint_t max_match_depth = 0;
+    /* 2) Compute matches without holding g_state lock */
+    uint32_t local_match_depths[MAX_PREFILL_UPSTREAMS];
+    ngx_uint_t computed_max = 0;
 
-    for (uint16_t i = 0; i < local_num; ++i)
+    /* If tokenizer didn't produce block_hashes, guard */
+    if (req->tokenizer_req.block_hashes == NULL || req->tokenizer_req.block_hashes_len == 0)
     {
-        omni_radix_tree_t *tree = local_trees[i];
-        ngx_uint_t match_depth = 0;
-
-        if (tree != NULL)
+        for (uint16_t i = 0; i < num_prefill; ++i)
         {
-            match_depth = omni_radix_tree_match_optimistic(tree,
-                                                           (uint64_t *)req->tokenizer_req.block_hashes,
-                                                           req->tokenizer_req.block_hashes_len);
+            local_match_depths[i] = 0;
         }
-
-        local_match_depths[i] = match_depth;
-        if (match_depth > max_match_depth)
+    }
+    else
+    {
+        for (uint16_t i = 0; i < num_prefill; ++i)
         {
-            max_match_depth = match_depth;
+            omni_radix_tree_t *tree = local_trees[i];
+            ngx_uint_t match_depth = 0;
+            if (tree != NULL)
+            {
+                /* Use optimistic match to avoid acquiring tree mutex for reads */
+                match_depth = omni_radix_tree_match_optimistic(tree,
+                                                               (uint64_t *)req->tokenizer_req.block_hashes,
+                                                               req->tokenizer_req.block_hashes_len);
+            }
+            local_match_depths[i] = (uint32_t)match_depth;
+            if ((ngx_uint_t)match_depth > computed_max)
+                computed_max = match_depth;
         }
     }
 
+    /* 3) Re-acquire global lock and write results to shared request and scheduling info */
     ngx_shmtx_lock(&g_state->shmtx);
+
+    /* re-validate info and req still exist and in expected group/phase */
     group = &g_state->groups[PHASE_TOKENIZING];
-    info = find_req_info_in_group(req->slot_index, group);
-    if (info)
+    info = find_req_info_in_group(slot_index, group);
+    if (info == NULL)
     {
-        for (uint16_t i = 0; i < local_num && i < MAX_PREFILL_UPSTREAMS; ++i)
-        {
-            info->match_depths[i] = local_match_depths[i];
-        }
-        info->weight = max_match_depth;
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                      "omni_proxy_post_tokenized: req disappeared while computing matches slot %u", slot_index);
+        ngx_shmtx_unlock(&g_state->shmtx);
+        assert(info != NULL && "req disappeared during post-tokenize");
+        abort();
     }
+
+    /* re-acquire request pointer from request pool to be safe */
+    omni_req_t *shared_req = &g_state->request_pool.slots[slot_index];
+    if (!shared_req->in_use || shared_req->slot_index != slot_index)
+    {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                      "omni_proxy_post_tokenized: shared req slot %u invalid (in_use=%u, slot_index=%u)",
+                      slot_index, (unsigned)shared_req->in_use, (unsigned)shared_req->slot_index);
+        ngx_shmtx_unlock(&g_state->shmtx);
+        assert(shared_req->in_use && "shared req invalid");
+        abort();
+    }
+
+    /* write per-endpoint match depths into shared request */
+    for (uint16_t i = 0; i < num_prefill; ++i)
+    {
+        shared_req->match_depths[i] = local_match_depths[i];
+    }
+    shared_req->max_match_depth = (uint32_t)computed_max;
+
+    /* update scheduler-visible weight (keep backward compatibility) */
+    info->weight = (double)computed_max;
+
     ngx_shmtx_unlock(&g_state->shmtx);
 
-phase_transition:
+    /* Finally perform phase transition and timestamp updates (no heavy locking required here) */
     omni_phase_transition_all(req, 0, PHASE_PREFILL_WAITING_SCHEDULE);
     req->metrics.time_enter_wait_prefill = ngx_current_msec;
 
@@ -183,45 +219,6 @@ phase_transition:
     }
 }
 
-static void omni_proxy_req_body_handler(ngx_http_request_t *r)
-{
-    omni_req_t *req = omni_get_req(r);
-    omni_req_context_t *ctx = omni_get_req_ctx(r);
-    req->metrics.time_contents_received = ngx_current_msec;
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Prefill-%d]: request body received", req->slot_index);
-
-    omni_proxy_save_origin_body(r, ctx);
-
-    req->metrics.prompt_num_tokens = ctx->origin_body_tokens_size;
-
-    if (!g_state->has_tokenizer)
-    {
-        omni_proxy_post_tokenized(req);
-        return;
-    }
-
-    req->tokenizer_req.input_data = ctx->origin_body_data;
-    req->tokenizer_req.input_len = ctx->origin_body_data_size;
-
-    // Chat template expansion buffer
-    req->tokenizer_req.prompt_buf_size = req->tokenizer_req.input_len + 512;
-    req->tokenizer_req.prompt = ngx_palloc(r->pool, req->tokenizer_req.prompt_buf_size);
-
-    req->tokenizer_req.input_ids_buf_size = req->tokenizer_req.prompt_buf_size;
-    req->tokenizer_req.input_ids = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.input_ids_buf_size);
-
-    req->tokenizer_req.block_hashes_buf_size = req->tokenizer_req.input_ids_buf_size / local_state.loc_conf->kv_block_size;
-    req->tokenizer_req.block_hashes = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.block_hashes_buf_size);
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                  "buf sizes: prompt %zu, input_ids %zu, block_hashes %zu, %p, %p, %p\n",
-                  req->tokenizer_req.prompt_buf_size,
-                  req->tokenizer_req.input_ids_buf_size,
-                  req->tokenizer_req.block_hashes_buf_size,
-                  req->tokenizer_req.prompt,
-                  req->tokenizer_req.input_ids,
-                  req->tokenizer_req.block_hashes);
-    omni_tokenizer_worker_submit(&local_state.tokenize_worker, req->slot_index);
-}
 
 static void omni_proxy_remove_req_from_groups(omni_req_t *req)
 {
