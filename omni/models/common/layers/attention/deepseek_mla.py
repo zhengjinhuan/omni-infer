@@ -80,7 +80,8 @@ class Indexer(nn.Module):
         self.actual_seq_lengths = {}
         for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
             # self.actual_seq_lengths[batch_size] = torch.tensor(list([1] * batch_size), dtype=torch.int64, device=current_platform.device_type)
-            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+            # todo 当前支持int32，后续需要去掉
+            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int32, device=current_platform.device_type).to(torch.int32)
             # torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
 
         self.wq_b = ReplicatedLinear(self.q_lora_rank,
@@ -121,16 +122,16 @@ class Indexer(nn.Module):
                 sp_size = model_extra_config.parall_config.attn_sp_size
                 sp_rank = get_tensor_model_parallel_rank()
                 if is_second:
-                    actual_seq_kvlen = [kvlen * (sp_size * 2 - sp_rank) for kvlen in actual_seq_kvlen]
+                    actual_seq_kvlen = actual_seq_kvlen * (sp_size * 2 - sp_rank)
                 else:
-                    actual_seq_kvlen = [kvlen * (sp_rank + 1) for kvlen in actual_seq_kvlen]
-            actual_seq_lengths_query = torch.tensor(attn_metadata.prefill.query_lens).npu()
-            actual_seq_lengths_key = torch.tensor(actual_seq_kvlen).npu()
+                    actual_seq_kvlen = actual_seq_kvlen * (sp_rank + 1)
+            actual_seq_lengths_query = attn_metadata.prefill.query_lens.to(torch.int32)
+            actual_seq_lengths_key = actual_seq_kvlen.to(torch.int32)
             block_table = attn_metadata.prefill.block_table
         else:
             # todo 在build阶段转tensor
             actual_seq_lengths_query = self.actual_seq_lengths[q.shape[0]]
-            actual_seq_lengths_key = torch.tensor(attn_metadata.decode.seq_lens).npu()
+            actual_seq_lengths_key = attn_metadata.decode.seq_lens.to(torch.int32)
             block_table = attn_metadata.decode.block_table
 
         topk_indices = torch.ops.npu.npu_lightning_indexer(query=q,
@@ -147,9 +148,9 @@ class Indexer(nn.Module):
         return topk_indices
 
     def forward(self, x: torch.Tensor, qr: torch.Tensor,
-                positions: torch.Tensor,attn_metadata: AttentionMetadata,
+                attn_metadata: AttentionMetadata,
                 kv_cache: torch.Tensor, is_prefill, is_second_forward=False):
-        print(f"{x.shape=} {qr.shape=} {positions.shape=} {is_prefill=}", flush=True)
+        print(f"{x.shape=} {qr.shape=} {is_prefill=}", flush=True)
         q = self.wq_b(qr)[0]  # [b*s,1536] @ [1536,64*128] = [b*s,64*128]
         q = q.reshape(-1, self.n_heads, self.head_dim)  # [b*s,64,128]
         q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64,64+64]
@@ -162,16 +163,17 @@ class Indexer(nn.Module):
             k = torch.cat([k_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
         k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
 
-        cos_q, sin_q = self.rotary_emb.get_cos_sin(positions)
         if is_prefill:
             cos, sin = attn_metadata.prefill.cos, attn_metadata.prefill.sin
         else:
             cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
-        q_pe = q_pe.unsqueeze(2)
+
         if model_extra_config.parall_config.attn_sp_size > 1:
-            q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q) # BNSD
+            cos_q, sin_q = attn_metadata.prefill.cos_q, attn_metadata.prefill.sin_q
         else:
-            q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q)
+            cos_q, sin_q = cos, sin
+        q_pe = q_pe.unsqueeze(2)
+        q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q)
         q_pe = q_pe.squeeze(2)
         
         k_pe = k_pe.unsqueeze(2)
@@ -502,14 +504,14 @@ class DeepseekMLA(nn.Module):
                 sp_size = model_extra_config.parall_config.attn_sp_size
                 sp_rank = get_tensor_model_parallel_rank()
                 if is_second_attn:
-                    actual_seq_kvlen = [kvlen * (sp_size * 2 - sp_rank) for kvlen in actual_seq_kvlen]
+                    actual_seq_kvlen = actual_seq_kvlen * (sp_size * 2 - sp_rank)
                 else:
-                    actual_seq_kvlen = [kvlen * (sp_rank + 1) for kvlen in actual_seq_kvlen]
+                    actual_seq_kvlen = actual_seq_kvlen * (sp_rank + 1)
 
             if model_extra_config.parall_config.attn_sp_size == 1:
                 hidden_states = mla_tensor_model_parallel_all_gather(hidden_states, dim=0)
 
-            topk_indices = self.indexer(hidden_states, qr, positions, attn_metadata,
+            topk_indices = self.indexer(hidden_states, qr, attn_metadata,
                                         kv_cache=kv_cache, is_prefill=True, is_second_forward=is_second_attn)
 
             k_nope = k_nope.squeeze(2)
@@ -529,8 +531,8 @@ class DeepseekMLA(nn.Module):
                 select_block_size=1,
                 select_block_count=2048,
                 layout="TND",sparse_mode=3, atten_mask=None,
-                actual_seq_qlen=actual_seq_qlen,
-                actual_seq_kvlen=actual_seq_kvlen,
+                actual_seq_qlen=actual_seq_qlen.tolist(),# todo 等接口支持后切换成tensor
+                actual_seq_kvlen=actual_seq_kvlen.tolist(),
             )
                 
         else:
@@ -642,14 +644,12 @@ class DeepseekMLA(nn.Module):
             sin = torch.zeros([latent_cache.size(0), 1, 1, self.qk_rope_head_dim], dtype=latent_cache.dtype, device=latent_cache.device)
         else:
             cos, sin = attn_metadata.prefill.cos, attn_metadata.prefill.sin
+            if model_extra_config.parall_config.attn_sp_size > 1:
+                cos_q, sin_q = attn_metadata.prefill.cos_q, attn_metadata.prefill.sin_q
+            else:
+                cos_q, sin_q = cos, sin
 
-        # todo 可以挪到前面去算好
-        cos_q, sin_q = self.rotary_emb.get_cos_sin(positions)
-        if model_extra_config.parall_config.attn_sp_size > 1:
-            print(f"{q_pe.shape=} {sin.shape=} {cos.shape=}", flush=True)
-            q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q) # BNSD
-        else:
-            q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q)
+        q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q) # BNSD
         q_pe = q_pe.squeeze(2) #BSH
         q[..., self.qk_nope_head_dim:] = q_pe
 
@@ -1018,7 +1018,7 @@ class DeepseekMLA(nn.Module):
                 k_nope = k_nope.squeeze(2)
                 k_rope = k_rope.squeeze(2)
                 # todo indexer only support bsnd
-                topk_indices = self.indexer(hidden_states, qr, positions, attn_metadata,
+                topk_indices = self.indexer(hidden_states, qr, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)
                 attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
                     query=q_nope,
@@ -1035,8 +1035,8 @@ class DeepseekMLA(nn.Module):
                     select_block_size=1,
                     select_block_count=2048,
                     layout="TND",sparse_mode=3, atten_mask=None,
-                    actual_seq_qlen=self.actual_seq_lengths[bsz],
-                    actual_seq_kvlen=attn_metadata.decode.seq_lens,
+                    actual_seq_qlen=self.actual_seq_lengths[bsz].tolist(),
+                    actual_seq_kvlen=attn_metadata.decode.seq_lens.tolist(),
                 )
             else:
                 attn_output, _ = op_scope.npu_fused_infer_attention_score(

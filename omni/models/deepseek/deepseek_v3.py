@@ -72,6 +72,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_mlp_tp_group,
     GroupCoordinator
 )
+import torch.nn.functional as F
 
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.layers.moe.deepseek_moe import DeepseekMoE 
@@ -407,33 +408,30 @@ class DeepseekV3Model(nn.Module):
         else:
             return self.forward_normal(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors)
 
-    def pad_inputs(self, input, query_lens, sp_size, pad_value=None):
-        count = 0
-        res = []
-        for len in query_lens:
-            pad_size = self._get_pad_size(len, sp_size)
-            tmp_tensor = input[count:count + len]
-            if pad_value is None:
-                pad_value = tmp_tensor.tolist()[-1] +1
-            padded_tensor = self.pad_tensor(tmp_tensor, pad_size, pad_value)
-            res.append(padded_tensor)
-            count += len
-        return torch.cat(res, dim=0)
+    def pad_inputs(self, input, query_lens, sp_size):
+        padded_lengths = sp_size - query_lens
+        segments = []
+        start_idx = 0
+        for length, pad_length in zip(query_lens, padded_lengths):
+            segment = input[start_idx : start_idx + length]
+            padded_segment = F.pad(segment, (0, 0, 0, pad_length), "constant", 0)
+            segments.append(padded_segment)
+            start_idx += length
 
-    def generage_sp_inputs(self, hidden_states, positions, attn_metadata):
+        return torch.cat(segments, dim=0)
+
+    # todo query_lens是tensor，需要适配
+    def generage_sp_inputs(self, hidden_states, attn_metadata):
         sp_size = model_extra_config.parall_config.attn_sp_size
         if attn_metadata is not None:
-            hidden_states = self.pad_inputs(hidden_states, attn_metadata.prefill.query_lens, sp_size, 0)
-            positions = self.pad_inputs(positions, attn_metadata.prefill.query_lens, sp_size)
+            actual_seq_qlens = torch.diff(attn_metadata.prefill.query_lens, dim=0, prepend=torch.tensor([0]))
+            hidden_states = self.pad_inputs(hidden_states, actual_seq_qlens, sp_size * 2)
             # split input for sp attention
             hidden_states_list = list(torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0))
-            position_id_list = list(torch.split(positions, attn_metadata.prefill.sp_split_list, dim=0))
             hidden_states = torch.cat([hidden_states_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
-            positions = torch.cat([position_id_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
         else:
             hidden_states = torch.split(hidden_states, sp_size, dim=0)[get_tensor_model_parallel_rank()]
-            positions = torch.split(positions, sp_size, dim=0)[get_tensor_model_parallel_rank()]
-        return hidden_states, positions
+        return hidden_states
 
     def forward_normal(
             self,
@@ -455,7 +453,7 @@ class DeepseekV3Model(nn.Module):
         if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
             # split input for sp attention
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
-            hidden_states, positions = self.generage_sp_inputs(hidden_states, positions, self.get_layer_attn_metadata(attn_metadata, 0))
+            hidden_states = self.generage_sp_inputs(hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
             print(f"after sp split, hidden_states shape: {hidden_states.shape}, positions shape: {positions.shape}", flush=True)
 
         for i in range(self.start_layer, self.end_layer):
