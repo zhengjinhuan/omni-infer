@@ -254,7 +254,7 @@ class ConfigUpdater:
 
     @staticmethod
     def _may_enable_omni_attn(vllm_config: 'VllmConfig') -> None:
-        if vllm_config.additional_config is None:
+        if vllm_config.additional_config is None or "enable_omni_attn" not in vllm_config.additional_config:
             return
         from omni.accelerators.cache import apply_omni_attn_patch, check_omni_attn_cmd_arg
         enable_omni_attn = check_omni_attn_cmd_arg(vllm_config.additional_config)
