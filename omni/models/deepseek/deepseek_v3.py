@@ -424,11 +424,11 @@ class DeepseekV3Model(nn.Module):
     def generage_sp_inputs(self, hidden_states, attn_metadata):
         sp_size = model_extra_config.parall_config.attn_sp_size
         if attn_metadata is not None:
-            actual_seq_qlens = torch.diff(attn_metadata.prefill.query_lens, dim=0, prepend=torch.tensor([0]))
-            hidden_states = self.pad_inputs(hidden_states, actual_seq_qlens, sp_size * 2)
+            hidden_states = self.pad_inputs(hidden_states, attn_metadata.prefill.query_lens, sp_size * 2)
             # split input for sp attention
             hidden_states_list = list(torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0))
             hidden_states = torch.cat([hidden_states_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
+            attn_metadata.prefill.query_lens = torch.cumsum(torch.ceil(attn_metadata.prefill.query_lens / sp_size / 2).to(torch.int64), dim=0)
         else:
             hidden_states = torch.split(hidden_states, sp_size, dim=0)[get_tensor_model_parallel_rank()]
         return hidden_states

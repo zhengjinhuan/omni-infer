@@ -81,7 +81,7 @@ class Indexer(nn.Module):
         for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
             # self.actual_seq_lengths[batch_size] = torch.tensor(list([1] * batch_size), dtype=torch.int64, device=current_platform.device_type)
             # todo 当前支持int32，后续需要去掉
-            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int32, device=current_platform.device_type).to(torch.int32)
+            self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int32, device=current_platform.device_type)
             # torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
 
         self.wq_b = ReplicatedLinear(self.q_lora_rank,
@@ -192,15 +192,17 @@ class Indexer(nn.Module):
             kv_cache = kv_cache.get("kv_cache")
         # TODO: update kcache
         if kv_cache[2] is not None and kv_cache[3] is not None:
-            torch_npu.scatter_update_(kv_cache[2].view(-1, k.shape[-1]), attn_metadata.slot_mapping, k.view(-1, k.shape[-1]), -1)   # b, s, n, d
+            torch_npu.npu_scatter_nd_update_(kv_cache[2].view(-1, k.shape[-1]),
+                                             attn_metadata.slot_mapping.view(-1, 1), 
+                                             k.view(-1, k.shape[-1]))   # b, s, n, d
 
         weights = self.weights_proj(x)[0]
-
-        topk_indices = self._apply_lightning_indexer(q, weights, attn_metadata, kv_cache, is_prefill)
 
         if model_extra_config.parall_config.attn_sp_size > 1 and is_second_forward:
             topk_indices_2 = self._apply_lightning_indexer(q2, weights, attn_metadata, kv_cache, is_prefill, is_second_forward)
             return topk_indices_2
+
+        topk_indices = self._apply_lightning_indexer(q, weights, attn_metadata, kv_cache, is_prefill)
 
         return topk_indices
 

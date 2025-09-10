@@ -71,6 +71,8 @@ NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which
 
 def _get_pad_size(num_seqs):
     tp_size = get_tensor_model_parallel_world_size()
+    if model_extra_config.parall_config.attn_sp_size > 1:
+        tp_size = tp_size * 2
     return (tp_size - num_seqs % tp_size) % tp_size
 
 class GraphCompileConfiguration:
@@ -340,6 +342,13 @@ class NPUModelRunner(GPUModelRunner):
             # requests have draft tokens.
             sample_indices = torch.arange(total_num_scheduled_tokens, dtype=torch.int32, device=self.device)
         else:
+            if model_extra_config.parall_config.attn_sp_size >1:
+                sp_size = model_extra_config.parall_config.attn_sp_size * 2
+                cu_num_tokens = np.empty_like(num_scheduled_tokens)
+                cu_num_tokens[0] = num_scheduled_tokens[0]
+                for i in range(1, num_scheduled_tokens.size):
+                    prev_aligned = ((cu_num_tokens[i - 1] + sp_size - 1) // sp_size) * sp_size
+                    cu_num_tokens[i] = prev_aligned + num_scheduled_tokens[i]
             sample_indices = cu_num_tokens - 1
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
         if self.lora_config:

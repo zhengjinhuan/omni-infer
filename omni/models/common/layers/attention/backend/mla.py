@@ -405,8 +405,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         cp_reverse_index = []
         for batch_id in range(bsz):
             cp_reverse_index.extend(
-                list(range(batch_id * 2, cp_piece_num * bsz, 2 * bsz)) +\
-                list(range((sp_size - 1) * 2 * bsz + batch_id * 2 + 1, 0, -2 * bsz))
+                list(range(batch_id, cp_piece_num * bsz, 2 * bsz)) +\
+                list(range((cp_piece_num - 1) * bsz + batch_id, 0, -2 * bsz))
             )
         reverse_split_list = seq_per_batch.repeat_interleave(2).repeat(sp_size).view(-1).int().tolist()
         reverse_split_list = reverse_split_list[::2] + reverse_split_list[1::2]
@@ -416,11 +416,11 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         count = 0
         res = []
         for len in query_lens:
-            pad_size = self._get_pad_size(len, sp_size)
+            pad_size = self.runner.model.model._get_pad_size(len, sp_size)
             tmp_tensor = input[count:count + len]
             if pad_value is None:
-                pad_value = tmp_tensor.tolist()[-1] +1
-            padded_tensor = self.pad_tensor(tmp_tensor, pad_size, pad_value)
+                pad_value = tmp_tensor.tolist()[-1] + 1
+            padded_tensor = self.runner.model.model.pad_tensor(tmp_tensor, pad_size, pad_value)
             res.append(padded_tensor)
             count += len
         return torch.cat(res, dim=0)
@@ -428,22 +428,25 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
     def prepare_sp_inputs(self,
                           positions,
                           query_lens_list,
-                          seq_lens_list):
-        sp_query_lens_list = [math.ceil(q_len / model_extra_config.parall_config.attn_sp_size / 2) for q_len in query_lens_list]
+                          seq_lens_list,
+                          slot_mapping):
         sp_seq_lens_list = [math.ceil(kv_len / model_extra_config.parall_config.attn_sp_size / 2) for kv_len in seq_lens_list]
         sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list = self.prepare_sp_split_indices(torch.tensor(query_lens_list))
         
         # prepare sp positions
         sp_size = model_extra_config.parall_config.attn_sp_size
         positions = self.pad_inputs(positions, query_lens_list, sp_size * 2)
+        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
         # split input for sp attention
         position_id_list = list(torch.split(positions, sp_split_list, dim=0))
         positions = torch.cat([position_id_list[i] for i in sp_zigzag_index], dim=0)
 
-        sp_query_lens = torch.tensor(sp_query_lens_list, dtype=torch.int64).npu()
         sp_seq_lens = torch.tensor(sp_seq_lens_list, dtype=torch.int64).npu()
+        
+        # prepare sp slotmapping
+        slot_mapping = self.pad_inputs(slot_mapping, query_lens_list, sp_size * 2, PAD_SLOT_ID)
 
-        return sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, sp_query_lens, sp_seq_lens
+        return sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, sp_seq_lens, cos, sin, slot_mapping
 
     def build(self,
               num_reqs: int,
@@ -506,26 +509,26 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
 
             positions = input_positions[tokens_start:]
-            # 全部位置信息
-            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
 
             # adapter attn sp
             if not model_extra_config.operator_opt_config.enable_fgsa:
                 query_lens = query_lens_list[reqs_start:]
                 seq_lens = seq_lens_list
+                query_lens = list(itertools.accumulate(query_lens))
             else:
                 query_lens = torch.tensor(query_lens_list[reqs_start:], dtype=torch.int64).npu()
                 seq_lens = torch.tensor(seq_lens_list, dtype=torch.int64).npu()
             if model_extra_config.parall_config.attn_sp_size > 1:
-                sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, query_lens, seq_lens  = \
+                sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, seq_lens, cos, sin, slot_mapping  = \
                     self.prepare_sp_inputs(positions=input_positions[tokens_start:],
                                         query_lens_list=query_lens_list[reqs_start:],
                                         seq_lens_list=seq_lens_list,
                                         )
                 # 在sp场景下，只有切分后长度的位置信息
                 cos_q, sin_q = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
+            else:
+                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
 
-            query_lens = list(itertools.accumulate(query_lens))
             prefill_metadata = AscendMLAPrefillMetadata(
                 attn_mask=self.runner.attn_mask,
                 query_lens=query_lens,
