@@ -78,17 +78,11 @@ torch.npu.config.allow_internal_format = True
 
 MICROBATCH_TOKEN_THRESHOLD = 4096
 DEFAULT_ROPE_THETA = 1000000
+
+
 class Qwen3MLP(FusedMLP):
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        hidden_act: str,
-        quant_config: Optional[QuantizationConfig] = None,
-        prefix: str = "",
-    ) -> None:
-        super().__init__(hidden_size, intermediate_size, hidden_act, quant_config, prefix)
-        self.intermediate_size = intermediate_size
+    pass
+
 
 class Qwen3Attention(nn.Module):
 
