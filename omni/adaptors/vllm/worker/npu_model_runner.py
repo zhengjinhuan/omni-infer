@@ -49,7 +49,6 @@ from omni.models.common.layers.attention.backend.attention_dummy_builder import 
 from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
-from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
 from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
