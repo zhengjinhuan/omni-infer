@@ -1,17 +1,7 @@
 import os
 import json
-from glob import glob
-from tqdm import tqdm
 import torch
-
-try:
-    import torch_npu
-except:
-    pass
-
 from safetensors.torch import load_file, save_file
-from huggingface_hub import snapshot_download
-
 
 def cal_scale(faquant_path, layer_idx, method='max'):
     tensors = []
@@ -34,12 +24,14 @@ def cal_scale(faquant_path, layer_idx, method='max'):
     if not tensors:
         raise ValueError(f"没有找到匹配 _{layer_idx}.pth 的tensor")
 
-    merged = torch.cat(tensors, dim=-1)
-    scale = (merged.max() / 127).clamp(min=1e-5).cpu()
+    merged = torch.cat(tensors, dim=0)
+
+    if method == 'max'
+        scale = (merged.max() / 127).clamp(min=1e-5).cpu()
     return scale
 
 
-def main(args, model_path, faquant_path, kvs_safetensor_name, layer_num=61):
+def main(args, model_path, faquant_path, kvs_safetensor_name, layer_num=62):
     model_config = os.path.join(model_path, "model.safetensors.index.json")
     with open(model_config, "r") as f:
         model_index = json.load(f)
