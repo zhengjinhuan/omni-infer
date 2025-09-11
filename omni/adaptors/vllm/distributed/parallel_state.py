@@ -169,7 +169,7 @@ def initialize_model_parallel(
         initialize_o_proj_tp_group(backend)
         initialize_o_proj_dp_group(backend)
 
-    if is_device_a2:
+    if is_device_a2 or not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
         if model_extra_config.operator_opt_config.two_stage_comm:
             initialize_cross_comm_group_list(backend)
             initialize_local_comm_group_list(backend)

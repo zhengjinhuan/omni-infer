@@ -493,18 +493,15 @@ def fused_experts_ep_best_alltoall(hidden_states: torch.Tensor,
     return final_out
 
 
-def fused_experts_w8a8_allgather_ep(hidden_states: torch.Tensor,
-                                    pertoken_scale: torch.Tensor,
-                                    w1: torch.Tensor,
-                                    w2: torch.Tensor,
-                                    w1_scale: torch.Tensor,
-                                    w2_scale: torch.Tensor,
-                                    topk_weights: torch.Tensor,
-                                    topk_ids: torch.Tensor,
-                                    n_routed_experts: int,
-                                    is_prefill: bool,
-                                    max_num_deployed_expert_per_rank: int  # ENABLE_OMNI_PLANNER
-                                    ):
+def fused_experts_allgather_ep_a3(layer: torch.nn.Module,
+                                  hidden_states: torch.Tensor,
+                                  pertoken_scale: torch.Tensor,
+                                  topk_weights: torch.Tensor,
+                                  topk_ids: torch.Tensor,
+                                  n_routed_experts: int,
+                                  is_prefill: bool,
+                                  max_num_deployed_expert_per_rank: int  # ENABLE_OMNI_PLANNER
+                                  ):
     redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
     expert_parallel_size = get_ep_group().world_size - redundancy_shared_expert_num
 
@@ -529,8 +526,6 @@ def fused_experts_w8a8_allgather_ep(hidden_states: torch.Tensor,
             row_index = row_index.to(torch.int64)
             share_input = torch.zeros((batch_size // get_dp_group().world_size, hidden_size), dtype=torch.bfloat16,
                                       device=current_platform.device_type)
-            scale_2 = torch.ones((n_routed_experts, w1_scale.shape[-1] // 2), dtype=torch.float32,
-                                 device=current_platform.device_type)
         else:
             with tng.scope.npu_stream_switch('11'):
                 expanded_x_idx = tng.scope.npu_wait_tensor(expanded_x_idx, expanded_x_idx)
@@ -539,107 +534,68 @@ def fused_experts_w8a8_allgather_ep(hidden_states: torch.Tensor,
                 row_index = row_index.to(torch.int64)
                 share_input = torch.zeros((batch_size // get_dp_group().world_size, hidden_size), dtype=torch.bfloat16,
                                           device=current_platform.device_type)
-                scale_2 = torch.ones((n_routed_experts, w1_scale.shape[-1] // 2), dtype=torch.float32,
-                                     device=current_platform.device_type)
-        gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=None, group_list=expert_tokens,
-                                                    split_item=3, output_dtype=torch.int32, group_type=0,
-                                                    group_list_type=1)[0]
-        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=w1_scale,
-                                                                          activation_scale=dynamic_quant_scale,
-                                                                          bias=None, quant_scale=scale_2,
-                                                                          quant_offset=None, group_index=expert_tokens,
-                                                                          activate_left=True, quant_mode=1)
+        if layer.weight_num_bits == 8:
+            scale_2 = torch.ones((n_routed_experts, layer.w13_weight_scale.shape[-1] // 2), dtype=torch.float32,
+                                 device=current_platform.device_type)
+            gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [layer.w13_weight], bias=None,
+                                                        group_list=expert_tokens,
+                                                        split_item=3, output_dtype=torch.int32, group_type=0,
+                                                        group_list_type=1)[0]
+            gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj,
+                                                                              weight_scale=layer.w13_weight_scale,
+                                                                              activation_scale=dynamic_quant_scale,
+                                                                              bias=None, quant_scale=scale_2,
+                                                                              quant_offset=None,
+                                                                              group_index=expert_tokens,
+                                                                              activate_left=True, quant_mode=1)
 
-        output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2, expert_tokens,
-                                                               scale=w2_scale.to(torch.float), bias=None,
-                                                               pertoken_scale=pertoken_scale, shared_input=share_input,
-                                                               logit=sorted_topk_weight, row_index=row_index,
-                                                               output_bs=batch_size, shared_input_weight=1.0,
-                                                               group_list_type=1, shared_input_offset=0).to(
-            torch.bfloat16)
+            output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, layer.w2_weight, expert_tokens,
+                                                                   scale=layer.w2_weight_scale.to(torch.float),
+                                                                   bias=None,
+                                                                   pertoken_scale=pertoken_scale,
+                                                                   shared_input=share_input,
+                                                                   logit=sorted_topk_weight,
+                                                                   row_index=row_index,
+                                                                   output_bs=batch_size,
+                                                                   shared_input_weight=1.0,
+                                                                   group_list_type=1, shared_input_offset=0).to(
+                torch.bfloat16)
+            return output
+        elif layer.weight_num_bits == 4:
+            gate_up_proj = \
+            torch_npu.npu_grouped_matmul([sorted_tokens], [layer.w13_weight], bias=[layer.w13_weight_bias],
+                                         scale=[layer.w13_weight_int4_scale],
+                                         offset=None, antiquant_scale=None, antiquant_offset=None,
+                                         per_token_scale=[dynamic_quant_scale],
+                                         group_list=expert_tokens,
+                                         activation_input=None, activation_quant_scale=None,
+                                         activation_quant_offset=None, split_item=3, group_type=0,
+                                         group_list_type=1, act_type=0, output_dtype=torch.bfloat16)[0]
 
-        return output
+            fake_scale = torch.ones(layer.w13_weight_int4_scale.shape, dtype=torch.float32, device="npu").view(
+                -1, layer.w13_weight_int4_scale.shape[-1])
+            dynamic_quant_scale = torch.ones(dynamic_quant_scale.shape, dtype=torch.float32, device="npu")
+            scale_2 = torch.ones((n_routed_experts, layer.w13_weight_int4_scale.shape[-1] // 2),
+                                 dtype=torch.float32, device="npu")
+            gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj,
+                                                                              weight_scale=fake_scale,
+                                                                              activation_scale=dynamic_quant_scale,
+                                                                              bias=None, quant_scale=scale_2,
+                                                                              quant_offset=None,
+                                                                              group_index=expert_tokens,
+                                                                              activate_left=True, quant_mode=1)
 
-
-def fused_experts_w4a8_allgather_ep(hidden_states: torch.Tensor,
-                                    pertoken_scale: torch.Tensor,
-                                    w1: torch.Tensor,
-                                    w2: torch.Tensor,
-                                    w1_scale: torch.Tensor,
-                                    w2_scale: torch.Tensor,
-                                    w1_bias: torch.Tensor,
-                                    w2_bias: torch.Tensor,
-                                    topk_weights: torch.Tensor,
-                                    topk_ids: torch.Tensor,
-                                    n_routed_experts: int,
-                                    is_prefill: bool,
-                                    max_num_deployed_expert_per_rank: int  # ENABLE_OMNI_PLANNER
-                                    ):
-    redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
-    expert_parallel_size = get_ep_group().world_size - redundancy_shared_expert_num
-
-    if expert_parallel_size > 1:
-        batch_size, hidden_size = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_size)
-        n_total_expert = n_routed_experts * expert_parallel_size
-
-        # experts_start_idx = get_expert_parallel_rank() * max_num_deployed_expert_per_rank
-        experts_start_idx = (
-                                    get_world_group().rank_in_group - redundancy_shared_expert_num) * max_num_deployed_expert_per_rank  # ENABLE_OMNI_PLANNER
-        experts_end_idx = experts_start_idx + n_routed_experts
-        expert_range = [experts_start_idx, experts_end_idx]
-
-        sorted_tokens, expanded_x_idx, expert_tokens, dynamic_quant_scale = torch_npu.npu_moe_init_routing_v2(
-            hidden_states, topk_ids, scale=pertoken_scale, offset=None,
-            active_num=topk_ids.numel(), expert_num=n_total_expert, expert_capacity=-1,
-            drop_pad_mode=0, expert_tokens_num_type=1, expert_tokens_num_flag=True,
-            active_expert_range=expert_range, quant_mode=-1, row_idx_type=1)  # row_idx_type=1 for gmm+finalize
-
-        if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
-            expanded_x_idx = torch.clamp(expanded_x_idx, 0, expanded_x_idx.shape[0] - 1)
-            sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
-            row_index = torch.floor(torch.div(expanded_x_idx, topk_ids.shape[-1]))
-            row_index = row_index.to(torch.int64)
-            share_input = torch.zeros((batch_size // get_dp_group().world_size, hidden_size), dtype=torch.bfloat16,
-                                      device="npu")
-            scale_2 = torch.ones((n_routed_experts, w1_scale.shape[-1] // 2), dtype=torch.float32, device="npu")
-        else:
-            with tng.scope.npu_stream_switch('11'):
-                expanded_x_idx = tng.scope.npu_wait_tensor(expanded_x_idx, expanded_x_idx)
-                expanded_x_idx = torch.clamp(expanded_x_idx, 0, expanded_x_idx.shape[0] - 1)
-                sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
-                row_index = expanded_x_idx // topk_ids.shape[-1]
-                row_index = row_index.to(torch.int64)
-                share_input = torch.zeros((batch_size // get_dp_group().world_size, hidden_size),
-                                          dtype=torch.bfloat16, device="npu")
-                scale_2 = torch.ones((n_routed_experts, w1_scale.shape[-1] // 2), dtype=torch.float32, device="npu")
-
-        gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=[w1_bias], scale=[w1_scale],
-                                                    offset=None, antiquant_scale=None, antiquant_offset=None,
-                                                    per_token_scale=[dynamic_quant_scale],
-                                                    group_list=expert_tokens,
-                                                    activation_input=None, activation_quant_scale=None,
-                                                    activation_quant_offset=None, split_item=3, group_type=0,
-                                                    group_list_type=1, act_type=0, output_dtype=torch.bfloat16)[0]
-
-        fake_scale = torch.ones(w1_scale.shape, dtype=torch.float32, device="npu").view(-1, w1_scale.shape[-1])
-        dynamic_quant_scale = torch.ones(dynamic_quant_scale.shape, dtype=torch.float32, device="npu")
-        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=fake_scale,
-                                                                          activation_scale=dynamic_quant_scale,
-                                                                          bias=None, quant_scale=scale_2,
-                                                                          quant_offset=None, group_index=expert_tokens,
-                                                                          activate_left=True, quant_mode=1)
-
-        output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2,
-                                                               group_list=expert_tokens, scale=w2_scale,
-                                                               bias=w2_bias,
-                                                               pertoken_scale=pertoken_scale,
-                                                               shared_input=share_input, logit=sorted_topk_weight,
-                                                               row_index=row_index,
-                                                               output_bs=batch_size, group_list_type=1).to(
-            torch.bfloat16)
-
-        return output
+            output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, layer.w2_weight,
+                                                                   group_list=expert_tokens,
+                                                                   scale=layer.w2_weight_int4_scale,
+                                                                   bias=layer.w2_weight_bias,
+                                                                   pertoken_scale=pertoken_scale,
+                                                                   shared_input=share_input,
+                                                                   logit=sorted_topk_weight,
+                                                                   row_index=row_index,
+                                                                   output_bs=batch_size, group_list_type=1).to(
+                torch.bfloat16)
+            return output
 
 
 def gmm_expert(layer, x, expert_tokens, dynamic_scale=None, avg_tokens_per_expert=None):
@@ -1053,13 +1009,10 @@ def shared_expert_alltoall_ep(hidden_states: torch.Tensor, expert: torch.nn.Modu
     return recv_back_data[inverse_indices]
 
 
-def fused_experts_w8a8_allgather_ep_a2(layer: torch.nn.Module,
+
+def fused_experts_allgather_ep_a2(layer: torch.nn.Module,
                                        hidden_states: torch.Tensor,
                                        pertoken_scale: torch.Tensor,
-                                       w1: torch.Tensor,
-                                       w2: torch.Tensor,
-                                       w1_scale: torch.Tensor,
-                                       w2_scale: torch.Tensor,
                                        topk_weights: torch.Tensor,
                                        topk_ids: torch.Tensor,
                                        n_routed_experts: int,
@@ -1133,33 +1086,60 @@ def fused_experts_w8a8_allgather_ep_a2(layer: torch.nn.Module,
                                             support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
                                                 not is_prefill))
 
-        gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=None, group_list=expert_tokens,
-                                                    split_item=3, output_dtype=torch.int32, group_type=0,
-                                                    group_list_type=1)[0]
+        if layer.weight_num_bits == 8:
+            gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [layer.w13_weight], bias=None, group_list=expert_tokens,
+                                                        split_item=3, output_dtype=torch.int32, group_type=0,
+                                                        group_list_type=1)[0]
 
-        gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=w1_scale,
-                                                                          activation_scale=dynamic_quant_scale,
-                                                                          bias=None, quant_scale=smooth_scale,
-                                                                          quant_offset=None, group_index=expert_tokens,
-                                                                          activate_left=True, quant_mode=1)
+            gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=layer.w13_weight_scale,
+                                                                              activation_scale=dynamic_quant_scale,
+                                                                              bias=None, quant_scale=smooth_scale,
+                                                                              quant_offset=None, group_index=expert_tokens,
+                                                                              activate_left=True, quant_mode=1)
 
-        if model_extra_config.operator_opt_config.pd_seperate_prefill:
-            out = torch_npu.npu_grouped_matmul([gate_up_proj], [w2], scale=[w2_scale],
-                                               per_token_scale=[pertoken_scale], bias=None,
-                                               group_list=expert_tokens, split_item=3, output_dtype=torch.bfloat16,
-                                               group_type=0, group_list_type=1)[0]
-            output = torch_npu.npu_moe_finalize_routing(out.unsqueeze(1).to(torch.bfloat16),
-                                                        None, None, None,
-                                                        topk_weights.to(torch.bfloat16),
-                                                        expanded_x_idx, topk_ids, drop_pad_mode=3)
-        else:
-            output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, w2, scale=w2_scale, bias=None,
+            if model_extra_config.operator_opt_config.pd_seperate_prefill:
+                out = torch_npu.npu_grouped_matmul([gate_up_proj], [layer.w2_weight], scale=[layer.w2_weight_scale],
+                                                   per_token_scale=[pertoken_scale], bias=None,
+                                                   group_list=expert_tokens, split_item=3, output_dtype=torch.bfloat16,
+                                                   group_type=0, group_list_type=1)[0]
+                output = torch_npu.npu_moe_finalize_routing(out.unsqueeze(1).to(torch.bfloat16),
+                                                            None, None, None,
+                                                            topk_weights.to(torch.bfloat16),
+                                                            expanded_x_idx, topk_ids, drop_pad_mode=3)
+            else:
+                output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, layer.w2_weight, scale=layer.w2_weight_scale, bias=None,
+                                                                       pertoken_scale=pertoken_scale,
+                                                                       group_list=expert_tokens, shared_input=share_input,
+                                                                       logit=sorted_topk_weight, row_index=row_index,
+                                                                       output_bs=batch_size, shared_input_weight=1.0,
+                                                                       group_list_type=1,
+                                                                       shared_input_offset=0)
+        elif layer.weight_num_bits == 4:
+            gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [layer.w13_weight], bias=[layer.w13_weight_bias], scale=[layer.w13_weight_int4_scale],
+                                                        offset=None, antiquant_scale=None, antiquant_offset=None,
+                                                        per_token_scale=[dynamic_quant_scale],
+                                                        group_list=expert_tokens,
+                                                        activation_input=None, activation_quant_scale=None,
+                                                        activation_quant_offset=None, split_item=3, group_type=0,
+                                                        group_list_type=1, act_type=0, output_dtype=torch.bfloat16)[0]
+
+            fake_scale = torch.ones(layer.w13_weight_int4_scale.shape, dtype=torch.float32, device="npu").view(-1, layer.w13_weight_int4_scale.shape[-1])
+            dynamic_quant_scale = torch.ones(dynamic_quant_scale.shape, dtype=torch.float32, device="npu")
+            scale_2 = torch.ones((n_routed_experts, layer.w13_weight_int4_scale.shape[-1] // 2), dtype=torch.float32, device="npu")
+            gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(gate_up_proj, weight_scale=fake_scale,
+                                                                              activation_scale=dynamic_quant_scale,
+                                                                              bias=None, quant_scale=scale_2,
+                                                                              quant_offset=None,
+                                                                              group_index=expert_tokens,
+                                                                              activate_left=True, quant_mode=1)
+
+            output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, layer.w2_weight,
+                                                                   group_list=expert_tokens, scale=layer.w2_weight_int4_scale,
+                                                                   bias=layer.w2_weight_bias,
                                                                    pertoken_scale=pertoken_scale,
-                                                                   group_list=expert_tokens, shared_input=share_input,
-                                                                   logit=sorted_topk_weight, row_index=row_index,
-                                                                   output_bs=batch_size, shared_input_weight=1.0,
-                                                                   group_list_type=1,
-                                                                   shared_input_offset=0)
+                                                                   shared_input=share_input, logit=sorted_topk_weight,
+                                                                   row_index=row_index,
+                                                                   output_bs=batch_size, group_list_type=1).to(torch.bfloat16)
 
         if not is_prefill and (
                 model_extra_config.operator_opt_config.enable_round_pipeline_comm or model_extra_config.operator_opt_config.enable_pipeline_comm):
