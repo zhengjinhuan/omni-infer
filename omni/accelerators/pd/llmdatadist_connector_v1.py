@@ -49,7 +49,7 @@ GET_META_MSG = b"get_meta_msg"
 logger = init_logger(__name__)
 
 thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
-BLOCK_RELEASE_DELAY = 30  # seconds, use to free blocks when the request is finished for a long time 
+BLOCK_RELEASE_DELAY = os.environ.get("BLOCK_RELEASE_DELAY", 7200)  # seconds, use to free blocks when the request is finished for a long time 
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
 
@@ -295,15 +295,15 @@ class PrefillConnectorWorker:
             dump_thread_to_file(self.thread, thread_name, thread_dump_path)
 
         # check whether omni attention is enabled
-        from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
-        use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
-        if use_omni_attn_mgr:
-            manager_cls = OmniBiGroupDataDistManager
-            logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
-            self.datadist_manager = manager_cls(vllm_config)
-        else:
-            manager_cls = LLMDataDistManager
-            self.datadist_manager = manager_cls(vllm_config)
+        manager_cls = LLMDataDistManager
+        if vllm_config.additional_config and "enable_omni_attn" in vllm_config.additional_config:
+            # do import only when necessary
+            from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+            use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+            if use_omni_attn_mgr:
+                manager_cls = OmniBiGroupDataDistManager
+                logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
+        self.datadist_manager = manager_cls(vllm_config)
 
         # initialize the dict to save requests finish time
         self.requests_finish_time = dict()
@@ -491,15 +491,17 @@ class DecodeConnectorWorker:
         if vllm_config.parallel_config.tensor_parallel_size > 1 and self.multi_rank_pull_kv:
             raise ValueError("multi_rank_pull_kv are not supported when tp > 1.")
 
-        from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
-        use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
-        if use_omni_attn_mgr:
-            manager_cls = OmniBiGroupDataDistManager
-            logger.warning(f"DecodeConnector is using Omni datadist manager for KV transfer.")
-            self.datadist_manager = manager_cls(vllm_config)
-        else:
-            manager_cls = LLMDataDistManager
-            self.datadist_manager = manager_cls(vllm_config)
+        # check whether omni attention is enabled
+        manager_cls = LLMDataDistManager
+        if vllm_config.additional_config and "enable_omni_attn" in vllm_config.additional_config:
+            # do import only when necessary
+            from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+            use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+            if use_omni_attn_mgr:
+                manager_cls = OmniBiGroupDataDistManager
+                logger.warning(f"DecodeConnector is using Omni datadist manager for KV transfer.")
+        self.datadist_manager = manager_cls(vllm_config)
+
         self._recving_transfers: list = []
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
 
