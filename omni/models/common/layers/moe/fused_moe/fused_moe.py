@@ -1053,7 +1053,8 @@ def shared_expert_alltoall_ep(hidden_states: torch.Tensor, expert: torch.nn.Modu
     return recv_back_data[inverse_indices]
 
 
-def fused_experts_w8a8_allgather_ep_a2(hidden_states: torch.Tensor,
+def fused_experts_w8a8_allgather_ep_a2(layer: torch.nn.Module,
+                                       hidden_states: torch.Tensor,
                                        pertoken_scale: torch.Tensor,
                                        w1: torch.Tensor,
                                        w2: torch.Tensor,
@@ -1125,6 +1126,12 @@ def fused_experts_w8a8_allgather_ep_a2(hidden_states: torch.Tensor,
                 row_index = torch.floor(torch.div(expanded_x_idx, topk_ids.shape[-1])).to(torch.int64)
                 share_input = torch.zeros((batch_size // expert_parallel_size, hidden_size), dtype=torch.bfloat16,
                                           device="npu")
+
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            group_list = expert_tokens.to(torch.int64)
+            layer.planner.record_activation(layer.moe_layer_idx, group_list,
+                                            support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
+                                                not is_prefill))
 
         gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [w1], bias=None, group_list=expert_tokens,
                                                     split_item=3, output_dtype=torch.int32, group_type=0,
