@@ -964,7 +964,7 @@ class NPUModelRunner(GPUModelRunner):
                                                                                            self.model_config,
                                                                                            self.enable_torchair_graph_mode)
                     if preemption_mode and preemption_mode == "swap":
-                        cpu_num_blocks = (self.vllm_config.cache_config.swap_space_bytes //
+                        cpu_num_blocks = int(self.vllm_config.cache_config.swap_space_bytes //
                                           kv_cache_spec.page_size_bytes // len(kv_cache_config.tensors))
                         cpu_kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
                             cpu_num_blocks, kv_cache_spec.block_size,

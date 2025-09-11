@@ -423,7 +423,6 @@ class DecodeConnectorScheduler:
             "DatadistConnector update_state_after_alloc: "
             "num_external_tokens=%s, kv_transfer_params=%s",
             num_external_tokens, params)
-
         self.processed_request.add(request.request_id)
         if params is not None:
             if params.get("remote_block_ids"):
