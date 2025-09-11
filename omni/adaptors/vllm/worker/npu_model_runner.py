@@ -584,7 +584,7 @@ class NPUModelRunner(GPUModelRunner):
             ], dtype=np.int32)
 
             req_slice = np.zeros(num_scheduled_tokens.size + 1, dtype=num_scheduled_tokens.dtype)
-            np.cumsum(num_scheduled_tokens, out=req_slice)
+            np.cumsum(num_scheduled_tokens, out=req_slice[1:])
 
             to_save = {}
             input_ids_cpu = input_ids.cpu()
