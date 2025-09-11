@@ -171,7 +171,7 @@ index 71268fc42..5609851d5 100644
 +                                          cpu_kv_cache_spec.page_size_bytes // len(cpu_kv_cache_config.tensors))
 +
 +            cpu_kv_cache_manager = KVCacheManager(
-+                kv_cache_config=kv_cache_config,
++                kv_cache_config=cpu_kv_cache_config,
 +                max_model_len=self.max_model_len,
 +                enable_caching=False,
 +            )
