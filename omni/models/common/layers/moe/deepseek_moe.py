@@ -289,8 +289,10 @@ class DeepseekMoE(nn.Module):
                     self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
 
         self.tuning_config = None
-        if model_extra_config.operator_opt_config.gmm_nz:
+        if not model_extra_config.operator_opt_config.gmm_nz:
             self.tuning_config = model_extra_config.operator_opt_config.decode_gear_list[:1]
+        elif model_extra_config.operator_opt_config.decode_gear_list[0] >= 32:
+            self.tuning_config = [256]
         
         self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
                                 model_extra_config.operator_opt_config.prefill_moe_all_to_all)
@@ -323,7 +325,7 @@ class DeepseekMoE(nn.Module):
 
         if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
-            global_hidden_states = get_world_group().all_gather(hidden_states_int8, dim=0)
+            global_hidden_states = all_gather_two_stage(hidden_states_int8, idx=0, dim=0)
         else:
             global_hidden_states = hidden_states
             global_pertoken_scale = None
@@ -344,7 +346,7 @@ class DeepseekMoE(nn.Module):
 
         if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
-            topk_all = get_world_group().all_gather(topk_cat, dim=0)
+            topk_all = all_gather_two_stage(topk_cat, idx=0, dim=0)
             topk_weights, topk_ids, global_pertoken_scale = torch.split(
                 topk_all, [topk_weights.shape[-1], topk_ids.shape[-1], 1], dim=-1)
             topk_ids = torch.round(topk_ids).to(torch.int32)
@@ -368,7 +370,7 @@ class DeepseekMoE(nn.Module):
             final_hidden_states = final_hidden_states_list
 
         if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
-            final_hidden_states = get_world_group().reduce_scatter(final_hidden_states)
+            final_hidden_states = reduce_scatter_two_stage(final_hidden_states, idx=0)
 
         if model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             final_hidden_states = torch_npu.npu_moe_finalize_routing(

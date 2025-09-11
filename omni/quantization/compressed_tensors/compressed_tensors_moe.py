@@ -17,9 +17,8 @@ from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.moe.fused_moe.fused_moe import (
     fused_experts_moe_dispatch_combine,
     moe_infer_fusion,
-    fused_experts_w8a8_allgather_ep,
-    fused_experts_w8a8_allgather_ep_a2,
-    fused_experts_w4a8_allgather_ep
+    fused_experts_allgather_ep_a3,
+    fused_experts_allgather_ep_a2
 )
 
 SEQ_SPLIT_LENGTH = 4096
@@ -154,26 +153,20 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
                                                              )
             else:
                 if os.getenv("ASCEND_PLATFORM", "A3") == "A2":
-                    out = fused_experts_w8a8_allgather_ep_a2(hidden_states=x,
-                                                             pertoken_scale=pertoken_scale,
-                                                             w1=layer.w13_weight,
-                                                             w2=layer.w2_weight,
-                                                             w1_scale=layer.w13_weight_scale,
-                                                             w2_scale=layer.w2_weight_scale,
-                                                             topk_weights=topk_weights,
-                                                             topk_ids=topk_ids,
-                                                             n_routed_experts=self.n_routed_experts,
-                                                             is_prefill=is_prefill,
-                                                             max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank,
-                                                             # ENABLE_OMNI_PLANNER
-                                                             smooth_scale=self.smooth_scale)
+                    out = fused_experts_allgather_ep_a2(layer=layer,
+                                                         hidden_states=x,
+                                                         pertoken_scale=pertoken_scale,
+                                                         topk_weights=topk_weights,
+                                                         topk_ids=topk_ids,
+                                                         n_routed_experts=self.n_routed_experts,
+                                                         is_prefill=is_prefill,
+                                                         max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank,
+                                                         # ENABLE_OMNI_PLANNER
+                                                         smooth_scale=self.smooth_scale)
                 else:
-                    out = fused_experts_w8a8_allgather_ep(hidden_states=x,
+                    out = fused_experts_allgather_ep_a3(layer=layer,
+                                                          hidden_states=x,
                                                           pertoken_scale=pertoken_scale,
-                                                          w1=layer.w13_weight,
-                                                          w2=layer.w2_weight,
-                                                          w1_scale=layer.w13_weight_scale,
-                                                          w2_scale=layer.w2_weight_scale,
                                                           topk_weights=topk_weights,
                                                           topk_ids=topk_ids,
                                                           n_routed_experts=self.n_routed_experts,
@@ -280,6 +273,7 @@ class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
         self.n_total_experts = None
         self.pack_factor = STORAGE_BITS_NPU // WEIGHT_BITS
         self.group_size = self.weight_quant.group_size
+        self.smooth_scale = None
 
     def create_weights(self, layer: torch.nn.Module, num_experts: int,
                        hidden_size: int, intermediate_size_per_partition: int,
@@ -378,8 +372,7 @@ class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         if model_extra_config.operator_opt_config.gmm_nz:
             layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
-            if "Ascend910B" not in torch.npu.get_device_name(0):
-                layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
+            layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
 
         layer.w13_weight.data = layer.w13_weight.data.view(torch.int32).contiguous()
         layer.w2_weight.data = layer.w2_weight.data.view(torch.int32).contiguous()
@@ -439,21 +432,28 @@ class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
                                                              is_route_expert=True
                                                              )
             else:
-                out = fused_experts_w4a8_allgather_ep(hidden_states=x,
-                                                      pertoken_scale=pertoken_scale,
-                                                      w1=layer.w13_weight,
-                                                      w2=layer.w2_weight,
-                                                      w1_scale=layer.w13_weight_int4_scale,
-                                                      w2_scale=layer.w2_weight_int4_scale,
-                                                      w1_bias=layer.w13_weight_bias,
-                                                      w2_bias=layer.w2_weight_bias,
-                                                      topk_weights=topk_weights,
-                                                      topk_ids=topk_ids,
-                                                      n_routed_experts=self.n_routed_experts,
-                                                      attn_metadata=attn_metadata,
-                                                      max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank
-                                                      # ENABLE_OMNI_PLANNER
-                                                      )
+                if os.getenv("ASCEND_PLATFORM", "A3") == "A2":
+                    out = fused_experts_allgather_ep_a2(layer,
+                                                         hidden_states=x,
+                                                         pertoken_scale=pertoken_scale,
+                                                         topk_weights=topk_weights,
+                                                         topk_ids=topk_ids,
+                                                         n_routed_experts=self.n_routed_experts,
+                                                         is_prefill=is_prefill,
+                                                         max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank,
+                                                         # ENABLE_OMNI_PLANNER
+                                                         smooth_scale=self.smooth_scale)
+                else:
+                    out = fused_experts_allgather_ep_a3(layer=layer,
+                                                          hidden_states=x,
+                                                          pertoken_scale=pertoken_scale,
+                                                          topk_weights=topk_weights,
+                                                          topk_ids=topk_ids,
+                                                          n_routed_experts=self.n_routed_experts,
+                                                          is_prefill=is_prefill,
+                                                          max_num_deployed_expert_per_rank=max_num_deployed_expert_per_rank
+                                                          # ENABLE_OMNI_PLANNER
+                                                          )
             if self.warm_up:
                 self.warm_up = False
             return out
