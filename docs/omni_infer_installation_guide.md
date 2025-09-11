@@ -437,3 +437,17 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --skip-tags sync_code --》过滤sync
 
 ```
+
+# profiling采集
+profiling采集代码位于omni\adaptors\vllm\worker\npu_worker.py文件。
+既可以采集prefill，又可以采集decode的profiling。
+主要配置项为以下三个环境变量：
+1、VLLM_TORCH_PROFILER_DIR，表示profiling文件存放位置，若设置了表示开启采集profiling，没设置则不采集。
+2、PROFILER_TOKEN_THRESHOLD，表示step调度的token数，是采集profiling的入口条件，可以根据这个值区分采集的阶段，默认值为1。
+3、PROFILER_STOP_STEP，表示采集profiling的步数，需要采集多少就设置为多少，默认为5。
+用法：
+```
+export VLLM_TORCH_PROFILER_DIR=./profiling
+export PROFILER_TOKEN_THRESHOLD=1
+export PROFILER_STOP_STEP=5
+```
