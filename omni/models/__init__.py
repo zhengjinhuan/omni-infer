@@ -67,6 +67,10 @@ def register_model():
     )
 
     ModelRegistry.register_model(
+        "LlamaForCausalLM",
+        "omni.models.llama.llama:LlamaForCausalLM")
+
+    ModelRegistry.register_model(
         "Qwen2_5_VLForConditionalGeneration",
         "omni.models.qwen.qwen2_5_vl:Qwen2_5_VLForConditionalGeneration")
 
@@ -85,6 +89,23 @@ def register_model():
     ModelRegistry.register_model(
         "PanguEmbeddedForCausalLM",
         "omni.models.pangu.pangu_dense:PanguEmbeddedForCausalLM")
+
+    ModelRegistry.register_model(
+        "InternLM2ForCausalLM",
+        "omni.models.internvl.internlm2:InternLM2ForCausalLM")
+    
+    ModelRegistry.register_model(
+        "InternVLChatModel",
+        "omni.models.internvl.internvl:InternVLChatModel")
+    
+    ModelRegistry.register_model(
+        "Gemma3ForCausalLM",
+        "omni.models.gemma.gemma3:Gemma3ForCausalLM")
+
+    ModelRegistry.register_model(
+        "Gemma3ForConditionalGeneration",
+        "omni.models.gemma.gemma3_mm:Gemma3ForConditionalGeneration")
+
 
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or

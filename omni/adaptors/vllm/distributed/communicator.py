@@ -126,7 +126,7 @@ class NPUCommunicator(DeviceCommunicatorBase):
         handle = dist.all_reduce(input_, group=self.device_group, async_op=True)
         return input_, handle
 
-    def all_gather_async(self, input_: torch.Tensor, dim: int = -1):
+    def all_gather_async(self, input_: torch.Tensor, dim: int = -1, output_tensor:Optional[torch.Tensor] = None):
         assert dim == 0, "all_gather_async only supports dim=0"
         input_size = input_.size()
         # NOTE: we have to use concat-style all-gather here,
@@ -134,9 +134,10 @@ class NPUCommunicator(DeviceCommunicatorBase):
         # torch.compile . see https://github.com/pytorch/pytorch/issues/138795
         output_size = (input_size[0] * self.world_size, ) + input_size[1:]
         # Allocate output tensor.
-        output_tensor = torch.empty(output_size,
-                                    dtype=input_.dtype,
-                                    device=input_.device)
+        if output_tensor is None:
+            output_tensor = torch.empty(output_size,
+                                        dtype=input_.dtype,
+                                        device=input_.device)
         # All-gather.
         handle = dist.all_gather_into_tensor(output_tensor,
                                              input_,
@@ -144,13 +145,14 @@ class NPUCommunicator(DeviceCommunicatorBase):
                                              async_op=True)
         return output_tensor, handle
 
-    def reduce_scatter_async(self, input_: torch.Tensor):
+    def reduce_scatter_async(self, input_: torch.Tensor, output_tensor:Optional[torch.Tensor] = None):
         input_size = tuple(input_.size())
-        output_tensor = torch.empty(
-            (input_size[0] // self.world_size,) + input_size[1:],
-            dtype=input_.dtype,
-            device=input_.device,
-        )
+        if output_tensor is None:
+            output_tensor = torch.empty(
+                (input_size[0] // self.world_size,) + input_size[1:],
+                dtype=input_.dtype,
+                device=input_.device,
+            )
         handle = torch.distributed.reduce_scatter_tensor(
             output_tensor, input_, group=self.device_group, async_op=True
         )

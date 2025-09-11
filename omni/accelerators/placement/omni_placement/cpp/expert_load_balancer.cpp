@@ -269,8 +269,6 @@ double ExpertLoadBalancer::compute_placement_ratio_combined(
 
     // Handle zero activation case
     if (avg_activation == 0) {
-        std::cerr << "Warning: Average activation is zero in layer "
-                  << layer_idx << std::endl;
         return (max_activation == 0) ? 1.0
                                      : std::numeric_limits<double>::infinity();
     }
@@ -303,7 +301,8 @@ vector<int> ExpertLoadBalancer::allocate_expert_deployments(
     int budget_limit, int expert_redundant_limit) {
     vector<int> deployments(num_experts, 1);
     int remaining_budget = budget_limit;
-    int max_deployments_per_expert = 1 + expert_redundant_limit;
+    int max_deployments_per_expert =
+        std::min(1 + expert_redundant_limit, this->num_ranks_);
 
     if (remaining_budget > 0) {
         auto cmp = [](const pair<double, int> &a, const pair<double, int> &b) {
@@ -444,35 +443,51 @@ pair<double, vector<int>> ExpertLoadBalancer::distribute_experts_to_ranks(
         }
     }
 
-    // Host-level rank reordering
-    int num_hosts = (num_ranks + num_ranks_per_host_ - 1) / num_ranks_per_host_;
-    vector<int> new_placement(num_ranks * max_slots_per_rank, -1);
-    vector<int> host_cur_rank(num_hosts, 0);
-
-    for (int r = 0; r < num_ranks; ++r) {
-        int host_id = r % num_hosts;
-        int new_rank = host_id * num_ranks_per_host_ + host_cur_rank[host_id];
-        if (new_rank >= num_ranks) {
-            cerr << "Error: Invalid new rank " << new_rank << " for host "
-                 << host_id << " in layer " << layer_idx << endl;
-            return {0.0, {}};
-        }
-        int old_start_idx = r * max_slots_per_rank;
-        int new_start_idx = new_rank * max_slots_per_rank;
-        for (int i = 0; i < max_slots_per_rank; ++i) {
-            new_placement[new_start_idx + i] =
-                target_placement[old_start_idx + i];
-        }
-        host_cur_rank[host_id]++;
-    }
-
-    // Compute max load
+    // The set of rank loads does not change during reordering, only their
+    // order. Therefore, the maximum load value is constant from this point
+    // forward.
     double max_load = 0.0;
     for (double load : rank_loads) {
         max_load = max(max_load, load);
     }
 
-    return {max_load, new_placement};
+    // --- CORRECTLY IMPLEMENTED HOST-LEVEL RANK REORDERING ---
+    int num_hosts = (num_ranks + num_ranks_per_host_ - 1) / num_ranks_per_host_;
+    if (num_hosts <= 1) {
+        // If there's only one host, no reordering is needed.
+        // Return the pre-calculated max_load.
+        return {max_load, target_placement};
+    }
+
+    vector<int> final_placement(num_ranks * max_slots_per_rank, -1);
+    vector<int> host_rank_counters(num_hosts, 0);
+
+    for (int logical_rank = 0; logical_rank < num_ranks; ++logical_rank) {
+        int host_id = logical_rank % num_hosts;
+        int rank_on_host = host_rank_counters[host_id];
+        int physical_rank = host_id * num_ranks_per_host_ + rank_on_host;
+
+        if (physical_rank >= num_ranks) {
+            cerr << "Warning: Host-level reordering failed due to incompatible "
+                    "rank/host configuration. "
+                 << "Falling back to non-reordered placement for layer "
+                 << layer_idx << endl;
+            // Return the pre-calculated max_load.
+            return {max_load, target_placement};
+        }
+
+        int src_start_idx = logical_rank * max_slots_per_rank;
+        int dest_start_idx = physical_rank * max_slots_per_rank;
+        for (int i = 0; i < max_slots_per_rank; ++i) {
+            final_placement[dest_start_idx + i] =
+                target_placement[src_start_idx + i];
+        }
+
+        host_rank_counters[host_id]++;
+    }
+
+    // The final_placement is ready, return it with the pre-calculated max_load.
+    return {max_load, final_placement};
 }
 
 // Generate placement for a single layer
@@ -559,8 +574,6 @@ double ExpertLoadBalancer::simulate_placement_ratio(
 
     // Handle zero activation case
     if (avg_activation == 0) {
-        cerr << "Warning: Average activation is zero in layer " << layer_idx
-             << endl;
         return (max_activation == 0) ? 1.0 : numeric_limits<double>::infinity();
     }
     return max_activation / avg_activation;

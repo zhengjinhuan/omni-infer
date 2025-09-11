@@ -17,6 +17,9 @@ parse_long_option() {
         --ci)
             USE_MOCK_MODEL="$2"
             ;;
+        --cache)
+            USE_LMCACHE="$2"
+            ;;
     esac
     return 0
 }
@@ -71,5 +74,13 @@ bash build.sh
 cd $BUILD_ROOT/omni/adaptors/vllm/cpp
 python setup.py bdist_wheel
 mv dist/omni_vllm* $BUILD_ROOT/build/dist
+
+
+if [ "$USE_LMCACHE" = "1" ]; then
+    cd $BUILD_ROOT/omni/adaptors/lmcache/script
+    bash build.sh
+    mv $BUILD_ROOT/omni/adaptors/lmcache/script/dist/* $BUILD_ROOT/build/dist
+    mv $BUILD_ROOT/omni/adaptors/lmcache/script/lib $BUILD_ROOT/build/
+fi
 
 cd $PWD

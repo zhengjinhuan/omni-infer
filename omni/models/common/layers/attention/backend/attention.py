@@ -40,7 +40,6 @@ from vllm.v1.worker.block_table import BlockTable
 from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.models.common.layers.rotary_embedding import QwenMRotaryEmbedding
-from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.config.model_config import model_extra_config
 
@@ -416,6 +415,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             logits_soft_cap: Optional[float] = None,
             attn_type: str = AttentionType.DECODER,
             use_irope: bool = False,
+            kv_stream = None
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
@@ -446,6 +446,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 torch.ones((2048, 2048), dtype=torch.bool, device="npu")
             )
         self.use_tnd_pa = model_extra_config.operator_opt_config.use_tnd_pa
+        self.kv_stream = kv_stream
 
     def forward(self, *args, **kwargs):
         if self.use_tnd_pa:
@@ -606,13 +607,23 @@ class AscendAttentionBackendImpl(AttentionImpl):
             cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
 
             if attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
-                torch_npu._npu_reshape_and_cache(
-                    key,
-                    value,
-                    self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
-                    self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
-                    attn_metadata.slot_mapping.int()
-                )
+                # if prefill does not use paged attention,
+                # (1) saving keys and values into kv_cache, and
+                # (2) GQA
+                # can run simultaneously in two streams
+                if self.kv_stream is not None and not hasattr(layer, 'quant_method') and attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+                    stream_for_reshape_and_cache = self.kv_stream
+                    self.kv_stream.wait_stream(torch.npu.current_stream())
+                else:
+                    stream_for_reshape_and_cache = torch.npu.current_stream()
+                with torch.npu.stream(stream_for_reshape_and_cache):
+                    torch_npu._npu_reshape_and_cache(
+                        key,
+                        value,
+                        self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                        self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                        attn_metadata.slot_mapping.int()
+                    )
             else:
                 torch_npu.scatter_update_(self.key_cache, attn_metadata.slot_indices, cast_key, -2)
                 torch_npu.scatter_update_(self.value_cache, attn_metadata.slot_indices, cast_value, -2)
@@ -679,7 +690,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 )[0].view(-1, self.num_heads, self.head_size)
                 
                 output[:actual_seq_qlen[-1], :].copy_(attn_output)
-
+            if stream_for_reshape_and_cache != torch.npu.current_stream():
+                torch.npu.current_stream().wait_stream(stream_for_reshape_and_cache)
         elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
 
             block_num, block_size = self.key_cache.shape[0], self.key_cache.shape[1]

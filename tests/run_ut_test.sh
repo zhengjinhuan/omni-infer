@@ -1,7 +1,7 @@
+#!/bin/bash
+
 START_DIR=$PWD
+SOURCE_ROOT="$(dirname "$(dirname "$(realpath "$0")")")"
 
-SOURCE_ROOT="$(dirname $(dirname "$(realpath "$0")"))"
-
-# test omni-placemnt
-cd $SOURCE_ROOT/omni/accelerators/placement
-pytest tests/test_moe_weights.py::TestGetExpertIds
+# 执行 build.sh
+bash "${SOURCE_ROOT}/omni/accelerators/placement/build.sh" "-ut"

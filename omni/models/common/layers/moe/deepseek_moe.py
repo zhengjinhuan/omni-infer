@@ -61,7 +61,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
 from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
-from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
+from omni.adaptors.vllm.utils import get_attr_by_names
 
 if model_extra_config.operator_opt_config.use_omni_placement:
     from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner

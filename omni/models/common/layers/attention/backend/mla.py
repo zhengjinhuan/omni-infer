@@ -30,7 +30,7 @@ from omni.models.common.layers.attention.backend.attention import AscendAttentio
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
-from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
+from omni.adaptors.vllm.utils import get_attr_by_names
 
 def group_request_list(seq_lens, query_lens, block_tables, threshold):
     s_lens_result = []
@@ -257,7 +257,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         # than a previous one whose cache is hit, this request will be considered
         # as 'decode' mistakenly.
         kv_transfer_config = self.runner.vllm_config.kv_transfer_config
-        if kv_transfer_config is not None and kv_transfer_config.kv_role == "kv_producer":
+        if kv_transfer_config is not None and kv_transfer_config.kv_role in ["kv_producer", "kv_both"]:
             self._num_decodes = 0
             self._num_prefills = len(input_batch.req_ids)
             self._num_decode_tokens = 0
@@ -329,8 +329,12 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         step = batch_size // world_size * top_k
         global_rank = get_world_group().rank_in_group
         experts_tp_size = 1
+        try:
+            num_routed_experts = self.runner.model.config.n_routed_experts
+        except:
+            num_routed_experts = self.runner.model.config.num_routed_experts
         cur_topk_list = [
-            i % self.runner.model.config.n_routed_experts for i in range(
+            i % num_routed_experts for i in range(
             global_rank // experts_tp_size * step, (global_rank // experts_tp_size + 1) * step)]
         return torch.Tensor(cur_topk_list).to(dtype=torch.int32, device=current_platform.device_type, non_blocking=True).view(batch_size // world_size, -1)
 

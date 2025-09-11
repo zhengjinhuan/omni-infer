@@ -670,6 +670,7 @@ class QwenMRotaryEmbedding(GPUMRotaryEmbedding):
         return query, key
 
 
+
 _ROPE_DICT: Dict[Tuple, nn.Module] = {}
 
 
@@ -681,10 +682,13 @@ def get_rope(
         is_neox_style: bool = True,
         rope_scaling: Optional[Dict[str, Any]] = None,
         dtype: Optional[torch.dtype] = None,
+        partial_rotary_factor: float = 1.0,
         dual_chunk_attention_config: Optional[dict[str, Any]] = None,
 ):
     if dtype is None:
         dtype = torch.get_default_dtype()
+    if partial_rotary_factor < 1.0:
+        rotary_dim = int(rotary_dim * partial_rotary_factor)
 
     if rope_scaling is not None:
         rope_scaling_tuple = {
@@ -770,6 +774,27 @@ def get_rope(
                         is_neox_style,
                         scaling_factor, 
                         dtype)
+            
+        elif scaling_type == "gemma_default":
+            if "mrope_section" in rope_scaling:
+                rotary_emb = GPUMRotaryEmbedding(
+                    head_size,
+                    rotary_dim,
+                    max_position,
+                    base,
+                    is_neox_style,
+                    dtype,
+                    mrope_section=rope_scaling["mrope_section"],
+                )
+            else:
+                rotary_emb = RotaryEmbeddingTorchNpu(
+                    head_size,
+                    rotary_dim,
+                    max_position,
+                    base,
+                    is_neox_style,
+                    dtype,
+                )
         else:
             scaling_type = rope_scaling["type"]
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}, only support linear and dynamic now")

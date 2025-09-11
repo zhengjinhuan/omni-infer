@@ -1079,6 +1079,12 @@ def fused_experts_allgather_ep_a2(layer: torch.nn.Module,
                 share_input = torch.zeros((batch_size // expert_parallel_size, hidden_size), dtype=torch.bfloat16,
                                           device="npu")
 
+        if model_extra_config.operator_opt_config.use_omni_placement:
+            group_list = expert_tokens.to(torch.int64)
+            layer.planner.record_activation(layer.moe_layer_idx, group_list,
+                                            support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
+                                                not is_prefill))
+
         if layer.weight_num_bits == 8:
             gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [layer.w13_weight], bias=None, group_list=expert_tokens,
                                                         split_item=3, output_dtype=torch.int32, group_type=0,

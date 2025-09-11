@@ -44,16 +44,16 @@ from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 from omni.adaptors.vllm.forward_context import set_forward_context
-from omni.models.common.layers.attention.backend.attention import AttentionMaskBuilder, AscendAttentionState
+from omni.models.common.layers.attention.backend.attention import AscendAttentionState
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.models.common.layers.npu_sampler_cache import PenaltyCache, ProbCache
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
-from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
 from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
+from omni.adaptors.vllm.utils import get_attr_by_names
 
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
@@ -117,9 +117,14 @@ class NPUModelRunner(GPUModelRunner):
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.max_num_reqs = self.scheduler_config.max_num_seqs
-        self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
-        self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
-        self.topk = vllm_config.additional_config.get("rejection_sampler_topk", 4)
+        if vllm_config.additional_config is not None:
+            self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
+            self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
+            self.topk = vllm_config.additional_config.get("rejection_sampler_topk", 4)
+        else:
+            self.use_rejection_sampler = False
+            self.use_penalty = False
+            self.topk = 4
         num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens) 
         if self.use_spec_decode:
             self.rejection_sampler = SimpleSampler(AscendSamplerV1(), self.use_rejection_sampler, self.topk)
@@ -174,12 +179,6 @@ class NPUModelRunner(GPUModelRunner):
         self.attn_state = None
         self.max_num_blocks_per_req = cdiv(self.model_config.max_model_len,
                                            self.block_size)
-
-        mask_len = os.getenv("PAGED_ATTENTION_MASK_LEN", "2048")
-        self.attn_mask_len = min(self.model_config.max_model_len,
-                                 int(mask_len))
-        self.attn_mask_builder = AttentionMaskBuilder.initialize_from_len(
-            self.attn_mask_len, self.dtype)
 
         self.model_mark_static = False
         self.dummy_model_mark_static = False
@@ -279,11 +278,11 @@ class NPUModelRunner(GPUModelRunner):
 
         # check and set attention state
         can_decode = self.vllm_config.kv_transfer_config is None or self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
-        if np.array_equal(self.seq_lens_np[:num_reqs], num_scheduled_tokens):
-            attn_state = AscendAttentionState.PrefillNoCache
         # We assume it is the decode stage, where prefill occurs but only one token is not hit in cache.
-        elif can_decode and (np.all(num_scheduled_tokens == 1) or num_scheduled_spec_decode_reqs == num_reqs):
+        if can_decode and (np.all(num_scheduled_tokens == 1) or num_scheduled_spec_decode_reqs == num_reqs):
             attn_state = AscendAttentionState.DecodeOnly
+        elif np.array_equal(self.seq_lens_np[:num_reqs], num_scheduled_tokens):
+            attn_state = AscendAttentionState.PrefillNoCache
         # splitfuse
         else:
             attn_state = AscendAttentionState.ChunkedPrefill
@@ -528,36 +527,28 @@ class NPUModelRunner(GPUModelRunner):
                         mark_static_for_graph_default(input_ids, positions, self.kv_caches)
                     self.model_mark_static = True
                 start_os_env = time.time()
-                if os.environ.get('PROFILING_FORWARD', "0") == '1':
-                    forward_results = run_model_with_profiling(self.model, input_ids, positions, intermediate_tensors,
-                                                               model_kwargs)
-                else:
-                    start_time = time.time()
-                    forward_results = self.model(
-                                input_ids=input_ids,
-                                positions=positions,
-                                intermediate_tensors=intermediate_tensors,
-                                inputs_embeds=inputs_embeds,
-                                **model_kwargs,
-                            )
-                    end_model = time.time()
-                    cost_model = end_model - start_time
-                    cost_os_env = start_time - start_os_env
-                    cost_debug = start_debug - start_os_env
-                    logger.info(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
+                start_time = time.time()
+                forward_results = self.model(
+                            input_ids=input_ids,
+                            positions=positions,
+                            intermediate_tensors=intermediate_tensors,
+                            inputs_embeds=inputs_embeds,
+                            **model_kwargs,
+                        )
+                end_model = time.time()
+                cost_model = end_model - start_time
+                cost_os_env = start_time - start_os_env
+                cost_debug = start_debug - start_os_env
+                logger.info(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
             else:
                 logger.info("Start running eager model.")
-                if os.environ.get('PROFILING_FORWARD', "0") == '1' and num_input_tokens > 20000:
-                    forward_results = run_model_with_profiling(self.model, input_ids, positions, intermediate_tensors,
-                                                               model_kwargs)
-                else:
-                    forward_results = self.model(
-                        input_ids=input_ids,
-                        positions=positions,
-                        intermediate_tensors=intermediate_tensors,
-                        inputs_embeds=inputs_embeds,
-                        **model_kwargs,
-                    )
+                forward_results = self.model(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=inputs_embeds,
+                    **model_kwargs,
+                )
             self.maybe_wait_for_kv_save()
             finished_sending, finished_recving = self.get_finished_kv_transfers(scheduler_output)
             start_fc_exit = time.time()
@@ -873,18 +864,16 @@ class NPUModelRunner(GPUModelRunner):
         fake_input = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
         fake_positions = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
         input_ids, positions = fake_input, fake_positions
-        self.attn_mask = None
         self.attn_state = AscendAttentionState.DecodeOnly
 
         # Build dummy attn_metadata
         attn_metadata = {}
-        is_pd_seperate_d = self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
         for kv_cache_group_id, kv_cache_group_spec in enumerate(self.kv_cache_config.kv_cache_groups):
             builder = self.attn_metadata_builders[kv_cache_group_id]
             if not isinstance(builder, DummyAttentionMetadataBuilder):
                 raise ValueError(f"{builder} does not implement DummyAttentionMetadataBuilder")
             attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
-            if self.enable_torchair_graph_mode and is_pd_seperate_d:
+            if self.enable_torchair_graph_mode:
                 builder.mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
                 attn_metadata[layer_name] = attn_metadata_i
@@ -895,8 +884,7 @@ class NPUModelRunner(GPUModelRunner):
             "selected_indices": None
         }
         with set_forward_context(attn_metadata, self.vllm_config):
-            is_not_pd_seperate_and_capture_model = self.vllm_config.kv_transfer_config is None and is_capture_model
-            use_compile = self.enable_torchair_graph_mode and (is_pd_seperate_d or is_not_pd_seperate_and_capture_model)
+            use_compile = self.enable_torchair_graph_mode
             if use_compile:
                 logger.debug("Start running dummy compiled model.")
                 if not self.dummy_model_mark_static:
@@ -959,9 +947,11 @@ class NPUModelRunner(GPUModelRunner):
             logger.info("Loading model weights took %.4f GB", m.consumed_memory / float(2**30))
 
         if model_extra_config.operator_opt_config.use_omni_placement:
+            first_k_dense_replace_names = ['num_dense_layers', 'first_k_dense_replace']
+            first_k_dense_replace = get_attr_by_names(self.model.config, first_k_dense_replace_names, 3)
             param_dict = dict(self.model.named_parameters())
             self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
-            self.planner.init_dram_weights(param_dict, first_k_dense_replace=self.model.config.first_k_dense_replace)
+            self.planner.init_dram_weights(param_dict, first_k_dense_replace=first_k_dense_replace)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
@@ -1008,7 +998,7 @@ class NPUModelRunner(GPUModelRunner):
                                                                                            self.model_config,
                                                                                            self.enable_torchair_graph_mode)
                     if preemption_mode and preemption_mode == "swap":
-                        cpu_num_blocks = (self.vllm_config.cache_config.swap_space_bytes //
+                        cpu_num_blocks = int(self.vllm_config.cache_config.swap_space_bytes //
                                           kv_cache_spec.page_size_bytes // len(kv_cache_config.tensors))
                         cpu_kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
                             cpu_num_blocks, kv_cache_spec.block_size,
