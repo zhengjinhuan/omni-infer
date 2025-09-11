@@ -358,5 +358,6 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
         return bool(
             forward_batch.forward_mode.is_decode_or_idle()
             and self.enable_torch_compile
-            and graph_bs in self.compile_bs
+            and not forward_batch.is_extend_in_batch
+            and graph_bs <= max(self.compile_bs)
         )

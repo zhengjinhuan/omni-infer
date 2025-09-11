@@ -14,8 +14,8 @@ from typing import (
 )
 
 from sglang.srt.distributed import (
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
+    get_pp_group,
+    get_world_group,
 )
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.layers.moe.token_dispatcher.base_dispatcher import (
@@ -736,7 +736,7 @@ class NpuDeepEPDispatcher:
         return_recv_hook: bool = False,
         **kwargs,
     ):
-        self.group = group
+        self.group = get_world_group().device_group
         self.experts_share_num_copy = 1
         self.n_routed_experts_per_rank = num_local_experts
         self.route_share_on_same_card = True
@@ -745,14 +745,19 @@ class NpuDeepEPDispatcher:
         self.num_experts = num_experts
         self.num_experts_per_tok = kwargs.get("num_experts_per_tok")
         self.hidden_size = hidden_size
-        self.global_rank = get_tensor_model_parallel_rank()
-
+        self.global_rank = get_world_group().rank_in_group
+        self.world_size = get_world_group().world_size
         self.experts_tp_size = 1
-        self.world_size = get_tensor_model_parallel_world_size()
 
-        self.group_name = group._get_backend(torch.device("npu")).get_hccl_comm_name(
+        self.group_name = self.group._get_backend(torch.device("npu")).get_hccl_comm_name(
             self.global_rank
         )
+
+        self.moe_rs_group = get_pp_group().device_group
+        self.moe_rs_group_rank = get_pp_group().rank_in_group
+        self.moe_rs_group_name = self.moe_rs_group._get_backend(
+            torch.device("npu")).get_hccl_comm_name(
+            self.moe_rs_group_rank)
 
         if self.route_share_on_same_card:
             self.shared_expert_rank_num = 0
@@ -860,7 +865,7 @@ class NpuDeepEPDispatcher:
             "group_ep": self.group_name,
             "ep_world_size": self.world_size,
             "ep_rank_id": self.global_rank,
-            "group_tp": self.group_name,
+            "group_tp": self.moe_rs_group_name,
             "tp_world_size": self.experts_tp_size,
         }
         (
@@ -977,7 +982,7 @@ class NpuDeepEPDispatcher:
             "ep_world_size": self.world_size,
             "ep_rank_id": self.global_rank,
             "tp_send_counts": tp_send_counts,
-            "group_tp": self.group_name,
+            "group_tp": self.moe_rs_group_name,
             "tp_world_size": self.experts_tp_size,
         }
         hidden_states = torch_npu.npu_moe_distribute_combine_v2(**_kwargs)
