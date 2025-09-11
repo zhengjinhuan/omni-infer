@@ -586,15 +586,15 @@ class NPUModelRunner(GPUModelRunner):
             req_slice = np.zeros(num_scheduled_tokens.size + 1, dtype=num_scheduled_tokens.dtype)
             np.cumsum(num_scheduled_tokens, out=req_slice[1:])
 
-            to_save = {}
+            to_save = []
             input_ids_cpu = input_ids.cpu()
             hidden_states_cpu = raw_hidden_states.cpu()
             for i, req_id in enumerate(self.input_batch.req_ids):
-                to_save[i] = {
+                to_save.append({
                     'req_id': req_id,
                     'input_ids': input_ids_cpu[req_slice[i]:req_slice[i + 1]],
                     'hidden_states': hidden_states_cpu[req_slice[i]:req_slice[i + 1]],
-                }
+                })
             filename = os.path.join(self.training_data_save_path, f"data-{time.time_ns()}.pt")
             torch.save(to_save, filename)
 
