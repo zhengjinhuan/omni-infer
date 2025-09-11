@@ -8,7 +8,7 @@
 操作步骤  
 1、拷贝元数据到output路径（注：model.safetensors.index.json需使用fp8权重的对应配置）  
 2、执行量化命令  
-deepseek/kimi k2
+deepseek/kimi k2  
 int8量化: python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu"  
 int4量化: python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --w4  
 
