@@ -29,7 +29,7 @@ from vllm.distributed.parallel_state import (
 if os.getenv("ASCEND_PLATFORM", "A3")=="A2":
     from .deepseek_v3_a2 import DeepseekDecoderLayer
 else:
-    from .deepseek_v3 import DeepseekDecoderLayer
+    from .deepseek_v3 import DeepseekDecoderLayer, generate_sp_inputs
 
 from omni.models.common.layers.layernorm import RMSNorm #zxp: not use
 from omni.models.common.layers.vocab_parallel_embedding import (
@@ -83,6 +83,8 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         self.eh_proj = nn.Linear(2 * self.config.hidden_size, self.config.hidden_size, bias=False)
         self.logits_processor = LogitsProcessor(self.config.vocab_size, logits_as_input=True)
         self.layer_idx = int(prefix.split('.')[-1])
+        self.prefix = prefix
+        self.postfix = ".self_attn.attn"
 
     def forward(
             self,
@@ -101,7 +103,15 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         tp_size = get_tensor_model_parallel_world_size()  # cloud: get_tp_group().world_size
         rank_in_group = get_tensor_model_parallel_rank()
 
-        if tp_size > 1:
+        is_prefill = attn_metadata is None or (isinstance(attn_metadata, dict) and self.get_layer_attn_metadata(attn_metadata, 0).prefill is not None)
+        if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
+            # split input for sp attention
+            tok_embeds = tensor_model_parallel_all_gather(tok_embeds, dim=0)
+            tok_embeds = generate_sp_inputs(tok_embeds, self.get_layer_attn_metadata(attn_metadata, 0))
+            previous_hidden_states = generate_sp_inputs(previous_hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
+
+
+        if tp_size > 1 and model_extra_config.parall_config.attn_sp_size == 1:
             token_num = previous_hidden_states.shape[0]
             start_range = rank_in_group * (token_num // tp_size)
             end_range = (1 + rank_in_group) * (token_num // tp_size)
@@ -124,6 +134,13 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
 
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
+        if model_extra_config.parall_config.attn_sp_size > 1 and is_prefill:
+            # reverse sp split
+            if attn_metadata is not None:
+                prefill_meta = self.get_layer_attn_metadata(attn_metadata, 0).prefill
+                outputs_list = list(torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0))
+                hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
+
         if attn_metadata is None:
             logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:
@@ -133,6 +150,13 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids, reduce=1)
+
+    def get_layer_attn_metadata(self, attn_metadata):
+        if attn_metadata is None:
+            return None
+        if isinstance(attn_metadata, dict):
+            key_idx = self.prefix + self.postfix
+            return attn_metadata[key_idx]
 
     def compute_lmhead(
             self,
@@ -157,6 +181,7 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         return logits
 
     def should_use_eager_mode(self, *args, **kwargs):
+        return True
         if len(kwargs) == 0:
            return True
 

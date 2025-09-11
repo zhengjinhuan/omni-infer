@@ -87,6 +87,33 @@ if model_extra_config.operator_opt_config.unquant_bmm_nz:
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
+def _get_pad_size(num_seqs, split_size):
+    """Calculate padding size needed to make sequence count divisible by tp size."""
+    return (split_size - num_seqs % split_size) % split_size
+
+def pad_inputs(input, query_lens, sp_size):
+    padded_lengths = _get_pad_size(query_lens, sp_size)
+    segments = []
+    start_idx = 0
+    for length, pad_length in zip(query_lens, padded_lengths):
+        segment = input[start_idx : start_idx + length]
+        padded_segment = F.pad(segment, (0, 0, 0, pad_length), "constant", 0)
+        segments.append(padded_segment)
+        start_idx += length
+
+    return torch.cat(segments, dim=0)
+
+# todo query_lens是tensor，需要适配
+def generate_sp_inputs(hidden_states, attn_metadata):
+    sp_size = model_extra_config.parall_config.attn_sp_size
+    if attn_metadata is not None:
+        hidden_states = pad_inputs(hidden_states, attn_metadata.prefill.actual_query_lens, sp_size * 2)
+        # split input for sp attention
+        hidden_states_list = list(torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0))
+        hidden_states = torch.cat([hidden_states_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
+    else:
+        hidden_states = torch.split(hidden_states, hidden_states.size(0) // sp_size, dim=0)[get_tensor_model_parallel_rank()]
+    return hidden_states
 
 class ParallelDeepseekMLP(nn.Module):
 
@@ -408,31 +435,6 @@ class DeepseekV3Model(nn.Module):
         else:
             return self.forward_normal(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors)
 
-    def pad_inputs(self, input, query_lens, sp_size):
-        padded_lengths = sp_size - query_lens
-        segments = []
-        start_idx = 0
-        for length, pad_length in zip(query_lens, padded_lengths):
-            segment = input[start_idx : start_idx + length]
-            padded_segment = F.pad(segment, (0, 0, 0, pad_length), "constant", 0)
-            segments.append(padded_segment)
-            start_idx += length
-
-        return torch.cat(segments, dim=0)
-
-    # todo query_lens是tensor，需要适配
-    def generage_sp_inputs(self, hidden_states, attn_metadata):
-        sp_size = model_extra_config.parall_config.attn_sp_size
-        if attn_metadata is not None:
-            hidden_states = self.pad_inputs(hidden_states, attn_metadata.prefill.query_lens, sp_size * 2)
-            # split input for sp attention
-            hidden_states_list = list(torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0))
-            hidden_states = torch.cat([hidden_states_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
-            attn_metadata.prefill.query_lens = torch.cumsum(torch.ceil(attn_metadata.prefill.query_lens / sp_size / 2).to(torch.int64), dim=0)
-        else:
-            hidden_states = torch.split(hidden_states, sp_size, dim=0)[get_tensor_model_parallel_rank()]
-        return hidden_states
-
     def forward_normal(
             self,
             input_ids: torch.Tensor,
@@ -453,7 +455,7 @@ class DeepseekV3Model(nn.Module):
         if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
             # split input for sp attention
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
-            hidden_states = self.generage_sp_inputs(hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
+            hidden_states = generate_sp_inputs(hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
             print(f"after sp split, hidden_states shape: {hidden_states.shape}, positions shape: {positions.shape}", flush=True)
 
         for i in range(self.start_layer, self.end_layer):
@@ -527,7 +529,7 @@ class DeepseekV3Model(nn.Module):
             # 3. stream0: mlp (current layer) + attn (next layer)
             # 4. stream1: mlp (current layer) + attn (next layer)
             with torch.npu.stream(curr_stream):
-                pad_size_mb0 = self._get_pad_size(positions_mb0.shape[0], self.tp_size)
+                pad_size_mb0 = _get_pad_size(positions_mb0.shape[0], self.tp_size)
                 positions_mb0 = self.pad_tensor(positions_mb0, pad_size_mb0, 0)
                 padding = torch.randint(1, self.vocab_size, (pad_size_mb0,),
                                         dtype=input_ids.dtype,
@@ -541,7 +543,7 @@ class DeepseekV3Model(nn.Module):
                                                                               metadata0,
                                                                               residual_mb0)
             with torch.npu.stream(self.stream1):
-                pad_size_mb1 = self._get_pad_size(positions_mb1.shape[0], self.tp_size)
+                pad_size_mb1 = _get_pad_size(positions_mb1.shape[0], self.tp_size)
                 positions_mb1 = self.pad_tensor(positions_mb1, pad_size_mb1, 0)
                 padding = torch.randint(1, self.vocab_size, (pad_size_mb1,),
                                         dtype=input_ids.dtype,
@@ -648,10 +650,6 @@ class DeepseekV3Model(nn.Module):
     def index_batch(self, ori_tensor, split_dim, split_idx):
         """Split tensor into two parts along specified dimension at split index."""
         return torch.split(ori_tensor, [split_idx, ori_tensor.size(split_dim) - split_idx], dim=split_dim)
-
-    def _get_pad_size(self, num_seqs, split_size):
-        """Calculate padding size needed to make sequence count divisible by tp size."""
-        return (split_size - num_seqs % split_size) % split_size
 
     def partition_list(self, lst, pos):
         """Partition list into two parts with balanced sum around target position."""
