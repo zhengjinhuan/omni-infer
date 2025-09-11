@@ -378,6 +378,8 @@ class DecodeConnectorScheduler:
         self.block_size = vllm_config.cache_config.block_size
         self._reqs_need_recv: dict[str, tuple[Request, list[int]]] = {}
         self.processed_request: set[str] = set()
+        self.ctx = zmq.Context()
+        self.zmq_socket_map = {}
 
         additional_config = vllm_config.additional_config
         if additional_config:
@@ -389,6 +391,22 @@ class DecodeConnectorScheduler:
             self.context = zmq.Context()
             self.pub = self.context.socket(zmq.PUB)
             self.pub.bind(f"ipc:///tmp/sched-pub-{vllm_config.parallel_config.data_parallel_rank_local}")
+
+    def _send_pulled_kv_req_list(self, path, data):
+        if path in self.zmq_socket_map:
+            socket = self.zmq_socket_map[path]
+        else:
+            socket = self.ctx.socket(zmq.PUSH)
+            socket.connect(path)
+            self.zmq_socket_map[path] = socket
+            logger.info(f"create new socket path:{path}")
+
+        try:
+            json_data = json.dumps(data)
+            socket.send_string(json_data)
+            logger.info(f"send string {json_data} path:{path}")
+        except Exception as e:
+            logger.error(f"Failed to send reqest_id {json_data} to prefill: {e}")
 
     def get_num_new_matched_tokens(
             self, request: "Request",
@@ -467,6 +485,8 @@ class DecodeConnectorScheduler:
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if request.request_id in self.processed_request:
             self.processed_request.remove(request.request_id)
+        if request.status == RequestStatus.FINISHED_ABORTED and request.kv_transfer_params is not None:
+            self._send_pulled_kv_req_list(request.kv_transfer_params.get("remote_host_ip"), [request.request_id])
         return False, None
 
 
