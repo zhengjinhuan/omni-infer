@@ -28,7 +28,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from vllm.config import CompilationLevel, VllmConfig
-from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group, get_tensor_model_parallel_rank
 from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
 from vllm.sequence import IntermediateTensors, VLLM_INVALID_TOKEN_ID
@@ -195,6 +195,10 @@ class NPUModelRunner(GPUModelRunner):
         if EmsEnv.enable_vllm_ems:
             from omni.adaptors.vllm.ems.ems_adapter import EmsAdapter
             self.ems_adapter = EmsAdapter(vllm_config=vllm_config)
+
+        rank = get_tensor_model_parallel_rank()
+        self.training_data_save_path = os.environ.get('TRAINING_DATA_SAVE_PATH', "")
+        self.prepare_for_training = self.training_data_save_path != "" and rank == 0
 
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
@@ -572,6 +576,28 @@ class NPUModelRunner(GPUModelRunner):
         cost_setup_connector = start_f - start_setup_connector
         cost_fc_exit = start_ret - start_fc_exit
         logger.debug(f" ***** before fc {cost_before_fc:.6f}, fc {cost_fc:.6f}={cost_setup_connector:.6f}+{cost_fc_exit:.6f}")
+
+        if self.prepare_for_training and attn_state == AscendAttentionState.PrefillNoCache:
+            num_scheduled_tokens = np.array([
+                scheduler_output.num_scheduled_tokens[req_id]
+                for req_id in self.input_batch.req_ids
+            ], dtype=np.int32)
+
+            req_slice = np.zeros(num_scheduled_tokens.size + 1, dtype=num_scheduled_tokens.dtype)
+            np.cumsum(num_scheduled_tokens, out=req_slice)
+
+            to_save = {}
+            input_ids_cpu = input_ids.cpu()
+            hidden_states_cpu = raw_hidden_states.cpu()
+            for i, req_id in enumerate(self.input_batch.req_ids):
+                to_save[i] = {
+                    'req_id': req_id,
+                    'input_ids': input_ids_cpu[req_slice[i]:req_slice[i + 1]],
+                    'hidden_states': hidden_states_cpu[req_slice[i]:req_slice[i + 1]],
+                }
+            filename = os.path.join(self.training_data_save_path, f"data-{time.time_ns()}.pt")
+            torch.save(to_save, filename)
+
         return hidden_states, raw_hidden_states, input_ids, finished_sending, finished_recving
 
     def kv_connector_no_forward(
