@@ -114,8 +114,6 @@ class NPUWorker(WorkerBase):
             from vllm.utils import init_cached_hf_modules
             init_cached_hf_modules()
 
-        self.profiler = self._init_profiler()
-
         torch.cuda.get_device_properties = get_device_properties
 
         vllm_config.model_config.disable_cascade_attn = True
@@ -169,6 +167,7 @@ class NPUWorker(WorkerBase):
 
         # Init ModelRunner here, so that we have access to self.device.
         self.model_runner = NPUModelRunner(self.vllm_config, self.device)
+        self.profiler = self._init_profiler()
 
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
@@ -278,7 +277,19 @@ class NPUWorker(WorkerBase):
         self,
         scheduler_output: "SchedulerOutput",
     ) -> Optional[ModelRunnerOutput]:
+        if envs.VLLM_TORCH_PROFILER_DIR:
+            if not self.profile_already_start and scheduler_output.total_num_scheduled_tokens >= self.profiler_token_threshold:
+                self.profiler.start()
+                self.profile_already_start = True
+                self.profile_step = 0
+
         output = self.model_runner.execute_model(scheduler_output)
+        if envs.VLLM_TORCH_PROFILER_DIR:
+            if self.profile_already_start and not self.profile_finished:
+                self.profile_step += 1
+            if not self.profile_finished and self.profile_step > self.profiler_stop_step:
+                self.profiler.stop()
+                self.profile_finished = True
         return output if self.is_driver_worker else None
 
     def load_model(self) -> None:
@@ -320,7 +331,7 @@ class NPUWorker(WorkerBase):
 
     def initialize_cache(self, kv_cache_configs: List[KVCacheConfig]) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
-        self.initialize_from_config(kv_cache_config)
+        self.initialize_from_config(kv_cache_configs)
 
     def profile(self, is_start: bool = True):
         if self.profiler is None:
@@ -361,31 +372,32 @@ class NPUWorker(WorkerBase):
     def _init_profiler(self):
         # Torch profiler. Enabled and configured through env vars:
         # VLLM_TORCH_PROFILER_DIR=/path/to/save/trace
+        # PROFILER_TOKEN_THRESHOLD=1
+        # PROFILER_STOP_STEP=5
+        self.profile_already_start = True
+        self.profile_step = 0
+        self.profile_finished = True
         if envs.VLLM_TORCH_PROFILER_DIR:
+            self.profiler_token_threshold = int(os.environ.get('PROFILER_TOKEN_THRESHOLD',"1"))
+            self.profiler_stop_step = int(os.environ.get('PROFILER_STOP_STEP',"5"))
             torch_profiler_trace_dir = envs.VLLM_TORCH_PROFILER_DIR
             logger.info("Profiling enabled. Traces will be saved to: %s",
                         torch_profiler_trace_dir)
 
             experimental_config = torch_npu.profiler._ExperimentalConfig(
-                export_type=torch_npu.profiler.ExportType.Text,
-                profiler_level=torch_npu.profiler.ProfilerLevel.Level0,
-                msprof_tx=False,
-                aic_metrics=torch_npu.profiler.AiCMetrics.AiCoreNone,
-                l2_cache=False,
-                op_attr=False,
-                data_simplification=False,
-                record_op_args=False,
-                gc_detect_threshold=None,
+                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
             )
-
+            self.profile_already_start = False
+            self.profile_finished = False
             return torch_npu.profiler.profile(
                 activities=[
                     torch_npu.profiler.ProfilerActivity.CPU,
                     torch_npu.profiler.ProfilerActivity.NPU,
                 ],
-                with_stack=True,
-                profile_memory=True,
-                with_modules=True,
+                with_stack=False,
+                profile_memory=False,
+                with_modules=False,
                 experimental_config=experimental_config,
                 on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(
                     torch_profiler_trace_dir))
