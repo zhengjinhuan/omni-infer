@@ -82,6 +82,7 @@ class FusedMLP(torch.nn.Module):
         super().__init__()
         tp_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
+        self.intermediate_size = intermediate_size
         self.gate_up_proj = MergedColumnParallelFlashCommLinear(
             hidden_size,
             [intermediate_size] * 2,
