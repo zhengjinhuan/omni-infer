@@ -1,6 +1,6 @@
-From 2a6b3726b11008e91a9658e551f6288b79249c4e Mon Sep 17 00:00:00 2001
-From: fengye <shindou14@icloud.com>
-Date: Sun, 31 Aug 2025 21:42:10 +0800
+From a538ea7e3bc45e494779529c67c68903979a6315 Mon Sep 17 00:00:00 2001
+From: fengye <vinsmoke.feng@huawei.com>
+Date: Thu, 11 Sep 2025 09:44:52 +0800
 Subject: [PATCH] NPU adatation for SGL
 
 ---
@@ -25,13 +25,13 @@ Subject: [PATCH] NPU adatation for SGL
  .../srt/managers/tp_worker_overlap_thread.py  |   8 +-
  python/sglang/srt/mem_cache/memory_pool.py    |  65 +++--
  .../srt/model_executor/cuda_graph_runner.py   | 244 +++++++++++++++---
- .../srt/model_executor/forward_batch_info.py  |   9 +-
+ .../srt/model_executor/forward_batch_info.py  |  19 +-
  .../sglang/srt/model_executor/model_runner.py | 113 +++++---
  .../sglang/srt/model_loader/weight_utils.py   |   5 +-
  python/sglang/srt/models/registry.py          |   5 +-
  python/sglang/srt/server_args.py              |   7 +-
  python/sglang/srt/utils.py                    |  41 ++-
- 27 files changed, 532 insertions(+), 139 deletions(-)
+ 27 files changed, 542 insertions(+), 139 deletions(-)
 
 diff --git a/python/sglang/bench_serving.py b/python/sglang/bench_serving.py
 index 3ba4eae0f..072cd4fc7 100644
@@ -1107,10 +1107,18 @@ index 05599c697..7fd1002f6 100644
  
  CUDA_GRAPH_CAPTURE_FAILED_MSG = (
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index e5793a269..3fd047c18 100644
+index e5793a269..384604f04 100644
 --- a/python/sglang/srt/model_executor/forward_batch_info.py
 +++ b/python/sglang/srt/model_executor/forward_batch_info.py
-@@ -275,6 +275,7 @@ class ForwardBatch:
+@@ -29,6 +29,7 @@ ScheduleBatch -> ModelWorkerBatch -> ForwardBatch
+ 
+ from __future__ import annotations
+ 
++import bisect
+ from dataclasses import dataclass
+ from enum import IntEnum, auto
+ from functools import total_ordering
+@@ -275,6 +276,7 @@ class ForwardBatch:
      global_num_tokens_for_logprob_gpu: Optional[torch.Tensor] = None
      # The padding mode for DP attention
      dp_padding_mode: Optional[DPPaddingMode] = None
@@ -1118,7 +1126,7 @@ index e5793a269..3fd047c18 100644
      # for extend, local start pos and num tokens is different in logits processor
      # this will be computed in get_dp_local_info
      # this will be recomputed in LogitsMetadata.from_forward_batch
-@@ -302,6 +303,9 @@ class ForwardBatch:
+@@ -302,6 +304,9 @@ class ForwardBatch:
      tbo_parent_token_range: Optional[Tuple[int, int]] = None
      tbo_children: Optional[List[ForwardBatch]] = None
  
@@ -1128,7 +1136,7 @@ index e5793a269..3fd047c18 100644
      @classmethod
      def init_new(
          cls,
-@@ -611,7 +615,6 @@ class ForwardBatch:
+@@ -611,7 +616,6 @@ class ForwardBatch:
              )
  
      def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
@@ -1136,7 +1144,7 @@ index e5793a269..3fd047c18 100644
          from sglang.srt.speculative.eagle_utils import EagleDraftInput
  
          assert self.global_num_tokens_cpu is not None
-@@ -630,7 +633,7 @@ class ForwardBatch:
+@@ -630,13 +634,22 @@ class ForwardBatch:
  
          dp_padding_mode = DPPaddingMode.get_dp_padding_mode(global_num_tokens)
          self.dp_padding_mode = dp_padding_mode
@@ -1145,7 +1153,22 @@ index e5793a269..3fd047c18 100644
          if dp_padding_mode.is_max_len():
              # when DP gather mode is all gather, we will use
              # all_gather_into_tensor to gather hidden states, where transferred
-@@ -685,6 +688,8 @@ class ForwardBatch:
+             # tokens should be padded to the same length. We will also use
+             # reduce-scatter instead of all-reduce after MLP.
+             max_num_tokens = max(global_num_tokens)
++            can_run_graph = bool(
++                model_runner.device_graph_runner
++                and model_runner.device_graph_runner.can_run_graph(self)
++            )
++            if can_run_graph and _is_npu:
++                # padding to compile bs gear
++                compile_bs = model_runner.device_graph_runner.compile_bs
++                index = bisect.bisect_left(compile_bs, max_num_tokens)
++                max_num_tokens = compile_bs[index]
+             global_num_tokens = [max_num_tokens] * sync_group_size
+             buffer_len = max_num_tokens * sync_group_size
+         else:
+@@ -685,6 +698,8 @@ class ForwardBatch:
          self.global_num_tokens_gpu = self.global_num_tokens_gpu.new_tensor(
              global_num_tokens
          )
@@ -1536,5 +1559,5 @@ index edf441945..5d631cc7b 100644
          npu_backend = torchair.get_npu_backend(compiler_config=compiler_config)
          return npu_backend
 -- 
-2.39.2.windows.1
+2.43.0.windows.1
 
