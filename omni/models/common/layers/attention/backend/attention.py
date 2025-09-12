@@ -487,7 +487,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
 
         # update kv cache
         if kv_cache[0].numel() > 0 or kv_cache[1].numel():
-            block_size = kv_cache.shape[-2]
+            block_size = kv_cache[0].shape[-2]
             assert block_size == 128, f"{block_size}"
             torch_npu.npu_scatter_pa_kv_cache(
                 key,
