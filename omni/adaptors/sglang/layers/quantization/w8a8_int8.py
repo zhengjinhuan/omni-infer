@@ -30,10 +30,6 @@ from sglang.srt.layers.quantization.int8_kernel import per_token_quant_int8
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.utils import (
     apply_module_patch,
-    cpu_has_amx_support,
-    is_cpu,
-    is_cuda,
-    is_npu,
     set_weight_attrs,
     use_intel_amx_backend,
 )
@@ -41,23 +37,15 @@ from sglang.srt.utils import (
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.topk import TopKOutput
 
-_is_cuda = is_cuda()
-_is_cpu_amx_available = cpu_has_amx_support()
-_is_cpu = is_cpu()
-_is_npu = is_npu()
-if _is_cuda:
-    from sgl_kernel import int8_scaled_mm
+import torch_npu
 
-if _is_npu:
-    import torch_npu
-
-    try:
-        from mindie_turbo import _ops as ops
-        from mindie_turbo.quantize.quant_utils import quant_per_tensor
-    except ImportError:
-        useMindIETurbo = False
-    else:
-        useMindIETurbo = True
+try:
+    from mindie_turbo import _ops as ops
+    from mindie_turbo.quantize.quant_utils import quant_per_tensor
+except ImportError:
+    useMindIETurbo = False
+else:
+    useMindIETurbo = True
 
 logger = logging.getLogger(__name__)
 
@@ -199,43 +187,33 @@ class W8A8Int8Config(QuantizationConfig):
             packed_modules_mapping if packed_modules_mapping is not None else {}
         )
 
-        if _is_npu:
-            if self.is_dynamic:
-                return
-            else:
-                logger.info(
-                    f"Ascend w8a8_int8 quantization with bias, use wrappers to isolate the effects between models, the corresponding forword_npu function is called in w8a8_int8.py"
+        if self.is_dynamic:
+            return
+        else:
+            logger.info(
+                f"Ascend w8a8_int8 quantization with bias, use wrappers to isolate the effects between models, the corresponding forword_npu function is called in w8a8_int8.py"
+            )
+        # Ascend w8a8_int8 quantization with bias, use wrappers to isolate the effects between models
+        for name in self.quant_description.keys():
+            if "norm.bias" in name:
+                apply_module_patch(
+                    "sglang.srt.layers.layernorm.RMSNorm",
+                    "__init__",
+                    [npu_wrapper_rmsnorm_init],
                 )
-            # Ascend w8a8_int8 quantization with bias, use wrappers to isolate the effects between models
-            for name in self.quant_description.keys():
-                if "norm.bias" in name:
-                    apply_module_patch(
-                        "sglang.srt.layers.layernorm.RMSNorm",
-                        "__init__",
-                        [npu_wrapper_rmsnorm_init],
-                    )
-                    apply_module_patch(
-                        "sglang.srt.layers.layernorm.RMSNorm",
-                        "forward_npu",
-                        [npu_wrapper_rmsnorm_forward],
-                    )
+                apply_module_patch(
+                    "sglang.srt.layers.layernorm.RMSNorm",
+                    "forward_npu",
+                    [npu_wrapper_rmsnorm_forward],
+                )
 
     @classmethod
     def get_supported_act_dtypes(cls) -> List[torch.dtype]:
-        return (
-            [torch.float16, torch.bfloat16]
-            if not _is_npu
-            else [torch.int8, torch.float16, torch.bfloat16]
-        )
+        return ([torch.int8, torch.float16, torch.bfloat16])
 
     @classmethod
     def get_min_capability(cls) -> int:
-        if _is_npu:
-            raise NotImplementedError(
-                'NPU hardware does not support "get_min_capability" feature.'
-            )
-        else:
-            return 75
+        raise NotImplementedError('NPU hardware does not support "get_min_capability" feature.')
 
     @classmethod
     def get_name(self) -> str:
@@ -244,8 +222,7 @@ class W8A8Int8Config(QuantizationConfig):
     @classmethod
     def get_config_filenames(cls) -> List[str]:
         filenames = []
-        if _is_npu:
-            filenames.append("quant_model_description.json")
+        filenames.append("quant_model_description.json")
         return filenames
 
     @classmethod
@@ -260,41 +237,31 @@ class W8A8Int8Config(QuantizationConfig):
         from sglang.srt.layers.linear import LinearBase
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
 
-        if _is_npu:
-            if isinstance(layer, LinearBase):
-                prefix_in_quant_config = prefix
-                proj_name = prefix.split(".")[-1]
-                if proj_name in self.packed_modules_mapping:
-                    prefix_in_quant_config = prefix.replace(
-                        proj_name, self.packed_modules_mapping[proj_name][0]
-                    )
-                self.is_dynamic = (
-                    "quant_method" in self.quant_description
-                    and self.quant_description["quant_method"] == "compressed-tensors"
-                ) or (
-                    f"{prefix_in_quant_config}.weight" in self.quant_description
-                    and self.quant_description[prefix_in_quant_config + ".weight"]
-                    == "W8A8_DYNAMIC"
-                )
-                if self.is_layer_skipped(prefix, self.packed_modules_mapping):
-                    return UnquantizedLinearMethod()
-                return (
-                    NPU_W8A8DynamicLinearMethod(self)
-                    if self.is_dynamic
-                    else NPU_W8A8LinearMethod(self)
-                )
-            elif isinstance(layer, FusedMoE):
-                return NPU_W8A8MoEMethod(self)
-            return None
-
-        if should_ignore_layer(
-            prefix, ignore=self.ignore, fused_mapping=self.packed_modules_mapping
-        ):
-            return UnquantizedLinearMethod()
         if isinstance(layer, LinearBase):
-            return W8A8Int8LinearMethod(self)
+            prefix_in_quant_config = prefix
+            proj_name = prefix.split(".")[-1]
+            if proj_name in self.packed_modules_mapping:
+                prefix_in_quant_config = prefix.replace(
+                    proj_name, self.packed_modules_mapping[proj_name][0]
+                )
+            self.is_dynamic = (
+                "quant_method" in self.quant_description
+                and self.quant_description["quant_method"] == "compressed-tensors"
+            ) or (
+                f"{prefix_in_quant_config}.weight" in self.quant_description
+                and self.quant_description[prefix_in_quant_config + ".weight"]
+                == "W8A8_DYNAMIC"
+            )
+            if self.is_layer_skipped(prefix, self.packed_modules_mapping):
+                return UnquantizedLinearMethod()
+            return (
+                NPU_W8A8DynamicLinearMethod(self)
+                if self.is_dynamic
+                else NPU_W8A8LinearMethod(self)
+            )
         elif isinstance(layer, FusedMoE):
-            return W8A8Int8MoEMethod(self)
+            return NPU_W8A8MoEMethod(self)
+        
         return None
 
     def is_layer_skipped(
@@ -343,15 +310,9 @@ class W8A8Int8LinearMethod(LinearMethodBase):
             self.quantization_config = W8A8Int8Config()
         else:
             self.quantization_config = quantization_config
-        self.enable_weight_nz = _is_npu
+        self.enable_weight_nz = True
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        if _is_cpu:
-            assert (
-                _is_cpu_amx_available
-            ), "W8A8Int8LinearMethod on CPU requires that CPU has AMX support"
-            _amx_process_weight_after_loading(layer, ["weight"])
-            return
 
         layer.weight = Parameter(layer.weight.t(), requires_grad=False)
         layer.weight_scale = Parameter(layer.weight_scale.data, requires_grad=False)
@@ -407,26 +368,16 @@ class W8A8Int8LinearMethod(LinearMethodBase):
                 True,  # is_vnni
             )
 
-        if _is_npu:
-            x_q, x_scale = torch_npu.npu_dynamic_quant(x)
-            out = torch_npu.npu_quant_matmul(
-                x_q,
-                layer.weight,
-                layer.weight_scale.view(-1),
-                pertoken_scale=x_scale.view(-1),
-                bias=bias,
-                output_dtype=x.dtype,
-            )
-        else:
-            x_q, x_scale = per_token_quant_int8(x)
-            out = int8_scaled_mm(
-                x_q,
-                layer.weight,
-                x_scale,
-                layer.weight_scale,
-                out_dtype=x.dtype,
-                bias=bias,
-            )
+        x_q, x_scale = torch_npu.npu_dynamic_quant(x)
+        out = torch_npu.npu_quant_matmul(
+            x_q,
+            layer.weight,
+            layer.weight_scale.view(-1),
+            pertoken_scale=x_scale.view(-1),
+            bias=bias,
+            output_dtype=x.dtype,
+        )
+
         return out
 
 
@@ -443,7 +394,7 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
 
     def __init__(self, quant_config: W8A8Int8Config):
         self.quant_config = quant_config
-        self.enable_weight_nz = _is_npu
+        self.enable_weight_nz = True
 
     def create_weights(
         self,
@@ -500,12 +451,6 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
         layer.register_parameter("w2_input_scale", w2_input_scale)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        if _is_cpu:
-            assert (
-                _is_cpu_amx_available
-            ), "W8A8Int8MoEMethod on CPU requires that CPU has AMX support"
-            _amx_process_weight_after_loading(layer, ["w13_weight", "w2_weight"])
-            return
 
         layer.w13_weight_scale = Parameter(
             layer.w13_weight_scale.data, requires_grad=False
@@ -534,30 +479,6 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
         routed_scaling_factor: Optional[float] = None,
     ) -> torch.Tensor:
         from sglang.srt.layers.moe.fused_moe_triton.fused_moe import fused_experts
-
-        if use_intel_amx_backend(layer):
-            from sglang.srt.layers.moe.topk import apply_topk_weights_cpu
-
-            topk_weights, topk_ids, _ = topk_output
-            x, topk_weights = apply_topk_weights_cpu(
-                apply_router_weight_on_input, topk_weights, x
-            )
-            return torch.ops.sgl_kernel.fused_experts_cpu(
-                x,
-                layer.w13_weight,
-                layer.w2_weight,
-                topk_weights,
-                topk_ids,
-                False,  # inplace See [Note] inplace should be False in fused_experts.
-                True,  # use_int8_w8a8
-                False,  # use_fp8_w8a16
-                layer.w13_weight_scale,  # w1_scale
-                layer.w2_weight_scale,  # w2_scale
-                None,  # block_size
-                layer.w13_input_scale,  # a1_scale
-                layer.w2_input_scale,  # a2_scale
-                True,  # is_vnni
-            )
 
         return fused_experts(
             x,

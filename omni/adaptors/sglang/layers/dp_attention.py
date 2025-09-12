@@ -17,7 +17,6 @@ from sglang.srt.distributed import (
     get_tp_group,
     tensor_model_parallel_all_reduce,
 )
-from sglang.srt.utils import is_npu
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +47,8 @@ class DPPaddingMode(IntEnum):
 
     @classmethod
     def get_dp_padding_mode(cls, global_num_tokens: List[int]) -> DPPaddingMode:
-        # we choose the mode that minimizes the communication cost
-        max_len = max(global_num_tokens)
-        sum_len = sum(global_num_tokens)
-        if sum_len * 2 > max_len * get_attention_dp_size() or is_npu():
-            # TODO: is_npu is because NPU HCCL need data has the same size on each card, the bs needs to be divided by the world size
-            return cls.MAX_LEN
-        else:
-            return cls.SUM_LEN
+        # NPU HCCL need data has the same size on each card, the bs needs to be divided by the world size
+        return cls.MAX_LEN
 
     @classmethod
     def get_default_mode_in_cuda_graph(cls) -> DPPaddingMode:
@@ -297,25 +290,9 @@ def _dp_gather_via_all_reduce(
     assert local_tokens.is_contiguous()
     assert global_tokens.is_contiguous()
 
-    if (
-        local_tokens.shape[0] > 0
-        and (is_partial or get_attention_tp_rank() == 0)
-        and not is_npu()
-    ):
-        local_start_pos, local_num_tokens = get_dp_local_info(forward_batch)
-        assert (
-            local_tokens.untyped_storage() is not global_tokens.untyped_storage()
-        ), "aliasing between global_tokens and local_tokens not allowed"
-
-        memcpy_triton(
-            global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False
-        )
-    elif is_npu():
-        local_start_pos, local_num_tokens = get_dp_local_info_npu(forward_batch)
-        # npu not support memcpy_triton
-        memcpy_npu(
-            global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False
-        )
+    local_start_pos, local_num_tokens = get_dp_local_info_npu(forward_batch)
+    # npu not support memcpy_triton
+    memcpy_npu(global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False)
 
     # Input IDs are in int 32. We should use inplace_all_reduce for local case because of custom all reduce.
     NUM_GPUS_PER_NODE = 8
@@ -389,22 +366,9 @@ def dp_scatter(
     local_tokens.fill_(0)
     assert local_tokens.is_contiguous()
     assert global_tokens.is_contiguous()
-    if local_tokens.shape[0] > 0 and not is_npu():
-        local_start_pos, local_num_tokens = get_dp_local_info(forward_batch)
-        assert (
-            local_tokens.untyped_storage() is not global_tokens.untyped_storage()
-        ), "aliasing between local_tokens and global_tokens not allowed"
-
-        memcpy_triton(
-            local_tokens, global_tokens, 0, local_start_pos, local_num_tokens, True
-        )
-    elif is_npu():
-        local_start_pos, local_num_tokens = get_dp_local_info_npu(forward_batch)
-        memcpy_npu(
-            local_tokens, global_tokens, 0, local_start_pos, local_num_tokens, True
-        )
-    else:
-        raise NotImplementedError("dp_scatter not implemented")
+    
+    local_start_pos, local_num_tokens = get_dp_local_info_npu(forward_batch)
+    memcpy_npu(local_tokens, global_tokens, 0, local_start_pos, local_num_tokens, True)
 
 
 def dp_reduce_scatter_tensor(output: torch.Tensor, input: torch.Tensor):

@@ -63,8 +63,6 @@ from sglang.srt.layers.moe.ep_moe.kernels import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
-_use_aiter = get_bool_env_var("SGLANG_USE_AITER") and is_hip()
-
 logger = logging.getLogger(__name__)
 
 
@@ -300,175 +298,6 @@ class _DeepEPDispatcherImplBase:
         raise NotImplementedError
 
 
-class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
-    def __init__(self, async_finish: bool, **kwargs):
-        super().__init__(**kwargs)
-
-        self.async_finish = async_finish
-        self.src2dst = None
-
-    def dispatch_a(
-        self,
-        hidden_states: torch.Tensor,
-        topk_idx: torch.Tensor,
-        topk_weights: torch.Tensor,
-    ):
-        topk_idx = topk_idx.to(torch.int64)
-        if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM:
-            # TODO hard code 128 block quant,use fp8 communication
-            hidden_states = sglang_per_token_group_quant_fp8(
-                hidden_states,
-                128,
-                column_major_scales=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
-                scale_tma_aligned=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
-                scale_ue8m0=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
-            )
-        previous_event = Buffer.capture() if self.async_finish else None
-        return hidden_states, topk_idx, topk_weights, previous_event
-
-    def dispatch_b(self, hidden_states, topk_idx, topk_weights, previous_event):
-        (
-            hidden_states,
-            topk_idx,
-            topk_weights,
-            num_recv_tokens_per_expert,
-            event,
-        ) = self._dispatch_core(hidden_states, topk_idx, topk_weights, previous_event)
-        event.current_stream_wait() if self.async_finish else ()
-        return DeepEPNormalOutput(
-            hidden_states, topk_idx, topk_weights, num_recv_tokens_per_expert
-        )
-
-    def _dispatch_core(
-        self,
-        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
-        topk_idx: torch.Tensor,
-        topk_weights: torch.Tensor,
-        previous_event,
-    ):
-        buffer = self._get_buffer()
-        (
-            num_tokens_per_rank,
-            num_tokens_per_rdma_rank,
-            num_tokens_per_expert,
-            is_token_in_rank,
-            previous_event,
-        ) = buffer.get_dispatch_layout(
-            topk_idx,
-            self.num_experts,
-            previous_event=previous_event,
-            async_finish=self.async_finish,
-            allocate_on_comm_stream=previous_event is not None,
-        )
-
-        # FIXME: `handle` should be transmitted with tokens from dispatch to combine.
-        # However, doing this would incur an unknown synchronization error, but keeping
-        # `handle` as a member variable works.
-
-        (
-            recv_x,
-            recv_topk_idx,
-            recv_topk_weights,
-            num_recv_tokens_per_expert,
-            self.handle,
-            event,
-        ) = buffer.dispatch(
-            x,
-            topk_idx=topk_idx,
-            topk_weights=topk_weights,
-            num_tokens_per_rank=num_tokens_per_rank,
-            num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
-            is_token_in_rank=is_token_in_rank,
-            num_tokens_per_expert=num_tokens_per_expert,
-            previous_event=previous_event,
-            async_finish=self.async_finish,
-            allocate_on_comm_stream=(previous_event is not None) and self.async_finish,
-            expert_alignment=128 if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM else 1,
-            config=DeepEPConfig.get_instance().normal_dispatch_config,
-        )
-
-        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
-            num_recv_tokens_per_expert,
-            num_tokens_per_rank=num_tokens_per_rank,
-            num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
-            num_tokens_per_expert=num_tokens_per_expert,
-        )
-
-        return (
-            recv_x,
-            recv_topk_idx,
-            recv_topk_weights,
-            num_recv_tokens_per_expert,
-            event,
-        )
-
-    def combine_a(
-        self,
-        hidden_states: torch.Tensor,
-        topk_idx: torch.Tensor,
-        topk_weights: torch.Tensor,
-    ):
-        if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM or _use_aiter:
-            output = hidden_states
-        else:
-            if hidden_states.shape[0] > 0:
-                num_tokens = self.src2dst.shape[0] // self.router_topk
-                output = torch.empty(
-                    (num_tokens, hidden_states.shape[1]),
-                    device=hidden_states.device,
-                    dtype=hidden_states.dtype,
-                )
-                deepep_post_reorder_triton_kernel[(num_tokens,)](
-                    hidden_states,
-                    output,
-                    self.src2dst,
-                    topk_idx,
-                    topk_weights,
-                    self.router_topk,
-                    hidden_states.shape[1],
-                    BLOCK_SIZE=512,
-                )
-            else:
-                output = torch.zeros(
-                    (0, hidden_states.shape[1]),
-                    device=hidden_states.device,
-                    dtype=hidden_states.dtype,
-                )
-        previous_event = Buffer.capture() if self.async_finish else None
-        return output, previous_event
-
-    def combine_b(self, output, previous_event):
-        hidden_states, event = self._combine_core(output, previous_event)
-        event.current_stream_wait() if self.async_finish else ()
-        self.handle = None
-        self.src2dst = None
-        return hidden_states
-
-    def _combine_core(self, x: torch.Tensor, previous_event):
-        buffer = self._get_buffer()
-        combined_x, _, event = buffer.combine(
-            x,
-            self.handle,
-            async_finish=self.async_finish,
-            previous_event=previous_event,
-            allocate_on_comm_stream=previous_event is not None,
-            config=DeepEPConfig.get_instance().normal_combine_config,
-        )
-        return combined_x, event
-
-    def _get_buffer(self):
-        DeepEPBuffer.set_dispatch_mode_as_normal()
-
-        return DeepEPBuffer.get_deepep_buffer(
-            self.group,
-            self.hidden_size,
-            self.params_bytes,
-            self.deepep_mode,
-            self.num_max_dispatch_tokens_per_rank,
-            self.num_experts,
-        )
-
-
 class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
     def __init__(self, return_recv_hook: bool, **kwargs):
         super().__init__(**kwargs)
@@ -643,10 +472,7 @@ class DeepEPDispatcher(BaseDispatcher):
                 **common_kwargs,
             )
         if self.deepep_mode.enable_normal():
-            dispatcher_cls = (
-                _DeepEPDispatcherImplNormal if not _is_npu else NpuDeepEPDispatcher
-            )
-            self._normal_dispatcher = dispatcher_cls(
+            self._normal_dispatcher = NpuDeepEPDispatcher(
                 async_finish=async_finish,
                 **common_kwargs,
             )
