@@ -841,6 +841,12 @@ class NpuDeepEPDispatcher:
             per_token_scales=gathered_pertoken_scale,
         )
         expert_tokens = expert_tokens.to(torch.int64)
+        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+            [],
+            num_tokens_per_rank=None,
+            num_tokens_per_rdma_rank=None,
+            num_tokens_per_expert=expert_tokens,
+        )
         return (
             hidden_states_ordered_by_experts,
             gathered_pertoken_scale,
@@ -876,6 +882,12 @@ class NpuDeepEPDispatcher:
             ep_recv_counts,
             tp_recv_counts,
         ) = torch_npu.npu_moe_distribute_dispatch_v2(**_kwargs)[:6]
+        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+            [],
+            num_tokens_per_rank=None,
+            num_tokens_per_rdma_rank=None,
+            num_tokens_per_expert=expert_tokens,
+        )
         return (
             hidden_states,
             dynamic_scale,
