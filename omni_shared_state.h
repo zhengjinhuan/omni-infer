@@ -34,23 +34,23 @@ typedef struct omni_request_metrics_s
     uint32_t decoded_tokens;
     uint32_t max_tokens;
 
-    uint32_t time_received;
-    uint32_t time_contents_received;
-    uint32_t time_tokenized;
-    uint32_t time_apc_updated;
+    ngx_msec_t time_received;
+    ngx_msec_t time_contents_received;
+    ngx_msec_t time_tokenized;
+    ngx_msec_t time_apc_updated;
 
-    uint32_t time_enter_wait_prefill;
-    uint32_t time_prefill_scheduled;
-    uint32_t time_to_prefill;
-    uint32_t time_prefilled;
+    ngx_msec_t time_enter_wait_prefill;
+    ngx_msec_t time_prefill_scheduled;
+    ngx_msec_t time_to_prefill;
+    ngx_msec_t time_prefilled;
 
-    uint32_t time_enter_wait_decode;
-    uint32_t time_decode_scheduled;
-    uint32_t time_to_decode;
+    ngx_msec_t time_enter_wait_decode;
+    ngx_msec_t time_decode_scheduled;
+    ngx_msec_t time_to_decode;
 
-    uint32_t time_last_reponse;
-    uint16_t time_first_token;
-    uint16_t tpot;
+    ngx_msec_t time_last_reponse;
+    ngx_msec_t time_first_token;
+    ngx_msec_t tpot;
 } omni_request_metrics_t;
 
 typedef struct omni_request_s
