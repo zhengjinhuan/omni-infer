@@ -125,19 +125,61 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
 
         assert(omni_req_is_in_phase(req, PHASE_PREFILL_WAITING_SCHEDULE));
 
-        uint32_t least_load = UINT32_MAX;
+        // uint32_t least_load = UINT32_MAX;
         uint32_t selected = UINT32_MAX;
-        for (int m = gs->last_selected_prefill; m < gs->num_prefill_endpoints + gs->last_selected_prefill; m++)
+        uint32_t best_match = 0;
+        uint32_t best_load_tokens = UINT32_MAX;
+        uint32_t best_running = UINT32_MAX;
+        uint32_t best_idx = UINT32_MAX;
+        // 基于 omni_req_t 的 per-endpoint 匹配深度进行优选：
+        // 1) 优先选择 match_depth 最大的 endpoint且不超过上限
+        // 2) 如果有并列，优先选择当前负载更低的（num_tokens 少）
+        // 3) 再次并列，选择 num_running 少的
+        // 4) 如果所有 endpoint 的 match_depth 都为 0，则退回到原有“最小负载优选”的策略
+        for (uint32_t j = 0; j < gs->num_prefill_endpoints; j++)
         {
-            int j = m % gs->num_prefill_endpoints;
+            uint32_t m = 0;
+            // 依赖于 post_tokenized 阶段已将 match_depths[] 写入 req
+            // 若某些请求没有该数据，m=0 将自动回退到负载优选
+            m = req->match_depths[j];
 
-            if (gs->prefill_states[j].num_tokens < least_load)
+            uint32_t load_tokens = gs->prefill_states[j].num_tokens;
+            uint32_t running = gs->prefill_states[j].num_running;
+            if (load_tokens > 30000 || running > 32)//负载超了
+                continue;
+            if (m > best_match ||
+                (m == best_match && load_tokens < best_load_tokens) ||
+                (m == best_match && load_tokens == best_load_tokens && running < best_running))
             {
-                least_load = gs->prefill_states[j].num_tokens;
-                selected = j;
-                if (least_load == 0)
+                best_match = m;
+                best_load_tokens = load_tokens;
+                best_running = running;
+                best_idx = j;
+            }
+        }
+
+        if (best_match > 0 && best_idx != UINT32_MAX)
+        {
+            // 命中缓存（有匹配深度）优先
+            selected = best_idx;
+        }
+        else
+        {
+            // 没有任何匹配，退回到最小负载优选（保持原先的轮转起点）
+            uint32_t least_load = UINT32_MAX;
+            for (uint32_t m = gs->last_selected_prefill;
+                 m < gs->num_prefill_endpoints + gs->last_selected_prefill;
+                 m++)
+            {
+                uint32_t j = m % gs->num_prefill_endpoints;
+                if (gs->prefill_states[j].num_tokens < least_load)
                 {
-                    break;
+                    least_load = gs->prefill_states[j].num_tokens;
+                    selected = j;
+                    if (least_load == 0)
+                    {
+                        break;
+                    }
                 }
             }
         }
