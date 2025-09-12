@@ -43,6 +43,7 @@ from omni.models.common.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.config.model_config import model_extra_config
 
+NZ_DIM = 16
 
 class AscendAttentionState(Enum):
     PrefillNoCache = 0
@@ -466,12 +467,6 @@ class AscendAttentionBackendImpl(AttentionImpl):
             trace_flag: bool = True,
     ) -> torch.Tensor:
         num_tokens = query.shape[0]
-        if output is None:
-            output = torch.empty(num_tokens,
-                                 self.num_heads,
-                                 self.head_size,
-                                 dtype=query.dtype,
-                                 device=query.device)
 
         if attn_metadata is None:
             return output.view(num_tokens, self.hidden_size)
@@ -492,43 +487,21 @@ class AscendAttentionBackendImpl(AttentionImpl):
 
         # update kv cache
         if kv_cache[0].numel() > 0 or kv_cache[1].numel():
-            self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
-            block_size = self.key_cache.shape[1]
-
-            cast_key = key.reshape(-1, 1, self.num_kv_heads * self.head_size)
-            cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
-
-            if attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
-                torch_npu._npu_reshape_and_cache(
-                    key,
-                    value,
-                    self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
-                    self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
-                    attn_metadata.slot_mapping.int()
-                )
-            else:
-                torch_npu.scatter_update_(self.key_cache, attn_metadata.slot_indices, cast_key, -2)
-                torch_npu.scatter_update_(self.value_cache, attn_metadata.slot_indices, cast_value, -2)
+            block_size = kv_cache.shape[-2]
+            assert block_size == 128, f"{block_size}"
+            torch_npu.npu_scatter_pa_kv_cache(
+                key,
+                value,
+                kv_cache[0],
+                kv_cache[1],
+                attn_metadata.slot_mapping
+            )
 
         if self.enable_graph_mode and attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
-            query = query.view(-1, 1, self.num_heads * self.head_size)
             attn_output = tng.ops.npu_fused_infer_attention_score_v2(
                 query,
-                self.key_cache,
-                self.value_cache,
-                num_query_heads=self.num_heads,
-                num_key_value_heads=self.num_kv_heads,
-                input_layout="BSH",
-                softmax_scale=self.scale,
-                block_table=attn_metadata.block_tables,
-                block_size=block_size,
-                actual_seq_kvlen=attn_metadata.seq_lens,
-            )[0]
-        else:
-            attn_output = torch_npu.npu_fused_infer_attention_score_v2(
-                query,
-                self.key_cache,
-                self.value_cache,
+                kv_cache[0].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
+                kv_cache[1].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
                 num_query_heads=self.num_heads,
                 num_key_value_heads=self.num_kv_heads,
                 input_layout="TND",
@@ -537,14 +510,33 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 block_size=block_size,
                 sparse_mode=3,
                 atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                actual_seq_qlen=attn_metadata.query_lens.cumsum(dim=0),
+                actual_seq_qlen=attn_metadata.query_lens,
+                actual_seq_kvlen=attn_metadata.seq_lens,
+            )[0]
+        else:
+            attn_output = torch_npu.npu_fused_infer_attention_score_v2(
+                query,
+                kv_cache[0].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
+                kv_cache[1].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
+                num_query_heads=self.num_heads,
+                num_key_value_heads=self.num_kv_heads,
+                input_layout="TND",
+                softmax_scale=self.scale,
+                block_table=attn_metadata.block_tables,
+                block_size=block_size,
+                sparse_mode=3,
+                atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                actual_seq_qlen=attn_metadata.query_lens,
                 actual_seq_kvlen=attn_metadata.seq_lens,
             )[0]
 
-        output = output.view_as(attn_output)
-        output.copy_(attn_output)
-
-        return output.view(num_tokens, self.hidden_size)
+        if output is not None:
+            # inplace, no need to return
+            output = output.view_as(attn_output)
+            output.copy_(attn_output)
+            raise RuntimeError()
+        else:
+            return attn_output.view(num_tokens, self.hidden_size)
 
     def forward_vanilla(
             self,
@@ -789,7 +781,10 @@ class AscendAttentionBackend(AttentionBackend):
             num_kv_heads: int,
             head_size: int,
     ) -> Tuple[int, ...]:
-        return (2, num_blocks, block_size, num_kv_heads * head_size)
+        if model_extra_config.operator_opt_config.use_tnd_pa:
+            return (2, num_blocks, num_kv_heads * head_size // NZ_DIM, block_size, NZ_DIM)
+        else:
+            return (2, num_blocks, block_size, num_kv_heads * head_size)
 
     @staticmethod
     def swap_blocks(
