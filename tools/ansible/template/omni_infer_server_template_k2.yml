@@ -263,7 +263,7 @@
           {% endfor %}
       )
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode_k2.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 52 --no-enable-prefix-caching'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 48 --no-enable-prefix-caching'
       GPU_UTIL=0.85
       ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}, "enable_omni_attn": true, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4 }, "multi_rank_pull_kv": true}'
       VLLM_ENABLE_MC2=1
