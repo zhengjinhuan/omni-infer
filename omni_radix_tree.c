@@ -3,17 +3,20 @@
 
 #include "omni_radix_tree.h"
 #include <assert.h>
-#include <stdlib.h>
+#include <limits.h>
 
-static uint64_t omni_generate_node_id(uint64_t parent_hash, uint64_t child_hash)
-{
-    u_char key[16];
+/*
+ switch rbtree keying from edge-id (H(parent, child))
+ to node-id (child_hash). Requires per-node parent pointer to maintain
+ parent/child linked lists and to allow O(1) unlink when removing a node
+ found via child_hash lookup.
 
-    *(uint64_t *)key = parent_hash;
-    *(uint64_t *)(key + 8) = child_hash;
-
-    return ngx_murmur_hash2(key, 16);
-}
+ Assumptions / notes:
+ - Each tree (per prefill server) guarantees child_hash uniqueness within the tree.
+ - ngx_rbtree_key_t may be narrower than uint64_t on some platforms; we cast
+   child_hash to ngx_rbtree_key_t. If you need full 64-bit key portability
+   on 32-bit platforms, additional handling is required.
+*/
 
 omni_radix_tree_t *omni_radix_tree_init(ngx_slab_pool_t *shpool)
 {
@@ -29,7 +32,7 @@ omni_radix_tree_t *omni_radix_tree_init(ngx_slab_pool_t *shpool)
     tree->shpool = shpool;
     tree->version = 1;
 
-    if (ngx_shmtx_create(&tree->mutex, &tree->lock, (u_char *)"radix_lock") != NGX_OK)
+    if (ngx_shmtx_create(&tree->mutex, &tree->lock, "radix lock") != NGX_OK)
     {
         ngx_slab_free(shpool, tree);
         return NULL;
@@ -47,10 +50,9 @@ omni_radix_tree_t *omni_radix_tree_init(ngx_slab_pool_t *shpool)
 
     ngx_memzero(tree->root, sizeof(omni_radix_node_t));
     tree->root->hash_key = 0;
-    tree->root->rb_node.key = omni_generate_node_id(0, 0);
     tree->root->parent = NULL;
-    tree->root->first_child = NULL;
-    tree->root->next_sibling = NULL;
+    /* Use child_hash (here 0) as rbtree key for the root */
+    tree->root->rb_node.key = (ngx_rbtree_key_t)tree->root->hash_key;
 
     ngx_rbtree_insert(&tree->lookup_tree, &tree->root->rb_node);
 
@@ -62,24 +64,34 @@ omni_radix_tree_t *omni_radix_tree_init(ngx_slab_pool_t *shpool)
 static omni_radix_node_t *omni_find_node(omni_radix_tree_t *tree, uint64_t parent_hash, uint64_t child_hash)
 {
     ngx_rbtree_node_t *node;
-    uint64_t node_id;
-
-    node_id = omni_generate_node_id(parent_hash, child_hash);
+    ngx_rbtree_key_t target_key = (ngx_rbtree_key_t)child_hash;
 
     node = tree->lookup_tree.root;
     while (node != NULL && node != &tree->sentinel)
     {
-        if (node_id < node->key)
+        if (target_key < node->key)
         {
             node = node->left;
         }
-        else if (node_id > node->key)
+        else if (target_key > node->key)
         {
             node = node->right;
         }
         else
         {
-            return (omni_radix_node_t *)node;
+            omni_radix_node_t *orn = (omni_radix_node_t *)node;
+            /* If caller does not care about parent, return first match */
+            if (parent_hash == UINT64_MAX)
+            {
+                return orn;
+            }
+            /* Verify parent matches expected parent_hash */
+            if (orn->parent && orn->parent->hash_key == parent_hash)
+            {
+                return orn;
+            }
+            /* Found node with that child_hash but parent doesn't match */
+            return NULL;
         }
     }
 
@@ -105,8 +117,8 @@ ngx_int_t omni_radix_tree_add_chain(omni_radix_tree_t *tree, uint64_t *hash_chai
     {
         uint64_t current_hash = hash_chain[i];
         omni_radix_node_t *existing;
-        uint64_t node_id;
 
+        /* Find child node by child_hash and verify parent == current->hash_key */
         existing = omni_find_node(tree, current->hash_key, current_hash);
 
         if (existing != NULL)
@@ -124,14 +136,12 @@ ngx_int_t omni_radix_tree_add_chain(omni_radix_tree_t *tree, uint64_t *hash_chai
 
         ngx_memzero(new_node, sizeof(omni_radix_node_t));
         new_node->hash_key = current_hash;
+        new_node->parent = current; /* set parent pointer */
 
-        node_id = omni_generate_node_id(current->hash_key, current_hash);
-        new_node->rb_node.key = node_id;
+        /* rbtree key is the child hash (node id) */
+        new_node->rb_node.key = (ngx_rbtree_key_t)new_node->hash_key;
 
-        /* link into sibling list and set parent pointer */
         new_node->next_sibling = current->first_child;
-        new_node->first_child = NULL;
-        new_node->parent = current;
         current->first_child = new_node;
 
         ngx_rbtree_insert(&tree->lookup_tree, &new_node->rb_node);
@@ -166,6 +176,7 @@ ngx_uint_t omni_radix_tree_match(omni_radix_tree_t *tree, uint64_t *hash_chain,
         uint64_t current_hash = hash_chain[i];
         omni_radix_node_t *next;
 
+        /* Search by child_hash and verify the returned node's parent is current */
         next = omni_find_node(tree, current->hash_key, current_hash);
 
         if (next == NULL)
@@ -208,19 +219,17 @@ ngx_uint_t omni_radix_tree_match_optimistic(omni_radix_tree_t *tree, uint64_t *h
         for (i = 0; i < chain_len; i++)
         {
             uint64_t current_hash = hash_chain[i];
-            omni_radix_node_t *next = NULL;
-            uint64_t node_id;
-
-            node_id = omni_generate_node_id(current->hash_key, current_hash);
+            omni_radix_node_t *next;
+            ngx_rbtree_key_t target = (ngx_rbtree_key_t)current_hash;
             ngx_rbtree_node_t *node = tree->lookup_tree.root;
 
             while (node != &tree->sentinel)
             {
-                if (node_id < node->key)
+                if (target < node->key)
                 {
                     node = node->left;
                 }
-                else if (node_id > node->key)
+                else if (target > node->key)
                 {
                     node = node->right;
                 }
@@ -231,7 +240,13 @@ ngx_uint_t omni_radix_tree_match_optimistic(omni_radix_tree_t *tree, uint64_t *h
                 }
             }
 
-            if (next == NULL)
+            if (node == &tree->sentinel)
+            {
+                break;
+            }
+
+            /* Verify parent relationship matches current */
+            if (next->parent == NULL || next->parent->hash_key != current->hash_key)
             {
                 break;
             }
@@ -263,137 +278,65 @@ static void omni_recursive_remove(omni_radix_tree_t *tree, omni_radix_node_t *no
         child = next_child;
     }
 
-
-
     ngx_rbtree_delete(&tree->lookup_tree, &node->rb_node);
     ngx_slab_free(tree->shpool, node);
 }
 
-static void omni_unlink_from_parent(omni_radix_tree_t *tree, omni_radix_node_t *node)
+static void omni_remove_from_parent(omni_radix_tree_t *tree, omni_radix_node_t *parent,
+                                    omni_radix_node_t *node)
 {
-    if (node == NULL || node->parent == NULL)
-        return;
+    omni_radix_node_t *prev, *current;
 
-    omni_radix_node_t *parent = node->parent;
+    if (parent == NULL || node == NULL)
+    {
+        return;
+    }
+
     if (parent->first_child == node)
     {
         parent->first_child = node->next_sibling;
+        return;
     }
-    else
+
+    prev = NULL;
+    current = parent->first_child;
+
+    while (current != NULL && current != node)
     {
-        omni_radix_node_t *prev = parent->first_child;
-        while (prev != NULL && prev->next_sibling != node)
-        {
-            prev = prev->next_sibling;
-        }
-        if (prev != NULL)
-        {
-            prev->next_sibling = node->next_sibling;
-        }
+        prev = current;
+        current = current->next_sibling;
     }
-    node->parent = NULL;
-    node->next_sibling = NULL;
-}
 
-static omni_radix_node_t *omni_find_node_by_hash(omni_radix_tree_t *tree, uint64_t target)
-{
-    ngx_rbtree_node_t *root = tree->lookup_tree.root;
-    if (root == &tree->sentinel)
-        return NULL;
-
-    /* initial stack capacity */
-    size_t stack_cap = 256;
-    ngx_rbtree_node_t **stack = malloc(stack_cap * sizeof(ngx_rbtree_node_t *));
-    if (!stack)
-        return NULL;
-
-    size_t sp = 0;
-    stack[sp++] = root;
-
-    omni_radix_node_t *found = NULL;
-
-    while (sp > 0)
+    if (current == node && prev != NULL)
     {
-        ngx_rbtree_node_t *n = stack[--sp];
-        if (n == &tree->sentinel)
-            continue;
-
-        omni_radix_node_t *orn = (omni_radix_node_t *)n;
-        if (orn != tree->root && orn->hash_key == target)
-        {
-            found = orn;
-            break;
-        }
-
-        if (n->right != &tree->sentinel)
-        {
-            if (sp + 1 >= stack_cap)
-            {
-                size_t new_cap = stack_cap * 2;
-                ngx_rbtree_node_t **new_stack = realloc(stack, new_cap * sizeof(ngx_rbtree_node_t *));
-                if (!new_stack)
-                {
-                    break;
-                }
-                stack = new_stack;
-                stack_cap = new_cap;
-            }
-            stack[sp++] = n->right;
-        }
-        if (n->left != &tree->sentinel)
-        {
-            if (sp + 1 >= stack_cap)
-            {
-                size_t new_cap = stack_cap * 2;
-                ngx_rbtree_node_t **new_stack = realloc(stack, new_cap * sizeof(ngx_rbtree_node_t *));
-                if (!new_stack)
-                {
-                    break;
-                }
-                stack = new_stack;
-                stack_cap = new_cap;
-            }
-            stack[sp++] = n->left;
-        }
+        prev->next_sibling = node->next_sibling;
     }
-
-    free(stack);
-    return found;
 }
 
 ngx_int_t omni_radix_tree_remove(omni_radix_tree_t *tree, uint64_t hash_to_remove)
 {
-    if (tree == NULL)
-    {
-        return NGX_ERROR;
-    }
+    omni_radix_node_t *node_to_remove;
 
     ngx_shmtx_lock(&tree->mutex);
 
-    ngx_int_t removed_any = NGX_ERROR;
+    /* Find node by child_hash (parent unspecified) */
+    node_to_remove = omni_find_node(tree, UINT64_MAX, hash_to_remove);
 
-
-    while (1)
+    if (node_to_remove == NULL)
     {
-        omni_radix_node_t *node = omni_find_node_by_hash(tree, hash_to_remove);
-        if (node == NULL)
-            break;
-
-        /* unlink from parent */
-        omni_unlink_from_parent(tree, node);
-
-        omni_recursive_remove(tree, node);
-
-        removed_any = NGX_OK;
+        ngx_shmtx_unlock(&tree->mutex);
+        return NGX_ERROR;
     }
 
-    if (removed_any == NGX_OK)
-    {
-        tree->version++;
-    }
+    /* Use the stored parent pointer for unlink */
+    omni_remove_from_parent(tree, node_to_remove->parent, node_to_remove);
+
+    omni_recursive_remove(tree, node_to_remove);
+
+    tree->version++;
 
     ngx_shmtx_unlock(&tree->mutex);
-    return removed_any;
+    return NGX_OK;
 }
 
 void omni_radix_tree_destroy(omni_radix_tree_t *tree)
@@ -405,25 +348,19 @@ void omni_radix_tree_destroy(omni_radix_tree_t *tree)
 
     ngx_shmtx_lock(&tree->mutex);
 
-    if (tree->root)
-    {
-        omni_recursive_remove(tree, tree->root);
-        tree->root = NULL;
-    }
+    omni_recursive_remove(tree, tree->root);
 
-    ngx_shmtx_unlock(&tree->mutex);
     ngx_shmtx_destroy(&tree->mutex);
 
     ngx_slab_free(tree->shpool, tree);
 }
 
-/* --- tests retained --- */
+typedef ngx_uint_t (*omni_matcher)(omni_radix_tree_t *tree, uint64_t *hash_chain,
+                                   ngx_uint_t chain_len);
 
-static void omni_radix_tree_test_internal(omni_radix_tree_t *tree, ngx_uint_t (*matcher)(omni_radix_tree_t *, uint64_t *, ngx_uint_t))
+static void omni_radix_tree_test_internal(omni_radix_tree_t *tree, omni_matcher matcher)
 {
     ngx_uint_t match_depth;
-
-    printf("\n--- Running tests with omni_radix_tree_match ---\n");
 
     // Test 1: Basic chain addition and matching
     printf("Test 1: Basic chain operations\n");
@@ -466,10 +403,9 @@ static void omni_radix_tree_test_internal(omni_radix_tree_t *tree, ngx_uint_t (*
     uint64_t query3[] = {128803, 1182, 5567, 2342, 34242};
     match_depth = matcher(tree, query3, 5);
     assert(match_depth == 3);
-
     // Test 7: Add chain with different starting point
     printf("Test 7: Different starting chains\n");
-    uint64_t chain4[] = {24928, 128803, 7282};
+    uint64_t chain4[] = {24928, 1288031, 17282};
     assert(omni_radix_tree_add_chain(tree, chain4, 3) == NGX_OK);
 
     match_depth = matcher(tree, chain4, 3);
