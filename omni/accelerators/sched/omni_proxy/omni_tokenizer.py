@@ -544,6 +544,10 @@ def _preprocess_chat_batch(
         
         # Assign tokenized results
         for i, input_ids in enumerate(all_input_ids):
+            model_name = requests[i].get("model", "")
+            if "deepseek" in model_name.lower():
+                if input_ids and len(input_ids) > 0:
+                    input_ids = input_ids[1:]
             results[i].input_ids = input_ids
             
     except Exception as e:
