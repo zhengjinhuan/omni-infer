@@ -1,37 +1,38 @@
-From a538ea7e3bc45e494779529c67c68903979a6315 Mon Sep 17 00:00:00 2001
+From 0ee54ec0281fac2c755ff3d1c6f438b3f57a8f7a Mon Sep 17 00:00:00 2001
 From: fengye <vinsmoke.feng@huawei.com>
-Date: Thu, 11 Sep 2025 09:44:52 +0800
-Subject: [PATCH] NPU adatation for SGL
+Date: Fri, 12 Sep 2025 11:39:13 +0800
+Subject: [PATCH] NPU adaptation for SGL
 
 ---
  python/sglang/bench_serving.py                |   2 +-
  python/sglang/launch_server.py                |   1 +
  .../sglang/srt/distributed/parallel_state.py  |   2 +-
  python/sglang/srt/eplb/expert_distribution.py |  21 +-
+ .../srt/layers/attention/base_attn_backend.py |   4 +-
  python/sglang/srt/layers/communicator.py      |   3 +-
  python/sglang/srt/layers/layernorm.py         |   5 +-
  python/sglang/srt/layers/linear.py            |  12 +-
- python/sglang/srt/layers/logits_processor.py  |  36 ++-
+ python/sglang/srt/layers/logits_processor.py  |  60 +++--
  python/sglang/srt/layers/moe/topk.py          |   4 +-
  .../srt/layers/quantization/__init__.py       |   2 +-
  .../srt/layers/quantization/fp8_kernel.py     |   4 +-
  .../srt/layers/quantization/moe_wna16.py      |   3 +-
  .../sglang/srt/layers/quantization/unquant.py |  25 +-
  .../srt/managers/data_parallel_controller.py  |   1 +
- python/sglang/srt/managers/schedule_batch.py  |  14 +-
+ python/sglang/srt/managers/schedule_batch.py  |  18 +-
  python/sglang/srt/managers/scheduler.py       |   6 +-
  .../srt/managers/scheduler_profiler_mixin.py  |  31 ++-
  python/sglang/srt/managers/tp_worker.py       |   2 +
  .../srt/managers/tp_worker_overlap_thread.py  |   8 +-
  python/sglang/srt/mem_cache/memory_pool.py    |  65 +++--
  .../srt/model_executor/cuda_graph_runner.py   | 244 +++++++++++++++---
- .../srt/model_executor/forward_batch_info.py  |  19 +-
- .../sglang/srt/model_executor/model_runner.py | 113 +++++---
+ .../srt/model_executor/forward_batch_info.py  |  36 ++-
+ .../sglang/srt/model_executor/model_runner.py | 116 ++++++---
  .../sglang/srt/model_loader/weight_utils.py   |   5 +-
  python/sglang/srt/models/registry.py          |   5 +-
  python/sglang/srt/server_args.py              |   7 +-
  python/sglang/srt/utils.py                    |  41 ++-
- 27 files changed, 542 insertions(+), 139 deletions(-)
+ 28 files changed, 583 insertions(+), 150 deletions(-)
 
 diff --git a/python/sglang/bench_serving.py b/python/sglang/bench_serving.py
 index 3ba4eae0f..072cd4fc7 100644
@@ -110,6 +111,22 @@ index c954394e6..5c2964842 100644
  
  
  def set_global_expert_distribution_recorder(value):
+diff --git a/python/sglang/srt/layers/attention/base_attn_backend.py b/python/sglang/srt/layers/attention/base_attn_backend.py
+index 3025d0b11..22175983c 100644
+--- a/python/sglang/srt/layers/attention/base_attn_backend.py
++++ b/python/sglang/srt/layers/attention/base_attn_backend.py
+@@ -65,9 +65,9 @@ class AttentionBackend(ABC):
+         **kwargs,
+     ):
+         """Run forward on an attention layer."""
+-        if forward_batch.forward_mode.is_idle():
++        if forward_batch.is_prefill_idle:
+             return q.new_empty(q.shape[0], layer.tp_q_head_num * layer.v_head_dim)
+-        elif forward_batch.forward_mode.is_decode():
++        elif forward_batch.is_decode_or_idle:
+             return self.forward_decode(
+                 q,
+                 k,
 diff --git a/python/sglang/srt/layers/communicator.py b/python/sglang/srt/layers/communicator.py
 index 4ef752d75..5ec3bbee3 100644
 --- a/python/sglang/srt/layers/communicator.py
@@ -202,7 +219,7 @@ index 2a9dfda59..587cb2fb1 100644
  
      def weight_loader_v2(self, param: BasevLLMParameter, loaded_weight: torch.Tensor):
 diff --git a/python/sglang/srt/layers/logits_processor.py b/python/sglang/srt/layers/logits_processor.py
-index 3384f5efa..83a168a66 100644
+index 3384f5efa..e9f9cda37 100644
 --- a/python/sglang/srt/layers/logits_processor.py
 +++ b/python/sglang/srt/layers/logits_processor.py
 @@ -21,6 +21,7 @@ import torch
@@ -221,7 +238,7 @@ index 3384f5efa..83a168a66 100644
      global_num_tokens_gpu: Optional[torch.Tensor] = None
      # The start position of local hidden states.
      dp_local_start_pos: Optional[torch.Tensor] = None
-@@ -112,10 +114,11 @@ class LogitsMetadata:
+@@ -112,19 +114,26 @@ class LogitsMetadata:
      # Buffer to gather logits from all ranks.
      forward_batch_gathered_buffer: Optional[torch.Tensor] = None
      # Number of tokens to sample per DP rank
@@ -233,8 +250,34 @@ index 3384f5efa..83a168a66 100644
 +    dp_padding_max_len: bool = False
      # for padding
      padded_static_len: int = -1
++    is_extend: bool = False
++    is_decode_or_idle: bool = False
++    is_target_verify: bool = False
++    is_draft_extend: bool = False
++    is_extend_or_draft_extend: bool = False
++    is_prefill_idle: bool = False
  
-@@ -161,6 +164,7 @@ class LogitsMetadata:
+     @classmethod
+     def from_forward_batch(cls, forward_batch: ForwardBatch):
+         if (
+-            forward_batch.forward_mode.is_extend()
++            forward_batch.is_extend
+             and forward_batch.return_logprob
+-            and not forward_batch.forward_mode.is_target_verify()
++            and not forward_batch.is_target_verify
+         ):
+             extend_return_top_logprob = any(
+                 x > 0 for x in forward_batch.top_logprobs_nums
+@@ -147,7 +156,7 @@ class LogitsMetadata:
+             ) = extend_logprob_pruned_lens_cpu = False
+ 
+         return cls(
+-            forward_mode=forward_batch.forward_mode,
++            forward_mode=None,
+             capture_hidden_mode=forward_batch.capture_hidden_mode,
+             next_token_logits_buffer=forward_batch.next_token_logits_buffer,
+             extend_return_logprob=extend_return_logprob,
+@@ -161,6 +170,7 @@ class LogitsMetadata:
              token_ids_logprobs=forward_batch.token_ids_logprobs,
              extend_input_logprob_token_ids_gpu=forward_batch.extend_input_logprob_token_ids_gpu,
              padded_static_len=forward_batch.padded_static_len,
@@ -242,7 +285,16 @@ index 3384f5efa..83a168a66 100644
              global_num_tokens_gpu=forward_batch.global_num_tokens_gpu,
              dp_local_start_pos=forward_batch.dp_local_start_pos,
              dp_local_num_tokens=forward_batch.dp_local_num_tokens,
-@@ -172,19 +176,29 @@ class LogitsMetadata:
+@@ -169,22 +179,38 @@ class LogitsMetadata:
+             global_num_tokens_for_logprob_cpu=forward_batch.global_num_tokens_for_logprob_cpu,
+             global_num_tokens_for_logprob_gpu=forward_batch.global_num_tokens_for_logprob_gpu,
+             dp_padding_mode=DPPaddingMode.SUM_LEN,
++            is_extend=forward_batch.is_extend,
++            is_decode_or_idle=forward_batch.is_decode_or_idle,
++            is_target_verify=forward_batch.is_target_verify,
++            is_draft_extend=forward_batch.is_draft_extend,
++            is_extend_or_draft_extend=forward_batch.is_extend_or_draft_extend,
++            is_prefill_idle=forward_batch.is_prefill_idle,
          )
  
      def compute_dp_attention_metadata(self):
@@ -282,6 +334,26 @@ index 3384f5efa..83a168a66 100644
  
          if self.global_num_tokens_for_logprob_cpu is not None:
              # create a smaller buffer to reduce peak memory usage
+@@ -246,8 +272,8 @@ class LogitsProcessor(nn.Module):
+             logits_metadata = LogitsMetadata.from_forward_batch(logits_metadata)
+         # Get the last hidden states and last logits for the next token prediction
+         if (
+-            logits_metadata.forward_mode.is_decode_or_idle()
+-            or logits_metadata.forward_mode.is_target_verify()
++            logits_metadata.is_decode_or_idle
++            or logits_metadata.is_target_verify
+         ):
+             pruned_states = hidden_states
+             if aux_hidden_states is not None:
+@@ -255,7 +281,7 @@ class LogitsProcessor(nn.Module):
+             sample_indices = None
+             input_logprob_indices = None
+         elif (
+-            logits_metadata.forward_mode.is_extend()
++            logits_metadata.is_extend
+             and not logits_metadata.extend_return_logprob
+         ):
+             # Prefill without input logprobs.
 diff --git a/python/sglang/srt/layers/moe/topk.py b/python/sglang/srt/layers/moe/topk.py
 index 78bd6f08d..1cfbff498 100644
 --- a/python/sglang/srt/layers/moe/topk.py
@@ -439,7 +511,7 @@ index 76b9e1a01..c30bf6898 100644
      configure_logger(server_args)
      parent_process = psutil.Process().parent()
 diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
-index dca2cbfb7..093a8ff7e 100644
+index dca2cbfb7..8c0d9fb70 100644
 --- a/python/sglang/srt/managers/schedule_batch.py
 +++ b/python/sglang/srt/managers/schedule_batch.py
 @@ -64,7 +64,7 @@ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, Forw
@@ -468,6 +540,17 @@ index dca2cbfb7..093a8ff7e 100644
  ]
  
  # Put some global args for easy access
+@@ -1516,8 +1519,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         self.input_ids = torch.empty(0, dtype=torch.int64, device=self.device)
+         self.seq_lens = torch.empty(0, dtype=torch.int64, device=self.device)
+         self.orig_seq_lens = torch.empty(0, dtype=torch.int32, device=self.device)
+-        self.out_cache_loc = torch.empty(0, dtype=torch.int64, device=self.device)
+-        self.req_pool_indices = torch.empty(0, dtype=torch.int32, device=self.device)
++        self.out_cache_loc = torch.empty(0, dtype=torch.int32, device=self.device)
++        self.req_pool_indices = torch.empty(0, dtype=torch.int64, device=self.device)
+         self.seq_lens_sum = 0
+         self.extend_num_tokens = 0
+         self.sampling_info = SamplingBatchInfo.from_schedule_batch(
 @@ -1713,15 +1716,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
              attention_backend_str = global_server_args_dict["prefill_attention_backend"]
          # Create seq_lens_cpu when needed
@@ -1107,7 +1190,7 @@ index 05599c697..7fd1002f6 100644
  
  CUDA_GRAPH_CAPTURE_FAILED_MSG = (
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index e5793a269..384604f04 100644
+index e5793a269..8559184a9 100644
 --- a/python/sglang/srt/model_executor/forward_batch_info.py
 +++ b/python/sglang/srt/model_executor/forward_batch_info.py
 @@ -29,6 +29,7 @@ ScheduleBatch -> ModelWorkerBatch -> ForwardBatch
@@ -1126,25 +1209,41 @@ index e5793a269..384604f04 100644
      # for extend, local start pos and num tokens is different in logits processor
      # this will be computed in get_dp_local_info
      # this will be recomputed in LogitsMetadata.from_forward_batch
-@@ -302,6 +304,9 @@ class ForwardBatch:
+@@ -302,6 +304,16 @@ class ForwardBatch:
      tbo_parent_token_range: Optional[Tuple[int, int]] = None
      tbo_children: Optional[List[ForwardBatch]] = None
  
 +    # can run this batch in graph mode?
 +    can_run_graph: bool = False
 +
++    is_extend: bool = False
++    is_decode_or_idle: bool = False
++    is_target_verify: bool = False
++    is_draft_extend: bool = False
++    is_extend_or_draft_extend: bool = False
++    is_prefill_idle: bool = False
++
      @classmethod
      def init_new(
          cls,
-@@ -611,7 +616,6 @@ class ForwardBatch:
+@@ -610,8 +622,15 @@ class ForwardBatch:
+                 dim=0,
              )
  
-     def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
--
+-    def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
++    def prepare_batch_forward_mode(self):
++        self.is_extend = self.forward_mode.is_extend()
++        self.is_decode_or_idle = self.forward_mode.is_decode_or_idle()
++        self.is_target_verify = self.forward_mode.is_target_verify()
++        self.is_draft_extend = self.forward_mode.is_draft_extend()
++        self.is_extend_or_draft_extend = (self.forward_mode == ForwardMode.EXTEND  or self.forward_mode == ForwardMode.DRAFT_EXTEND)
++        self.is_prefill_idle = (self.forward_mode.is_idle() and self.is_extend_in_batch)
+ 
++    def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
          from sglang.srt.speculative.eagle_utils import EagleDraftInput
  
          assert self.global_num_tokens_cpu is not None
-@@ -630,13 +634,22 @@ class ForwardBatch:
+@@ -630,13 +649,22 @@ class ForwardBatch:
  
          dp_padding_mode = DPPaddingMode.get_dp_padding_mode(global_num_tokens)
          self.dp_padding_mode = dp_padding_mode
@@ -1168,7 +1267,16 @@ index e5793a269..384604f04 100644
              global_num_tokens = [max_num_tokens] * sync_group_size
              buffer_len = max_num_tokens * sync_group_size
          else:
-@@ -685,6 +698,8 @@ class ForwardBatch:
+@@ -658,6 +686,8 @@ class ForwardBatch:
+             self.batch_size = num_tokens
+ 
+         bs = self.batch_size
++        if self.forward_mode.is_idle() and not self.is_prefill_idle:
++            bs = num_tokens
+ 
+         # padding
+         self.input_ids = self._pad_tensor_to_size(self.input_ids, num_tokens)
+@@ -685,6 +715,8 @@ class ForwardBatch:
          self.global_num_tokens_gpu = self.global_num_tokens_gpu.new_tensor(
              global_num_tokens
          )
@@ -1178,7 +1286,7 @@ index e5793a269..384604f04 100644
          if self.mrope_positions is not None:
              self.mrope_positions = self._pad_tensor_to_size(self.mrope_positions, bs)
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 923482d72..07abff11a 100644
+index 923482d72..a6aae6bca 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
 @@ -92,6 +92,7 @@ from sglang.srt.mem_cache.memory_pool import (
@@ -1347,7 +1455,7 @@ index 923482d72..07abff11a 100644
      def apply_torch_tp(self):
          logger.info(f"Enabling torch tensor parallelism on {self.tp_size} devices.")
          from sglang.srt.model_parallel import tensor_parallel
-@@ -1660,22 +1698,31 @@ class ModelRunner:
+@@ -1660,24 +1698,34 @@ class ModelRunner:
          reinit_attn_backend: bool = False,
          split_forward_count: int = 1,
      ) -> Tuple[Union[LogitsProcessorOutput, PPProxyTensors], bool]:
@@ -1355,6 +1463,7 @@ index 923482d72..07abff11a 100644
 -            forward_batch.forward_mode.is_cuda_graph()
 -            and self.cuda_graph_runner
 -            and self.cuda_graph_runner.can_run(forward_batch)
++        forward_batch.prepare_batch_forward_mode()
 +        if _is_npu:
 +            if forward_batch.global_num_tokens_cpu is not None:
 +                forward_batch.prepare_mlp_sync_batch(self)
@@ -1390,9 +1499,12 @@ index 923482d72..07abff11a 100644
 +            if forward_batch.global_num_tokens_cpu is not None:
 +                forward_batch.prepare_mlp_sync_batch(self)
  
-         if forward_batch.forward_mode.is_decode():
+-        if forward_batch.forward_mode.is_decode():
++        if forward_batch.forward_mode.is_decode_or_idle() and not forward_batch.is_prefill_idle:
              ret = self.forward_decode(
-@@ -1703,7 +1750,7 @@ class ModelRunner:
+                 forward_batch,
+                 skip_attn_backend_init=skip_attn_backend_init,
+@@ -1703,7 +1751,7 @@ class ModelRunner:
          if forward_batch.global_num_tokens_cpu is not None:
              forward_batch.post_forward_mlp_sync_batch(ret)
  

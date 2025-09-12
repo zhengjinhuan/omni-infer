@@ -289,10 +289,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
         q_rope: Optional[torch.Tensor] = None,
         k_rope: Optional[torch.Tensor] = None,
     ):
-        if (
-            forward_batch.forward_mode == ForwardMode.EXTEND
-            or forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND
-        ):
+        if forward_batch.is_extend_or_draft_extend:
             if k_rope is not None:
                 forward_batch.token_to_kv_pool.set_mla_kv_buffer(
                     layer,
