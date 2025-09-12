@@ -166,6 +166,7 @@ class NpuGraphRunner(DeviceRunnerBase):
             global_num_tokens_for_logprob_gpu=global_num_tokens.clone(),
             can_run_graph=True,
         )
+        forward_batch.is_decode_or_idle = True
         return forward_batch
 
     def mark_static(
@@ -201,21 +202,6 @@ class NpuGraphRunner(DeviceRunnerBase):
             mark_tensor_static(forward_batch.token_to_kv_pool.v_buffer, is_cache=True)
         except AttributeError as e:
             mark_tensor_static(forward_batch.token_to_kv_pool.kv_buffer, is_cache=True)
-
-    def prepare_idle_batch(self, bs: int, num_tokens: int) -> ForwardBatch:
-        forward_batch = self.prepare_forward_batch(bs, num_tokens)
-        forward_batch.batch_size = 0
-        forward_batch.forward_mode = ForwardMode.IDLE
-        with torch.device(self.model_runner.device):
-            forward_batch.input_ids = torch.empty(0, dtype=torch.int64)
-            forward_batch.seq_lens = torch.empty(0, dtype=torch.int64)
-            forward_batch.out_cache_loc = torch.empty(0, dtype=torch.int64)
-            forward_batch.req_pool_indices = torch.empty(0, dtype=torch.int32)
-            forward_batch.seq_lens_sum = 0
-        forward_batch.seq_lens_cpu = torch.empty(0, dtype=torch.int64)
-        if forward_batch.global_num_tokens_cpu is not None:
-            forward_batch.prepare_mlp_sync_batch(self.model_runner)
-        return forward_batch
 
     def warm_up(self):
         if not self.enable_torch_compile:
@@ -311,13 +297,6 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                 torch.npu.synchronize()
                 self.model_runner.tp_group.barrier()
                 run_once()
-            if self.require_mlp_tp_gather:
-                for _ in range(2):
-                    torch.npu.synchronize()
-                    self.model_runner.tp_group.barrier()
-                    forward_batch = self.prepare_idle_batch(bs, num_tokens)
-                    run_once()
-
         return
 
     @contextmanager
@@ -342,7 +321,7 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                     **kwargs,
                 )
 
-        if (not skip_attn_backend_init) and forward_batch.forward_mode.is_decode():
+        if not skip_attn_backend_init:
             forward_batch.attn_backend.init_forward_metadata(forward_batch)
 
         yield runner_fn

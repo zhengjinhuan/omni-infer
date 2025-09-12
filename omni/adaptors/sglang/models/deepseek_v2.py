@@ -667,10 +667,9 @@ class DeepseekV2MoE(nn.Module):
         next_attn_weights: Dict = None,
     ) -> torch.Tensor:
         pad_size = None
-        forward_mode = forward_batch.forward_mode
         shared_output = None
-        if is_non_idle_and_non_empty(forward_mode, hidden_states):
-            if forward_batch.forward_mode.is_decode() and forward_batch.can_run_graph:
+        if hidden_states.shape[0] > 0 and not forward_batch.is_prefill_idle:
+            if forward_batch.is_decode_or_idle and forward_batch.can_run_graph:
                 torch_npu.npu_prefetch(
                     self.experts.w13_weight,
                     hidden_states,
@@ -725,7 +724,7 @@ class DeepseekV2MoE(nn.Module):
         if self.ep_size > 1:
             if (
                 forward_batch.can_run_graph
-                and forward_batch.forward_mode.is_decode()
+                and forward_batch.is_decode_or_idle
                 and next_attn_weights is not None
             ):
                 attn_prefetch_size = 96 * 1024 * 1024
@@ -771,9 +770,7 @@ class DeepseekV2MoE(nn.Module):
             return None
 
     def op_gate(self, state):
-        if is_non_idle_and_non_empty(
-            state.forward_batch.forward_mode, state.hidden_states_mlp_input
-        ):
+        if state.hidden_states_mlp_input.shape[0] > 0 and not state.forward_batch.is_prefill_idle:
             # router_logits: (num_tokens, n_experts)
             state.router_logits = self.gate(state.hidden_states_mlp_input)
         else:
@@ -781,8 +778,8 @@ class DeepseekV2MoE(nn.Module):
 
     def op_shared_experts(self, state):
         hidden_states_mlp_input = state.pop("hidden_states_mlp_input")
-        if (self.num_fused_shared_experts == 0) and is_non_idle_and_non_empty(
-            state.forward_batch.forward_mode, hidden_states_mlp_input
+        if (self.num_fused_shared_experts == 0) and (
+            hidden_states_mlp_input.shape[0] > 0 and not state.forward_batch.is_prefill_idle
         ):
             state.shared_output = self.shared_experts(hidden_states_mlp_input)
         else:
@@ -1111,14 +1108,14 @@ class DeepseekV2AttentionMLA(nn.Module):
             if _is_hip:
                 if (
                     self.rocm_fused_decode_mla
-                    and forward_batch.forward_mode.is_decode()
+                    and forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle
                 ):
                     return AttnForwardMethod.MLA_FUSED_ROPE
                 else:
                     return AttnForwardMethod.MLA
             elif _is_npu:
                 if (
-                    forward_batch.forward_mode.is_extend()
+                    forward_batch.is_extend
                     and forward_batch.extend_num_tokens > 1
                 ):
                     return AttnForwardMethod.MHA
@@ -1133,7 +1130,7 @@ class DeepseekV2AttentionMLA(nn.Module):
                     return AttnForwardMethod.MLA
 
         # Determine attention backend used by current forward batch
-        if forward_batch.forward_mode.is_decode_or_idle():
+        if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
             attention_backend = global_server_args_dict["decode_attention_backend"]
         else:
             attention_backend = global_server_args_dict["prefill_attention_backend"]
@@ -1145,9 +1142,9 @@ class DeepseekV2AttentionMLA(nn.Module):
             # Flashinfer MLA: Do not absorb when enabling ragged prefill
             if (
                 not self.flashinfer_mla_disable_ragged
-                and forward_batch.forward_mode.is_extend()
-                and not forward_batch.forward_mode.is_target_verify()
-                and not forward_batch.forward_mode.is_draft_extend()
+                and forward_batch.is_extend
+                and not forward_batch.is_target_verify
+                and not forward_batch.is_draft_extend
                 and sum(forward_batch.extend_prefix_lens_cpu) == 0
             ):
                 return AttnForwardMethod.MHA
@@ -1158,10 +1155,10 @@ class DeepseekV2AttentionMLA(nn.Module):
             if forward_batch.extend_prefix_lens_cpu is not None:
                 sum_extend_prefix_lens = sum(forward_batch.extend_prefix_lens_cpu)
             if (
-                forward_batch.forward_mode.is_extend()
+                forward_batch.is_extend
                 and not self.disable_chunked_prefix_cache
-                and not forward_batch.forward_mode.is_target_verify()
-                and not forward_batch.forward_mode.is_draft_extend()
+                and not forward_batch.is_target_verify
+                and not forward_batch.is_draft_extend
                 and (
                     sum_extend_prefix_lens >= self.chunked_prefix_cache_threshold
                     or sum_extend_prefix_lens == 0
@@ -1172,9 +1169,9 @@ class DeepseekV2AttentionMLA(nn.Module):
                 return _dispatch_mla_subtype()
         elif attention_backend == "aiter":
             if (
-                forward_batch.forward_mode.is_extend()
-                and not forward_batch.forward_mode.is_target_verify()
-                and not forward_batch.forward_mode.is_draft_extend()
+                forward_batch.is_extend
+                and not forward_batch.is_target_verify
+                and not forward_batch.is_draft_extend
             ):
                 return AttnForwardMethod.MHA
             else:
@@ -1182,9 +1179,9 @@ class DeepseekV2AttentionMLA(nn.Module):
         else:
             # Triton: Use normal computation for prefill and use weight absorption for extend/decode
             if (
-                forward_batch.forward_mode.is_extend()
-                and not forward_batch.forward_mode.is_target_verify()
-                and not forward_batch.forward_mode.is_draft_extend()
+                forward_batch.is_extend
+                and not forward_batch.is_target_verify
+                and not forward_batch.is_draft_extend
                 and sum(forward_batch.extend_prefix_lens_cpu) == 0
             ):
                 return AttnForwardMethod.MHA
@@ -2249,7 +2246,7 @@ class DeepseekV2Model(nn.Module):
                 zero_allocator=zero_allocator,
             )
 
-        if not forward_batch.forward_mode.is_idle():
+        if not forward_batch.is_prefill_idle:
             if residual is None:
                 hidden_states = self.norm(hidden_states)
             else:
