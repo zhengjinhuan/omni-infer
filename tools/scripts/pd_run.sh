@@ -316,7 +316,6 @@ export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
 export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
-export CPU_AFFINITY_CONF=2
 
 # Turn on these two variables to enable proc_bind
 # export CPU_AFFINITY_CONF=2
