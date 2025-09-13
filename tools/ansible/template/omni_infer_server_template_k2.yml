@@ -24,7 +24,7 @@
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/model/kimi-k2-w4a8-mtp"
     MODEL_LEN_MAX_PREFILL: "33008"
-    MODEL_LEN_MAX_DECODE: "16384"
+    MODEL_LEN_MAX_DECODE: "33008"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
 
