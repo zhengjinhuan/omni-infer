@@ -342,7 +342,7 @@ class NPUModelRunner(GPUModelRunner):
             # requests have draft tokens.
             sample_indices = torch.arange(total_num_scheduled_tokens, dtype=torch.int32, device=self.device)
         else:
-            if model_extra_config.parall_config.attn_sp_size >1:
+            if model_extra_config.parall_config.attn_sp_size > 1:
                 sp_size = model_extra_config.parall_config.attn_sp_size * 2
                 cu_num_tokens = np.empty_like(num_scheduled_tokens)
                 cu_num_tokens[0] = num_scheduled_tokens[0]

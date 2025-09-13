@@ -792,7 +792,7 @@ dry_run=false
 log_file=""
 log_level=""
 prefill_lb_sdk="least_total_load"
-decode_lb_sdk="weighted_least_activate"
+decode_lb_sdk="weighted_least_active"
 
 print_help() {
     echo "Usage:"

@@ -69,12 +69,12 @@ class Indexer(nn.Module):
                  prefix: str = ""):
         super().__init__()
 
-        self.dim: int = config.hidden_size  # 7168
-        self.n_heads: int = config.index_n_heads  # 64
-        self.head_dim: int = config.index_head_dim  # 128
-        self.rope_head_dim: int = config.qk_rope_head_dim  # 64
-        self.index_topk: int = config.index_topk  # 2048
-        self.q_lora_rank: int = config.q_lora_rank  # 1536
+        self.dim: int = 7168#config.hidden_size  # 7168
+        self.n_heads: int = 64#config.index_n_heads  # 64
+        self.head_dim: int = 128#config.index_head_dim  # 128
+        self.rope_head_dim: int = 64#config.qk_rope_head_dim  # 64
+        self.index_topk: int = 2048#config.index_topk  # 2048
+        self.q_lora_rank: int = 1536#config.q_lora_rank  # 1536
         self.rotary_emb = rotary_emb
 
         self.actual_seq_lengths = {}
@@ -445,7 +445,7 @@ class DeepseekMLA(nn.Module):
             self.actual_seq_lengths = {}
             for batch_size in model_extra_config.operator_opt_config.decode_gear_list:
                 self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
-                self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+                self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * self.tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
                 # self.actual_seq_lengths[batch_size] = list([1] * batch_size)
                 torch._dynamo.mark_static(self.norm_res[batch_size])
                 # torch._dynamo.mark_static(self.actual_seq_lengths[batch_size])
@@ -518,7 +518,7 @@ class DeepseekMLA(nn.Module):
 
             k_nope = k_nope.squeeze(2)
             k_rope = k_rope.squeeze(2)
-            attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
+            attn_output = torch.ops.npu.npu_selected_flash_attention(
                 query=q_nope,
                 key=k_nope,
                 value=k_nope,
@@ -533,8 +533,8 @@ class DeepseekMLA(nn.Module):
                 select_block_size=1,
                 select_block_count=2048,
                 layout="TND",sparse_mode=3, atten_mask=None,
-                actual_seq_qlen=actual_seq_qlen.tolist(),# todo 等接口支持后切换成tensor
-                actual_seq_kvlen=actual_seq_kvlen.tolist(),
+                actual_seq_qlen=actual_seq_qlen.to(torch.int32),# todo 等接口支持后切换成tensor
+                actual_seq_kvlen=actual_seq_kvlen.to(torch.int32),
             )
                 
         else:
@@ -1022,7 +1022,7 @@ class DeepseekMLA(nn.Module):
                 # todo indexer only support bsnd
                 topk_indices = self.indexer(hidden_states, qr, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)
-                attn_output = torch.ops.npu.npu_nsa_select_attention_infer(
+                attn_output = torch.ops.npu.npu_selected_flash_attention(
                     query=q_nope,
                     key=k_nope,
                     value=k_nope,
@@ -1037,8 +1037,8 @@ class DeepseekMLA(nn.Module):
                     select_block_size=1,
                     select_block_count=2048,
                     layout="TND",sparse_mode=3, atten_mask=None,
-                    actual_seq_qlen=self.actual_seq_lengths[bsz].tolist(),
-                    actual_seq_kvlen=attn_metadata.decode.seq_lens.tolist(),
+                    actual_seq_qlen=self.actual_seq_lengths[bsz].to(torch.int32),
+                    actual_seq_kvlen=attn_metadata.decode.seq_lens.to(torch.int32),
                 )
             else:
                 attn_output, _ = op_scope.npu_fused_infer_attention_score(

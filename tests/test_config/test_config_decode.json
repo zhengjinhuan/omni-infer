@@ -11,6 +11,7 @@
         "best_ep": false,
         "merge_qkv": false,
         "gmm_nz": true,
+        "unquant_bmm_nz": true,
         "decode_moe_dispatch_combine": true,
         "use_omni_placement": false,
         "omni_placement_config_path": "../../tests/test_config/config_d.yaml",
