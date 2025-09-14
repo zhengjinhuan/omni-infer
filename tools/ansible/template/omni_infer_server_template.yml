@@ -1024,7 +1024,7 @@
         MOONCAKE_MASTER_PORT: "{{ mooncake_master_port }}"
         MOONCAKE_METRICS_PORT: "{{ mooncake_metrics_port }}"
         PROXY_PORT: "{{ proxy_port }}"
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      when: "('P' in group_names or 'D' in group_names or 'C' in group_names) and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
       tags:
         - stop_server
         - run_server
@@ -1032,7 +1032,7 @@
     - name: Kill Mooncake master pod.
       command: /bin/bash -c "kill -9 $(netstat -tulpn | grep :{{ MOONCAKE_MASTER_PORT }} | awk '{print $7}' | grep -oP '\d+')"
       failed_when: false
-      when: "'C' in group_names"
+      when: "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
       tags:
         - stop_server
         - run_server
@@ -1040,7 +1040,7 @@
     - name: Kill etcd pod.
       command: /bin/bash -c "kill -9 $(netstat -tulpn | grep :{{ ETCD_PORT }} | awk '{print $7}' | grep -oP '\d+')"
       failed_when: false
-      when: "'C' in group_names"
+      when: "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
       tags:
         - stop_server
         - run_server
@@ -1067,14 +1067,14 @@
       command: /bin/bash -c "{{ docker_start_etcd_cmd }}"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-      when: "'C' in group_names"
+      when: "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
       tags: run_server
 
     - name: Run master port of Mooncake.
       command: /bin/bash -c "{{ docker_start_mooncake_master_cmd }}"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-      when: "'C' in group_names"
+      when: "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
       tags: run_server
 
     - name: Remove proc_trace.txt if it exists (P & D nodes)
