@@ -467,6 +467,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
             trace_flag: bool = True,
     ) -> torch.Tensor:
         num_tokens = query.shape[0]
+        if output is None:
+            output = torch.empty(num_tokens,
+                                 self.num_heads,
+                                 self.head_size,
+                                 dtype=query.dtype,
+                                 device=query.device)
 
         if attn_metadata is None:
             return output.view(num_tokens, self.hidden_size)
@@ -510,7 +516,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 block_size=block_size,
                 sparse_mode=3,
                 atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                actual_seq_qlen=attn_metadata.query_lens,
+                actual_seq_qlen=attn_metadata.query_lens.cumsum(dim=0),
                 actual_seq_kvlen=attn_metadata.seq_lens,
             )[0]
         else:
@@ -526,17 +532,14 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 block_size=block_size,
                 sparse_mode=3,
                 atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
-                actual_seq_qlen=attn_metadata.query_lens,
+                actual_seq_qlen=attn_metadata.query_lens.cumsum(dim=0),
                 actual_seq_kvlen=attn_metadata.seq_lens,
             )[0]
 
-        if output is not None:
-            # inplace, no need to return
-            output = output.view_as(attn_output)
-            output.copy_(attn_output)
-            raise RuntimeError()
-        else:
-            return attn_output.view(num_tokens, self.hidden_size)
+        output = output.view_as(attn_output)
+        output.copy_(attn_output)
+    
+        return attn_output.view(num_tokens, self.hidden_size)
 
     def forward_vanilla(
             self,
