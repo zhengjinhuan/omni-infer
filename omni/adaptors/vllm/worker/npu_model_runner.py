@@ -599,7 +599,7 @@ class NPUModelRunner(GPUModelRunner):
             hidden_states_cpu = raw_hidden_states.cpu()
             for i, req_id in enumerate(self.input_batch.req_ids):
                 req = self.requests.get(req_id, None)
-                if req.sampling_params.max_tokens <= 16:
+                if req.sampling_params.max_tokens > 16:
                     continue
                 to_save.append({
                     'req_id': req_id,
