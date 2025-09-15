@@ -109,7 +109,7 @@ placement_paths = PlacementPathManager()
 # 定义扩展模块
 ext_modules = [
     Extension(
-        "omni_vllm.npu_mem_allocator",
+        "omni.adaptors.vllm.npu_mem_allocator",
         sources=alloc_paths.sources,
         include_dirs=alloc_paths.get_include_dirs(),
         language='c++',
