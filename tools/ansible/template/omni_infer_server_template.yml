@@ -1052,7 +1052,7 @@
         mode: '0750'
       vars:
         HOST_IP: "{{ ansible_host }}"
-      when: "'P' in group_names or 'D' in group_names"
+      when: "('P' in group_names or 'D' in group_names) and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
       tags: run_server
 
     - name: Generate a lmcahce + mooncake config yaml.
@@ -1060,7 +1060,7 @@
         content: "{{ generate_lmcache_mooncake_config_yml }}"
         dest: "$SCRIPTS_PATH/lmcache_mooncake_config.yml"
         mode: '0750'
-      when: "'P' in group_names or 'D' in group_names"
+      when: "('P' in group_names or 'D' in group_names) and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
       tags: run_server
 
     - name: Run etcd for Mooncake.
