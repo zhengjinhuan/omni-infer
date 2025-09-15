@@ -198,7 +198,15 @@ class NPUModelRunner(GPUModelRunner):
 
         rank = get_tensor_model_parallel_rank()
         self.training_data_save_path = os.environ.get('TRAINING_DATA_SAVE_PATH', "")
-        self.prepare_for_training = self.training_data_save_path != "" and rank == 0
+        prepare_for_training = self.training_data_save_path != "" and rank == 0
+        self.save_hidden_states = False
+        self.save_token_ids = False
+        if prepare_for_training:
+            if self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
+                self.save_token_ids = True
+            else:
+                self.save_hidden_states = True
+
 
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
@@ -577,7 +585,7 @@ class NPUModelRunner(GPUModelRunner):
         cost_fc_exit = start_ret - start_fc_exit
         logger.debug(f" ***** before fc {cost_before_fc:.6f}, fc {cost_fc:.6f}={cost_setup_connector:.6f}+{cost_fc_exit:.6f}")
 
-        if self.prepare_for_training and attn_state == AscendAttentionState.PrefillNoCache:
+        if self.save_hidden_states and attn_state == AscendAttentionState.PrefillNoCache:
             num_scheduled_tokens = np.array([
                 scheduler_output.num_scheduled_tokens[req_id]
                 for req_id in self.input_batch.req_ids
@@ -590,12 +598,15 @@ class NPUModelRunner(GPUModelRunner):
             input_ids_cpu = input_ids.cpu()
             hidden_states_cpu = raw_hidden_states.cpu()
             for i, req_id in enumerate(self.input_batch.req_ids):
+                req = self.requests.get(req_id, None)
+                if req.sampling_params.max_tokens <= 16:
+                    continue
                 to_save.append({
                     'req_id': req_id,
                     'input_ids': input_ids_cpu[req_slice[i]:req_slice[i + 1]],
                     'hidden_states': hidden_states_cpu[req_slice[i]:req_slice[i + 1]],
                 })
-            filename = os.path.join(self.training_data_save_path, f"data-{time.time_ns()}.pt")
+            filename = os.path.join(self.training_data_save_path, f"hidden-states-{time.time_ns()}.pt")
             torch.save(to_save, filename)
 
         return hidden_states, raw_hidden_states, input_ids, finished_sending, finished_recving
@@ -640,6 +651,27 @@ class NPUModelRunner(GPUModelRunner):
                                               dtype=torch.int64).view(-1, 2)
             self.cache_engine.swap_out(blocks_to_swap_out)
 
+    def save_tokens(
+        self,
+        scheduler_output: "SchedulerOutput",
+    ) -> None:
+        to_save = []
+        for req_id in scheduler_output.finished_req_ids:
+            req = self.requests.get(req_id, None)
+            if req is None:
+                continue
+            
+        
+            to_save.append({
+                'req_id' : req_id,
+                'prompt_token_ids' : req.prompt_token_ids,
+                'output_token_ids' : req.output_token_ids,
+            })
+        if len(to_save) > 0:
+            filename = os.path.join(self.training_data_save_path, f"token-ids-{time.time_ns()}.pt")
+            torch.save(to_save, filename)
+            
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -650,6 +682,9 @@ class NPUModelRunner(GPUModelRunner):
 
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.sync_save_event()
+
+        if self.save_token_ids:
+            self.save_tokens(scheduler_output)
 
         # Update KVConnector with the KVConnector metadata forward().
         self._update_states(scheduler_output)
