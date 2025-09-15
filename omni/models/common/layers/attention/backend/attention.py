@@ -539,7 +539,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
         output = output.view_as(attn_output)
         output.copy_(attn_output)
     
-        return attn_output.view(num_tokens, self.hidden_size)
+        return output.view(num_tokens, self.hidden_size)
 
     def forward_vanilla(
             self,
