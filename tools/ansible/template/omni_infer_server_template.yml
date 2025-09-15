@@ -1281,7 +1281,7 @@
       when: "'C' in group_names"
       tags: run_proxy
 
-    - name: Kill all Python processes in the container of prefill.
+    - name: Kill all Python processes in the container of proxy.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/kill_nginx_processes.sh"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
