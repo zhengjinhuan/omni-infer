@@ -88,5 +88,5 @@ index dc38daa38..63079541f 100644
 +        if self.guided_decoding is not None:
 +            raise ValueError("guided decoding is not supported.")
 
-    def _verify_greedy_sampling(self) -> None:
+     def _verify_greedy_sampling(self) -> None:
          if self.n > 1:
