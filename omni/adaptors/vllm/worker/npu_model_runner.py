@@ -49,7 +49,6 @@ from omni.models.common.layers.attention.backend.attention_dummy_builder import 
 from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
-from omni.adaptors.vllm.worker.npu_model_profiling import run_model_with_profiling
 from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
@@ -470,36 +469,28 @@ class NPUModelRunner(GPUModelRunner):
                         mark_static_for_graph_default(input_ids, positions, self.kv_caches)
                     self.model_mark_static = True
                 start_os_env = time.time()
-                if os.environ.get('PROFILING_FORWARD', "0") == '1':
-                    forward_results = run_model_with_profiling(self.model, input_ids, positions, intermediate_tensors,
-                                                               model_kwargs)
-                else:
-                    start_time = time.time()
-                    forward_results = self.model(
-                                input_ids=input_ids,
-                                positions=positions,
-                                intermediate_tensors=intermediate_tensors,
-                                inputs_embeds=None,
-                                **model_kwargs,
-                            )
-                    end_model = time.time()
-                    cost_model = end_model - start_time
-                    cost_os_env = start_time - start_os_env
-                    cost_debug = start_debug - start_os_env
-                    logger.info(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
+                start_time = time.time()
+                forward_results = self.model(
+                            input_ids=input_ids,
+                            positions=positions,
+                            intermediate_tensors=intermediate_tensors,
+                            inputs_embeds=None,
+                            **model_kwargs,
+                        )
+                end_model = time.time()
+                cost_model = end_model - start_time
+                cost_os_env = start_time - start_os_env
+                cost_debug = start_debug - start_os_env
+                logger.info(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
             else:
                 logger.info("Start running eager model.")
-                if os.environ.get('PROFILING_FORWARD', "0") == '1' and num_input_tokens > 20000:
-                    forward_results = run_model_with_profiling(self.model, input_ids, positions, intermediate_tensors,
-                                                               model_kwargs)
-                else:
-                    forward_results = self.model(
-                        input_ids=input_ids,
-                        positions=positions,
-                        intermediate_tensors=intermediate_tensors,
-                        inputs_embeds=None,
-                        **model_kwargs,
-                    )
+                forward_results = self.model(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=None,
+                    **model_kwargs,
+                )
             self.maybe_wait_for_kv_save()
             finished_sending, finished_recving = self.get_finished_kv_transfers(scheduler_output)
             start_fc_exit = time.time()
