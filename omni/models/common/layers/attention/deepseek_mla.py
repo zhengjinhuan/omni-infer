@@ -418,18 +418,17 @@ class DeepseekMLA(nn.Module):
         if attn_metadata is not None:
             prefill_metadata = attn_metadata.prefill
             computed_tokens = 0
-            nz_block_size = 32 if self.fa_quant else 16
             assert not (self.fa_quant and len(prefill_metadata.seq_qlen_group) > 1)
             for iter, (actual_seq_qlen, actual_seq_kvlen) in enumerate(zip(
                 prefill_metadata.seq_qlen_group,
                 prefill_metadata.seq_kvlen_group)
             ):
                 if prefill_metadata.kv_index_list and kv_cache is not None and isinstance(kv_cache, Tuple) and\
-                        kv_cache[0].numel() > 0:
+                        kv_cache[0].numel() > 0 and not self.fa_quant:
                     # adapt nz
                     block_num, block_size, head_size, _ = kv_cache[0].shape
                     kv_cache_a = (kv_cache[0]
-                                .view(block_num, 1, self.kv_lora_rank // nz_block_size, block_size, nz_block_size))
+                                .view(block_num, 1, self.kv_lora_rank // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM))
                     kv_cache_pe = (kv_cache[1]
                                 .view(block_num, 1, self.qk_rope_head_dim // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM))
                     kv_cache_a = kv_cache_a.transpose(1, 3)
