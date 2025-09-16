@@ -95,6 +95,8 @@ from sglang.srt.utils import (
     log_info_on_rank0,
 )
 
+from omni.adaptors.sglang.layers.attention.deepseek_mla import AttentionPreparer
+
 _is_fp8_fnuz = is_fp8_fnuz()
 
 logger = logging.getLogger(__name__)
@@ -514,6 +516,11 @@ class DeepseekV2AttentionMLA(nn.Module):
         alt_stream: Optional[torch.cuda.Stream] = None,
     ) -> None:
         super().__init__()
+
+        self.rope_scaling = rope_scaling
+        self.quant_config = quant_config
+        self.prefix = prefix
+
         self.layer_id = layer_id
         self.hidden_size = hidden_size
         self.qk_nope_head_dim = qk_nope_head_dim
@@ -685,6 +692,33 @@ class DeepseekV2AttentionMLA(nn.Module):
 
         self.weight_block_size = None
 
+        q_proj_val = self.q_proj if hasattr(self, 'q_proj') else None
+        kv_a_proj_with_mqa_val = self.kv_a_proj_with_mqa if hasattr(self, 'kv_a_proj_with_mqa') else None
+        self.ap = AttentionPreparer(
+            self.hidden_size,
+            self.num_heads,
+            self.qk_nope_head_dim,
+            self.qk_rope_head_dim,
+            self.v_head_dim,
+            self.q_lora_rank,
+            self.kv_lora_rank,
+            self.rope_theta,
+            self.rope_scaling,
+            self.max_position_embeddings,
+            self.quant_config,
+            self.prefix,
+
+            self.fused_qkv_a_proj_with_mqa,
+            self.q_a_layernorm,
+            self.q_b_proj,
+            q_proj_val,
+            kv_a_proj_with_mqa_val,
+            self.kv_b_proj,
+            self.kv_a_layernorm,
+            self.rotary_emb,
+            self.attn_mha)
+
+
     def dispatch_attn_forward_method(
         self, forward_batch: ForwardBatch
     ) -> AttnForwardMethod:
@@ -803,41 +837,7 @@ class DeepseekV2AttentionMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if self.q_lora_rank is not None:
-            q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
-                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
-            )
-            q = self.q_a_layernorm(q)
-            q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
-        else:
-            q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim
-            )
-            latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-
-        _, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-        kv_a, _ = latent_cache.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-        latent_cache = latent_cache.unsqueeze(1)
-        kv_a = self.kv_a_layernorm(kv_a)
-        kv = self.kv_b_proj(kv_a)[0]
-        kv = kv.view(-1, self.num_local_heads, self.qk_nope_head_dim + self.v_head_dim)
-        k_nope = kv[..., : self.qk_nope_head_dim]
-        v = kv[..., self.qk_nope_head_dim :]
-        k_pe = latent_cache[:, :, self.kv_lora_rank :]
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
-        q[..., self.qk_nope_head_dim :] = q_pe
-        k = torch.empty_like(q)
-        k[..., : self.qk_nope_head_dim] = k_nope
-        k[..., self.qk_nope_head_dim :] = k_pe
-
-        latent_cache[:, :, : self.kv_lora_rank] = kv_a.unsqueeze(1)
-        latent_cache[:, :, self.kv_lora_rank :] = k_pe
-
-        # Save latent cache
-        forward_batch.token_to_kv_pool.set_kv_buffer(
-            self.attn_mha, forward_batch.out_cache_loc, latent_cache, None
-        )
-
+        q, k, v, forward_batch = self.ap.forward_normal_prepare(positions, hidden_states, forward_batch, zero_allocator)
         return q, k, v, forward_batch
 
     def forward_normal_core(self, q, k, v, forward_batch):
@@ -853,61 +853,8 @@ class DeepseekV2AttentionMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        from sglang.srt.model_executor.cuda_graph_runner import get_is_capture_mode
-
-        if self.q_lora_rank is not None:
-            fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
-            q, latent_cache = fused_qkv_a_proj_out.split(
-                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
-            )
-            k_nope = latent_cache[..., : self.kv_lora_rank]
-
-            # overlap qk norm
-            if self.alt_stream is not None and get_is_capture_mode():
-                current_stream = torch.cuda.current_stream()
-                self.alt_stream.wait_stream(current_stream)
-                q = self.q_a_layernorm(q)
-                with torch.cuda.stream(self.alt_stream):
-                    k_nope = self.kv_a_layernorm(k_nope)
-                current_stream.wait_stream(self.alt_stream)
-            else:
-                q = self.q_a_layernorm(q)
-                k_nope = self.kv_a_layernorm(k_nope)
-
-            k_nope = k_nope.unsqueeze(1)
-            q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
-        else:
-            q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim
-            )
-            latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-            k_nope = latent_cache[..., : self.kv_lora_rank]
-            k_nope = self.kv_a_layernorm(k_nope).unsqueeze(1)
-
-        q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-        k_pe = latent_cache[..., self.kv_lora_rank :].unsqueeze(1)
-
-        if self.use_deep_gemm_bmm:
-            q_nope_val, q_nope_scale, masked_m, expected_m, aligned_m = (
-                per_token_group_quant_mla_deep_gemm_masked_fp8(q_nope.transpose(0, 1))
-            )
-            q_nope_out = q_nope.new_empty(
-                (self.num_local_heads, aligned_m, self.kv_lora_rank)
-            )
-            deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_masked(
-                (q_nope_val, q_nope_scale),
-                (self.w_kc, self.w_scale_k),
-                q_nope_out,
-                masked_m,
-                expected_m,
-            )
-            q_nope_out = q_nope_out[:, :expected_m, :]
-        else:
-            q_nope_out = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
-
-        q_nope_out = q_nope_out.transpose(0, 1)
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
-
+        self.ap.init_weights(self.w_kc, self.w_scale_k)
+        q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator = self.ap.forward_absorb_prepare(positions, hidden_states, forward_batch, zero_allocator)
         return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
 
     def forward_absorb_core(
