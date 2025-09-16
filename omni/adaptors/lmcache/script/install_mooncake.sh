@@ -134,10 +134,8 @@ fi
 
 source ~/.bashrc
 
-unset http_proxy
-unset https_proxy
 go env -w GO111MODULE=on
-go env -w GOPROXY=http://mirrors.tools.huawei.com/goproxy/
+go env -w GOPROXY=https://mirrors.huaweicloud.com/repository/goproxy/
 go env -w GONOSUMDB=*
 
 if [ ! -d "${MOONCAKE_PATH}/build" ]; then
