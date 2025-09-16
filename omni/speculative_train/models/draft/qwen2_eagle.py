@@ -38,14 +38,48 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 from transformers.utils.generic import check_model_inputs
 
+class EagleQwen2DecoderLayer(Qwen2DecoderLayer):
+    def __init__(
+        self,
+        config: Qwen2Config,
+        layer_idx: int,
+    ) -> None:
+        super().__init__(
+            config, layer_idx,
+        )
+
+        del self.input_layernorm
+        self.input_layernorm = nn.Identity()
+
+class EagleQwen2Model(Qwen2Model):
+    def __init__(self, config: Qwen2Config):
+        super(Qwen2Model, self).__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+
+        self.embed_tokens = None
+        self.layers = nn.ModuleList(
+            [EagleQwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
+        self.norm = nn.Identity()
+        self.rotary_emb = Qwen2RotaryEmbedding(config=config)
+        self.gradient_checkpointing = False
+        self.has_sliding_layers = "sliding_attention" in self.config.layer_types
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
 @auto_docstring
 class EagleQwen2ForCausalLM(Qwen2ForCausalLM):
+    _tied_weights_keys = ["lm_head.weight"]
+    _tp_plan = {"lm_head": "colwise_rep"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+
     def __init__(self, config):
-        super().__init__(config)
+        super(Qwen2ForCausalLM, self).__init__(config)
+        self.model = EagleQwen2Model(config)
+        self.vocab_size = config.vocab_size
+        self.lm_head = None
 
-        for layer in self.model.layers:
-            del layer.input_layernorm
-            layer.input_layernorm = nn.Identity()
-
-        del self.model.norm
-        self.model.norm = nn.Identity()
+        # Initialize weights and apply final processing
+        self.post_init()
