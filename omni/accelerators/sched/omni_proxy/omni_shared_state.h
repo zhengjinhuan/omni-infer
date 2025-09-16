@@ -97,9 +97,9 @@ typedef struct omni_batch_metrics_s
 {
     uint32_t num_requests;
     uint32_t num_tokens;
-    uint32_t time_taken; // Since the oldest request responded in this batch
-    uint32_t first_response_receive_time;
-    uint32_t last_response_receive_time;
+    ngx_msec_t time_taken; // Since the oldest request responded in this batch
+    ngx_msec_t first_response_receive_time;
+    ngx_msec_t last_response_receive_time;
     double average_delta;
 } omni_batch_metrics_t;
 
@@ -130,8 +130,8 @@ typedef struct omni_upstream_prefill_s
     omni_upstream_address_t address;
     uint32_t num_running;
     uint32_t num_tokens;
-    uint32_t last_scheduled_time;
-    uint32_t expected_next_schedule_time;
+    ngx_msec_t last_scheduled_time;
+    ngx_msec_t expected_next_schedule_time;
     omni_batch_metrics_his_t his;
     omni_zmq_handler_t kv_handler;
     ngx_slab_pool_t *radix_pool;
@@ -145,8 +145,8 @@ typedef struct omni_upstream_decode_s
     uint32_t num_running;
     uint32_t num_tokens;
     uint32_t generated_tokens;
-    uint32_t last_scheduled_time;
-    uint32_t expected_next_schedule_time;
+    ngx_msec_t last_scheduled_time;
+    ngx_msec_t expected_next_schedule_time;
     omni_batch_metrics_his_t his;
     omni_zmq_handler_t kv_handler;
     ngx_slab_pool_t *radix_pool;
