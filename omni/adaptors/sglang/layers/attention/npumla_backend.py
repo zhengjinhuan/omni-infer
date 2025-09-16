@@ -69,20 +69,10 @@ def create_npumla_kv_indices(
     kv_indices_ptr_stride,
     PAGED_SIZE=128,
 ):
-    req_to_token_ptr = req_to_token_ptr.view(-1)
-
-    for pid in range(bs):
-        # find the req pool idx, this is for batch to token
-        req_pool_index = req_pool_indices_ptr[pid]
-
-        kv_start = 0
-        kv_end = page_kernel_lens_ptr[pid]
-        num_pages = (kv_end - kv_start + PAGED_SIZE - 1) // PAGED_SIZE
-
-        for i in range(num_pages):
-            req_to_token_ptr_start = req_pool_index * req_to_token_ptr_stride + kv_start
-            paged_offset = req_to_token_ptr_start + i * PAGED_SIZE
-            kv_indices_ptr[pid, i] = req_to_token_ptr[paged_offset] // PAGED_SIZE
+    req_to_tokens = (
+        req_to_token_ptr[req_pool_indices_ptr, : page_kernel_lens_ptr.max()][:, ::PAGED_SIZE] // PAGED_SIZE
+    )
+    kv_indices_ptr[: req_to_tokens.size(0), : req_to_tokens.size(1)].copy_(req_to_tokens)
 
 
 class NpuMLABackend(TorchNativeAttnBackend):
