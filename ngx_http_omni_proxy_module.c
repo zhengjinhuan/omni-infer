@@ -345,7 +345,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     us->num_tokens -= req->metrics.prompt_num_tokens;
 
     omni_batch_metrics_t *current_batch = &us->his.his[us->his.head];
-    uint32_t delta = (current_batch->last_response_receive_time > 0) ? 
+    ngx_current_msec delta = (current_batch->last_response_receive_time > 0) ? 
                      (ngx_current_msec - current_batch->last_response_receive_time) : 
                      (21); // If first，force delta > 20 to get a new batch
 
@@ -562,7 +562,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     omni_upstream_decode_t *us = &g_state->decode_states[req->decode_upstream_endpoint_idx];
     // Update batch level statistics
     omni_batch_metrics_t *batch = &us->his.his[us->his.head];
-    uint32_t delta = ngx_current_msec - batch->last_response_receive_time;
+    ngx_msec_t delta = ngx_current_msec - batch->last_response_receive_time;
 
     // Need a smarter value from statistics or work out by the number of tokens scheduled
     if (delta > 10)
