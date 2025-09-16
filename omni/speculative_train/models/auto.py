@@ -10,7 +10,7 @@ from transformers import (
     Qwen2Config,
 )
 
-from .draft.qwen2_ealge import EagleQwen2Model
+from .draft.qwen2_eagle import EagleQwen2Model
 
 class AutoEagleDraftModel(AutoModelForCausalLMBase):
     # the model mapping is currently hardcoded, we should support lazy model mapping via registry
