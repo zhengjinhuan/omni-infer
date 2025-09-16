@@ -84,7 +84,7 @@ index dc38daa38..63079541f 100644
 @@ -448,6 +444,8 @@ class SamplingParams(
          if self.best_of != self._real_n and self.output_kind == (
                  RequestOutputKind.DELTA):
-            raise ValueError("best_of must equal n to use output_kind=DELTA")
+             raise ValueError("best_of must equal n to use output_kind=DELTA")
 +        if self.guided_decoding is not None:
 +            raise ValueError("guided decoding is not supported.")
 
