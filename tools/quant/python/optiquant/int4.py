@@ -219,6 +219,14 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
     disable_names.append("model.norm.weight")
     disable_names.append("model.embed_tokens.weight")
 
+    if pangu_mode:
+        disable_names.append(f"model.layers.61.embed_tokens.weight")
+        disable_names.append(f"model.layers.61.enorm.weight")
+        disable_names.append(f"model.layers.61.hnorm.weight")
+        disable_names.append(f"model.layers.61.eh_proj.weight")
+        disable_names.append(f"model.layers.61.shared_head.norm.weight")
+        disable_names.append(f"model.layers.61.shared_head.head.weight")
+
     w4_type = QType(args.qtype)
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(output_path, exist_ok=True)
@@ -279,8 +287,12 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                     int4_weight, int4_scale, bias = quant_ssz(weight, w4_type, -1, w4=True)
 
                     new_state_dict[weight_name] = pack_4bit(int4_weight)
-                    new_scale_int4 = scale_inv_name.replace("_scale_inv", "_int4_scale")
-                    new_bias = scale_inv_name.replace("_scale_inv", "_bias")
+                    if pangu_mode:
+                        new_scale_int4 = weight_name + "_int4_scale"
+                        new_bias = weight_name + "_bias"
+                    else:
+                        new_scale_int4 = scale_inv_name.replace("_scale_inv", "_int4_scale")
+                        new_bias = scale_inv_name.replace("_scale_inv", "_bias")
 
                     new_state_dict[new_scale_int4] = int4_scale
                     new_state_dict[new_bias] = bias
@@ -292,7 +304,10 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                     # print(weight_name, "int8")
                     int8_weight, scale_inv = weight_quant(weight)
                     new_state_dict[weight_name] = int8_weight
-                    new_scale_name = scale_inv_name.replace("_scale_inv", "_scale")
+                    if pangu_mode:
+                        new_scale_name = weight_name + "_scale"
+                    else:
+                        new_scale_name = scale_inv_name.replace("_scale_inv", "_scale")
                     new_state_dict[new_scale_name] = scale_inv
 
                     new_weight_map[weight_name] = file_name
