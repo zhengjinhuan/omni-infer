@@ -8,7 +8,7 @@
 static void update_prefill_weights(omni_req_group_t *group)
 {
     uint32_t max_prompt_tokens = 0;
-    uint32_t max_wait_time = 0;
+    ngx_msec_t max_wait_time = 0;
     for (uint32_t i = 0; i < group->watermark; i++)
     {
         omni_req_info_t *info = &group->requests[i];
@@ -23,7 +23,7 @@ static void update_prefill_weights(omni_req_group_t *group)
             max_prompt_tokens = req->metrics.prompt_num_tokens;
         }
 
-        uint32_t waited = ngx_current_msec - req->metrics.time_received;
+        ngx_msec_t waited = ngx_current_msec - req->metrics.time_received;
 
         if (max_wait_time < waited)
         {
@@ -44,7 +44,7 @@ static void update_prefill_weights(omni_req_group_t *group)
             continue;
         }
         omni_req_t *req = omni_info_to_req(info);
-        uint32_t waited = ngx_current_msec - req->metrics.time_received;
+        ngx_msec_t waited = ngx_current_msec - req->metrics.time_received;
 
         double token_weight = (double)(max_prompt_tokens - req->metrics.prompt_num_tokens) / max_prompt_tokens;
         double time_weight = (double)waited / max_wait_time;
