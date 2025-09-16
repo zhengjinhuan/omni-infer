@@ -109,7 +109,7 @@ def generate_sp_inputs(hidden_states, attn_metadata):
     if attn_metadata is not None:
         hidden_states = pad_inputs(hidden_states, attn_metadata.prefill.actual_query_lens, sp_size * 2)
         # split input for sp attention
-        hidden_states_list = list(torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0))
+        hidden_states_list = torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0)
         hidden_states = torch.cat([hidden_states_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
     else:
         hidden_states = torch.split(hidden_states, hidden_states.size(0) // sp_size, dim=0)[get_tensor_model_parallel_rank()]
@@ -456,7 +456,6 @@ class DeepseekV3Model(nn.Module):
             # split input for sp attention
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
             hidden_states = generate_sp_inputs(hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
-            print(f"after sp split, hidden_states shape: {hidden_states.shape}, positions shape: {positions.shape}", flush=True)
 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
@@ -498,7 +497,7 @@ class DeepseekV3Model(nn.Module):
             # reverse sp split
             if attn_metadata is not None:
                 prefill_meta = self.get_layer_attn_metadata(attn_metadata, 0).prefill
-                outputs_list = list(torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0))
+                outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
                 hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
 
         return hidden_states
@@ -935,7 +934,6 @@ class DeepseekV3ForCausalLM(nn.Module):
         return loaded_params
 
     def should_use_eager_mode(self, *args, **kwargs):
-        return True
         attn_metadata = kwargs.get("attn_metadata", None)
         if not attn_metadata:
             return True

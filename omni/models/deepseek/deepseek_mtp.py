@@ -103,12 +103,12 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         tp_size = get_tensor_model_parallel_world_size()  # cloud: get_tp_group().world_size
         rank_in_group = get_tensor_model_parallel_rank()
 
-        is_prefill = attn_metadata is None or (isinstance(attn_metadata, dict) and self.get_layer_attn_metadata(attn_metadata, 0).prefill is not None)
+        is_prefill = attn_metadata is None or (isinstance(attn_metadata, dict) and self.get_layer_attn_metadata(attn_metadata).prefill is not None)
         if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
             # split input for sp attention
             tok_embeds = tensor_model_parallel_all_gather(tok_embeds, dim=0)
-            tok_embeds = generate_sp_inputs(tok_embeds, self.get_layer_attn_metadata(attn_metadata, 0))
-            previous_hidden_states = generate_sp_inputs(previous_hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
+            tok_embeds = generate_sp_inputs(tok_embeds, self.get_layer_attn_metadata(attn_metadata))
+            previous_hidden_states = generate_sp_inputs(previous_hidden_states, self.get_layer_attn_metadata(attn_metadata))
 
 
         if tp_size > 1 and model_extra_config.parall_config.attn_sp_size == 1:
@@ -137,8 +137,8 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         if model_extra_config.parall_config.attn_sp_size > 1 and is_prefill:
             # reverse sp split
             if attn_metadata is not None:
-                prefill_meta = self.get_layer_attn_metadata(attn_metadata, 0).prefill
-                outputs_list = list(torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0))
+                prefill_meta = self.get_layer_attn_metadata(attn_metadata).prefill
+                outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
                 hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
 
         if attn_metadata is None:
@@ -181,7 +181,6 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         return logits
 
     def should_use_eager_mode(self, *args, **kwargs):
-        return True
         if len(kwargs) == 0:
            return True
 
