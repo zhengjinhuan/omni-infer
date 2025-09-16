@@ -397,12 +397,13 @@ class NpuMLABackend(TorchNativeAttnBackend):
         else:
             q_nope, q_rope = q.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
         b, s, n, _ = q_nope.size()
+        q_nope_dim = q_nope.shape[-1]
         _, k_heads, k_dim = k_cache.size()
 
         if q_rope is not None:  # MLA
             k_cache = k_cache.view(-1, PAGE_SIZE, k_dim)
-            k_nope = k_cache[..., : self.kv_lora_rank]
-            k_rope = k_cache[..., self.kv_lora_rank :]
+            k_nope = k_cache[..., : q_nope_dim]
+            k_rope = k_cache[..., q_nope_dim :]
 
             attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                 q_nope,
