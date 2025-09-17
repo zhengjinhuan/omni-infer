@@ -300,6 +300,9 @@ class EagleQwen2ForCausalLM(EagleDraftModel):
         self.rotary_emb = Qwen2RotaryEmbedding(config=config)
         self.lm_head = None
 
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.embed_tokens(input_ids)
+
     def forward(
         self,
         hidden_states: torch.Tensor,

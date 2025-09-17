@@ -49,20 +49,6 @@ class EagleDraftModel(PreTrainedModel, ABC):
         """
         pass
 
-    @abstractmethod
-    def project_hidden_states(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Project the concatenated hidden states from the high, medium and low layers to the target hidden size.
-        """
-        pass
-
-    @abstractmethod
-    def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the logits of the draft model.
-        """
-        pass
-
     def prepare_decoder_attention_mask(
         self,
         attention_mask: torch.Tensor,
