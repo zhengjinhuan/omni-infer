@@ -5,7 +5,7 @@ from transformers import PretrainedConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.layers.radix_attention import RadixAttention
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode, PPProxyTensors
 from sglang.srt.layers.rotary_embedding import get_rope, get_rope_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from torch import nn
@@ -302,6 +302,34 @@ class DeepseekMLA(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
+    ):
+        if forward_batch.forward_mode.is_prefill():
+            return self._forward_prefill(positions, hidden_states, forward_batch,zero_allocator)
+        else:
+            return self._forward_decode(positions, hidden_states, forward_batch,zero_allocator)
+
+
+    def _forward_prefill(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor,
+            forward_batch: ForwardBatch,
+            zero_allocator: BumpAllocator,
+    ):
+        s = self.forward_prepare(
+            positions=positions,
+            hidden_states=hidden_states,
+            forward_batch=forward_batch,
+            zero_allocator=zero_allocator,
+        )
+        return self.forward_core(s)
+
+    def _forward_decode(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor,
+            forward_batch: ForwardBatch,
+            zero_allocator: BumpAllocator,
     ):
         s = self.forward_prepare(
             positions=positions,
