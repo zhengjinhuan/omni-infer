@@ -51,6 +51,9 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
     
+    max_split_token_ratio_threshold: float = 0.8 # Split hidden_states in prefill if token duplication ratio exceeds threshold, to avoid GMM OOM.
+    max_split_token_count_threshold: int = 32768 # Split hidden_states in prefill if token duplication count exceeds threshold, to avoid GMM OOM.
+
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
         if self.use_omni_placement and not self.omni_placement_config_path:
