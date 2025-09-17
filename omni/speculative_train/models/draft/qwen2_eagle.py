@@ -278,7 +278,7 @@ def prepare_decoder_attention_mask(
 class EagleQwen2ForCausalLM(EagleDraftModel):
     config_class = Qwen2Config
     def __init__(self, config):
-        super().__init__()
+        super().__init__(config)
 
         self.config = config
         self.vocab_size = config.vocab_size
