@@ -83,8 +83,12 @@ from sglang.srt.model_loader.weight_utils import default_weight_loader
 
 from omni.adaptors.sglang.layers.moe.token_dispatcher.deepep import (
     NpuDeepEPDispatcher,
-    model_forward,
 )
+
+from omni.adaptors.sglang.layers.attention.deepseek_mla import (
+    DeepseekMLA,
+)
+
 from sglang.srt.utils import (
     BumpAllocator,
     LazyValue,
@@ -95,30 +99,10 @@ from sglang.srt.utils import (
     log_info_on_rank0,
 )
 
-from omni.adaptors.sglang.layers.attention.deepseek_mla import AttentionPreparer
 
 _is_fp8_fnuz = is_fp8_fnuz()
 
 logger = logging.getLogger(__name__)
-
-
-class AttnForwardMethod(IntEnum):
-    # Use multi-head attention
-    MHA = auto()
-
-    # Use absorbed multi-latent attention
-    MLA = auto()
-
-    # Use multi-head attention, but with KV cache chunked.
-    # This method can avoid OOM when prefix lengths are long.
-    MHA_CHUNKED_KV = auto()
-
-    # Use MLA but with fused RoPE
-    MLA_FUSED_ROPE = auto()
-
-    # Use MLA with fused RoPE kernel for CPU
-    MLA_FUSED_ROPE_CPU = auto()
-
 
 class DeepseekV2MLP(nn.Module):
     def __init__(
@@ -486,412 +470,6 @@ class DeepseekV2MoE(nn.Module):
 
         return final_hidden_states
 
-
-def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
-    import math
-
-    if scale <= 1:
-        return 1.0
-    return 0.1 * mscale * math.log(scale) + 1.0
-
-class DeepseekV2AttentionMLA(nn.Module):
-
-    def __init__(
-        self,
-        config: PretrainedConfig,
-        hidden_size: int,
-        num_heads: int,
-        qk_nope_head_dim: int,
-        qk_rope_head_dim: int,
-        v_head_dim: int,
-        q_lora_rank: int,
-        kv_lora_rank: int,
-        rope_theta: float = 10000,
-        rope_scaling: Optional[Dict[str, Any]] = None,
-        max_position_embeddings: int = 8192,
-        quant_config: Optional[QuantizationConfig] = None,
-        reduce_results: bool = True,
-        layer_id: int = None,
-        prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
-    ) -> None:
-        super().__init__()
-
-        self.rope_scaling = rope_scaling
-        self.quant_config = quant_config
-        self.prefix = prefix
-
-        self.layer_id = layer_id
-        self.hidden_size = hidden_size
-        self.qk_nope_head_dim = qk_nope_head_dim
-        self.qk_rope_head_dim = qk_rope_head_dim
-        self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
-        self.v_head_dim = v_head_dim
-        self.q_lora_rank = q_lora_rank
-        self.kv_lora_rank = kv_lora_rank
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
-
-        self.num_heads = num_heads
-        assert num_heads % attn_tp_size == 0
-        self.num_local_heads = num_heads // attn_tp_size
-        self.scaling = self.qk_head_dim**-0.5
-        self.rope_theta = rope_theta
-        self.max_position_embeddings = max_position_embeddings
-
-        # For tensor parallel attention
-        if self.q_lora_rank is not None:
-            self.fused_qkv_a_proj_with_mqa = ReplicatedLinear(
-                self.hidden_size,
-                self.q_lora_rank + self.kv_lora_rank + self.qk_rope_head_dim,
-                bias=False,
-                quant_config=quant_config,
-                prefix=add_prefix("fused_qkv_a_proj_with_mqa", prefix),
-            )
-            self.q_a_layernorm = RMSNorm(self.q_lora_rank, eps=config.rms_norm_eps)
-            self.q_b_proj = ColumnParallelLinear(
-                q_lora_rank,
-                self.num_heads * self.qk_head_dim,
-                bias=False,
-                quant_config=quant_config,
-                prefix=add_prefix("q_b_proj", prefix),
-                tp_rank=attn_tp_rank,
-                tp_size=attn_tp_size,
-            )
-        else:
-            self.q_proj = ColumnParallelLinear(
-                self.hidden_size,
-                self.num_heads * self.qk_head_dim,
-                bias=False,
-                quant_config=quant_config,
-                prefix=add_prefix("q_proj", prefix),
-                tp_rank=attn_tp_rank,
-                tp_size=attn_tp_size,
-            )
-            self.kv_a_proj_with_mqa = ReplicatedLinear(
-                self.hidden_size,
-                self.kv_lora_rank + self.qk_rope_head_dim,
-                bias=False,
-                quant_config=quant_config,
-                prefix=add_prefix("kv_a_proj_with_mqa", prefix),
-            )
-
-        self.kv_b_proj = ColumnParallelLinear(
-            self.kv_lora_rank,
-            self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
-            bias=False,
-            quant_config=None,  # NPU not support quantization method for kv_b_proj
-            prefix=add_prefix("kv_b_proj", prefix),
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
-        )
-        # O projection.
-        self.o_proj = RowParallelLinear(
-            self.num_heads * self.v_head_dim,
-            self.hidden_size,
-            bias=False,
-            quant_config=quant_config,
-            reduce_results=reduce_results,
-            prefix=add_prefix("o_proj", prefix),
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
-        )
-        self.kv_a_layernorm = RMSNorm(self.kv_lora_rank, eps=config.rms_norm_eps)
-
-        if rope_scaling:
-            rope_scaling["rope_type"] = "deepseek_yarn"
-
-        self.rotary_emb = get_rope_wrapper(
-            qk_rope_head_dim,
-            rotary_dim=qk_rope_head_dim,
-            max_position=max_position_embeddings,
-            base=rope_theta,
-            rope_scaling=rope_scaling,
-            is_neox_style=False,
-            device=global_server_args_dict["device"],
-        )
-
-        if rope_scaling:
-            mscale_all_dim = rope_scaling.get("mscale_all_dim", False)
-            scaling_factor = rope_scaling["factor"]
-            mscale = yarn_get_mscale(scaling_factor, float(mscale_all_dim))
-            self.scaling = self.scaling * mscale * mscale
-        else:
-            self.rotary_emb.forward = self.rotary_emb.forward_native
-
-        self.attn_mqa = RadixAttention(
-            self.num_local_heads,
-            self.kv_lora_rank + self.qk_rope_head_dim,
-            self.scaling,
-            num_kv_heads=1,
-            layer_id=layer_id,
-            v_head_dim=self.kv_lora_rank,
-            quant_config=quant_config,
-            prefix=add_prefix("attn_mqa", prefix),
-        )
-
-        self.attn_mha = RadixAttention(
-            self.num_local_heads,
-            self.qk_nope_head_dim + self.qk_rope_head_dim,
-            self.scaling,
-            num_kv_heads=self.num_local_heads,
-            layer_id=layer_id,
-            v_head_dim=self.v_head_dim,
-            quant_config=quant_config,
-            prefix=add_prefix("attn_mha", prefix),
-        )
-
-        self.alt_stream = alt_stream
-        self.attn_mha.kv_b_proj = None
-
-        self.w_kc = None
-        self.w_vc = None
-        self.w_scale = 1.0
-
-        self.w_scale_k = None
-        self.w_scale_v = None
-        self.use_deep_gemm_bmm = False
-
-        self.disable_chunked_prefix_cache = global_server_args_dict[
-            "disable_chunked_prefix_cache"
-        ]
-
-        self.current_attention_backend = (
-            None  # Attention backend used by current forward batch
-        )
-        self.rocm_fused_decode_mla = get_bool_env_var(
-            "SGLANG_ROCM_FUSED_DECODE_MLA", "false"
-        )
-
-        # TODO: Design a finer way to determine the threshold
-        self.chunked_prefix_cache_threshold = get_int_env_var(
-            "SGL_CHUNKED_PREFIX_CACHE_THRESHOLD", 8192
-        )
-
-        # which requires self.w_kc and self.w_vc to be packed.
-        # If not, we will use torch.bmm and weight shouldn't be packed in this case
-        has_fused_proj = hasattr(self, "fused_qkv_a_proj_with_mqa")
-
-        is_packed_weight = (
-            has_fused_proj
-            and hasattr(self.fused_qkv_a_proj_with_mqa.quant_method, "quant_config")
-            and self.fused_qkv_a_proj_with_mqa.quant_method.quant_config.get_name()
-            in {"awq", "awq_marlin", "moe_wna16"}
-        )
-
-        self.qkv_proj_with_rope_is_int8 = (
-            has_fused_proj
-            and not is_packed_weight
-            and self.fused_qkv_a_proj_with_mqa.weight.dtype == torch.int8
-        )
-        self.qkv_proj_with_rope_is_fp8 = (
-            has_fused_proj
-            and not is_packed_weight
-            and self.fused_qkv_a_proj_with_mqa.weight.dtype == torch.float8_e4m3fn
-        )
-
-        self.weight_block_size = None
-
-        q_proj_val = self.q_proj if hasattr(self, 'q_proj') else None
-        kv_a_proj_with_mqa_val = self.kv_a_proj_with_mqa if hasattr(self, 'kv_a_proj_with_mqa') else None
-        self.ap = AttentionPreparer(
-            self.hidden_size,
-            self.num_heads,
-            self.qk_nope_head_dim,
-            self.qk_rope_head_dim,
-            self.v_head_dim,
-            self.q_lora_rank,
-            self.kv_lora_rank,
-            self.rope_theta,
-            self.rope_scaling,
-            self.max_position_embeddings,
-            self.quant_config,
-            self.prefix,
-
-            self.fused_qkv_a_proj_with_mqa,
-            self.q_a_layernorm,
-            self.q_b_proj,
-            q_proj_val,
-            kv_a_proj_with_mqa_val,
-            self.kv_b_proj,
-            self.kv_a_layernorm,
-            self.rotary_emb,
-            self.attn_mha)
-
-
-    def dispatch_attn_forward_method(
-        self, forward_batch: ForwardBatch
-    ) -> AttnForwardMethod:
-        def _dispatch_mla_subtype():
-            if (
-                forward_batch.is_extend
-                and forward_batch.extend_num_tokens > 1
-            ):
-                return AttnForwardMethod.MHA
-            else:
-                return AttnForwardMethod.MLA
-
-        # Determine attention backend used by current forward batch
-        if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
-            attention_backend = global_server_args_dict["decode_attention_backend"]
-        else:
-            attention_backend = global_server_args_dict["prefill_attention_backend"]
-        self.current_attention_backend = attention_backend
-
-        if attention_backend == "ascend":
-            return AttnForwardMethod.MLA
-        elif attention_backend == "aiter":
-            if (
-                forward_batch.is_extend
-                and not forward_batch.is_target_verify
-                and not forward_batch.is_draft_extend
-            ):
-                return AttnForwardMethod.MHA
-            else:
-                return AttnForwardMethod.MLA
-        else:
-            # Triton: Use normal computation for prefill and use weight absorption for extend/decode
-            if (
-                forward_batch.is_extend
-                and not forward_batch.is_target_verify
-                and not forward_batch.is_draft_extend
-                and sum(forward_batch.extend_prefix_lens_cpu) == 0
-            ):
-                return AttnForwardMethod.MHA
-            else:
-                return _dispatch_mla_subtype()
-
-    def op_prepare(self, state):
-        state.attn_intermediate_state = self.forward_prepare(
-            positions=state.positions,
-            hidden_states=state.pop("hidden_states_after_comm_pre_attn"),
-            forward_batch=state.forward_batch,
-            zero_allocator=state.zero_allocator,
-        )
-
-    def op_core(self, state):
-        state.hidden_states_after_attn = self.forward_core(
-            state.pop("attn_intermediate_state")
-        )
-
-    def forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
-        s = self.forward_prepare(
-            positions=positions,
-            hidden_states=hidden_states,
-            forward_batch=forward_batch,
-            zero_allocator=zero_allocator,
-        )
-        return self.forward_core(s)
-
-    def forward_prepare(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
-        if hidden_states.shape[0] == 0:
-            assert (
-                not self.o_proj.reduce_results
-            ), "short-circuiting allreduce will lead to hangs"
-            return hidden_states, None, forward_batch, None
-
-        attn_forward_method = self.dispatch_attn_forward_method(forward_batch)
-
-        if attn_forward_method == AttnForwardMethod.MHA:
-            inner_state = self.forward_normal_prepare(
-                positions, hidden_states, forward_batch, zero_allocator
-            )
-        elif attn_forward_method == AttnForwardMethod.MLA:
-            inner_state = self.forward_absorb_prepare(
-                positions, hidden_states, forward_batch, zero_allocator
-            )
-        else:
-            raise NotImplementedError
-        return None, attn_forward_method, forward_batch, inner_state
-
-    def forward_core(self, intermediate_state):
-        hidden_states, attn_forward_method, forward_batch, inner_state = (
-            intermediate_state
-        )
-        if inner_state is None:
-            return hidden_states
-
-        if attn_forward_method == AttnForwardMethod.MHA:
-            return self.forward_normal_core(*inner_state)
-        elif attn_forward_method == AttnForwardMethod.MLA:
-            return self.forward_absorb_core(*inner_state)
-        else:
-            raise NotImplementedError
-
-    def forward_normal_prepare(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
-        q, k, v, forward_batch = self.ap.forward_normal_prepare(positions, hidden_states, forward_batch, zero_allocator)
-        return q, k, v, forward_batch
-
-    def forward_normal_core(self, q, k, v, forward_batch):
-        attn_output = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False)
-        attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
-        output, _ = self.o_proj(attn_output)
-        return output
-
-    def forward_absorb_prepare(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
-        self.ap.init_weights(self.w_kc, self.w_scale_k)
-        q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator = self.ap.forward_absorb_prepare(positions, hidden_states, forward_batch, zero_allocator)
-        return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
-
-    def forward_absorb_core(
-        self, q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
-    ):
-        attn_output = self.attn_mqa(q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe)
-        attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
-
-        attn_bmm_output = torch.empty(
-            (self.num_local_heads, attn_output.shape[0], self.v_head_dim),
-            dtype=attn_output.dtype,
-            device=attn_output.device,
-        )
-        torch.bmm(
-            attn_output.transpose(0, 1),
-            self.w_vc,
-            out=attn_bmm_output,
-        )
-        attn_bmm_output = attn_bmm_output.transpose(0, 1).reshape(
-            -1, self.num_local_heads * self.v_head_dim
-        )
-
-        output, _ = self.o_proj(attn_bmm_output)
-
-        return output
-
-    def forward_normal_chunked_kv_core(self, q, k, v, forward_batch):
-        # Do mha for extended part without prefix
-        forward_batch.set_attn_attend_prefix_cache(False)
-        attn_output, lse = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False)
-        lse = torch.transpose(lse, 0, 1).contiguous()
-
-        attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
-        output, _ = self.o_proj(attn_output)
-        return output
-
-
 class DeepseekV2DecoderLayer(nn.Module):
 
     def __init__(
@@ -913,7 +491,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         self.speculative_algorithm = global_server_args_dict["speculative_algorithm"]
         self.layer_id = layer_id
         self.is_nextn = is_nextn
-        self.self_attn = DeepseekV2AttentionMLA(
+        self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
@@ -1087,12 +665,7 @@ class DeepseekV2Model(nn.Module):
 
         residual = None
 
-        normal_num_layers = (
-            self.first_k_dense_replace
-            if forward_batch.can_run_tbo
-            else total_num_layers
-        )
-        for i in range(normal_num_layers):
+        for i in range(total_num_layers):
             with get_global_expert_distribution_recorder(True).with_current_layer(i):
                 layer = self.layers[i]
                 if (i < total_num_layers - 1 and i >= self.first_k_dense_replace):
@@ -1114,16 +687,6 @@ class DeepseekV2Model(nn.Module):
                     zero_allocator,
                     **kwargs,
                 )
-
-        if normal_num_layers != total_num_layers:
-            hidden_states, residual = model_forward(
-                layers=self.layers[normal_num_layers:],
-                positions=positions,
-                forward_batch=forward_batch,
-                hidden_states=hidden_states,
-                residual=residual,
-                zero_allocator=zero_allocator,
-            )
 
         if not forward_batch.is_prefill_idle:
             if residual is None:
