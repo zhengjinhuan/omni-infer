@@ -34,7 +34,6 @@ from transformers.cache_utils import Cache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding
 from transformers.processing_utils import Unpack
-from transformers.utils import auto_docstring
 
 class Qwen2MLP(nn.Module):
     def __init__(self, config):
@@ -319,7 +318,6 @@ def prepare_decoder_attention_mask(
 
     return combined_attention_mask
 
-@auto_docstring
 class EagleQwen2ForCausalLM(nn.Module):
 
     def __init__(self, config):
