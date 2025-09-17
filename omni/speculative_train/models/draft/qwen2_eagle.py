@@ -319,7 +319,7 @@ def prepare_decoder_attention_mask(
     return combined_attention_mask
 
 class EagleQwen2ForCausalLM(nn.Module):
-
+    config_class = Qwen2Config
     def __init__(self, config):
         super().__init__()
 
