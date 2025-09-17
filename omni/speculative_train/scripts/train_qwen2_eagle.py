@@ -10,3 +10,5 @@ model = AutoEagleDraftModel.from_pretrained("/data/model/qwq-32b-eagle").npu()
 print(model)
 names = [item[0] for item in model.named_parameters()]
 print(names)
+
+
