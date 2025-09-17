@@ -386,19 +386,11 @@ class DeepseekV2MoE(nn.Module):
         shared_output = None
 
         if hidden_states.shape[0] > 0 and not forward_batch.is_prefill_idle:
-            if forward_batch.is_decode_or_idle and forward_batch.can_run_graph:
-                torch_npu.npu_prefetch(
-                    self.experts.w13_weight,
-                    hidden_states,
-                    self.experts.w13_weight.numel(),
-                    0,
-                )
-            
             router_logits = self.gate(hidden_states) # router_logits: (num_tokens, n_experts)
 
             if self.num_fused_shared_experts == 0:
                 shared_output = self.shared_experts(hidden_states)
-            
+
             topk_weights, topk_idx, _ = self.topk(
                 hidden_states,
                 router_logits,
@@ -445,32 +437,6 @@ class DeepseekV2MoE(nn.Module):
         )
 
         if self.ep_size > 1:
-            next_attn_weights = kwargs.get("next_attn_weights", None)
-
-            if (
-                forward_batch.can_run_graph
-                and forward_batch.is_decode_or_idle
-                and next_attn_weights is not None
-            ):
-                attn_prefetch_size = 96 * 1024 * 1024
-                torch_npu.npu_prefetch(
-                    next_attn_weights["fused_qkv_a_proj_with_mqa"],
-                    final_hidden_states,
-                    attn_prefetch_size,
-                    0,
-                )
-                torch_npu.npu_prefetch(
-                    next_attn_weights["q_b_proj"],
-                    final_hidden_states,
-                    attn_prefetch_size,
-                    0,
-                )
-                torch_npu.npu_prefetch(
-                    next_attn_weights["w_kc"],
-                    final_hidden_states,
-                    attn_prefetch_size,
-                    0,
-                )
             final_hidden_states = self.deepep_dispatcher.combine(
                 hidden_states=final_hidden_states,
                 topk_idx=topk_idx,
