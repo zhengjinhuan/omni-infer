@@ -80,18 +80,7 @@ static inline omni_req_context_t *omni_get_req_ctx(ngx_http_request_t *r)
 {
     return ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 }
-static omni_req_info_t *find_req_info_in_group(uint32_t slot_index, omni_req_group_t *group)
-{
-    for (uint32_t i = 0; i < group->watermark; ++i)
-    {
-        omni_req_info_t *info = &group->requests[i];
-        if (info->in_use && info->slot_index == slot_index)
-        {
-            return info;
-        }
-    }
-    return NULL;
-}
+
 
 static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 {
@@ -100,114 +89,45 @@ static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 
 static void omni_proxy_post_tokenized(omni_req_t *req)
 {
-    omni_req_group_t *group;
-    omni_req_info_t *info;
-
     /* 1) snapshot pointers under lock */
     ngx_shmtx_lock(&g_state->shmtx);
-
-    group = &g_state->groups[PHASE_TOKENIZING];
-    info = find_req_info_in_group(req->slot_index, group);
-
-    if (info == NULL)
-    {
-        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                      "omni_proxy_post_tokenized: cannot find req info for slot %u (shared state corrupted)", req->slot_index);
-        ngx_shmtx_unlock(&g_state->shmtx);
-        assert(info != NULL && "missing req info in omni_proxy_post_tokenized");
-        abort();
-    }
-
-    /* snapshot number of prefill endpoints and radix_tree pointers */
+    /* snapshot radix_tree pointers */
     uint16_t num_prefill = g_state->num_prefill_endpoints;
-    /* cap to MAX_PREFILL_UPSTREAMS just in case */
-    if (num_prefill > MAX_PREFILL_UPSTREAMS)
-        num_prefill = MAX_PREFILL_UPSTREAMS;
-
-    /* allocate local array of radix_tree pointers on stack (fits: 128 pointers) */
     omni_radix_tree_t *local_trees[MAX_PREFILL_UPSTREAMS];
     for (uint16_t i = 0; i < num_prefill; ++i)
     {
         local_trees[i] = g_state->prefill_states[i].radix_tree;
     }
-
-    /* Keep a copy of the info pointer index in case group compacts; we'll re-find later */
-    uint32_t slot_index = req->slot_index;
-
-    /* release lock before heavy/locking ops */
     ngx_shmtx_unlock(&g_state->shmtx);
 
     /* 2) Compute matches without holding g_state lock */
     uint32_t local_match_depths[MAX_PREFILL_UPSTREAMS];
     ngx_uint_t computed_max = 0;
 
-    /* If tokenizer didn't produce block_hashes, guard */
-    if (req->tokenizer_req.block_hashes == NULL || req->tokenizer_req.block_hashes_len == 0)
-    {
-        for (uint16_t i = 0; i < num_prefill; ++i)
-        {
-            local_match_depths[i] = 0;
-        }
-    }
-    else
-    {
-        for (uint16_t i = 0; i < num_prefill; ++i)
-        {
-            omni_radix_tree_t *tree = local_trees[i];
-            ngx_uint_t match_depth = 0;
-            if (tree != NULL)
-            {
-                /* Use optimistic match to avoid acquiring tree mutex for reads */
-                match_depth = omni_radix_tree_match_optimistic(tree,
-                                                               (uint64_t *)req->tokenizer_req.block_hashes,
-                                                               req->tokenizer_req.block_hashes_len);
-            }
-            local_match_depths[i] = (uint32_t)match_depth;
-            if ((ngx_uint_t)match_depth > computed_max)
-                computed_max = match_depth;
-        }
-    }
-
-    /* 3) Re-acquire global lock and write results to shared request and scheduling info */
-    ngx_shmtx_lock(&g_state->shmtx);
-
-    /* re-validate info and req still exist and in expected group/phase */
-    group = &g_state->groups[PHASE_TOKENIZING];
-    info = find_req_info_in_group(slot_index, group);
-    if (info == NULL)
-    {
-        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                      "omni_proxy_post_tokenized: req disappeared while computing matches slot %u", slot_index);
-        ngx_shmtx_unlock(&g_state->shmtx);
-        assert(info != NULL && "req disappeared during post-tokenize");
-        abort();
-    }
-
-    /* re-acquire request pointer from request pool to be safe */
-    omni_req_t *shared_req = &g_state->request_pool.slots[slot_index];
-    if (!shared_req->in_use || shared_req->slot_index != slot_index)
-    {
-        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
-                      "omni_proxy_post_tokenized: shared req slot %u invalid (in_use=%u, slot_index=%u)",
-                      slot_index, (unsigned)shared_req->in_use, (unsigned)shared_req->slot_index);
-        ngx_shmtx_unlock(&g_state->shmtx);
-        assert(shared_req->in_use && "shared req invalid");
-        abort();
-    }
-
-    /* write per-endpoint match depths into shared request */
     for (uint16_t i = 0; i < num_prefill; ++i)
     {
-        shared_req->match_depths[i] = local_match_depths[i];
+        omni_radix_tree_t *tree = local_trees[i];
+        ngx_uint_t match_depth = 0;
+        if (tree != NULL)
+        {
+            match_depth = omni_radix_tree_match_optimistic(tree,
+                                                            (uint64_t *)req->tokenizer_req.block_hashes,
+                                                            req->tokenizer_req.block_hashes_len);
+        }
+        local_match_depths[i] = (uint32_t)match_depth;
+        if ((ngx_uint_t)match_depth > computed_max)
+            computed_max = match_depth;
     }
-    shared_req->max_match_depth = (uint32_t)computed_max;
+    
 
-    /* update scheduler-visible weight (keep backward compatibility) */
-    info->weight = (double)computed_max;
+    /* 3) write results to shared request */
+    for (uint16_t i = 0; i < num_prefill; ++i)
+    {
+        req->match_depths[i] = local_match_depths[i];
+    }
+    req->max_match_depth = (uint32_t)computed_max;
 
-    ngx_shmtx_unlock(&g_state->shmtx);
-
-    /* Finally perform phase transition and timestamp updates (no heavy locking required here) */
+    /* Finally perform phase transition and timestamp updates */
     omni_phase_transition_all(req, 0, PHASE_PREFILL_WAITING_SCHEDULE);
     req->metrics.time_enter_wait_prefill = ngx_current_msec;
 
