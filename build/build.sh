@@ -71,10 +71,6 @@ mv dist/omni_i* $BUILD_ROOT/build/dist
 cd $BUILD_ROOT/omni/accelerators/sched/global_proxy/build/
 bash build.sh
 
-cd $BUILD_ROOT/omni/adaptors/vllm/cpp
-python setup.py bdist_wheel
-mv dist/omni_vllm* $BUILD_ROOT/build/dist
-
 
 if [ "$USE_LMCACHE" = "1" ]; then
     cd $BUILD_ROOT/omni/adaptors/lmcache/script
