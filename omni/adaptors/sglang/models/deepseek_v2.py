@@ -70,7 +70,7 @@ from sglang.srt.layers.quantization.fp8_utils import (
 from sglang.srt.layers.quantization.int8_utils import (
     block_dequant as int8_block_dequant,
 )
-from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
+from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.rotary_embedding import get_rope_wrapper
 from sglang.srt.layers.vocab_parallel_embedding import (
@@ -131,6 +131,7 @@ class DeepseekV2MLP(nn.Module):
         prefix: str = "",
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
+        **kwargs,
     ) -> None:
         super().__init__()
         self.tp_size = tp_size
@@ -159,56 +160,23 @@ class DeepseekV2MLP(nn.Module):
                 f"Unsupported activation: {hidden_act}. "
                 "Only silu is supported for now."
             )
-        self.is_dynamic_quant = not isinstance(
-            self.gate_up_proj.quant_method,
-            UnquantizedLinearMethod)
+        self.act_fn = SiluAndMul()
 
     def forward(
         self,
         x,
         forward_batch=None,
         use_reduce_scatter: bool = False,
+        **kwargs,
     ):
         if (self.tp_size == 1) and x.shape[0] == 0:
             return x
 
-        skip_all_reduce = use_reduce_scatter
-
-        if self.is_dynamic_quant:
-            x, dynamic_scale = torch_npu.npu_dynamic_quant(x)
-
-            x = torch_npu.npu_quant_matmul(
-                x,
-                self.gate_up_proj.weight,
-                self.gate_up_proj.weight_scale,
-                output_dtype=torch.int32)
-
-            x, dynamic_scale = torch_npu.npu_dequant_swiglu_quant(
-                x,
-                weight_scale=self.gate_up_proj.weight_scale_fp32,
-                activation_scale=dynamic_scale,
-                bias=None,
-                quant_scale=None,
-                quant_offset=None,
-                group_index=None,
-                activate_left=True,
-                quant_mode=1)
-
-            x = torch_npu.npu_quant_matmul(
-                x,
-                self.down_proj.weight,
-                self.down_proj.weight_scale,
-                pertoken_scale=dynamic_scale,
-                output_dtype=torch.bfloat16)
-
-            if not skip_all_reduce:
-                if self.down_proj.reduce_results and self.down_proj.tp_size > 1:
-                    x = tensor_model_parallel_all_reduce(x)
-        else:
-            gate_up, _ = self.gate_up_proj(x)
-            x = torch_npu.npu_swiglu(gate_up)
-            x, _ = self.down_proj(x, skip_all_reduce=skip_all_reduce)
-
+        gate_up, _ = self.gate_up_proj(x)
+        x = self.act_fn(gate_up)
+        x, _ = self.down_proj(
+            x, skip_all_reduce=use_reduce_scatter
+        )
         return x
 
 
