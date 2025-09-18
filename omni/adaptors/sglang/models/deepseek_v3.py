@@ -12,10 +12,6 @@
 # limitations under the License.
 # ==============================================================================
 
-# Adapted from:
-# https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py
-"""Inference-only DeepseekV2 model."""
-
 import concurrent.futures
 import logging
 from enum import IntEnum, auto
@@ -58,7 +54,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTe
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 
 from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
-from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekV2MLP, DeepseekV2MoE
+from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekV3MLP, DeepseekV3MoE
 
 from sglang.srt.utils import (
     BumpAllocator,
@@ -74,7 +70,7 @@ _is_fp8_fnuz = is_fp8_fnuz()
 logger = logging.getLogger(__name__)
 
 
-class DeepseekV2DecoderLayer(nn.Module):
+class DeepseekV3DecoderLayer(nn.Module):
 
     def __init__(
         self,
@@ -127,7 +123,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         )
 
         if self.is_layer_sparse:
-            self.mlp = DeepseekV2MoE(
+            self.mlp = DeepseekV3MoE(
                 config=config,
                 quant_config=quant_config,
                 prefix=add_prefix("mlp", prefix),
@@ -140,7 +136,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                 mlp_tp_rank, mlp_tp_size = 0, 1
             else:
                 mlp_tp_rank, mlp_tp_size = None, None
-            self.mlp = DeepseekV2MLP(
+            self.mlp = DeepseekV3MLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.intermediate_size,
                 hidden_act=config.hidden_act,
@@ -210,7 +206,7 @@ class DeepseekV2DecoderLayer(nn.Module):
 
         return hidden_states, residual
 
-class DeepseekV2Model(nn.Module):
+class DeepseekV3Model(nn.Module):
     fall_back_to_pt_during_load = False
 
     def __init__(
@@ -232,7 +228,7 @@ class DeepseekV2Model(nn.Module):
         self.alt_stream = None
         self.layers = nn.ModuleList(
             [
-                DeepseekV2DecoderLayer(
+                DeepseekV3DecoderLayer(
                     config,
                     layer_id,
                     quant_config=quant_config,
@@ -300,7 +296,7 @@ class DeepseekV2Model(nn.Module):
         return hidden_states
 
 
-class DeepseekV2ForCausalLM(nn.Module):
+class DeepseekV3ForCausalLM(nn.Module):
     # for quark model load
     packed_modules_mapping = {}
 
@@ -327,7 +323,7 @@ class DeepseekV2ForCausalLM(nn.Module):
         self.tp_size = get_tensor_model_parallel_world_size()
         self.quant_config = quant_config
         self.determine_num_fused_shared_experts()
-        self.model = DeepseekV2Model(
+        self.model = DeepseekV3Model(
             config, quant_config, prefix=add_prefix("model", prefix)
         )
         self.lm_head = ParallelLMHead(
@@ -343,7 +339,7 @@ class DeepseekV2ForCausalLM(nn.Module):
             lambda: {
                 layer_id: layer.mlp.get_moe_weights()
                 for layer_id, layer in enumerate(self.model.layers)
-                if isinstance(layer.mlp, DeepseekV2MoE)
+                if isinstance(layer.mlp, DeepseekV3MoE)
             }
         )
 
@@ -569,7 +565,7 @@ class DeepseekV2ForCausalLM(nn.Module):
                 experts = layer.mlp.experts
             else:
                 mlp = layer.mlp
-                assert isinstance(mlp, DeepseekV2MLP)
+                assert isinstance(mlp, DeepseekV3MLP)
                 for module in [
                     mlp.gate_up_proj,
                     mlp.down_proj,
@@ -826,10 +822,6 @@ class DeepseekV2ForCausalLM(nn.Module):
             num_logical_experts=config.n_routed_experts,
             num_groups=config.n_group,
         )
-
-
-class DeepseekV3ForCausalLM(DeepseekV2ForCausalLM):
-    pass
 
 
 EntryClass = DeepseekV3ForCausalLM

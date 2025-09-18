@@ -1546,7 +1546,7 @@ index f81d3c76e..327dd50fd 100644
  
 -ModelRegistry = _ModelRegistry(import_model_classes())
 +tmp_ = _ModelRegistry(import_model_classes())
-+module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v2")
++module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v3")
 +tmp_.models["DeepseekV3ForCausalLM"] = module.EntryClass
 +ModelRegistry = tmp_
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py

@@ -30,7 +30,7 @@ from sglang.srt.utils import add_prefix
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
 from omni.adaptors.sglang.layers.moe.token_dispatcher.deepep import NpuDeepEPDispatcher
 
-class DeepseekV2MLP(nn.Module):
+class DeepseekV3MLP(nn.Module):
     def __init__(
         self,
         hidden_size: int,
@@ -108,7 +108,7 @@ class MoEGate(nn.Module):
         return F.linear(hidden_states, self.weight, None)
 
 
-class DeepseekV2MoE(nn.Module):
+class DeepseekV3MoE(nn.Module):
 
     def __init__(
         self,
@@ -174,7 +174,7 @@ class DeepseekV2MoE(nn.Module):
         
         if (config.n_shared_experts is not None and self.num_fused_shared_experts == 0):
             
-            self.shared_experts = DeepseekV2MLP(
+            self.shared_experts = DeepseekV3MLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.moe_intermediate_size * config.n_shared_experts,
                 hidden_act=config.hidden_act,
