@@ -51,6 +51,7 @@ typedef struct omni_request_metrics_s
     ngx_msec_t time_last_reponse;
     ngx_msec_t time_first_token;
     ngx_msec_t tpot;
+    ngx_msec_t ttft;
 } omni_request_metrics_t;
 
 typedef struct omni_request_s
