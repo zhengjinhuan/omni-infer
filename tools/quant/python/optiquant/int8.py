@@ -44,6 +44,14 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
     disable_names.append("model.norm.weight")
     disable_names.append("model.embed_tokens.weight")
 
+    if pangu_mode:
+        disable_names.append(f"model.layers.61.embed_tokens.weight")
+        disable_names.append(f"model.layers.61.enorm.weight")
+        disable_names.append(f"model.layers.61.hnorm.weight")
+        disable_names.append(f"model.layers.61.eh_proj.weight")
+        disable_names.append(f"model.layers.61.shared_head.norm.weight")
+        disable_names.append(f"model.layers.61.shared_head.head.weight")
+
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(output_path, exist_ok=True)
     model_index_file = os.path.join(output_path, "model.safetensors.index.json")

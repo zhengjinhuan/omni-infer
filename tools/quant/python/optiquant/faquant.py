@@ -26,7 +26,7 @@ def cal_scale(faquant_path, layer_idx, method='max'):
 
     merged = torch.cat(tensors, dim=0)
 
-    if method == 'max'
+    if method == 'max':
         scale = (merged.max() / 127).clamp(min=1e-5).cpu()
     return scale
 
