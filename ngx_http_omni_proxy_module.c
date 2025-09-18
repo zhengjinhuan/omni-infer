@@ -528,7 +528,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
         if (req->metrics.decoded_tokens != 0)
         {
             req->metrics.tpot =
-                ((req->metrics.tpot * req->metrics.decoded_tokens) +
+                ((req->metrics.tpot * req->metrics.decoded_tokens - 1) +
                  ngx_current_msec - req->metrics.time_last_reponse) /
                 req->metrics.decoded_tokens;
         }
@@ -542,6 +542,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     }
     else
     {
+        req->metrics.ttft = ngx_current_msec - req->metrics.time_received;
         req->metrics.time_first_token = req->metrics.tpot = ngx_current_msec - req->metrics.time_to_decode;
         req->metrics.decoded_tokens++;
 
