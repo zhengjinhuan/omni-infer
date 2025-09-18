@@ -14,7 +14,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
 from vllm.distributed import get_ep_group
 from omni.adaptors.vllm.distributed.parallel_state import GroupCoordinator
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.moe.fused_moe.fused_moe import (
+from omni.layers.moe.fused_moe.fused_moe import (
     fused_experts_moe_dispatch_combine,
     moe_infer_fusion,
     fused_experts_allgather_ep_a3,

@@ -1,4 +1,4 @@
-from omni.models.common.layers.fused_mlp.layer import (FusedMLP, FusedMLPMethodBase,
+from omni.layers.fused_mlp.layer import (FusedMLP, FusedMLPMethodBase,
                                                        W8A8DynamicFusedMLPMethod)
 
 __all__ = [

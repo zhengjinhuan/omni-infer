@@ -54,7 +54,7 @@ from vllm.model_executor.utils import set_weight_attrs
 
 from omni.adaptors.vllm.utils import NPU_W8A8_STATIC
 from omni.models.pangu.pangu_pro_moe.fused_moe import select_experts
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 def ascend_direct_register_custom_op(
         op_name: str,

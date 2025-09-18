@@ -17,7 +17,7 @@ from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
 from omni.adaptors.vllm.distributed.parallel_state import GroupCoordinator
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.moe.fused_moe.fused_moe import (
+from omni.layers.moe.fused_moe.fused_moe import (
     fused_topk,
     grouped_topk
 )
