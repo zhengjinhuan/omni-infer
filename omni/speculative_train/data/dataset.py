@@ -3,14 +3,11 @@
 import os
 import torch
 
-def list_local_files(path, suffixes=[".ckpt"]):
+def list_local_files(path, suffix):
     datapaths = []
     for root, directories, files in os.walk(path):
-        for file in files:
-            file_path = os.path.join(root, file)
-            datapaths.append(file_path)
-    for suffix in suffixes:
-        datapaths = [f_name for f_name in datapaths if f_name.endswith(suffix)]
+        part_datapaths = [os.path.join(root, file) for file in files if file.endswith(suffix)]
+        datapaths.extend(part_datapaths)
     return datapaths
 
 class OfflineEagleDataset(torch.utils.data.Dataset):
@@ -62,9 +59,10 @@ class OfflineEagleDataset(torch.utils.data.Dataset):
 
 def build_offline_eagle_dataset(
     hidden_states_path: str,
-    max_len: int = 2048,
+    max_len: int,
+    suffix: str,
 ) -> torch.utils.data.Dataset:
     return OfflineEagleDataset(
-        list_local_files(hidden_states_path),
+        list_local_files(hidden_states_path, suffix),
         max_len=max_len,
     )
