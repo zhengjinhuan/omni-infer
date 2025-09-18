@@ -15,6 +15,10 @@ int4量化: python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路�
 qwen:  
 int8量化: python quant_qwen.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu"  
 
+gpt-oss:  
+gpt-oss-120b int8量化: python quant_gptoss.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --model-type "120b"  
+gpt-oss-20b int8量化: python quant_gptoss.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --model-type "20b"  
+
 C8量化: 先拉起服务化dump数据再使用量化工具  
 （1）拉起服务化时在config文件中加入c8_calib_path,对话后将knope保存至自定义的c8_calib_path
 （2）pytho quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --w4 --c8-calib-path "your_path" --kvs-safetensor-name "your_name"  
