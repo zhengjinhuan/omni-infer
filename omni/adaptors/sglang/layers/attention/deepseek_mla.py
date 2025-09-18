@@ -303,10 +303,10 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if forward_batch.forward_mode.is_prefill():
-            return self._forward_prefill(positions, hidden_states, forward_batch,zero_allocator)
-        else:
+        if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
             return self._forward_decode(positions, hidden_states, forward_batch,zero_allocator)
+        else:
+            return self._forward_prefill(positions, hidden_states, forward_batch,zero_allocator)
 
 
     def _forward_prefill(
