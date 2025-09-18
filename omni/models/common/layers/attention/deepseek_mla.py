@@ -53,6 +53,11 @@ KVCACHE_NZ_DIM = 16
 
 import torch.nn.functional as F
 
+def stream_context(stream_tag):
+    if model_extra_config.operator_opt_config.moe_multi_stream_tune:
+        return tng.scope.npu_stream_switch(stream_tag)
+    return nullcontext()
+
 class LayerNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
@@ -150,18 +155,6 @@ class Indexer(nn.Module):
     def forward(self, x: torch.Tensor, qr: torch.Tensor,
                 attn_metadata: AttentionMetadata,
                 kv_cache: torch.Tensor, is_prefill):
-        q = self.wq_b(qr)[0]  # [b*s,1536] @ [1536,64*128] = [b*s,64*128]
-        q = q.reshape(-1, self.n_heads, self.head_dim)  # [b*s,64,128]
-        q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64,64+64]
-
-        k = self.wk(x)[0]  # [b*s,7168] @ [7168,128] = [b*s,128]
-        k = self.k_norm(k).unsqueeze(1)
-        k = mla_tensor_model_parallel_all_gather(k, dim=0)
-        if model_extra_config.parall_config.attn_sp_size > 1:
-            k_list = torch.split(k, attn_metadata.prefill.sp_reverse_split_list, dim=0)
-            k = torch.cat([k_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
-        k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
-
         if is_prefill:
             cos, sin = attn_metadata.prefill.cos, attn_metadata.prefill.sin
         else:
@@ -171,21 +164,36 @@ class Indexer(nn.Module):
             cos_q, sin_q = attn_metadata.prefill.cos_q, attn_metadata.prefill.sin_q
         else:
             cos_q, sin_q = cos, sin
-        q_pe = q_pe.unsqueeze(2)
-        q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q)
-        q_pe = q_pe.squeeze(2)
-        
+
+        with stream_context("11"):
+            q = self.wq_b(qr)[0]  # [b*s,1536] @ [1536,64*128] = [b*s,64*128]
+            q = q.reshape(-1, self.n_heads, self.head_dim)  # [b*s,64,128]
+            q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64,64+64]
+
+            q_pe = q_pe.unsqueeze(2)
+            q_pe = torch_npu.npu_interleave_rope(q_pe, cos_q, sin_q)
+            q_pe = q_pe.squeeze(2)
+
+            if model_extra_config.parall_config.attn_sp_size > 1:
+                q_nope, q_nope_2 = torch.split(q_nope, q_nope.size(0) // 2, dim=0)
+                q_pe, q_pe_2 = torch.split(q_pe, q_pe.size(0) // 2, dim=0)
+                q2 = torch.cat([q_nope_2, q_pe_2], dim=-1)
+
+            q = torch.cat([q_pe, q_nope], dim=-1)  # [b*s,64,128]
+
+        kw = self.wk(x)[0]  # [b*s,7168] @ [7168,128] = [b*s,128]
+        k = self.k_norm(kw).unsqueeze(1)
+        k = mla_tensor_model_parallel_all_gather(k, dim=0)
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            k_list = torch.split(k, attn_metadata.prefill.sp_reverse_split_list, dim=0)
+            k = torch.cat([k_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
+        k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
+
         k_pe = k_pe.unsqueeze(2)
         k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
         k_pe = k_pe.squeeze(2)
 
-        if model_extra_config.parall_config.attn_sp_size > 1:
-            q_nope, q_nope_2 = torch.split(q_nope, q_nope.size(0) // 2, dim=0)
-            q_pe, q_pe_2 = torch.split(q_pe, q_pe.size(0) // 2, dim=0)
-            q2 = torch.cat([q_nope_2, q_pe_2], dim=-1)
-
         k = torch.cat([k_pe, k_nope], dim=-1)  # [b*s,128]
-        q = torch.cat([q_pe, q_nope], dim=-1)  # [b*s,64,128]
 
         if isinstance(kv_cache, Dict):
             kv_cache = kv_cache.get("kv_cache")
@@ -195,7 +203,9 @@ class Indexer(nn.Module):
                                              attn_metadata.slot_mapping.view(-1, 1), 
                                              k.view(-1, k.shape[-1]))   # b, s, n, d
 
-        weights = self.weights_proj(x)[0]
+        with stream_context("22"):
+            tng.scope.npu_wait_tensor(x, kw)
+            weights = self.weights_proj(x)[0]
 
         topk_indices = self._apply_lightning_indexer(q, weights, attn_metadata, kv_cache, is_prefill)
 
@@ -905,12 +915,13 @@ class DeepseekMLA(nn.Module):
                 cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
                 cache_index = attn_metadata.slot_mapping.view(bsz, -1)
 
-                q_nope, q_pe, k_nope, k_rope, dequant_scale_q_nope = torch.ops.npu.npu_mla_prolog_v2(token_x = hidden_states_mla_prolog.view(bsz, 1, -1),
+                cache_mode = "PA_BSND" if model_extra_config.operator_opt_config.enable_fgsa else "PA_NZ"
+                q_nope, q_pe, dequant_scale_q_nope, qr, dequant_scale_q_norm = torch.ops.npu.npu_mla_prolog_v3(token_x = hidden_states_mla_prolog.view(bsz, 1, -1),
                     weight_dq=self.q_a_proj.weight, weight_uq_qr=self.q_b_proj.weight,
                     weight_uk=self.W_UK, weight_dkv_kr=self.kv_a_proj_with_mqa.weight,
                     rmsnorm_gamma_cq=self.q_a_layernorm.weight, rmsnorm_gamma_ckv=self.kv_a_layernorm.weight,
                     rope_sin=sin.squeeze(1), rope_cos=cos.squeeze(1), cache_index=cache_index,
-                    kv_cache=key_cache.view(-1, 128, 1, 512), kr_cache=value_cache.view(-1, 128, 1, 64),
+                    kv_cache=key_cache, kr_cache=value_cache,
                     dequant_scale_x=pertoken_scale.view(-1, 1) if self.quant_symbol else None, # pertoken quant
                     dequant_scale_w_dq=self.q_a_proj.weight_scale.view(1, -1) if self.quant_symbol else None,
                     dequant_scale_w_uq_qr=self.q_b_proj.weight_scale.view(1, -1) if self.quant_symbol else None,
@@ -920,10 +931,14 @@ class DeepseekMLA(nn.Module):
                     smooth_scales_cq=None,
                     rmsnorm_epsilon_cq=self.q_a_layernorm.variance_epsilon,
                     rmsnorm_epsilon_ckv=self.kv_a_layernorm.variance_epsilon,
-                    cache_mode = "PA_NZ")
+                    cache_mode=cache_mode,
+                    query_norm_flag=True)
 
-                k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // nz_block_size, block_size, nz_block_size)
-                k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim_nz, block_size, 16)
+                if cache_mode == "PA_NZ":
+                    k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // nz_block_size, block_size, nz_block_size)
+                    k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim_nz, block_size, 16)
+                k_nope = key_cache
+                k_rope = value_cache
                 q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
                 q_pe = q_pe.view(bsz, self.num_local_heads, -1)
             else:
@@ -956,11 +971,7 @@ class DeepseekMLA(nn.Module):
                     .view(bsz, q_len, self.num_local_heads, -1)
                 )
                 cache_mode = "PA" if model_extra_config.operator_opt_config.enable_fgsa else "PA_NZ"
-                if model_extra_config.operator_opt_config.moe_multi_stream_tune:
-                    stream_context = tng.scope.npu_stream_switch('11')
-                else:
-                    stream_context = nullcontext()
-                with stream_context:
+                with stream_context("11"):
                     kv = kv.unsqueeze(1).unsqueeze(1)
                     cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
                     # cos, sin = self.rotary_emb.get_cos_sin(positions)
@@ -1008,6 +1019,8 @@ class DeepseekMLA(nn.Module):
                     actual_seq_kvlen=attn_metadata.decode.seq_lens
                 )
             elif model_extra_config.operator_opt_config.enable_fgsa:
+                if model_extra_config.operator_opt_config.moe_multi_stream_tune:
+                    tng.scope.npu_wait_tensor(qr, q_pe)
                 # todo indexer only support bsnd
                 topk_indices, _ = self.indexer(hidden_states, qr, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)

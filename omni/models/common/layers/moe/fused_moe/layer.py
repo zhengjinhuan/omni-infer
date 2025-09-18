@@ -260,6 +260,14 @@ class FusedMoE(torch.nn.Module):
                 torch.device(current_platform.device_type)).get_hccl_comm_name(
                 self.moe_rs_group_rank)
 
+    def cal_best_topk(self, tokens):
+        world_size = get_world_group().world_size
+        batch_size = tokens * world_size
+        step = batch_size // world_size * self.top_k
+        global_rank = get_world_group().rank_in_group
+        cur_topk_list = [i % 256 for i in range(global_rank * step, (global_rank + 1) * step)]
+        return torch.Tensor(cur_topk_list).to(dtype=torch.int32, device=current_platform.device_type, non_blocking=True).view(batch_size // world_size, -1)
+
     def apply_expert_load_balance(
             self,
             topk_ids: torch.Tensor,
@@ -278,9 +286,7 @@ class FusedMoE(torch.nn.Module):
         # Forced load balance
         if model_extra_config.operator_opt_config.best_ep:
             if self.is_prefill_instance:
-                t = (topk_ids.shape[0] * 8) // 256
-                topk_ids = torch.arange(256, device=current_platform.device_type, dtype=torch.int32).unsqueeze(
-                    0).repeat(t + 1, 1).view(-1, 8)[:topk_ids.shape[0]]
+                topk_ids = self.cal_best_topk(topk_ids.shape[0])
             elif best_topk_ids is not None:
                 if model_extra_config.operator_opt_config.moe_multi_stream_tune:
                     topk_ids = tng.scope.npu_wait_tensor(best_topk_ids, topk_ids)
