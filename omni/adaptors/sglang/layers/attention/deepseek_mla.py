@@ -8,11 +8,16 @@ from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode, PPProxyTensors
 from sglang.srt.layers.rotary_embedding import get_rope, get_rope_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
+from sglang.srt.layers.communicator import (
+    LayerScatterModes,
+    ScatterMode,
+)
 from torch import nn
 import torch
 
 from typing import Any, Dict, Iterable, Optional, Tuple
 from sglang.srt.layers.dp_attention import (
+    attn_tp_all_gather_into_tensor,
     get_attention_tp_rank,
     get_attention_tp_size,
 )
@@ -84,6 +89,8 @@ class DeepseekMLA(nn.Module):
         reduce_results: bool = True,
         layer_id: int = None,
         prefix: str = "",
+        layer_scatter_modes: LayerScatterModes = None,
+
     ) -> None:
         super().__init__()
 
@@ -108,6 +115,8 @@ class DeepseekMLA(nn.Module):
         self.scaling = self.qk_head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
+
+        self.layer_scatter_modes = layer_scatter_modes
 
         # For tensor parallel attention
         if self.q_lora_rank is not None:
@@ -301,6 +310,18 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
+        if (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
+                self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
+        ):
+            hidden_states, local_hidden_states = (
+                forward_batch.gathered_buffer[: forward_batch.input_ids.shape[0]],
+                hidden_states,
+            )
+            attn_tp_all_gather_into_tensor(
+                hidden_states,
+                local_hidden_states,
+            )
+
         if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
             return self._forward_decode(positions, hidden_states, forward_batch,zero_allocator)
         else:
@@ -506,14 +527,4 @@ class DeepseekMLA(nn.Module):
 
         output, _ = self.o_proj(attn_bmm_output)
 
-        return output
-
-    def forward_normal_chunked_kv_core(self, q, k, v, forward_batch):
-        # Do mha for extended part without prefix
-        forward_batch.set_attn_attend_prefix_cache(False)
-        attn_output, lse = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False)
-        lse = torch.transpose(lse, 0, 1).contiguous()
-
-        attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
-        output, _ = self.o_proj(attn_output)
         return output

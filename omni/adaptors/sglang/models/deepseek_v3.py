@@ -93,6 +93,17 @@ class DeepseekDecoderLayer(nn.Module):
         self.speculative_algorithm = global_server_args_dict["speculative_algorithm"]
         self.layer_id = layer_id
         self.is_nextn = is_nextn
+
+        self.is_layer_sparse = self._is_layer_sparse(layer_id, is_nextn=is_nextn)
+        is_previous_layer_sparse = self._is_layer_sparse(layer_id - 1, is_nextn=False)
+
+        self.layer_scatter_modes = LayerScatterModes.init_new(
+            layer_id=layer_id,
+            num_layers=1 if is_nextn else config.num_hidden_layers,
+            is_layer_sparse=self.is_layer_sparse,
+            is_previous_layer_sparse=is_previous_layer_sparse,
+        )
+
         self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
@@ -111,16 +122,7 @@ class DeepseekDecoderLayer(nn.Module):
             layer_id=layer_id,
             reduce_results=False,
             prefix=add_prefix("self_attn", prefix),
-        )
-
-        self.is_layer_sparse = self._is_layer_sparse(layer_id, is_nextn=is_nextn)
-        is_previous_layer_sparse = self._is_layer_sparse(layer_id - 1, is_nextn=False)
-
-        self.layer_scatter_modes = LayerScatterModes.init_new(
-            layer_id=layer_id,
-            num_layers=1 if is_nextn else config.num_hidden_layers,
-            is_layer_sparse=self.is_layer_sparse,
-            is_previous_layer_sparse=is_previous_layer_sparse,
+            layer_scatter_modes=self.layer_scatter_modes,
         )
 
         if self.is_layer_sparse:
@@ -175,9 +177,27 @@ class DeepseekDecoderLayer(nn.Module):
         **kwargs,
     ) -> torch.Tensor:
 
-        hidden_states, residual = self.layer_communicator.prepare_attn(
-            hidden_states, residual, forward_batch
-        )
+        if hidden_states.shape[0] == 0:
+            residual = hidden_states
+        else:
+            if (
+                residual is not None
+                and hasattr(hidden_states, "_sglang_needs_allreduce_fusion")
+                and hidden_states._sglang_needs_allreduce_fusion
+            ):
+                hidden_states, residual = (
+                    self.input_layernorm.forward_with_allreduce_fusion(
+                        hidden_states, residual
+                    )
+                )
+            else:
+                if residual is None:
+                    residual = hidden_states
+                    hidden_states = self.input_layernorm.forward_npu(hidden_states)
+                else:
+                    hidden_states, residual = self.input_layernorm.forward_npu(
+                        hidden_states, residual
+                    )
 
         hidden_states = self.self_attn(
             positions=positions,
