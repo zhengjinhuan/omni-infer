@@ -32,10 +32,7 @@ from sglang.srt.utils import (
     get_int_env_var,
     is_npu,
     load_json_config,
-    BumpAllocator,
 )
-from sglang.srt.operations import execute_operations, execute_overlapped_operations
-from sglang.srt.operations_strategy import OperationsStrategy
 
 _is_npu = is_npu()
 
@@ -827,28 +824,4 @@ class NpuDeepEPDispatcher:
         }
         hidden_states = torch_npu.npu_moe_distribute_combine_v2(**_kwargs)
         return hidden_states
-
-# -------------------------------- Execution ---------------------------------------
-
-def model_forward(
-    layers,
-    positions: torch.Tensor,
-    forward_batch: ForwardBatch,
-    hidden_states: torch.Tensor,
-    residual: Optional[torch.Tensor],
-    zero_allocator: Optional[BumpAllocator] = None,
-):
-    inputs = dict(
-        positions=positions,
-        hidden_states=hidden_states,
-        forward_batch=forward_batch,
-        residual=residual,
-        zero_allocator=zero_allocator,
-    )
-    operations_strategy = OperationsStrategy.init_new_tbo(
-        layers, forward_batch.global_forward_mode
-    )
-
-    outputs = execute_operations(inputs, operations_strategy.operations)
-    return outputs["hidden_states"], outputs["residual"]
 
