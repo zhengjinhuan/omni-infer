@@ -35,8 +35,8 @@ class OfflineEagleDataset(torch.utils.data.Dataset):
         # Squeeze due to our data generation script adding a batch dimension
         hidden_states = data["hidden_states"][:self.max_len]
 
-        input_ids = data["input_ids"][: self.max_len][None, :]
-        loss_mask = data["loss_mask"][: self.max_len][None, :]
+        input_ids = data["input_ids"][: self.max_len]
+        loss_mask = data["loss_mask"][: self.max_len]
         loss_mask[-1] = 0
 
         pad_size = self.max_len - input_ids.numel()
