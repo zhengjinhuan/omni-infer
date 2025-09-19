@@ -52,10 +52,6 @@ from sglang.srt.layers.vocab_parallel_embedding import (
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
-
-from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
-from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekV3MLP, DeepseekV3MoE
-
 from sglang.srt.utils import (
     BumpAllocator,
     LazyValue,
@@ -64,13 +60,20 @@ from sglang.srt.utils import (
     log_info_on_rank0,
 )
 
+from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
+from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekMLP, DeepseekMoE
+
 
 _is_fp8_fnuz = is_fp8_fnuz()
 
 logger = logging.getLogger(__name__)
 
 
-class DeepseekV3DecoderLayer(nn.Module):
+class ParallelDeepseekMLP(DeepseekMLP):
+    pass
+
+
+class DeepseekDecoderLayer(nn.Module):
 
     def __init__(
         self,
@@ -79,7 +82,6 @@ class DeepseekV3DecoderLayer(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         is_nextn: bool = False,
         prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -109,7 +111,6 @@ class DeepseekV3DecoderLayer(nn.Module):
             layer_id=layer_id,
             reduce_results=False,
             prefix=add_prefix("self_attn", prefix),
-            alt_stream=alt_stream,
         )
 
         self.is_layer_sparse = self._is_layer_sparse(layer_id, is_nextn=is_nextn)
@@ -123,12 +124,11 @@ class DeepseekV3DecoderLayer(nn.Module):
         )
 
         if self.is_layer_sparse:
-            self.mlp = DeepseekV3MoE(
+            self.mlp = DeepseekMoE(
                 config=config,
                 quant_config=quant_config,
                 prefix=add_prefix("mlp", prefix),
                 layer_id=self.layer_id,
-                alt_stream=alt_stream,
                 is_nextn=is_nextn,
             )
         else:
@@ -136,7 +136,7 @@ class DeepseekV3DecoderLayer(nn.Module):
                 mlp_tp_rank, mlp_tp_size = 0, 1
             else:
                 mlp_tp_rank, mlp_tp_size = None, None
-            self.mlp = DeepseekV3MLP(
+            self.mlp = ParallelDeepseekMLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.intermediate_size,
                 hidden_act=config.hidden_act,
@@ -206,6 +206,7 @@ class DeepseekV3DecoderLayer(nn.Module):
 
         return hidden_states, residual
 
+
 class DeepseekV3Model(nn.Module):
     fall_back_to_pt_during_load = False
 
@@ -225,15 +226,13 @@ class DeepseekV3Model(nn.Module):
             config.hidden_size,
             enable_tp=not global_server_args_dict["enable_dp_attention"],
         )
-        self.alt_stream = None
         self.layers = nn.ModuleList(
             [
-                DeepseekV3DecoderLayer(
+                DeepseekDecoderLayer(
                     config,
                     layer_id,
                     quant_config=quant_config,
                     prefix=add_prefix(f"layers.{layer_id}", prefix),
-                    alt_stream=self.alt_stream,
                 )
                 for layer_id in range(config.num_hidden_layers)
             ]
@@ -339,7 +338,7 @@ class DeepseekV3ForCausalLM(nn.Module):
             lambda: {
                 layer_id: layer.mlp.get_moe_weights()
                 for layer_id, layer in enumerate(self.model.layers)
-                if isinstance(layer.mlp, DeepseekV3MoE)
+                if isinstance(layer.mlp, DeepseekMoE)
             }
         )
 
@@ -565,7 +564,7 @@ class DeepseekV3ForCausalLM(nn.Module):
                 experts = layer.mlp.experts
             else:
                 mlp = layer.mlp
-                assert isinstance(mlp, DeepseekV3MLP)
+                assert isinstance(mlp, ReplicatedDeepseekMLP)
                 for module in [
                     mlp.gate_up_proj,
                     mlp.down_proj,

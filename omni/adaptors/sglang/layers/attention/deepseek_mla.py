@@ -84,7 +84,6 @@ class DeepseekMLA(nn.Module):
         reduce_results: bool = True,
         layer_id: int = None,
         prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
     ) -> None:
         super().__init__()
 
@@ -212,7 +211,6 @@ class DeepseekMLA(nn.Module):
             prefix=add_prefix("attn_mha", prefix),
         )
 
-        self.alt_stream = alt_stream
         self.attn_mha.kv_b_proj = None
 
         self.w_kc = None
@@ -447,16 +445,8 @@ class DeepseekMLA(nn.Module):
             k_nope = latent_cache[..., : self.kv_lora_rank]
 
             # overlap qk norm
-            if self.alt_stream is not None and get_is_capture_mode():
-                current_stream = torch.cuda.current_stream()
-                self.alt_stream.wait_stream(current_stream)
-                q = self.q_a_layernorm(q)
-                with torch.cuda.stream(self.alt_stream):
-                    k_nope = self.kv_a_layernorm(k_nope)
-                current_stream.wait_stream(self.alt_stream)
-            else:
-                q = self.q_a_layernorm(q)
-                k_nope = self.kv_a_layernorm(k_nope)
+            q = self.q_a_layernorm(q)
+            k_nope = self.kv_a_layernorm(k_nope)
 
             k_nope = k_nope.unsqueeze(1)
             q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
