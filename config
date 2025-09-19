@@ -25,7 +25,8 @@ ngx_module_incs="$ngx_addon_dir"
 detect_python_config() {
     if command -v python3-config >/dev/null 2>&1; then
         PYTHON_INCLUDES=$(python3-config --includes)
-        PYTHON_LDFLAGS=$(python3-config --ldflags --embed 2>/dev/null || python3-config --ldflags)
+        PYTHON_LDFLAGS=$(python3-config --ldflags 2>/dev/null || python3-config --ldflags)
+        #PYTHON_LDFLAGS=$(python3-config --ldflags --embed 2>/dev/null || python3-config --ldflags)
     elif command -v pkg-config >/dev/null 2>&1; then
         PYTHON_INCLUDES=$(pkg-config --cflags python3)
         PYTHON_LDFLAGS=$(pkg-config --libs python3)
@@ -46,7 +47,6 @@ detect_zeromq_config() {
         ZMQ_CFLAGS=""
         ZMQ_LIBS="-lzmq"
     else
-        # 尝试查找ZeroMQ
         ZMQ_PATHS="/usr /usr/local /opt/local"
         for path in $ZMQ_PATHS; do
             if [ -f "$path/include/zmq.h" ]; then
@@ -69,7 +69,7 @@ PYTHON_FLAGS=$(detect_python_config)
 ZMQ_FLAGS=$(detect_zeromq_config)
 
 CFLAGS="$CFLAGS $PYTHON_FLAGS $ZMQ_FLAGS"
-ngx_module_libs="$ngx_module_libs $PYTHON_FLAGS $ZMQ_FLAGS -lmsgpackc"
+ngx_module_libs="$ngx_module_libs $ZMQ_FLAGS -lmsgpack-c -Wl,-Bdynamic -L/usr/local/lib -lpython3.11 $PYTHON_FLAGS"
 
 CFLAGS="$CFLAGS -Wno-unused-function -Wno-unused-variable"
 
