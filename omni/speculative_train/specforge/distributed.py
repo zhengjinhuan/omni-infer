@@ -38,7 +38,7 @@ def init_distributed(timeout: int = 10, tp_size: int = 1):
         timeout(int): Timeout for collective communication in minutes
         tp_size(int): The degree of tensor parallelism
     """
-    dist.init_process_group(backend="nccl", timeout=timedelta(minutes=timeout))
+    dist.init_process_group(backend="hccl", timeout=timedelta(minutes=timeout))
     local_rank = dist.get_rank() % torch.cuda.device_count()
     torch.cuda.set_device(local_rank)
     print_with_rank(f"bind to device {local_rank}")

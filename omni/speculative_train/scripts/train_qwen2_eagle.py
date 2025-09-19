@@ -189,7 +189,7 @@ print(model)
 names = [item[0] for item in model.named_parameters()]
 print(names)
 
-# init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
+init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
 
 args.dp_size = dist.get_world_size() // args.tp_size
 
