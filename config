@@ -26,7 +26,6 @@ detect_python_config() {
     if command -v python3-config >/dev/null 2>&1; then
         PYTHON_INCLUDES=$(python3-config --includes)
         PYTHON_LDFLAGS=$(python3-config --ldflags 2>/dev/null || python3-config --ldflags)
-        #PYTHON_LDFLAGS=$(python3-config --ldflags --embed 2>/dev/null || python3-config --ldflags)
     elif command -v pkg-config >/dev/null 2>&1; then
         PYTHON_INCLUDES=$(pkg-config --cflags python3)
         PYTHON_LDFLAGS=$(pkg-config --libs python3)
