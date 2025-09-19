@@ -81,7 +81,6 @@ static inline omni_req_context_t *omni_get_req_ctx(ngx_http_request_t *r)
     return ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 }
 
-
 static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 {
     return omni_get_req_ctx(r)->req;
@@ -111,14 +110,13 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
         if (tree != NULL)
         {
             match_depth = omni_radix_tree_match_optimistic(tree,
-                                                            (uint64_t *)req->tokenizer_req.block_hashes,
-                                                            req->tokenizer_req.block_hashes_len);
+                                                           (uint64_t *)req->tokenizer_req.block_hashes,
+                                                           req->tokenizer_req.block_hashes_len);
         }
         local_match_depths[i] = (uint32_t)match_depth;
         if ((ngx_uint_t)match_depth > computed_max)
             computed_max = match_depth;
     }
-    
 
     /* 3) write results to shared request */
     for (uint16_t i = 0; i < num_prefill; ++i)
@@ -384,7 +382,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     us->num_tokens -= req->metrics.prompt_num_tokens;
 
     omni_batch_metrics_t *current_batch = &us->his.his[us->his.head];
-    ngx_current_msec delta = (current_batch->last_response_receive_time > 0) ? (ngx_current_msec - current_batch->last_response_receive_time) : (21); // If first，force delta > 20 to get a new batch
+    ngx_msec_t delta = (current_batch->last_response_receive_time > 0) ? (ngx_current_msec - current_batch->last_response_receive_time) : (21); // If first，force delta > 20 to get a new batch
 
     // Need a smarter value from statistics or work out by the number of tokens scheduled
     if (delta > 20)
