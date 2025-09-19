@@ -1358,6 +1358,7 @@ static ngx_int_t ngx_http_omni_init_upstreams()
     for (i = 0; i < nupstreams; i++)
     {
         ngx_http_upstream_srv_conf_t *uscf = uscfp[i];
+        uscfp[i]->peer.init = omni_proxy_upstream_init;
         bool is_prefill = false;
         if (ngx_strncmp(uscf->host.data, PREFILL_ENDPOINTS, sizeof(PREFILL_ENDPOINTS) - 1) == 0)
         {
