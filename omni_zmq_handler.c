@@ -249,9 +249,9 @@ ngx_int_t omni_zmq_handler_init(ngx_cycle_t *cycle,
                                 ngx_str_t subscribe_topic,
                                 omni_zmq_msg_callback_t callback)
 {
-    ngx_int_t saved_index = handler->index;
-    ngx_memzero(handler, sizeof(omni_zmq_handler_t));
-    handler->index = saved_index;
+    ngx_int_t saved_index = handler->index;
+    ngx_memzero(handler, sizeof(omni_zmq_handler_t));
+    handler->index = saved_index;
     handler->log = cycle->log;
     handler->cycle = cycle;
     handler->zmq_address = zmq_address;
