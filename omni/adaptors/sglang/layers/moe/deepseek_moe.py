@@ -5,7 +5,6 @@ from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 import torch_npu
 from transformers import PretrainedConfig
@@ -30,7 +29,9 @@ from sglang.srt.utils import add_prefix
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
 from omni.adaptors.sglang.layers.moe.token_dispatcher.deepep import NpuDeepEPDispatcher
 
-class DeepseekV3MLP(nn.Module):
+
+class DeepseekMLP(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
@@ -90,7 +91,12 @@ class DeepseekV3MLP(nn.Module):
         return x
 
 
+class ReplicatedDeepseekMLP(DeepseekMLP):
+    pass
+
+
 class MoEGate(nn.Module):
+
     def __init__(self, config):
         super().__init__()
         self.weight = nn.Parameter(
@@ -104,11 +110,11 @@ class MoEGate(nn.Module):
             )
 
     def forward(self, hidden_states):
-        # NOTE: For some unknown reason, router_gemm seems degrade accept length.
+        import torch.nn.functional as F
         return F.linear(hidden_states, self.weight, None)
 
 
-class DeepseekV3MoE(nn.Module):
+class DeepseekMoE(nn.Module):
 
     def __init__(
         self,
@@ -174,7 +180,7 @@ class DeepseekV3MoE(nn.Module):
         
         if (config.n_shared_experts is not None and self.num_fused_shared_experts == 0):
             
-            self.shared_experts = DeepseekV3MLP(
+            self.shared_experts = ReplicatedDeepseekMLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.moe_intermediate_size * config.n_shared_experts,
                 hidden_act=config.hidden_act,
@@ -215,13 +221,6 @@ class DeepseekV3MoE(nn.Module):
                 n_routed_experts=config.n_routed_experts,
                 num_experts_per_tok=config.num_experts_per_tok,
             )
-
-    def get_moe_weights(self):
-        return [
-            x.data
-            for name, x in self.experts.named_parameters()
-            if name not in ["correction_bias"]
-        ]
 
     def forward(
         self,
@@ -301,3 +300,10 @@ class DeepseekV3MoE(nn.Module):
             )
 
         return final_hidden_states
+
+    def get_moe_weights(self):
+        return [
+            x.data
+            for name, x in self.experts.named_parameters()
+            if name not in ["correction_bias"]
+        ]
