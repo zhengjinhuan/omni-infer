@@ -1,5 +1,3 @@
-from omni.speculative_train.models.auto import AutoDraftModelConfig, AutoEagleDraftModel
-
 import argparse
 import hashlib
 import math
@@ -8,12 +6,18 @@ import time
 from collections import defaultdict
 
 import torch
+import torch_npu
+
+
 import torch.distributed as dist
 from datasets import load_dataset
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType
 from tqdm import tqdm
 from transformers import AutoTokenizer
+
+
+from omni.speculative_train.models.auto import AutoDraftModelConfig, AutoEagleDraftModel
 
 from omni.speculative_train.specforge.distributed import destroy_distributed, get_dp_group, init_distributed
 from omni.speculative_train.specforge.utils import (
@@ -28,6 +32,8 @@ from omni.speculative_train.data.dataset import (
     build_offline_eagle_dataset,
     prepare_dp_dataloaders,
 )
+
+from vllm.config import ParallelConfig
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Eagle with offline data")
@@ -183,7 +189,7 @@ print(model)
 names = [item[0] for item in model.named_parameters()]
 print(names)
 
-init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
+# init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
 
 args.dp_size = dist.get_world_size() // args.tp_size
 
