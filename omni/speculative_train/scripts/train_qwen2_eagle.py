@@ -183,15 +183,16 @@ def parse_args():
 
 # initialize
 parser, args = parse_args()
+init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
+args.dp_size = dist.get_world_size() // args.tp_size
+
+
 config = AutoDraftModelConfig.from_file("/data/model/qwq-32b-eagle/config.json")
 model = AutoEagleDraftModel.from_config(config).npu()
 print(model)
 names = [item[0] for item in model.named_parameters()]
 print(names)
 
-init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
-
-args.dp_size = dist.get_world_size() // args.tp_size
 
 with rank_0_priority():
     train_eagle3_dataset = build_offline_eagle_dataset(
