@@ -1,7 +1,13 @@
 # edit from specforge/data/preprocessing.py
-
 import os
+
+from datasets import Dataset
+
 import torch
+import torch.distributed as dist
+from torch.utils.data import DataLoader, DistributedSampler
+
+from typing import Optional
 
 def list_local_files(path, suffix):
     datapaths = []
@@ -66,3 +72,44 @@ def build_offline_eagle_dataset(
         list_local_files(hidden_states_path, suffix),
         max_len=max_len,
     )
+
+
+def prepare_dp_dataloaders(
+    dataset: Dataset,
+    batch_size: int,
+    num_workers: int = 4,
+    process_group: Optional[dist.ProcessGroup] = None,
+    pin_memory: Optional[bool] = False,
+    shuffle: Optional[bool] = False,
+    **dataloader_kwargs
+) -> DataLoader:
+    """
+    Prepare dataloader for distributed data parallel training.
+
+    Args:
+        dataset: The dataset to load data from.
+        batch_size: The batch size for each GPU.
+        num_workers: The number of workers for data loading.
+        process_group: The process group for distributed training.
+        pin_memory: Whether to pin memory for data loading.
+        shuffle: Whether to shuffle the dataset.
+        is_vlm: Whether the dataset is a vision-language model dataset.
+        **dataloader_kwargs: Additional keyword arguments for the DataLoader.
+
+    Returns:
+        A DataLoader for the dataset.
+    """
+    world_size = dist.get_world_size(process_group)
+    rank = dist.get_rank(process_group)
+    sampler = DistributedSampler(
+        dataset, num_replicas=world_size, rank=rank, shuffle=shuffle
+    )
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        **dataloader_kwargs
+    )
+    return dataloader

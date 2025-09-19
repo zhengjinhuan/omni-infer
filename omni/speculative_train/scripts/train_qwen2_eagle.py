@@ -9,12 +9,25 @@ from collections import defaultdict
 
 import torch
 import torch.distributed as dist
-from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType
 from tqdm import tqdm
 from transformers import AutoTokenizer
+
+from omni.speculative_train.specforge.distributed import destroy_distributed, get_dp_group, init_distributed
+from omni.speculative_train.specforge.utils import (
+    create_draft_config_from_target,
+    get_last_checkpoint,
+    print_on_rank0,
+    print_with_rank,
+    rank_0_priority,
+)
+
+from omni.speculative_train.data.dataset import (
+    build_offline_eagle_dataset,
+    prepare_dp_dataloaders,
+)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Eagle with offline data")
@@ -82,7 +95,7 @@ def parse_args():
     # other args
     parser.add_argument("--cache-key", type=str, default=None)
     parser.add_argument("--cache-dir", type=str, default="./cache")
-    parser.add_argument("--output-dir", type=str, required=True)
+    # parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--eval-interval", type=int, default=1)
     parser.add_argument("--save-interval", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
@@ -161,9 +174,33 @@ def parse_args():
 
     return parser, args
 
+
+# initialize
+parser, args = parse_args()
 config = AutoDraftModelConfig.from_file("/data/model/qwq-32b-eagle/config.json")
 model = AutoEagleDraftModel.from_config(config).npu()
 print(model)
 names = [item[0] for item in model.named_parameters()]
 print(names)
 
+init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
+
+args.dp_size = dist.get_world_size() // args.tp_size
+
+with rank_0_priority():
+    train_eagle3_dataset = build_offline_eagle_dataset(
+        args.train_hidden_states_path,
+        args.max_length,
+        'pt',
+    )
+
+train_dataloader = prepare_dp_dataloaders(
+    train_eagle3_dataset,
+    args.draft_micro_batch_size,
+    num_workers=4,
+    shuffle=True,
+    process_group=get_dp_group(),
+    pin_memory=True,
+)
+print_with_rank("Initialized train dataloader")
+print(train_dataloader)
