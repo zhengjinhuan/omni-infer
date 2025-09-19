@@ -187,22 +187,6 @@ def disable_dp_size():
         _ATTN_DP_SIZE = old_dp_size
 
 
-def get_dp_local_info_npu(forward_batch: ForwardBatch):
-    dp_rank = get_attention_dp_rank()
-
-    if forward_batch.dp_local_start_pos is None:
-        if dp_rank == 0:
-            local_start_pos = 0
-        else:
-            local_start_pos = sum(forward_batch.global_num_tokens_cpu[0:dp_rank])
-        local_num_tokens = forward_batch.global_num_tokens_cpu[dp_rank]
-
-        forward_batch.dp_local_start_pos = local_start_pos
-        forward_batch.dp_local_num_tokens = local_num_tokens
-
-    return forward_batch.dp_local_start_pos, forward_batch.dp_local_num_tokens
-
-
 def get_dp_local_info(forward_batch: ForwardBatch) -> Tuple[torch.Tensor, torch.Tensor]:
     # `get_dp_local_info` is only called in global DP gather and scatter. We use global DP rank here.
     dp_rank = get_attention_dp_rank()
@@ -290,9 +274,10 @@ def _dp_gather_via_all_reduce(
     assert local_tokens.is_contiguous()
     assert global_tokens.is_contiguous()
 
-    local_start_pos, local_num_tokens = get_dp_local_info_npu(forward_batch)
-    # npu not support memcpy_triton
-    memcpy_npu(global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False)
+    local_start_pos, local_num_tokens = get_dp_local_info(forward_batch)
+    if local_tokens.shape[0] > 0 and (is_partial or get_attention_tp_rank() == 0):
+        # npu not support memcpy_triton
+        memcpy_npu(global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False)
 
     # Input IDs are in int 32. We should use inplace_all_reduce for local case because of custom all reduce.
     NUM_GPUS_PER_NODE = 8
@@ -317,10 +302,13 @@ def _dp_gather_via_all_gather(
     if not is_partial:
         if get_attention_tp_rank() != 0:
             local_tokens.fill_(0)
-    scattered_local_tokens = local_tokens.tensor_split(get_attention_tp_size())[
-        get_attention_tp_rank()
-    ]
-    get_attention_tp_group().reduce_scatter_tensor(scattered_local_tokens, local_tokens)
+    if get_attention_tp_size() > 1:
+        scattered_local_tokens = local_tokens.tensor_split(get_attention_tp_size())[
+            get_attention_tp_rank()
+        ]
+        get_attention_tp_group().reduce_scatter_tensor(scattered_local_tokens, local_tokens)
+    else:
+        scattered_local_tokens = local_tokens
     get_tp_group().all_gather_into_tensor(global_tokens, scattered_local_tokens)
 
 
@@ -367,7 +355,7 @@ def dp_scatter(
     assert local_tokens.is_contiguous()
     assert global_tokens.is_contiguous()
     
-    local_start_pos, local_num_tokens = get_dp_local_info_npu(forward_batch)
+    local_start_pos, local_num_tokens = get_dp_local_info(forward_batch)
     memcpy_npu(local_tokens, global_tokens, 0, local_start_pos, local_num_tokens, True)
 
 
