@@ -11,7 +11,7 @@ def register_values(inventory):
     
     for host, vars in inventory['all']['children']['P']['hosts'].items():
         ansible_host_val = vars.get('ansible_host', '')
-        host_ip_val = vars.get('ansible_host', '')
+        host_ip_val = vars.get('host_ip', '')
         api_port_val = vars.get('env', '').get('API_PORT', '')
         
         if ansible_host_val and host_ip_val and ansible_host_val == host_ip_val:
