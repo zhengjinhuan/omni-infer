@@ -18,6 +18,7 @@ typedef enum
 typedef enum
 {
     OMNI_VALUE_INT32,
+    OMNI_VALUE_INT64,
     OMNI_VALUE_DOUBLE
 } omni_value_type_t;
 
@@ -36,6 +37,7 @@ typedef struct omni_metric_desc_s
     union
     {
         int32_t *int_values;   // Pointer to int values in global_state
+        int64_t *int64_values;
         double *double_values; // Pointer to double values
     } value;
 
