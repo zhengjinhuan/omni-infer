@@ -551,15 +551,15 @@ class NpuDeepEPDispatcher:
         self.world_size = get_world_group().world_size
         self.experts_tp_size = 1
 
-        self.group_name = self.group._get_backend(torch.device("npu")).get_hccl_comm_name(
-            self.global_rank
-        )
+        self.group_name = self.group._get_backend(
+            torch.device("npu")
+        ).get_hccl_comm_name(self.global_rank)
 
         self.moe_rs_group = get_pp_group().device_group
         self.moe_rs_group_rank = get_pp_group().rank_in_group
         self.moe_rs_group_name = self.moe_rs_group._get_backend(
-            torch.device("npu")).get_hccl_comm_name(
-            self.moe_rs_group_rank)
+            torch.device("npu")
+        ).get_hccl_comm_name(self.moe_rs_group_rank)
 
         if self.route_share_on_same_card:
             self.shared_expert_rank_num = 0

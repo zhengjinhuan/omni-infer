@@ -201,11 +201,13 @@ class W8A8Int8Config(QuantizationConfig):
 
     @classmethod
     def get_supported_act_dtypes(cls) -> List[torch.dtype]:
-        return ([torch.int8, torch.float16, torch.bfloat16])
+        return [torch.int8, torch.float16, torch.bfloat16]
 
     @classmethod
     def get_min_capability(cls) -> int:
-        raise NotImplementedError('NPU hardware does not support "get_min_capability" feature.')
+        raise NotImplementedError(
+            'NPU hardware does not support "get_min_capability" feature.'
+        )
 
     @classmethod
     def get_name(self) -> str:

@@ -50,12 +50,14 @@ class AttnForwardMethod(IntEnum):
     # Use MLA with fused RoPE kernel for CPU
     MLA_FUSED_ROPE_CPU = auto()
 
+
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
     import math
 
     if scale <= 1:
         return 1.0
     return 0.1 * mscale * math.log(scale) + 1.0
+
 
 class DeepseekMLA(nn.Module):
 
@@ -77,7 +79,6 @@ class DeepseekMLA(nn.Module):
         layer_id: int = None,
         prefix: str = "",
         layer_scatter_modes: LayerScatterModes = None,
-
     ) -> None:
         super().__init__()
 
@@ -261,10 +262,7 @@ class DeepseekMLA(nn.Module):
         self, forward_batch: ForwardBatch
     ) -> AttnForwardMethod:
         def _dispatch_mla_subtype():
-            if (
-                forward_batch.is_extend
-                and forward_batch.extend_num_tokens > 1
-            ):
+            if forward_batch.is_extend and forward_batch.extend_num_tokens > 1:
                 return AttnForwardMethod.MHA
             else:
                 return AttnForwardMethod.MLA
@@ -298,7 +296,7 @@ class DeepseekMLA(nn.Module):
         zero_allocator: BumpAllocator,
     ):
         if (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
-                self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
+            self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
         ):
             hidden_states, local_hidden_states = (
                 forward_batch.gathered_buffer[: forward_batch.input_ids.shape[0]],
@@ -310,17 +308,20 @@ class DeepseekMLA(nn.Module):
             )
 
         if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
-            return self._forward_decode(positions, hidden_states, forward_batch,zero_allocator)
+            return self._forward_decode(
+                positions, hidden_states, forward_batch, zero_allocator
+            )
         else:
-            return self._forward_prefill(positions, hidden_states, forward_batch,zero_allocator)
-
+            return self._forward_prefill(
+                positions, hidden_states, forward_batch, zero_allocator
+            )
 
     def _forward_prefill(
-            self,
-            positions: torch.Tensor,
-            hidden_states: torch.Tensor,
-            forward_batch: ForwardBatch,
-            zero_allocator: BumpAllocator,
+        self,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        forward_batch: ForwardBatch,
+        zero_allocator: BumpAllocator,
     ):
         s = self.forward_prepare(
             positions=positions,
@@ -331,11 +332,11 @@ class DeepseekMLA(nn.Module):
         return self.forward_core(s)
 
     def _forward_decode(
-            self,
-            positions: torch.Tensor,
-            hidden_states: torch.Tensor,
-            forward_batch: ForwardBatch,
-            zero_allocator: BumpAllocator,
+        self,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        forward_batch: ForwardBatch,
+        zero_allocator: BumpAllocator,
     ):
         s = self.forward_prepare(
             positions=positions,
@@ -496,7 +497,9 @@ class DeepseekMLA(nn.Module):
     def forward_absorb_core(
         self, q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
     ):
-        attn_output = self.attn_mqa(q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe)
+        attn_output = self.attn_mqa(
+            q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe
+        )
         attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
 
         attn_bmm_output = torch.empty(

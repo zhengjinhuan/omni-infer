@@ -448,6 +448,7 @@ class DeepEPMoE(EPMoE):
             forward_batch=forward_batch,
         )
 
+
 class NpuDeepEPMoE(DeepEPMoE):
     def __init__(
         self,

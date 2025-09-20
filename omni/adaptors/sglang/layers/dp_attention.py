@@ -273,7 +273,9 @@ def _dp_gather_via_all_reduce(
     local_start_pos, local_num_tokens = get_dp_local_info(forward_batch)
     if local_tokens.shape[0] > 0 and (is_partial or get_attention_tp_rank() == 0):
         # npu not support memcpy_triton
-        memcpy_npu(global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False)
+        memcpy_npu(
+            global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False
+        )
 
     # Input IDs are in int 32. We should use inplace_all_reduce for local case because of custom all reduce.
     NUM_GPUS_PER_NODE = 8
@@ -302,7 +304,9 @@ def _dp_gather_via_all_gather(
         scattered_local_tokens = local_tokens.tensor_split(get_attention_tp_size())[
             get_attention_tp_rank()
         ]
-        get_attention_tp_group().reduce_scatter_tensor(scattered_local_tokens, local_tokens)
+        get_attention_tp_group().reduce_scatter_tensor(
+            scattered_local_tokens, local_tokens
+        )
     else:
         scattered_local_tokens = local_tokens
     get_tp_group().all_gather_into_tensor(global_tokens, scattered_local_tokens)
