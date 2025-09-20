@@ -56,6 +56,7 @@ KVCACHE_NZ_DIM = 16
 from vllm.logger import logger
 
 import torch.nn.functional as F
+import custom_ops
 
 def stream_context(stream_tag):
     if model_extra_config.operator_opt_config.moe_multi_stream_tune:
@@ -143,17 +144,16 @@ class Indexer(nn.Module):
             actual_seq_lengths_key = attn_metadata.decode.seq_lens.to(torch.int32)
             block_table = attn_metadata.decode.block_table
 
-        topk_indices = torch.ops.npu.npu_lightning_indexer(query=q,
-                                                          key=kv_cache[2],
-                                                          weights=weights,
-                                                          actual_seq_lengths_query=actual_seq_lengths_query,
-                                                          actual_seq_lengths_key=actual_seq_lengths_key,
-                                                          block_table=block_table,
-                                                          score_scale=self.n_heads **-0.5 * self.softmax_scale,
-                                                          layout_query="TND",
-                                                          layout_key="PA_BSND",
-                                                          selected_count=2048,
-                                                          sparse_mode=3)
+        topk_indices = torch.ops.custom.npu_lightning_indexer(query=q,
+                                                                key=kv_cache[2],
+                                                                weights=weights,
+                                                                actual_seq_lengths_query=actual_seq_lengths_query,
+                                                                actual_seq_lengths_key=actual_seq_lengths_key,
+                                                                block_table=block_table,
+                                                                layout_query="TND",
+                                                                layout_key="PA_BSND",
+                                                                selected_count=2048,
+                                                                sparse_mode=3)
         return topk_indices
 
     def forward(self, x: torch.Tensor, qr: torch.Tensor,
@@ -208,14 +208,17 @@ class Indexer(nn.Module):
                                              k.view(-1, k.shape[-1]))   # b, s, n, d
 
         with stream_context("22"):
-            tng.scope.npu_wait_tensor(x, kw)
+            if not is_prefill:
+                tng.scope.npu_wait_tensor(x, kw)
             weights = self.weights_proj(x)[0]
+            if model_extra_config.parall_config.attn_sp_size > 1:
+                weights, weights_2 = torch.split(weights, weights.size(0) // 2, dim=0)
 
         topk_indices = self._apply_lightning_indexer(q, weights, attn_metadata, kv_cache, is_prefill)
 
         topk_indices_2 = None
         if model_extra_config.parall_config.attn_sp_size > 1:
-            topk_indices_2 = self._apply_lightning_indexer(q2, weights, attn_metadata, kv_cache, is_prefill, True)
+            topk_indices_2 = self._apply_lightning_indexer(q2, weights_2, attn_metadata, kv_cache, is_prefill, True)
 
         return topk_indices, topk_indices_2
 
@@ -521,7 +524,7 @@ class DeepseekMLA(nn.Module):
                 else:
                     actual_seq_kvlen = actual_seq_kvlen * (sp_rank + 1)
 
-            attn_output = torch.ops.npu.npu_selected_flash_attention(
+            attn_output = torch.ops.custom.npu_selected_flash_attention(
                 query=q_nope,
                 key=k_nope,
                 value=k_nope,
@@ -971,7 +974,8 @@ class DeepseekMLA(nn.Module):
                 cache_index = attn_metadata.slot_mapping.view(bsz, -1)
 
                 cache_mode = "PA_BSND" if model_extra_config.operator_opt_config.enable_fgsa else "PA_NZ"
-                q_nope, q_pe, dequant_scale_q_nope, qr, dequant_scale_q_norm = torch.ops.npu.npu_mla_prolog_v3(token_x = hidden_states_mla_prolog.view(bsz, 1, -1),
+                q_nope, q_pe, dequant_scale_q_nope, qr, dequant_scale_q_norm = torch.ops.npu.npu_mla_prolog_v3(
+                    token_x = hidden_states_mla_prolog.view(bsz, 1, -1),
                     weight_dq=self.q_a_proj.weight, weight_uq_qr=self.q_b_proj.weight,
                     weight_uk=self.W_UK, weight_dkv_kr=self.kv_a_proj_with_mqa.weight,
                     rmsnorm_gamma_cq=self.q_a_layernorm.weight, rmsnorm_gamma_ckv=self.kv_a_layernorm.weight,
@@ -1079,7 +1083,7 @@ class DeepseekMLA(nn.Module):
                 # todo indexer only support bsnd
                 topk_indices, _ = self.indexer(hidden_states, qr, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)
-                attn_output = torch.ops.npu.npu_selected_flash_attention(
+                attn_output = torch.ops.custom.npu_selected_flash_attention(
                     query=q_nope,
                     key=k_nope,
                     value=k_nope,
