@@ -145,7 +145,7 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
 
     omni_proxy_save_origin_body(r, ctx);
 
-    req->metrics.prompt_num_tokens = ctx->origin_body_tokens_size;
+    req->metrics.prompt_num_tokens = r->request_length / 8; // will be updated after tokenization
 
     if (!g_state->has_tokenizer)
     {

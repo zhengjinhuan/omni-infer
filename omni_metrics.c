@@ -49,8 +49,8 @@ static size_t metrics_count = 0;
         OMNI_METRIC_GAUGE,                                                                                    \
         {{0}},                                                                                                \
         2,                                                                                                    \
-        {.int64_values = (int64_t *)&endpoint->value}, // use int64_values and type transfer                  \
-        OMNI_VALUE_INT64,                              // for int64_values                                    \
+        {.int64_values = (int64_t *)&endpoint->value},                                                        \
+        OMNI_VALUE_INT64,                                                                                     \
         1};                                                                                                   \
     snprintf(&metrics_registry[index].label_names[0][0],                                                      \
              OMNI_METRICS_MAX_LABEL_LEN, "endpoint=\"%s:%d\"", endpoint->address.ip, endpoint->address.port); \
