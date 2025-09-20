@@ -52,10 +52,11 @@ def get_p_start_rank(p_tp_size, p_dp_size, d_tp_size, d_dp_size, d_node_num, cur
     # Calculate starting prefill rank for KV group
     p_dp_index = kv_group_index // p_replica_groups
     replica_index = kv_group_index % p_replica_groups
-    start_rank = p_dp_index * p_tp_size + replica_index * kv_group_size
-    
-    # return prefill rank for current decode device
-    return start_rank + cur_d_tp
+
+    # Calculate the prefill rank for current decode device
+    stride = p_tp_size // kv_group_size
+    offset = replica_index + cur_d_tp * stride
+    return p_dp_index * p_tp_size + offset
 
 def prepare_ranktables(prefill_group: ServerGroup, decode_group: ServerGroup, p_ranks: int, d_ranks: int):
     p_ranktables, d_ranktables = {}, {}
