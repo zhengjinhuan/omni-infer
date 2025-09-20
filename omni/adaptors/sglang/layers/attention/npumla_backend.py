@@ -13,20 +13,21 @@ from typing import TYPE_CHECKING, Callable, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch_npu
-
 from sglang.global_config import global_config
 from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
-from sglang.srt.layers.attention.flashinfer_mla_backend import (
-    FlashInferMLAIndicesUpdaterDecode,
-)
-from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
+from sglang.srt.layers.attention.flashinfer_mla_backend import \
+    FlashInferMLAIndicesUpdaterDecode
+from sglang.srt.layers.attention.torch_native_backend import \
+    TorchNativeAttnBackend
 from sglang.srt.layers.dp_attention import get_attention_tp_size
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
+                                                          ForwardMode)
 
 if TYPE_CHECKING:
     from sglang.srt.layers.radix_attention import RadixAttention
     from sglang.srt.model_executor.model_runner import ModelRunner
-    from sglang.srt.speculative.eagle_utils import EagleDraftInput, EagleVerifyInput
+    from sglang.srt.speculative.eagle_utils import (EagleDraftInput,
+                                                    EagleVerifyInput)
     from sglang.srt.speculative.spec_info import SpecInfo
 
 

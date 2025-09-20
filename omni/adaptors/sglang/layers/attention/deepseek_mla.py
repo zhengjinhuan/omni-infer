@@ -1,51 +1,37 @@
 from __future__ import annotations
 
 from enum import IntEnum, auto
-from transformers import PretrainedConfig
-from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from typing import Any, Dict, Iterable, Optional, Tuple
+
+import torch
+from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
+from sglang.srt.layers.dp_attention import (attn_tp_all_gather_into_tensor,
+                                            get_attention_tp_rank,
+                                            get_attention_tp_size)
+from omni.adaptors.sglang.layers.layernorm import RMSNorm
+from sglang.srt.layers.linear import (ColumnParallelLinear,
+                                      MergedColumnParallelLinear,
+                                      ReplicatedLinear, RowParallelLinear)
 from sglang.srt.layers.quantization import deep_gemm_wrapper
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.quantization.fp8_kernel import (
+    is_fp8_fnuz, per_tensor_quant_mla_fp8,
+    per_token_group_quant_mla_deep_gemm_masked_fp8)
 from sglang.srt.layers.radix_attention import RadixAttention
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode, PPProxyTensors
 from sglang.srt.layers.rotary_embedding import get_rope, get_rope_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.layers.communicator import (
-    LayerScatterModes,
-    ScatterMode,
-)
+from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
+                                                          ForwardMode,
+                                                          PPProxyTensors)
+from sglang.srt.utils import (BumpAllocator, LazyValue, add_prefix,
+                              bind_or_assign, get_bool_env_var, get_device_sm,
+                              get_int_env_var, is_flashinfer_available,
+                              is_non_idle_and_non_empty, log_info_on_rank0,
+                              use_intel_amx_backend)
 from torch import nn
-import torch
+from transformers import PretrainedConfig
 
-from typing import Any, Dict, Iterable, Optional, Tuple
-from sglang.srt.layers.dp_attention import (
-    attn_tp_all_gather_into_tensor,
-    get_attention_tp_rank,
-    get_attention_tp_size,
-)
-from omni.adaptors.sglang.layers.layernorm import RMSNorm
-from sglang.srt.layers.linear import (
-    ColumnParallelLinear,
-    MergedColumnParallelLinear,
-    ReplicatedLinear,
-    RowParallelLinear,
-)
-from sglang.srt.layers.quantization.fp8_kernel import (
-    is_fp8_fnuz,
-    per_tensor_quant_mla_fp8,
-    per_token_group_quant_mla_deep_gemm_masked_fp8,
-)
-from sglang.srt.utils import (
-    BumpAllocator,
-    LazyValue,
-    add_prefix,
-    bind_or_assign,
-    get_bool_env_var,
-    get_device_sm,
-    get_int_env_var,
-    is_flashinfer_available,
-    is_non_idle_and_non_empty,
-    log_info_on_rank0,
-    use_intel_amx_backend,
-)
+
 class AttnForwardMethod(IntEnum):
     # Use multi-head attention
     MHA = auto()
@@ -456,7 +442,8 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        from sglang.srt.model_executor.cuda_graph_runner import get_is_capture_mode
+        from sglang.srt.model_executor.cuda_graph_runner import \
+            get_is_capture_mode
 
         if self.q_lora_rank is not None:
             fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
