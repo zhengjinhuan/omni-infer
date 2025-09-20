@@ -21,7 +21,7 @@ from sglang.srt.layers.dp_attention import (
     get_attention_tp_rank,
     get_attention_tp_size,
 )
-from sglang.srt.layers.layernorm import RMSNorm
+from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from sglang.srt.layers.linear import (
     ColumnParallelLinear,
     MergedColumnParallelLinear,

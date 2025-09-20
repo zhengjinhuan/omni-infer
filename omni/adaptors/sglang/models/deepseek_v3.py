@@ -30,7 +30,7 @@ from sglang.srt.layers.communicator import (
     LayerScatterModes,
     enable_moe_dense_fully_dp,
 )
-from sglang.srt.layers.layernorm import RMSNorm
+from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
 from sglang.srt.layers.quantization import deep_gemm_wrapper
