@@ -599,7 +599,7 @@ class NPUModelRunner(GPUModelRunner):
                 if get_dp_group().world_size > 1:
                     self._dummy_run(1)
                 else:
-                    time.sleep(0)
+                    time.sleep(0.001) # release GIL
                 if not has_kv_transfer_group():
                     # Return empty ModelRunnerOuptut if there's no work to do.
                     return EMPTY_MODEL_RUNNER_OUTPUT
