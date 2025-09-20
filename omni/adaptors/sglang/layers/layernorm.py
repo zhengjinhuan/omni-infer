@@ -2,10 +2,12 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Custom normalization layers."""
+from typing import Any, Optional, Union
+
 import torch
 import torch_npu
-from typing import Optional, Union, Any
 from sglang.srt.layers.layernorm import RMSNorm as RMSNormGPU
+
 
 class RMSNorm(RMSNormGPU):
     def forward(
