@@ -71,9 +71,14 @@ def create_npumla_kv_indices(
     PAGED_SIZE=128,
 ):
     req_to_tokens = (
-        req_to_token_ptr[req_pool_indices_ptr, : page_kernel_lens_ptr.max()][:, ::PAGED_SIZE] // PAGED_SIZE
+        req_to_token_ptr[req_pool_indices_ptr, : page_kernel_lens_ptr.max()][
+            :, ::PAGED_SIZE
+        ]
+        // PAGED_SIZE
     )
-    kv_indices_ptr[: req_to_tokens.size(0), : req_to_tokens.size(1)].copy_(req_to_tokens)
+    kv_indices_ptr[: req_to_tokens.size(0), : req_to_tokens.size(1)].copy_(
+        req_to_tokens
+    )
 
 
 class NpuMLABackend(TorchNativeAttnBackend):
@@ -403,8 +408,8 @@ class NpuMLABackend(TorchNativeAttnBackend):
 
         if q_rope is not None:  # MLA
             k_cache = k_cache.view(-1, PAGE_SIZE, k_dim)
-            k_nope = k_cache[..., : q_nope_dim]
-            k_rope = k_cache[..., q_nope_dim :]
+            k_nope = k_cache[..., :q_nope_dim]
+            k_rope = k_cache[..., q_nope_dim:]
 
             attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                 q_nope,

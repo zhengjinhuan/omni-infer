@@ -81,9 +81,7 @@ class DeepseekMLP(nn.Module):
 
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
-        x, _ = self.down_proj(
-            x, skip_all_reduce=use_reduce_scatter
-        )
+        x, _ = self.down_proj(x, skip_all_reduce=use_reduce_scatter)
         return x
 
 
@@ -107,6 +105,7 @@ class MoEGate(nn.Module):
 
     def forward(self, hidden_states):
         import torch.nn.functional as F
+
         return F.linear(hidden_states, self.weight, None)
 
 
@@ -160,7 +159,9 @@ class DeepseekMoE(nn.Module):
         ep_num_redundant_experts = global_server_args_dict["ep_num_redundant_experts"]
 
         self.experts = NpuDeepEPMoE(
-            num_experts=config.n_routed_experts + self.num_fused_shared_experts + ep_num_redundant_experts,
+            num_experts=config.n_routed_experts
+            + self.num_fused_shared_experts
+            + ep_num_redundant_experts,
             num_fused_shared_experts=self.num_fused_shared_experts,
             top_k=config.num_experts_per_tok + self.num_fused_shared_experts,
             hidden_size=config.hidden_size,
@@ -169,28 +170,34 @@ class DeepseekMoE(nn.Module):
             quant_config=quant_config,
             routed_scaling_factor=config.routed_scaling_factor,
             prefix=add_prefix("experts", prefix),
-            deepep_mode=deepep_mode, # moe_a2a_backend
+            deepep_mode=deepep_mode,  # moe_a2a_backend
         )
 
         self.shared_experts = None
 
-        if (config.n_shared_experts is not None and self.num_fused_shared_experts == 0):
+        if config.n_shared_experts is not None and self.num_fused_shared_experts == 0:
 
             self.shared_experts = ReplicatedDeepseekMLP(
                 hidden_size=config.hidden_size,
-                intermediate_size=config.moe_intermediate_size * config.n_shared_experts,
+                intermediate_size=config.moe_intermediate_size
+                * config.n_shared_experts,
                 hidden_act=config.hidden_act,
                 quant_config=quant_config,
                 reduce_results=False,
                 prefix=add_prefix("shared_experts", prefix),
-                tp_size=1, # disable tp for shared experts when enable deepep moe
+                tp_size=1,  # disable tp for shared experts when enable deepep moe
                 tp_rank=0,
             )
 
             # shared_experts_is_fp8
             if self.shared_experts.gate_up_proj.weight.dtype == torch.float8_e4m3fn:
-                if (hasattr(self.shared_experts.gate_up_proj.quant_method, "quant_config")
-                    and self.shared_experts.gate_up_proj.quant_method.quant_config.get_name() == "moe_wna16"):
+                if (
+                    hasattr(
+                        self.shared_experts.gate_up_proj.quant_method, "quant_config"
+                    )
+                    and self.shared_experts.gate_up_proj.quant_method.quant_config.get_name()
+                    == "moe_wna16"
+                ):
                     assert (
                         self.shared_experts.gate_up_proj.quant_method.quant_config.weight_block_size
                         == self.shared_experts.down_proj.quant_method.quant_config.weight_block_size
@@ -228,7 +235,9 @@ class DeepseekMoE(nn.Module):
         shared_output = None
 
         if hidden_states.shape[0] > 0 and not forward_batch.is_prefill_idle:
-            router_logits = self.gate(hidden_states) # router_logits: (num_tokens, n_experts)
+            router_logits = self.gate(
+                hidden_states
+            )  # router_logits: (num_tokens, n_experts)
 
             if self.shared_experts is not None:
                 shared_output = self.shared_experts(hidden_states)
@@ -242,9 +251,11 @@ class DeepseekMoE(nn.Module):
                 ),
             )
         else:
-            topk_idx = torch.randperm(256)[:hidden_states.size(0) * self.top_k].reshape(
-                hidden_states.size(0), self.top_k
-                ).npu()
+            topk_idx = (
+                torch.randperm(256)[: hidden_states.size(0) * self.top_k]
+                .reshape(hidden_states.size(0), self.top_k)
+                .npu()
+            )
 
             topk_weights = torch.empty(
                 (hidden_states.size(0), self.top_k),

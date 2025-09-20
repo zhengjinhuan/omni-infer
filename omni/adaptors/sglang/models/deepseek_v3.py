@@ -207,7 +207,6 @@ class DeepseekDecoderLayer(nn.Module):
             hidden_states, forward_batch, use_reduce_scatter, **kwargs
         )
 
-
         hidden_states, residual = self.layer_communicator.postprocess_layer(
             hidden_states, residual, forward_batch
         )
@@ -275,7 +274,7 @@ class DeepseekV3Model(nn.Module):
         for i in range(total_num_layers):
             with get_global_expert_distribution_recorder(True).with_current_layer(i):
                 layer = self.layers[i]
-                if (i < total_num_layers - 1 and i >= self.first_k_dense_replace):
+                if i < total_num_layers - 1 and i >= self.first_k_dense_replace:
                     next_layer = self.layers[i + 1]
                     kwargs = {
                         "next_attn_weights": {
@@ -477,9 +476,7 @@ class DeepseekV3ForCausalLM(nn.Module):
                 0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim)
             ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1)
             if not use_deep_gemm_bmm:
-                self_attn.w_kc = bind_or_assign(
-                    self_attn.w_kc, w_kc.contiguous()
-                )
+                self_attn.w_kc = bind_or_assign(self_attn.w_kc, w_kc.contiguous())
                 self_attn.w_vc = bind_or_assign(
                     self_attn.w_vc, w_vc.transpose(1, 2).contiguous()
                 )
@@ -681,7 +678,7 @@ class DeepseekV3ForCausalLM(nn.Module):
                 if "rotary_emb.inv_freq" in name:
                     continue
                 if "weight_offset" in name:
-                    continue # NPU not support for weight_offset now.
+                    continue  # NPU not support for weight_offset now.
 
                 for param_name, weight_name, shard_id in stacked_params_mapping:
                     # Skip non-stacked layers and experts (experts handled below).
