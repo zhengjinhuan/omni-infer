@@ -32,32 +32,12 @@ from transformers import PretrainedConfig
 
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
 
-
-class AttnForwardMethod(IntEnum):
-    # Use multi-head attention
-    MHA = auto()
-
-    # Use absorbed multi-latent attention
-    MLA = auto()
-
-    # Use multi-head attention, but with KV cache chunked.
-    # This method can avoid OOM when prefix lengths are long.
-    MHA_CHUNKED_KV = auto()
-
-    # Use MLA but with fused RoPE
-    MLA_FUSED_ROPE = auto()
-
-    # Use MLA with fused RoPE kernel for CPU
-    MLA_FUSED_ROPE_CPU = auto()
-
-
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
     import math
 
     if scale <= 1:
         return 1.0
     return 0.1 * mscale * math.log(scale) + 1.0
-
 
 class DeepseekMLA(nn.Module):
 
@@ -222,9 +202,6 @@ class DeepseekMLA(nn.Module):
             "disable_chunked_prefix_cache"
         ]
 
-        self.current_attention_backend = (
-            None  # Attention backend used by current forward batch
-        )
         self.rocm_fused_decode_mla = get_bool_env_var(
             "SGLANG_ROCM_FUSED_DECODE_MLA", "false"
         )
@@ -258,36 +235,6 @@ class DeepseekMLA(nn.Module):
 
         self.weight_block_size = None
 
-    def dispatch_attn_forward_method(
-        self, forward_batch: ForwardBatch
-    ) -> AttnForwardMethod:
-        def _dispatch_mla_subtype():
-            if forward_batch.is_extend and forward_batch.extend_num_tokens > 1:
-                return AttnForwardMethod.MHA
-            else:
-                return AttnForwardMethod.MLA
-
-        # Determine attention backend used by current forward batch
-        if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
-            attention_backend = global_server_args_dict["decode_attention_backend"]
-        else:
-            attention_backend = global_server_args_dict["prefill_attention_backend"]
-        self.current_attention_backend = attention_backend
-
-        if attention_backend == "ascend":
-            return AttnForwardMethod.MLA
-        else:
-            # Triton: Use normal computation for prefill and use weight absorption for extend/decode
-            if (
-                forward_batch.is_extend
-                and not forward_batch.is_target_verify
-                and not forward_batch.is_draft_extend
-                and sum(forward_batch.extend_prefix_lens_cpu) == 0
-            ):
-                return AttnForwardMethod.MHA
-            else:
-                return _dispatch_mla_subtype()
-
     def forward(
         self,
         positions: torch.Tensor,
@@ -307,7 +254,7 @@ class DeepseekMLA(nn.Module):
                 local_hidden_states,
             )
 
-        if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
+        if (forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle) or forward_batch.is_target_verify:
             return self._forward_decode(
                 positions, hidden_states, forward_batch, zero_allocator
             )
@@ -323,77 +270,11 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        s = self.forward_prepare(
-            positions=positions,
-            hidden_states=hidden_states,
-            forward_batch=forward_batch,
-            zero_allocator=zero_allocator,
-        )
-        return self.forward_core(s)
-
-    def _forward_decode(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
-        s = self.forward_prepare(
-            positions=positions,
-            hidden_states=hidden_states,
-            forward_batch=forward_batch,
-            zero_allocator=zero_allocator,
-        )
-        return self.forward_core(s)
-
-    def forward_prepare(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
         if hidden_states.shape[0] == 0:
             assert (
                 not self.o_proj.reduce_results
             ), "short-circuiting allreduce will lead to hangs"
-            return hidden_states, None, forward_batch, None
-
-        attn_forward_method = self.dispatch_attn_forward_method(forward_batch)
-
-        if attn_forward_method == AttnForwardMethod.MHA:
-            inner_state = self.forward_normal_prepare(
-                positions, hidden_states, forward_batch, zero_allocator
-            )
-        elif attn_forward_method == AttnForwardMethod.MLA:
-            inner_state = self.forward_absorb_prepare(
-                positions, hidden_states, forward_batch, zero_allocator
-            )
-        else:
-            raise NotImplementedError
-        return None, attn_forward_method, forward_batch, inner_state
-
-    def forward_core(self, intermediate_state):
-        hidden_states, attn_forward_method, forward_batch, inner_state = (
-            intermediate_state
-        )
-        if inner_state is None:
             return hidden_states
-
-        if attn_forward_method == AttnForwardMethod.MHA:
-            return self.forward_normal_core(*inner_state)
-        elif attn_forward_method == AttnForwardMethod.MLA:
-            return self.forward_absorb_core(*inner_state)
-        else:
-            raise NotImplementedError
-
-    def forward_normal_prepare(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
         if self.q_lora_rank is not None:
             q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
                 [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
@@ -428,25 +309,23 @@ class DeepseekMLA(nn.Module):
         forward_batch.token_to_kv_pool.set_kv_buffer(
             self.attn_mha, forward_batch.out_cache_loc, latent_cache, None
         )
-
-        return q, k, v, forward_batch
-
-    def forward_normal_core(self, q, k, v, forward_batch):
         attn_output = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False)
         attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
         output, _ = self.o_proj(attn_output)
         return output
 
-    def forward_absorb_prepare(
+    def _forward_decode(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        from sglang.srt.model_executor.cuda_graph_runner import \
-            get_is_capture_mode
-
+        if hidden_states.shape[0] == 0:
+            assert (
+                not self.o_proj.reduce_results
+            ), "short-circuiting allreduce will lead to hangs"
+            return hidden_states
         if self.q_lora_rank is not None:
             fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
             q, latent_cache = fused_qkv_a_proj_out.split(
@@ -491,15 +370,7 @@ class DeepseekMLA(nn.Module):
 
         q_nope_out = q_nope_out.transpose(0, 1)
         q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
-
-        return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
-
-    def forward_absorb_core(
-        self, q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
-    ):
-        attn_output = self.attn_mqa(
-            q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe
-        )
+        attn_output = self.attn_mqa(q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe)
         attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
 
         attn_bmm_output = torch.empty(
