@@ -53,7 +53,7 @@ from omni.adaptors.vllm.utils import current_stream
 from omni.models.common.config.model_config import model_extra_config
 KVCACHE_NZ_DIM = 16
 
-+from vllm.logger import logger
+from vllm.logger import logger
 
 import torch.nn.functional as F
 

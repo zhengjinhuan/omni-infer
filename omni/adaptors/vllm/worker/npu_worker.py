@@ -325,7 +325,6 @@ class NPUWorker(WorkerBase):
             if model_extra_config.operator_opt_config.use_omni_cache:
                 self.model_runner.initialize_omni_kv_cache(kv_cache_config)
             else:
-                raise RuntimeError(f"Should not come here.")
                 self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def initialize_cache(self, kv_cache_configs: List[KVCacheConfig]) -> None:
