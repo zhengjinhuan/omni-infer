@@ -231,6 +231,18 @@ train_dataloader = prepare_dp_dataloaders(
 print_with_rank("Initialized train dataloader")
 print(train_dataloader)
 
+# Calculate total steps if not provided
+if args.total_steps is None:
+    steps_per_epoch = math.ceil(
+        len(train_dataloader) / args.draft_accumulation_steps
+    )
+    args.total_steps = args.num_epochs * steps_per_epoch
+    print_with_rank(
+        f"Auto-calculated total_steps: {args.total_steps} (num_epochs={args.num_epochs} * steps_per_epoch={steps_per_epoch})"
+    )
+else:
+    print_with_rank(f"Using provided total_steps: {args.total_steps}")
+
 # build Eagle3 model
 eagle_model = OfflineEagleModel(
     target_head=target_head,
