@@ -20,24 +20,45 @@ import inspect
 import os
 import types
 from contextlib import contextmanager
-from typing import (TYPE_CHECKING, Any, Callable, ContextManager, Generator,
-                    Optional, Tuple, Union)
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ContextManager,
+    Generator,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import torch
 import tqdm
 from networkx.utils.backends import backends
+
 from sglang.srt.distributed import get_tensor_model_parallel_rank
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.cuda_graph_runner import (
-    DeviceRunnerBase, _to_torch, get_batch_sizes_to_capture, patch_model,
-    set_torch_compile_config)
+    DeviceRunnerBase,
+    _to_torch,
+    get_batch_sizes_to_capture,
+    patch_model,
+    set_torch_compile_config,
+)
 from sglang.srt.model_executor.forward_batch_info import (
-    CaptureHiddenMode, ForwardBatch, ForwardMode, PPProxyTensors,
-    enable_num_token_non_padded)
-from sglang.srt.utils import (get_available_gpu_memory, get_compiler_backend,
-                              get_device, get_device_memory_capacity,
-                              rank0_log)
+    CaptureHiddenMode,
+    ForwardBatch,
+    ForwardMode,
+    PPProxyTensors,
+    enable_num_token_non_padded,
+)
+from sglang.srt.utils import (
+    get_available_gpu_memory,
+    get_compiler_backend,
+    get_device,
+    get_device_memory_capacity,
+    rank0_log,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner

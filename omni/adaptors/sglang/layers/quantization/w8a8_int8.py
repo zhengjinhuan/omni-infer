@@ -4,27 +4,35 @@ import importlib
 import logging
 import sys
 from types import MappingProxyType
-from typing import (TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple,
-                    Union, cast)
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, Union, cast
 
 import torch
-from sglang.srt.distributed import (get_tensor_model_parallel_rank,
-                                    get_tensor_model_parallel_world_size)
+from torch.nn.parameter import Parameter
+
+from sglang.srt.distributed import (
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+)
 from sglang.srt.layers.amx_utils import _amx_process_weight_after_loading
-from sglang.srt.layers.parameter import (ChannelQuantScaleParameter,
-                                         ModelWeightParameter,
-                                         PerTensorScaleParameter)
-from sglang.srt.layers.quantization.base_config import (FusedMoEMethodBase,
-                                                        LinearMethodBase,
-                                                        QuantizationConfig,
-                                                        QuantizeMethodBase)
-from sglang.srt.layers.quantization.compressed_tensors.utils import \
-    should_ignore_layer
+from sglang.srt.layers.parameter import (
+    ChannelQuantScaleParameter,
+    ModelWeightParameter,
+    PerTensorScaleParameter,
+)
+from sglang.srt.layers.quantization.base_config import (
+    FusedMoEMethodBase,
+    LinearMethodBase,
+    QuantizationConfig,
+    QuantizeMethodBase,
+)
+from sglang.srt.layers.quantization.compressed_tensors.utils import should_ignore_layer
 from sglang.srt.layers.quantization.int8_kernel import per_token_quant_int8
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
-from sglang.srt.utils import (apply_module_patch, set_weight_attrs,
-                              use_intel_amx_backend)
-from torch.nn.parameter import Parameter
+from sglang.srt.utils import (
+    apply_module_patch,
+    set_weight_attrs,
+    use_intel_amx_backend,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.topk import TopKOutput
@@ -253,7 +261,7 @@ class W8A8Int8Config(QuantizationConfig):
             )
         elif isinstance(layer, FusedMoE):
             return NPU_W8A8MoEMethod(self)
-
+        
         return None
 
     def is_layer_skipped(
@@ -397,8 +405,7 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
         params_dtype: torch.dtype,
         **extra_weight_attrs,
     ):
-        from sglang.srt.layers.moe.fused_moe_triton import \
-            FusedMoeWeightScaleSupported
+        from sglang.srt.layers.moe.fused_moe_triton import FusedMoeWeightScaleSupported
 
         tp_size = get_tensor_model_parallel_world_size()
 
@@ -471,8 +478,7 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
         no_combine: bool = False,
         routed_scaling_factor: Optional[float] = None,
     ) -> torch.Tensor:
-        from sglang.srt.layers.moe.fused_moe_triton.fused_moe import \
-            fused_experts
+        from sglang.srt.layers.moe.fused_moe_triton.fused_moe import fused_experts
 
         return fused_experts(
             x,
@@ -859,8 +865,7 @@ class NPU_W8A8MoEMethod(FusedMoEMethodBase):
         params_dtype: torch.dtype,
         **extra_weight_attrs,
     ) -> None:
-        from sglang.srt.layers.moe.fused_moe_triton import \
-            FusedMoeWeightScaleSupported
+        from sglang.srt.layers.moe.fused_moe_triton import FusedMoeWeightScaleSupported
 
         self.num_experts = num_experts
         extra_weight_attrs.update(

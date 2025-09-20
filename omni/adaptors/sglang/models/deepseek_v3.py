@@ -18,39 +18,51 @@ from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
+from torch import nn
 import torch_npu
+from transformers import PretrainedConfig
+
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
-from sglang.srt.eplb.expert_distribution import \
-    get_global_expert_distribution_recorder
+from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
-from sglang.srt.layers.communicator import (LayerCommunicator,
-                                            LayerScatterModes,
-                                            enable_moe_dense_fully_dp)
+from sglang.srt.layers.communicator import (
+    LayerCommunicator,
+    LayerScatterModes,
+    enable_moe_dense_fully_dp,
+)
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessor
+from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.fp8_kernel import is_fp8_fnuz
 from sglang.srt.layers.quantization.fp8_utils import (
-    block_quant_to_tensor_quant, channel_quant_to_tensor_quant,
-    normalize_e4m3fn_to_e4m3fnuz, requant_weight_ue8m0_inplace)
-from sglang.srt.layers.quantization.int8_utils import \
-    block_dequant as int8_block_dequant
-from sglang.srt.layers.vocab_parallel_embedding import (ParallelLMHead,
-                                                        VocabParallelEmbedding)
+    block_quant_to_tensor_quant,
+    channel_quant_to_tensor_quant,
+    normalize_e4m3fn_to_e4m3fnuz,
+    requant_weight_ue8m0_inplace,
+)
+from sglang.srt.layers.quantization.int8_utils import (
+    block_dequant as int8_block_dequant,
+)
+from sglang.srt.layers.vocab_parallel_embedding import (
+    ParallelLMHead,
+    VocabParallelEmbedding,
+)
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
-                                                          PPProxyTensors)
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
-from sglang.srt.utils import (BumpAllocator, LazyValue, add_prefix,
-                              bind_or_assign, log_info_on_rank0)
-from torch import nn
-from transformers import PretrainedConfig
+from sglang.srt.utils import (
+    BumpAllocator,
+    LazyValue,
+    add_prefix,
+    bind_or_assign,
+    log_info_on_rank0,
+)
 
 from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
-from omni.adaptors.sglang.layers.moe.deepseek_moe import (DeepseekMLP,
-                                                          DeepseekMoE)
-from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
+from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekMLP, DeepseekMoE
+
 
 _is_fp8_fnuz = is_fp8_fnuz()
 
@@ -202,7 +214,7 @@ class DeepseekDecoderLayer(nn.Module):
         use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
             forward_batch
         )
-
+        
         hidden_states = self.mlp(
             hidden_states, forward_batch, use_reduce_scatter, **kwargs
         )
@@ -363,7 +375,7 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         # Only Deepseek V3/R1 can use shared experts fusion optimization now.
         disable_reason = "Only Deepseek V3/R1 on NV-platform with capability >= 80 can use shared experts fusion optimization."
-
+        
         global_server_args_dict["disable_shared_experts_fusion"] = True
         self.num_fused_shared_experts = 0
         log_info_on_rank0(

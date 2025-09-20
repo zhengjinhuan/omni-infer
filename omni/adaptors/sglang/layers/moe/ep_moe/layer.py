@@ -4,36 +4,46 @@ import logging
 from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import torch
-from sglang.srt.distributed.parallel_state import \
-    get_moe_expert_parallel_world_size
+
+from sglang.srt.distributed.parallel_state import get_moe_expert_parallel_world_size
 from sglang.srt.layers.moe.ep_moe.kernels import (
-    ep_gather, ep_scatter, moe_ep_deepgemm_preprocess,
-    post_reorder_triton_kernel, silu_and_mul_masked_post_quant_fwd,
-    tma_align_input_scale)
-from sglang.srt.layers.moe.fused_moe_triton.layer import (FlashInferFusedMoE,
-                                                          FusedMoE)
+    ep_gather,
+    ep_scatter,
+    moe_ep_deepgemm_preprocess,
+    post_reorder_triton_kernel,
+    silu_and_mul_masked_post_quant_fwd,
+    tma_align_input_scale,
+)
+from sglang.srt.layers.moe.fused_moe_triton.layer import FlashInferFusedMoE, FusedMoE
 from sglang.srt.layers.moe.topk import TopKOutput
-from sglang.srt.layers.moe.utils import (DeepEPMode,
-                                         should_use_flashinfer_trtllm_moe)
+from sglang.srt.layers.moe.utils import DeepEPMode, should_use_flashinfer_trtllm_moe
 from sglang.srt.layers.quantization import deep_gemm_wrapper
-from sglang.srt.layers.quantization.base_config import (QuantizationConfig,
-                                                        QuantizeMethodBase)
-from sglang.srt.layers.quantization.fp8 import (Fp8Config, Fp8MoEMethod,
-                                                get_tile_tokens_dim)
+from sglang.srt.layers.quantization.base_config import (
+    QuantizationConfig,
+    QuantizeMethodBase,
+)
+from sglang.srt.layers.quantization.fp8 import (
+    Fp8Config,
+    Fp8MoEMethod,
+    get_tile_tokens_dim,
+)
 from sglang.srt.layers.quantization.fp8_kernel import (
-    is_fp8_fnuz, sglang_per_token_group_quant_fp8)
+    is_fp8_fnuz,
+    sglang_per_token_group_quant_fp8,
+)
+from omni.adaptors.sglang.layers.quantization.w8a8_int8 import W8A8Int8Config, W8A8Int8MoEMethod
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.utils import ceil_div, dispose_tensor, get_bool_env_var, is_npu
 
-from omni.adaptors.sglang.layers.quantization.w8a8_int8 import (
-    W8A8Int8Config, W8A8Int8MoEMethod)
-
 if TYPE_CHECKING:
-    from sglang.srt.layers.moe.token_dispatcher import DispatchOutput
-
     from omni.adaptors.sglang.layers.moe.token_dispatcher import (
-        DeepEPLLOutput, DeepEPNormalOutput)
+        DeepEPLLOutput,
+        DeepEPNormalOutput,
+    )
+    from sglang.srt.layers.moe.token_dispatcher import (
+        DispatchOutput,
+    )
 
 _is_npu = is_npu()
 _is_fp8_fnuz = is_fp8_fnuz()
@@ -571,8 +581,9 @@ def get_moe_impl_class():
             # Check the quantization argument directly
             quantization = global_server_args_dict.get("quantization")
             if quantization == "modelopt_fp4":
-                from sglang.srt.layers.moe.fused_moe_triton.layer import \
-                    FlashInferFP4MoE
+                from sglang.srt.layers.moe.fused_moe_triton.layer import (
+                    FlashInferFP4MoE,
+                )
 
                 return FlashInferFP4MoE
         except:

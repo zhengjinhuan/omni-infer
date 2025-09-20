@@ -7,12 +7,16 @@ from enum import IntEnum, auto
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
-from sglang.srt.distributed import (GroupCoordinator,
-                                    get_tensor_model_parallel_rank,
-                                    get_tensor_model_parallel_world_size,
-                                    get_tp_group,
-                                    tensor_model_parallel_all_reduce)
-from sglang.triton_utils import tl, triton
+from sglang.triton_utils import triton
+from sglang.triton_utils import tl
+
+from sglang.srt.distributed import (
+    GroupCoordinator,
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+    get_tp_group,
+    tensor_model_parallel_all_reduce,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +354,7 @@ def dp_scatter(
     local_tokens.fill_(0)
     assert local_tokens.is_contiguous()
     assert global_tokens.is_contiguous()
-
+    
     local_start_pos, local_num_tokens = get_dp_local_info(forward_batch)
     memcpy_npu(local_tokens, global_tokens, 0, local_start_pos, local_num_tokens, True)
 

@@ -5,25 +5,29 @@ from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
+from torch import nn
 import torch_npu
-from sglang.srt.distributed import (get_moe_expert_parallel_world_size,
-                                    get_tensor_model_parallel_world_size,
-                                    parallel_state)
+from transformers import PretrainedConfig
+
+from sglang.srt.distributed import (
+    get_moe_expert_parallel_world_size,
+    get_tensor_model_parallel_world_size,
+    parallel_state,
+)
 from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
+from sglang.srt.layers.linear import (
+    MergedColumnParallelLinear,
+    RowParallelLinear,
+)
 from sglang.srt.layers.activation import SiluAndMul
-from sglang.srt.layers.linear import (MergedColumnParallelLinear,
-                                      RowParallelLinear)
 from sglang.srt.layers.moe.topk import TopK
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.utils import add_prefix
-from torch import nn
-from transformers import PretrainedConfig
 
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
-from omni.adaptors.sglang.layers.moe.token_dispatcher.deepep import \
-    NpuDeepEPDispatcher
+from omni.adaptors.sglang.layers.moe.token_dispatcher.deepep import NpuDeepEPDispatcher
 
 
 class DeepseekMLP(nn.Module):
@@ -173,9 +177,9 @@ class DeepseekMoE(nn.Module):
         )
 
         self.shared_experts = None
-
+        
         if (config.n_shared_experts is not None and self.num_fused_shared_experts == 0):
-
+            
             self.shared_experts = ReplicatedDeepseekMLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.moe_intermediate_size * config.n_shared_experts,
@@ -201,7 +205,7 @@ class DeepseekMoE(nn.Module):
 
         if global_server_args_dict["moe_a2a_backend"].is_deepep():
             # TODO: we will support tp < ep in the future
-
+            
             self.deepep_dispatcher = NpuDeepEPDispatcher(
                 group=parallel_state.get_tp_group().device_group,
                 router_topk=self.top_k,
@@ -232,7 +236,7 @@ class DeepseekMoE(nn.Module):
 
             if self.shared_experts is not None:
                 shared_output = self.shared_experts(hidden_states)
-
+            
             topk_weights, topk_idx, _ = self.topk(
                 hidden_states,
                 router_logits,
@@ -245,7 +249,7 @@ class DeepseekMoE(nn.Module):
             topk_idx = torch.randperm(256)[:hidden_states.size(0) * self.top_k].reshape(
                 hidden_states.size(0), self.top_k
                 ).npu()
-
+            
             topk_weights = torch.empty(
                 (hidden_states.size(0), self.top_k),
                 dtype=torch.float32,
