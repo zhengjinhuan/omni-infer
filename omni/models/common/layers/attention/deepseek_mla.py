@@ -19,6 +19,7 @@ from vllm.model_executor.layers.linear import (
     ReplicatedLinear
 )
 from vllm.model_executor.layers.layernorm import RMSNorm
+from vllm.model_executor.models.utils import extract_layer_index
 from vllm.distributed.communication_op import (
     tensor_model_parallel_all_gather)
 from vllm.distributed.parallel_state import (
@@ -48,8 +49,11 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_npu_device_count,
     get_local_group_from_list
 )
+from omni.adaptors.vllm.utils import current_stream
 from omni.models.common.config.model_config import model_extra_config
 KVCACHE_NZ_DIM = 16
+
++from vllm.logger import logger
 
 import torch.nn.functional as F
 
@@ -262,6 +266,7 @@ class DeepseekMLA(nn.Module):
         self.kv_scale = None
         # FA is fully quantized, KVCache is not quantized, and the function is not enabled.
         self.quant_symbol = quant_config is not None
+        self.layer_idx = extract_layer_index(self.prefix)
 
         self.merge_qkv = model_extra_config.operator_opt_config.merge_qkv
         if self.q_lora_rank is not None:
@@ -714,6 +719,9 @@ class DeepseekMLA(nn.Module):
         attn_metadata: AttentionMetadata,
         comm_group: Optional[GroupCoordinator] = None,
     ) -> torch.Tensor:
+        main_stream = current_stream()
+        kv_event = torch.npu.Event(blocking=False, enable_timing=False)
+
         assert model_extra_config.parall_config.attn_sp_size == 1, "only support attn_sp_size=1"
         if self.q_lora_rank is not None:
             if self.merge_qkv:
@@ -758,6 +766,7 @@ class DeepseekMLA(nn.Module):
         if isinstance(kv_cache, Dict):
             kv_cache = kv_cache.get("kv_cache")
         if kv_cache is not None and isinstance(kv_cache, Tuple) and kv_cache[0].numel() > 0:
+            raise RuntimeError(f"Should not come here.")
             # k_pe:BNS,64 kv_a:BNS, 512, kv_states:bnsd, cos,sin:bnsd,kv cache:bsnd
             _, _, k_pe, kv_a = torch_npu.npu_kv_rmsnorm_rope_cache(
                 latent_cache.view(-1, 1, 1, 576), # bnsd
@@ -783,6 +792,34 @@ class DeepseekMLA(nn.Module):
             k_pe = k_pe.unsqueeze(2)
             k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
             k_pe = k_pe.squeeze(2)
+            kv_event.record(main_stream)
+
+            if attn_metadata is not None:
+                # ram_cache = attn_metadata.ram_cache
+                # assert ram_cache is not None
+                # assert isinstance(ram_cache, torch.Tensor), f"ram_cache should be Tensor, but got {type(ram_cache)}."
+                # assert ram_cache.device == torch.device('cpu'), f"ram_cache should be on CPU, but got {ram_cache.device}."
+                assert len(kv_a.shape) == 2 and kv_a.shape[1] == 512, f"{kv_a.shape=}"
+                assert k_pe.shape == (kv_a.shape[0], 1, 64), f"{k_pe.shape=}"
+                # kv_states = torch.cat([kv_a.unsqueeze(1), k_pe], dim=-1)
+                # kv_head_size = current_kv.shape[-1]
+                # kv_tp_size = kv_head_size // self.tp_world_size  # for TP16, it's 36; for TP32, it's 18
+                # cpu_slot_mapping = attn_metadata.slot_mapping.cpu()
+
+                # block_size = ram_cache.shape[1]
+                # # consider padding in slot mapping
+                # ram_cache[cpu_slot_mapping//block_size, cpu_slot_mapping%block_size, self.layer_idx, self.tp_local_rank]=current_kv[..., self.tp_rank*kv_tp_size:(self.tp_rank+1)*kv_tp_size].cpu()
+                # attn_metadata.omni_cache.synchronize_d2h(kv_a.unsqueeze(1), k_pe, attn_metadata.slot_mapping, kv_event)
+                if attn_metadata.prefill.prefix_meta is not None:
+                    # attn_metadata.omni_cache.synchronize_h2d(
+                    #     prefix_meta=attn_metadata.prefill.prefix_meta,
+                    #     layer_idx=self.layer_idx,
+                    # )
+                    prefix_buffer = attn_metadata.omni_cache.prefix_buffer_npu
+                    dst_slots = attn_metadata.prefill.prefix_meta.query_slots
+                    num_actual_tokens = attn_metadata.prefill.prefix_meta.num_actual_tokens
+                    prefix_buffer[dst_slots, :, :512] = kv_a.unsqueeze(1)[:num_actual_tokens]
+                    prefix_buffer[dst_slots, :, 512:] = k_pe[:num_actual_tokens]
 
         is_attn_output_reshape = model_extra_config.operator_opt_config.prefill_enable_mla_alltoall and attn_metadata is None
         o_proj_tp_size = get_o_proj_dp_group().world_size \
@@ -798,12 +835,14 @@ class DeepseekMLA(nn.Module):
             prefill_metadata = attn_metadata.prefill
             computed_tokens = 0
             assert not (self.fa_quant and len(prefill_metadata.seq_qlen_group) > 1)
+            assert len(prefill_metadata.seq_qlen_group) == 1, f"{len(prefill_metadata.seq_qlen_group)=}"
             for iter, (actual_seq_qlen, actual_seq_kvlen) in enumerate(zip(
                 prefill_metadata.seq_qlen_group,
                 prefill_metadata.seq_kvlen_group)
             ):
                 if prefill_metadata.kv_index_list and kv_cache is not None and isinstance(kv_cache, Tuple) and\
                         kv_cache[0].numel() > 0 and not self.fa_quant:
+                    raise RuntimeError(f"Should not come here.")
                     # adapt nz
                     block_num, block_size, head_size, _ = kv_cache[0].shape
                     kv_cache_a = (kv_cache[0]
@@ -817,8 +856,14 @@ class DeepseekMLA(nn.Module):
                         .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
                     k_pe = kv_cache_pe.reshape(-1, kv_cache[1].shape[-1]) \
                         .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
-                prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
-                prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
+                if prefill_metadata.prefix_meta is not None:
+                    prefix_buffer = attn_metadata.omni_cache.prefix_buffer_npu
+                    prefill_kv_a, prefill_k_pe = prefix_buffer[:actual_seq_kvlen[-1], :, :512], prefix_buffer[:actual_seq_kvlen[-1], :, 512:]
+                    prefix_event = attn_metadata.omni_cache.h2d_event
+                else:
+                    prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
+                    prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
+                    prefix_event = None
 
                 kv = self.kv_b_proj.forward(prefill_kv_a)[0]
                 kv = kv.view(-1, self.num_local_heads, self.qk_nope_head_dim + self.v_head_dim)
@@ -830,6 +875,8 @@ class DeepseekMLA(nn.Module):
                     attn_mask = None
                     sparse_mode = 0  # must be 0 if attn_mask is None
                 prefill_k_rope = prefill_k_pe.view(-1, 1, self.qk_rope_head_dim).repeat(1, self.num_local_heads, 1)
+                if prefix_event is not None:
+                    main_stream.wait_event(prefix_event)
                 attn_output[computed_tokens:computed_tokens+actual_seq_qlen[-1]] = \
                     torch.ops.npu.npu_fused_infer_attention_score(
                         q_nope[computed_tokens:computed_tokens+actual_seq_qlen[-1]],
@@ -849,6 +896,14 @@ class DeepseekMLA(nn.Module):
                 computed_tokens += actual_seq_qlen[-1]
         else:
             attn_output.fill_(0)
+
+        if attn_metadata is not None:
+            attn_metadata.omni_cache.synchronize_d2h(kv_a.unsqueeze(1), k_pe, attn_metadata.slot_mapping, self.layer_idx, kv_event)
+            attn_metadata.omni_cache.synchronize_h2d(
+                prefix_meta=attn_metadata.prefill.prefix_meta,
+                layer_idx=self.layer_idx + 1,
+            )
+            # attn_metadata.omni_cache.buffer2host(latent_cache.shape[0], self.layer_idx, main_stream)
 
         # if only set prefill_enable_mla_alltoall means prefill o_proj tp to dp
         # if also set o_proj_tp_size means prefill o_proj tp to dp + tp

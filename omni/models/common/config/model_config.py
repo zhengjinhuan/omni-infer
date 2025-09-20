@@ -6,6 +6,7 @@ import json
 import threading
 from vllm.logger import logger
 import omni.adaptors.vllm.envs as envs
+import os
 
 @dataclass
 class ModelParallelConfig:
@@ -52,6 +53,7 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
     enable_fgsa: bool = False # 使能mla = Indexer + select FA
+    use_omni_cache: bool = False
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
@@ -59,6 +61,10 @@ class ModelOperatorOptConfig:
             raise ValueError(
                 "When use_omni_placement=True, omni_placement_config_path must be provided!"
             )
+        
+        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
+            self.use_omni_cache = True
+
         # Check the dependencies of use_prefetch and prefetch_Mb
         if not self.use_prefetch:
             self.expert_gate_up_prefetch = 0

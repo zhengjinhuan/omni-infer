@@ -48,9 +48,9 @@ from vllm.distributed import (
 )
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.models.utils import (
-    PPMissingLayer, 
-    is_pp_missing_parameter, 
-    make_layers, 
+    PPMissingLayer,
+    is_pp_missing_parameter,
+    make_layers,
     make_empty_intermediate_tensors_factory,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
@@ -60,7 +60,7 @@ from omni.models.common.layers.linear import (
     AscendRowParallelLinear,
 )
 from omni.models.common.layers.vocab_parallel_embedding import (
-    ParallelLMHead, 
+    ParallelLMHead,
     VocabParallelEmbedding
 )
 from omni.models.common.layers.activation import SiluAndMul
@@ -427,6 +427,12 @@ class DeepseekV3Model(nn.Module):
             max_num_tokens=None
     ) -> Union[torch.Tensor, IntermediateTensors]:
         attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
+        if attn_metadata_first is not None and attn_metadata_first.prefill is not None:
+            attn_metadata_first.omni_cache.synchronize_h2d(
+                prefix_meta=attn_metadata_first.prefill.prefix_meta,
+                layer_idx=0,
+            )
+
         if model_extra_config.operator_opt_config.enable_prefill_micro_batch and \
             attn_metadata is not None and attn_metadata_first is not None \
             and attn_metadata_first.prefill is not None and \
@@ -463,7 +469,7 @@ class DeepseekV3Model(nn.Module):
 
             if i >= self.first_k_dense_replace and i < self.end_layer - 1:
                 next_attention_weights = {
-                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
+                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,
                     'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
                     'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
                     'W_UK': self.layers[i + 1].self_attn.W_UK
@@ -715,7 +721,7 @@ class DeepseekV3Model(nn.Module):
         else:
             metadata_out = self.refresh_metadata(slot_mapping2, pad_size, seq_lens2, query_lens2, block_table, max_num_tokens, metadata)
         return metadata_out
-    
+
     def refresh_metadata(self, slot_mapping, pad_size, seq_lens, query_lens, block_table, max_num_tokens, metadata):
         metadata_out = copy.deepcopy(metadata)
         slot_mapping = self.pad_tensor(slot_mapping, pad_size, pad_value=-1)
@@ -742,7 +748,7 @@ class DeepseekV3ForCausalLM(nn.Module):
         "experts":
         ["experts.0.gate_proj", "experts.0.up_proj", "experts.0.down_proj"]
     }
-    
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
 

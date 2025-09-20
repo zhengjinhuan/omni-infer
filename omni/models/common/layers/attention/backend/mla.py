@@ -31,6 +31,7 @@ from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
 from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
+from omni.accelerators.cache.omni_cache import BaseOmniCache, PrefixCopyMeta
 
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_world_size,
@@ -173,6 +174,8 @@ class AscendMLAPrefillMetadata:
     sp_reverse_split_list: Optional[list[int]] = None
     actual_query_lens: Optional[torch.Tensor] = None
 
+    prefix_meta: Optional[list[PrefixCopyMeta]] = None
+
 
 @dataclass
 class AscendMLADecodeMetadata:
@@ -185,7 +188,6 @@ class AscendMLADecodeMetadata:
     cos: Optional[torch.Tensor] = None
     sin: Optional[torch.Tensor] = None
     best_topk: Optional[torch.Tensor] = None
-
 
 @dataclass
 class AscendMLAMetadata:
@@ -223,6 +225,8 @@ class AscendMLAMetadata:
     decode: Optional[AscendMLADecodeMetadata] = None
     prefill: Optional[AscendMLAPrefillMetadata] = None
 
+    omni_cache: Optional[BaseOmniCache] = None
+
     def __post_init__(self):
         pass
 
@@ -247,8 +251,6 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         scheduler_config = runner.scheduler_config
         self.chunked_prefill_enabled = scheduler_config.chunked_prefill_enabled
         self.block_size = self.runner.block_size
-        self.base_index = np.array(list(range(0, self.block_size)))
-        self.base_block = self.block_size * np.ones([1, self.block_size])
         self.kv_cache_spec = kv_cache_spec
         self.block_table = block_table
         self.decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
@@ -471,6 +473,9 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         input_positions = self.runner.positions_cpu[:num_actual_tokens].to(
             device, non_blocking=True)
 
+        assert isinstance(self.runner.omni_cache, BaseOmniCache), f"Omni cache type is {type(self.runner.omni_cache)}"
+        omni_cache = self.runner.omni_cache
+
         # pad prefill to avoid error of operator's shape assert
         if graph_pad_size > 0:
             padding = torch.full((graph_pad_size, ),
@@ -491,22 +496,34 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             reqs_start = self._num_decodes  # prefill_start
             tokens_start = self._num_decode_tokens
 
-            # Group request for Chunk-Prefill
-            seq_kvlen_group, seq_qlen_group, block_groups = group_request_list(
-                seq_lens_list,
-                query_lens_list,
-                block_table,
-                self.runner.max_num_tokens)
+            if not model_extra_config.operator_opt_config.use_omni_cache:
+                # Group request for Chunk-Prefill
+                seq_kvlen_group, seq_qlen_group, block_groups = group_request_list(
+                    seq_lens_list,
+                    query_lens_list,
+                    block_table,
+                    self.runner.max_num_tokens)
 
-            # Prepare kv index for prefill get kv_latent from kv_cache
-            kv_index_list = []
-            if block_table is not None and block_table.numel() > 0:
-                for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
-                    kv_index = self.get_kv_index(seq_lens, block_tables)
-                    kv_index_list.append(kv_index)
+                # Prepare kv index for prefill get kv_latent from kv_cache
+                kv_index_list = []
+                if block_table is not None and block_table.numel() > 0:
+                    for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
+                        kv_index = self.get_kv_index(seq_lens, block_tables)
+                        kv_index_list.append(kv_index)
 
-            seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
-            seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
+                seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
+                seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
+            else:
+                seq_qlen_group = [list(itertools.accumulate(query_lens_list))]
+                seq_kvlen_group = [list(itertools.accumulate(seq_lens_list))]
+
+                prefix_meta = omni_cache.get_prefill_prefix_copy_meta(
+                    block_size=self.block_size,
+                    kv_lens=self.runner.input_batch.num_computed_tokens_cpu[:num_reqs],
+                    query_lens_list=query_lens_list,
+                    block_tables=self.block_table.get_numpy_array()[:num_reqs],
+                    attn_state=self.runner.attn_state,
+                )
 
             positions = input_positions[tokens_start:]
 
@@ -552,6 +569,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 sp_reverse_index=sp_reverse_index if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 sp_reverse_split_list=sp_reverse_split_list if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 actual_query_lens=actual_query_lens if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                prefix_meta=prefix_meta if model_extra_config.operator_opt_config.use_omni_cache else None,
             )
 
         decode_metadata = None
@@ -580,6 +598,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 best_topk = None
                 if model_extra_config.operator_opt_config.best_ep:
                     best_topk = self.cal_best_topk(num_actual_tokens + graph_pad_size)
+
             else:
                 raise NotImplementedError("Chunked prefill mode is not supported currently.")
 
@@ -602,6 +621,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             attn_state=self.runner.attn_state,
             prefill=prefill_metadata,
             decode=decode_metadata,
+            omni_cache=omni_cache,
         )
 
     def build_omni_attn_metadata(
@@ -772,5 +792,5 @@ class AscendMLAImpl(MLAAttentionImpl):
         **kwargs
     ) -> torch.Tensor:
         # This method should be implemented in the subclass
-        raise NotImplementedError("AscendMLAImpl.forward is not implemented.")  
+        raise NotImplementedError("AscendMLAImpl.forward is not implemented.")
 

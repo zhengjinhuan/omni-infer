@@ -307,6 +307,7 @@ class LLMDataDistManager:
         return False
 
     def check_register_status(self):
+        return True # a workaround before real kv is ready
         status = {comm_name: False for comm_name in self.rank_link_info_map.keys()}
         ready_num = 0
         while ready_num < len(self.rank_link_info_map):

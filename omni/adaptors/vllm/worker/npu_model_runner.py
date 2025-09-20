@@ -182,6 +182,8 @@ class NPUModelRunner(GPUModelRunner):
             from omni.adaptors.vllm.ems.ems_adapter import EmsAdapter
             self.ems_adapter = EmsAdapter(vllm_config=vllm_config)
 
+        self.omni_cache = None
+
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
 
@@ -460,6 +462,7 @@ class NPUModelRunner(GPUModelRunner):
             self.maybe_setup_kv_connector(scheduler_output)
             model_kwargs["kv_caches"] = self.kv_caches
             model_kwargs["attn_metadata"] = attn_metadata
+            # model_kwargs["use_cpu_cache"] =
             start_f = time.time()
 
             if model_extra_config.operator_opt_config.use_omni_placement:
@@ -974,6 +977,48 @@ class NPUModelRunner(GPUModelRunner):
 
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.bind_kvcaches(self.kv_caches)
+
+    def initialize_omni_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+        from omni.accelerators.cache.omni_cache import create_omni_cache
+        if self.vllm_config.kv_transfer_config is None:
+            raise NotImplementedError("Currently only support PD disaggregation, but KV transfer config is None.")
+        if len(kv_cache_config.kv_cache_groups) > 1:
+            raise RuntimeError(f"Only support single KV cache group, but got {len(kv_cache_config.kv_cache_groups)}.")
+
+        self.kv_cache_config = kv_cache_config
+        self.input_batch = InputBatch(
+            max_num_reqs=self.max_num_reqs,
+            max_model_len=self.model_config.max_model_len,
+            max_num_batched_tokens=self.max_num_tokens,
+            device=self.device,
+            pin_memory=is_pin_memory_available(),
+            vocab_size=self.model_config.get_vocab_size(),
+            block_size=self.cache_config.block_size
+        )
+        self.input_batch.token_ids_cpu_tensor = torch.zeros(
+            (self.max_num_reqs, self.model_config.max_model_len),
+            device="cpu",
+            dtype=torch.int64,
+            pin_memory=False,
+        )
+        self.input_batch.token_ids_cpu = self.input_batch.token_ids_cpu_tensor.numpy()
+        self.initialize_attn_backend(kv_cache_config)
+
+        omni_cache = create_omni_cache(
+            kv_cache_config=self.kv_cache_config,
+            vllm_config=self.vllm_config,
+            runner=self,
+        )
+
+        get_kv_transfer_group().register_kv_caches(
+            omni_cache.MEMMAP_PATH,
+            omni_cache.dtype,
+            block_len_dtype=omni_cache.block_len_dtype,
+            start_offset=omni_cache.dp_offset,
+            omni_cache=omni_cache
+        )
+
+        self.omni_cache = omni_cache
 
     def capture_model(self) -> None:
         if self.enable_torchair_graph_mode:
