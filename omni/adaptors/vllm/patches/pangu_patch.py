@@ -56,6 +56,7 @@ def patch_pangu():
     # for mtp
     from vllm.config import SpeculativeConfig
     from transformers import PretrainedConfig
+    import vllm.envs as envs
 
     @staticmethod
     def hf_config_override(hf_config: PretrainedConfig) -> PretrainedConfig:
