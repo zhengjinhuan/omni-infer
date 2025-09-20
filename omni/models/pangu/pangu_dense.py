@@ -48,7 +48,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 
 class PanguEmbeddedMLP(nn.Module):

@@ -44,10 +44,10 @@ from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 from omni.adaptors.vllm.forward_context import set_forward_context
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
-from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
-from omni.models.common.layers.sampler import SimpleSampler, AscendSamplerV1
-from omni.models.common.layers.npu_sampler_cache import PenaltyCache, ProbCache
+from omni.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.layers.sampler import SimpleSampler, AscendSamplerV1
+from omni.layers.npu_sampler_cache import PenaltyCache, ProbCache
 from omni.adaptors.vllm.platform import NPUPlatform
 from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.ems.ems_env import EmsEnv

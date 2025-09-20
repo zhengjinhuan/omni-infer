@@ -422,8 +422,8 @@ class NPUPlatform(Platform):
             str: The module path to the attention backend class.
         """
         ensure_v1_engine()
-        return ("omni.models.common.layers.attention.backend.mla.AscendMLABackend" if use_mla
-                else "omni.models.common.layers.attention.backend.attention.AscendAttentionBackend")
+        return ("omni.layers.attention.backend.mla.AscendMLABackend" if use_mla
+                else "omni.layers.attention.backend.attention.AscendAttentionBackend")
 
     @classmethod
     def get_punica_wrapper(cls) -> str:

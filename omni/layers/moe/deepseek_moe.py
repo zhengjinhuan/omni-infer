@@ -43,11 +43,11 @@ from vllm.distributed import (
 from vllm.model_executor.layers.linear import (
     ReplicatedLinear,
 )
-from omni.models.common.layers.linear import (
+from omni.layers.linear import (
     MergedReplicatedLinear,
 )
-from omni.models.common.layers.activation import SiluAndMul
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE, UNQUANT_MODE, DYNAMIC_QUANT_MODE
+from omni.layers.activation import SiluAndMul
+from omni.layers.moe.fused_moe.layer import FusedMoE, UNQUANT_MODE, DYNAMIC_QUANT_MODE
 from omni.adaptors.vllm.distributed.communication_op import (
     all_gather_two_stage,
     reduce_scatter_two_stage,
@@ -58,9 +58,9 @@ from omni.adaptors.vllm.distributed.communication_op import (
 from omni.adaptors.vllm.distributed.parallel_state import (
     get_round_cross_group_from_list
 )
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
+from omni.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
 from omni.adaptors.vllm.utils import get_attr_by_names
 
 if model_extra_config.operator_opt_config.use_omni_placement:

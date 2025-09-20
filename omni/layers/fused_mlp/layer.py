@@ -15,8 +15,8 @@ from vllm.distributed import (
     tensor_model_parallel_reduce_scatter,
     get_tp_group
 )
-from omni.models.common.layers.activation import SiluAndMul
-from omni.models.common.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
+from omni.layers.activation import SiluAndMul
+from omni.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
 
 class FusedMLPMethodBase(QuantizeMethodBase):
     """Base method for FusedMLP

@@ -32,12 +32,12 @@ if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and not model_extra_config.operator_
 else:
     from .deepseek_v3 import DeepseekDecoderLayer
 
-from omni.models.common.layers.layernorm import RMSNorm #zxp: not use
-from omni.models.common.layers.vocab_parallel_embedding import (
+from omni.layers.layernorm import RMSNorm #zxp: not use
+from omni.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding
 )
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.moe.fused_moe.layer import FusedMoE
 
 class SharedHead(nn.Module):
 

@@ -45,16 +45,16 @@ from vllm.model_executor.models.utils import (
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
-from omni.models.common.layers.linear import (
+from omni.layers.linear import (
     AscendMergedColumnParallelLinear,
     AscendRowParallelLinear,
 )
-from omni.models.common.layers.vocab_parallel_embedding import (
+from omni.layers.vocab_parallel_embedding import (
     ParallelLMHead, 
     VocabParallelEmbedding
 )
-from omni.models.common.layers.activation import SiluAndMul
-from omni.models.common.layers.layernorm import RMSNorm
+from omni.layers.activation import SiluAndMul
+from omni.layers.layernorm import RMSNorm
 from omni.adaptors.vllm.distributed.parallel_state import (
     get_stream1_attn_group,
     get_stream1_mlp_group,
@@ -63,11 +63,11 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     GroupCoordinator
 )
 
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
-from omni.models.common.layers.moe.deepseek_moe import DeepseekMoE 
-from omni.models.common.layers.attention.deepseek_mla import DeepseekMLA 
+from omni.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.moe.deepseek_moe import DeepseekMoE 
+from omni.layers.attention.deepseek_mla import DeepseekMLA 
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.attention.backend.mla import group_request_list
+from omni.layers.attention.backend.mla import group_request_list
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 

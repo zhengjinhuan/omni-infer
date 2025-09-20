@@ -63,15 +63,15 @@ from vllm.model_executor.models.utils import (
     make_layers,
     maybe_prefix,
 )
-from omni.models.common.layers.layernorm import RMSNormFlashComm
-from omni.models.common.layers.linear import (
+from omni.layers.layernorm import RMSNormFlashComm
+from omni.layers.linear import (
     RowParallelFlashCommLinear,
     QKVParallelFlashCommLinear,
     ColumnParallelFlashCommLinear,
 )
-from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
-from omni.models.common.layers.fused_mlp import FusedMLP
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
+from omni.layers.fused_mlp import FusedMLP
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 # if use weight nz, this config must be True
 torch.npu.config.allow_internal_format = True

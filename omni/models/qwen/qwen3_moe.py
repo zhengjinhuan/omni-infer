@@ -49,11 +49,11 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
 
 from omni.models.qwen.fused_moe import FusedMoE
 from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
-from omni.models.common.layers.layernorm import RMSNormFlashComm, RMSNorm
-from omni.models.common.layers.linear import (RowParallelFlashCommLinear, 
+from omni.layers.layernorm import RMSNormFlashComm, RMSNorm
+from omni.layers.linear import (RowParallelFlashCommLinear, 
                                               QKVParallelFlashCommLinear)
-from omni.models.common.layers.rotary_embedding import get_rope
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.rotary_embedding import get_rope
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 
 logger = init_logger(__name__)
