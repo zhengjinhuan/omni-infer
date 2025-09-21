@@ -338,6 +338,7 @@ class EagleQwen2ForCausalLM(EagleDraftModel):
                 hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
+                position_embeddings=position_embeddings,
             )
 
         return hidden_states
