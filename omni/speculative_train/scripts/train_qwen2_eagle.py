@@ -193,6 +193,17 @@ parser, args = parse_args()
 init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
 args.dp_size = dist.get_world_size() // args.tp_size
 
+args.draft_accumulation_steps = (
+    args.draft_global_batch_size // args.dp_size // args.draft_micro_batch_size
+)
+assert (
+    args.draft_accumulation_steps * args.draft_micro_batch_size * args.dp_size
+    == args.draft_global_batch_size
+), f"draft_global_batch_size={args.draft_global_batch_size} must be divisible by dp_size={args.dp_size} and micro_batch_size={args.draft_micro_batch_size}"
+print_with_rank(
+    f"draft_accumulation_steps={args.draft_global_batch_size} // {args.dp_size} // {args.draft_micro_batch_size}={args.draft_accumulation_steps}"
+)
+
 # build target and draft model
 target_head = TargetHead(args.target_model_path)
 target_head.load_weights(
