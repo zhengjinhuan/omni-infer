@@ -46,7 +46,7 @@ class OfflineEagleModel(nn.Module):
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # norm_hidden_states = self.norm(hidden_states)
-        return self.lm_head(hidden_states)
+        return self.target_head(hidden_states)
 
     def forward(
         self,
