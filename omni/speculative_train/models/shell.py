@@ -45,8 +45,8 @@ class OfflineEagleModel(nn.Module):
         self.attention_backend = attention_backend
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        norm_hidden_states = self.norm(hidden_states)
-        return self.lm_head(norm_hidden_states)
+        # norm_hidden_states = self.norm(hidden_states)
+        return self.lm_head(hidden_states)
 
     def forward(
         self,
