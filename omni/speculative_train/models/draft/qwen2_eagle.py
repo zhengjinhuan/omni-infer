@@ -314,6 +314,8 @@ class EagleQwen2ForCausalLM(EagleDraftModel):
         device = hidden_states.device
         position_ids = torch.arange(0, seq_length, dtype=torch.long, device=device)
         position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+        # create position embeddings to be shared across the decoder layers
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         # make attention mask
         if attention_mask is None:
