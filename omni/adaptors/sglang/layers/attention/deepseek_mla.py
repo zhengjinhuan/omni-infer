@@ -86,6 +86,15 @@ class DeepseekMLA(nn.Module):
 
         self.layer_scatter_modes = layer_scatter_modes
 
+        self.mask_length = 2048
+        self.attn_mask = ~torch.tril(
+            torch.ones(
+                (self.mask_length, self.mask_length),
+                dtype=torch.bool,
+                device=global_server_args_dict["device"],
+            )
+        )
+
         # For tensor parallel attention
         if self.q_lora_rank is not None:
             self.fused_qkv_a_proj_with_mqa = ReplicatedLinear(
@@ -309,7 +318,37 @@ class DeepseekMLA(nn.Module):
         forward_batch.token_to_kv_pool.set_kv_buffer(
             self.attn_mha, forward_batch.out_cache_loc, latent_cache, None
         )
-        attn_output = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False)
+        if forward_batch.is_prefill_idle:
+            attn_output = q.new_empty(q.shape[0], self.num_local_heads * self.v_head_dim)
+        else:
+            k = k.view(-1, self.num_local_heads, self.qk_head_dim)
+            v = v.view(-1, self.num_local_heads, self.v_head_dim)
+            if q.ndim == 2:
+                q = q.view(q.shape[0], self.num_local_heads, -1)
+            bs_qlen, q_heads, q_dim = q.size()
+            q_nope, q_rope = q.split(
+                [self.v_head_dim, self.qk_rope_head_dim], dim=-1
+            )
+            k_nope, k_rope = k.split(
+                [self.v_head_dim, self.qk_rope_head_dim], dim=-1
+            )
+            metadata = forward_batch.attn_backend.forward_metadata
+            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                q_nope,
+                k_nope,
+                v,
+                query_rope=q_rope,
+                key_rope=k_rope,
+                num_heads=q_heads,
+                input_layout="TND",
+                atten_mask=self.attn_mask,
+                sparse_mode=3,
+                actual_seq_lengths=metadata.seq_lens_list_cumsum,
+                actual_seq_lengths_kv=metadata.seq_lens_list_cumsum,
+                scale=self.scaling,
+                next_tokens=0,
+            )
+            attn_output = attn_output[..., : self.v_head_dim]
         attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
         output, _ = self.o_proj(attn_output)
         return output
@@ -370,7 +409,49 @@ class DeepseekMLA(nn.Module):
 
         q_nope_out = q_nope_out.transpose(0, 1)
         q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
-        attn_output = self.attn_mqa(q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe)
+        k_nope = k_nope.view(-1, 1, self.kv_lora_rank)
+        forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+            self.attn_mqa,
+            forward_batch.out_cache_loc,
+            k_nope,
+            k_pe,
+        )
+        padding_bs = forward_batch.input_ids.size(0)
+        q_nope = q_nope_out.view(padding_bs, -1, self.num_local_heads, self.kv_lora_rank)
+        q_pe = q_pe.view(
+            padding_bs, -1, self.num_local_heads, self.kv_lora_rank + self.qk_rope_head_dim - self.kv_lora_rank
+        )
+
+        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id).to(
+            q_nope_out.dtype
+        )
+        PAGE_SIZE = 128
+        b, s, n, _ = q_nope.size()
+        q_nope_dim = q_nope.shape[-1]
+        _, k_heads, k_dim = k_cache.size()
+        k_cache = k_cache.view(-1, PAGE_SIZE, k_dim)
+        k_nope = k_cache[..., :q_nope_dim]
+        k_rope = k_cache[..., q_nope_dim:]
+
+        metadata = forward_batch.attn_backend.forward_metadata
+        attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+            q_nope,
+            k_nope,
+            k_nope,
+            query_rope=q_pe,
+            key_rope=k_rope,
+            num_heads=n,
+            num_key_value_heads=1,
+            input_layout="BSND",
+            atten_mask=None,
+            sparse_mode=0,
+            scale=self.scaling,
+            antiquant_mode=0,
+            antiquant_scale=None,
+            block_table=metadata.block_kv_indices,
+            block_size=PAGE_SIZE,
+            actual_seq_lengths_kv=metadata.seq_lens_list,
+        )
         attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
 
         attn_bmm_output = torch.empty(
