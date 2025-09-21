@@ -12,5 +12,6 @@ torchrun \
     --learning-rate 1e-4 \
     --max-length 2048 \
     --chat-template qwen \
+    --report-to wandb \
     --output-dir ./ \
     --resume
