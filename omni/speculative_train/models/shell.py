@@ -68,7 +68,7 @@ class OfflineEagleModel(nn.Module):
 
         # Step 5.2: run the draft model backbone
         hidden_states_out = self.draft_model(
-            input_embeds=inputs_embeds,
+            inputs_embeds=inputs_embeds,
             hidden_states=hidden_states,
             attention_mask=attention_mask,
         )
