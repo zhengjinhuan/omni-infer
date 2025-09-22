@@ -123,7 +123,7 @@ index 3ed7dc664..6ef0d7687 100644
 +    blocks_to_swap_in: list[tuple[int, int]] = None
 +    blocks_to_swap_out: list[tuple[int, int]] = None
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 59f85d501..15251c574 100644
+index ffebd194c..147432785 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -5,6 +5,8 @@ from __future__ import annotations
@@ -200,14 +200,15 @@ index 59f85d501..15251c574 100644
          # For logging.
          scheduled_timestamp = time.monotonic()
  
-@@ -259,9 +286,18 @@ class Scheduler(SchedulerInterface):
+@@ -259,9 +286,19 @@ class Scheduler(SchedulerInterface):
                      # The request cannot be scheduled.
                      # Preempt the lowest-priority request.
                      preempted_req = self.running.pop()
 -                    self.kv_cache_manager.free(preempted_req)
 +                    if self.preemption_mode == PreemptionMode.SWAP:
 +                        if not self.cpu_npu_kv_cache_manager.can_swap_out(preempted_req):
-+                            self.kv_cache_manager.free(preempted_req)
++                            preempted_req.status = RequestStatus.FINISHED_LENGTH_CAPPED
++                            self.finish_requests(preempted_req.request_id, RequestStatus.FINISHED_ABORTED)
 +                            logger.info(f"Preempting request {preempted_req.request_id} has been released.")
 +                            can_schedule = False
 +                            break
@@ -221,7 +222,7 @@ index 59f85d501..15251c574 100644
                      if self.log_stats:
                          preempted_req.record_event(
                              EngineCoreEventType.PREEMPTED, scheduled_timestamp)
-@@ -428,6 +464,12 @@ class Scheduler(SchedulerInterface):
+@@ -428,6 +465,12 @@ class Scheduler(SchedulerInterface):
                          if num_new_tokens == 0:
                              # The request cannot be scheduled.
                              break
@@ -234,7 +235,7 @@ index 59f85d501..15251c574 100644
  
                  new_blocks = self.kv_cache_manager.allocate_slots(
                      request,
-@@ -440,7 +482,6 @@ class Scheduler(SchedulerInterface):
+@@ -440,7 +483,6 @@ class Scheduler(SchedulerInterface):
                  if new_blocks is None:
                      # The request cannot be scheduled.
                      break
@@ -242,7 +243,7 @@ index 59f85d501..15251c574 100644
                  # KVConnector: update internal state after allocation.
                  # This information is used to determine if a load is
                  # needed for this request.
-@@ -575,6 +616,8 @@ class Scheduler(SchedulerInterface):
+@@ -575,6 +617,8 @@ class Scheduler(SchedulerInterface):
              free_encoder_input_ids=self.encoder_cache_manager.get_freed_ids(),
              structured_output_request_ids=structured_output_request_ids,
              grammar_bitmask=grammar_bitmask,
@@ -251,7 +252,7 @@ index 59f85d501..15251c574 100644
          )
  
          # NOTE(Kuntai): this function is designed for multiple purposes:
-@@ -605,6 +648,22 @@ class Scheduler(SchedulerInterface):
+@@ -605,6 +649,22 @@ class Scheduler(SchedulerInterface):
          self.finished_req_ids = set()
          return scheduler_output
  
@@ -274,7 +275,7 @@ index 59f85d501..15251c574 100644
      def _make_cached_request_data(
          self,
          request: Request,
-@@ -943,6 +1002,10 @@ class Scheduler(SchedulerInterface):
+@@ -943,6 +1003,10 @@ class Scheduler(SchedulerInterface):
      def _free_blocks(self, request: Request):
          assert request.is_finished()
          assert request.request_id not in self._cached_reqs_data
