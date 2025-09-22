@@ -38,10 +38,9 @@ from sglang.srt.layers.quantization.int8_utils import \
 
 from sglang.srt.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
-)
-from omni.adaptors.sglang.layers.vocab_parallel_embedding import (
     ParallelLMHead,
 )
+
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
                                                           PPProxyTensors)

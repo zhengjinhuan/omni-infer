@@ -39,7 +39,7 @@ class MergedColumnParallelLinear(MergedColumnParallelLinearGPU):
         # Matrix multiply.
         assert self.quant_method is not None
         output_parallel = self.quant_method.apply(self, input_, bias)
-        if "gate_up_proj" in self.prefix:
+        if "mlp.gate_up_proj" in self.prefix:
             tp_group = get_mlp_tp_group()
         else:
             tp_group = parallel_state.get_tp_group()

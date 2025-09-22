@@ -1,38 +1,21 @@
 diff --git a/python/sglang/srt/distributed/parallel_state.py b/python/sglang/srt/distributed/parallel_state.py
-index 6126461bc..55879168f 100644
+index 71fe73686..13af08a34 100644
 --- a/python/sglang/srt/distributed/parallel_state.py
 +++ b/python/sglang/srt/distributed/parallel_state.py
-@@ -49,7 +49,12 @@ from sglang.srt.utils import (
-     is_shm_available,
-     supports_custom_op,
- )
--
-+from omni.adaptors.sglang.distributed.parallel_state import (
-+    initialize_mlp_tp_group,
-+    initialize_o_proj_tp_group,
-+    initialize_o_proj_dp_group,
-+    initialize_local_world_group,
-+)
- 
- @dataclass
- class GraphCaptureContext:
-@@ -1362,7 +1367,11 @@ def initialize_model_parallel(
-         )
+@@ -1362,6 +1362,8 @@ def initialize_model_parallel(
          _TP.pynccl_comm.disabled = False
          _PDMUX_PREFILL_TP_GROUP.pynccl_comm.disabled = False
-+    initialize_mlp_tp_group(backend, tensor_model_parallel_size, dp_size)
-+    initialize_local_world_group(backend)
  
-+    initialize_o_proj_dp_group(backend)
-+    initialize_o_proj_tp_group(backend, tensor_model_parallel_size, dp_size)
++    initialize_add_groups(backend, tensor_model_parallel_size, dp_size)
++
      moe_ep_size = expert_model_parallel_size
  
      moe_tp_size = tensor_model_parallel_size // moe_ep_size
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 317733be2..40a247cae 100644
+index a857c11f6..65ac2eba9 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
-@@ -562,6 +562,7 @@ class ModelRunner:
+@@ -570,6 +570,7 @@ class ModelRunner:
                  pipeline_model_parallel_size=self.pp_size,
                  expert_model_parallel_size=self.moe_ep_size,
                  duplicate_tp_group=self.server_args.enable_pdmux,
