@@ -11,10 +11,15 @@ echo "NGINX_VERSION is $NGINX_VERSION"
 NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
 echo "NGINX_SBIN_PATH is $NGINX_SBIN_PATH"
 
+export proxy=http://10.155.96.5:8081 && export http_proxy=$proxy && export https_proxy=${http_proxy}
+
 if [ ! -d nginx-${NGINX_VERSION} ]; then
 	wget --no-check-certificate https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
 	tar -zxf nginx-${NGINX_VERSION}.tar.gz
 fi
+
+unset http_proxy
+unset https_proxy
 
 yum install -y pcre gcc gcc-c++ make zlib zlib-devel pcre pcre-devel openssl-devel
 

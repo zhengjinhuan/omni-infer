@@ -43,13 +43,14 @@ from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
     get_pp_group,
     get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_gather
+    tensor_model_parallel_all_gather,
+    get_tensor_model_parallel_rank,
 )
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.models.utils import (
-    PPMissingLayer, 
-    is_pp_missing_parameter, 
-    make_layers, 
+    PPMissingLayer,
+    is_pp_missing_parameter,
+    make_layers,
     make_empty_intermediate_tensors_factory,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
@@ -59,7 +60,7 @@ from omni.models.common.layers.linear import (
     AscendRowParallelLinear,
 )
 from omni.models.common.layers.vocab_parallel_embedding import (
-    ParallelLMHead, 
+    ParallelLMHead,
     VocabParallelEmbedding
 )
 from omni.models.common.layers.activation import SiluAndMul
@@ -71,6 +72,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_mlp_tp_group,
     GroupCoordinator
 )
+import torch.nn.functional as F
 
 from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.layers.moe.deepseek_moe import DeepseekMoE 
@@ -85,6 +87,33 @@ if model_extra_config.operator_opt_config.unquant_bmm_nz:
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
+def _get_pad_size(num_seqs, split_size):
+    """Calculate padding size needed to make sequence count divisible by tp size."""
+    return (split_size - num_seqs % split_size) % split_size
+
+def pad_inputs(input, query_lens, sp_size):
+    padded_lengths = _get_pad_size(query_lens, sp_size)
+    segments = []
+    start_idx = 0
+    for length, pad_length in zip(query_lens, padded_lengths):
+        segment = input[start_idx : start_idx + length]
+        padded_segment = F.pad(segment, (0, 0, 0, pad_length), "constant", 0)
+        segments.append(padded_segment)
+        start_idx += length
+
+    return torch.cat(segments, dim=0)
+
+# todo query_lens是tensor，需要适配
+def generate_sp_inputs(hidden_states, attn_metadata):
+    sp_size = model_extra_config.parall_config.attn_sp_size
+    if attn_metadata is not None:
+        hidden_states = pad_inputs(hidden_states, attn_metadata.prefill.actual_query_lens, sp_size * 2)
+        # split input for sp attention
+        hidden_states_list = torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0)
+        hidden_states = torch.cat([hidden_states_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
+    else:
+        hidden_states = torch.split(hidden_states, hidden_states.size(0) // sp_size, dim=0)[get_tensor_model_parallel_rank()]
+    return hidden_states
 
 class ParallelDeepseekMLP(nn.Module):
 
@@ -421,6 +450,12 @@ class DeepseekV3Model(nn.Module):
             max_num_tokens=None
     ) -> Union[torch.Tensor, IntermediateTensors]:
         attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
+        if attn_metadata_first is not None and attn_metadata_first.prefill is not None:
+            attn_metadata_first.omni_cache.synchronize_h2d(
+                prefix_meta=attn_metadata_first.prefill.prefix_meta,
+                layer_idx=0,
+            )
+
         if model_extra_config.operator_opt_config.enable_prefill_micro_batch and \
             attn_metadata is not None and attn_metadata_first is not None \
             and attn_metadata_first.prefill is not None and \
@@ -458,13 +493,18 @@ class DeepseekV3Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
+            # split input for sp attention
+            hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
+            hidden_states = generate_sp_inputs(hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
+
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             layer_id = i - 3
 
             if i >= self.first_k_dense_replace and i < self.end_layer - 1:
                 next_attention_weights = {
-                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
+                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,
                     'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
                     'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
                     'W_UK': self.layers[i + 1].self_attn.W_UK
@@ -494,6 +534,13 @@ class DeepseekV3Model(nn.Module):
 
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
+        if model_extra_config.parall_config.attn_sp_size > 1 and is_prefill:
+            # reverse sp split
+            if attn_metadata is not None:
+                prefill_meta = self.get_layer_attn_metadata(attn_metadata, 0).prefill
+                outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
+                hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
+
         return hidden_states
 
     def forward_micro_batch(
@@ -522,7 +569,7 @@ class DeepseekV3Model(nn.Module):
             # 3. stream0: mlp (current layer) + attn (next layer)
             # 4. stream1: mlp (current layer) + attn (next layer)
             with torch.npu.stream(curr_stream):
-                pad_size_mb0 = self._get_pad_size(positions_mb0.shape[0])
+                pad_size_mb0 = _get_pad_size(positions_mb0.shape[0], self.tp_size)
                 positions_mb0 = self.pad_tensor(positions_mb0, pad_size_mb0, 0)
                 padding = torch.randint(1, self.vocab_size, (pad_size_mb0,),
                                         dtype=input_ids.dtype,
@@ -536,7 +583,7 @@ class DeepseekV3Model(nn.Module):
                                                                               metadata0,
                                                                               residual_mb0)
             with torch.npu.stream(self.stream1):
-                pad_size_mb1 = self._get_pad_size(positions_mb1.shape[0])
+                pad_size_mb1 = _get_pad_size(positions_mb1.shape[0], self.tp_size)
                 positions_mb1 = self.pad_tensor(positions_mb1, pad_size_mb1, 0)
                 padding = torch.randint(1, self.vocab_size, (pad_size_mb1,),
                                         dtype=input_ids.dtype,
@@ -644,10 +691,6 @@ class DeepseekV3Model(nn.Module):
         """Split tensor into two parts along specified dimension at split index."""
         return torch.split(ori_tensor, [split_idx, ori_tensor.size(split_dim) - split_idx], dim=split_dim)
 
-    def _get_pad_size(self, num_seqs):
-        """Calculate padding size needed to make sequence count divisible by tp size."""
-        return (self.tp_size - num_seqs % self.tp_size) % self.tp_size
-
     def partition_list(self, lst, pos):
         """Partition list into two parts with balanced sum around target position."""
         target = pos // 2
@@ -678,8 +721,9 @@ class DeepseekV3Model(nn.Module):
 
     def pad_tensor(self, tensor, pad_size, pad_value=0):
         """Pad tensor with specified value along first dimension."""
+        padded_shape = (pad_size, tensor.shape[-1]) if tensor.dim() > 1 else (pad_size,)
         padding = torch.full(
-            (pad_size,),
+            padded_shape,
             pad_value,
             dtype=tensor.dtype,
             device=tensor.device
@@ -712,7 +756,7 @@ class DeepseekV3Model(nn.Module):
         else:
             metadata_out = self.refresh_metadata(slot_mapping2, pad_size, seq_lens2, query_lens2, block_table, max_num_tokens, metadata)
         return metadata_out
-    
+
     def refresh_metadata(self, slot_mapping, pad_size, seq_lens, query_lens, block_table, max_num_tokens, metadata):
         metadata_out = copy.deepcopy(metadata)
         slot_mapping = self.pad_tensor(slot_mapping, pad_size, pad_value=-1)
@@ -739,7 +783,7 @@ class DeepseekV3ForCausalLM(nn.Module):
         "experts":
         ["experts.0.gate_proj", "experts.0.up_proj", "experts.0.down_proj"]
     }
-    
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
 
