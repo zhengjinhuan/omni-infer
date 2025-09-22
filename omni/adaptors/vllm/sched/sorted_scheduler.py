@@ -235,7 +235,7 @@ def schedule(self) -> SchedulerOutput:
         if self.enable_mix_schedule:
             mix_requests = [MixRequest(req, True) for req in self.running] + [MixRequest(req, False) for req in self.waiting]
         else:
-            [MixRequest(req, False) for req in self.waiting]
+            mix_requests = [MixRequest(req, False) for req in self.waiting]
         # 计算每个请求需要的新token数量
         for mix_req in mix_requests:
             pre_scheduled[mix_req.request.request_id] = False

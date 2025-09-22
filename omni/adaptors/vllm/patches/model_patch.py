@@ -51,8 +51,9 @@ def patch_linear():
     linear.UnquantizedLinearMethod = AscendUnquantizedLinearMethod
 
 def patch_scheduler():
-    from omni.adaptors.vllm.sched.sorted_scheduler import schedule
+    from omni.adaptors.vllm.sched.sorted_scheduler import schedule, __init__
     from vllm.v1.core.sched.scheduler import Scheduler
+    Scheduler.__init__ = __init__
     Scheduler.schedule = schedule
     print("++++++++++++++++++++++patch_scheduler++++++++++++++++++++++++++++")
 
