@@ -480,8 +480,8 @@ class NPUModelRunner(GPUModelRunner):
             else:
                 inputs_embeds = self.model.get_input_embeddings(input_ids)
                 
-            self.inputs_embeds[:num_input_tokens + graph_pad_size].copy_(inputs_embeds)
-            inputs_embeds = self.inputs_embeds[:num_input_tokens + graph_pad_size]
+            self.inputs_embeds[:num_input_tokens].copy_(inputs_embeds)
+            inputs_embeds = self.inputs_embeds[:num_input_tokens]
 
             if graph_pad_size >= 0:
                 if attn_state == AscendAttentionState.DecodeOnly:
@@ -872,11 +872,12 @@ class NPUModelRunner(GPUModelRunner):
             self.max_batch_size = self._get_max_token_num(
                 self.vllm_config.parallel_config.data_parallel_size > 1, num_tokens)
         if self.is_multimodal_model:
-            fake_input = torch.zeros((self.max_batch_size, inputs_embeds[1]), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+            fake_input = torch.zeros((self.max_batch_size, inputs_embeds.shape[1]), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
             if self.uses_mrope:
                 fake_positions = torch.zeros((self.mrope_positions.shape[0], self.max_batch_size), dtype=torch.int64, device=self.device)
             else:
                 fake_positions = torch.zeros(self.max_batch_size, dtype=torch.int64, device=self.device)
+            inputs_embeds, positions = fake_input, fake_positions
         else:
             fake_input = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
             fake_positions = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)

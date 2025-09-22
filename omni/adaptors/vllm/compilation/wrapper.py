@@ -82,7 +82,7 @@ class TorchNpuCompilerWrapperWithCustomDispatcher:
             if isinstance(inputs, torch.Tensor):
                 gear_size = inputs.shape[0]
                 return self.cached_compiled_models[gear_size](*args, **kwargs)
-            if isinstance(input_ids, int):
+            if isinstance(inputs, int):
                 gear_size = inputs
                 return self.cached_compiled_models[gear_size](*args, **kwargs)
 
