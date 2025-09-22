@@ -55,7 +55,7 @@ index b7bc5f1f7..e270f0908 100644
 +        self.combine_block_num = 1
 +        if additional_config:
 +            self.combine_block_num = int(additional_config.get(
-+                "combine_block", "1")):
++                "combine_block", "1"))
 +        logger.info(f" combine_block_num is {self.combine_block_num}")
          self.kv_cache_manager = KVCacheManager(
              kv_cache_config=kv_cache_config,
