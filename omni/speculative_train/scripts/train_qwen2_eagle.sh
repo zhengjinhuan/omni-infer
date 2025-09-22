@@ -9,7 +9,7 @@ torchrun \
     --train-data-path /data/d00646319/offline-dataset/longbench-2048-2048 \
     --train-hidden-states-path /data/d00646319/offline-dataset/longbench-2048-2048 \
     --num-epochs 10 \
-    --learning-rate 1e-4 \
+    --learning-rate 1e-5 \
     --max-length 2048 \
     --chat-template qwen \
     --output-dir ./ \
