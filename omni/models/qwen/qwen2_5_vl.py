@@ -31,6 +31,9 @@ from typing import List, Callable, Literal, Optional, TypedDict, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch_npu
+
+import math
 from einops import rearrange
 from transformers import BatchFeature
 from transformers.models.qwen2_5_vl import Qwen2_5_VLProcessor
@@ -38,6 +41,7 @@ from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
     Qwen2_5_VLConfig, Qwen2_5_VLVisionConfig)
 
 from vllm.attention import AttentionMetadata
+from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
 from vllm.distributed import parallel_state
 from vllm.distributed import utils as dist_utils
@@ -60,17 +64,17 @@ from vllm.platforms import _Backend
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.config import uses_mrope
 
-from .interfaces import (MultiModalEmbeddings, SupportsLoRA,
+from vllm.model_executor.models.interfaces import (MultiModalEmbeddings, SupportsLoRA,
                          SupportsMultiModal, SupportsPP)
-from .qwen2_vl import Qwen2VLDummyInputsBuilder as Qwen2_5_VLDummyInputsBuilder
-from .qwen2_vl import (Qwen2VLMultiModalProcessor, Qwen2VLProcessingInfo,
+from vllm.model_executor.models.qwen2_vl import Qwen2VLDummyInputsBuilder as Qwen2_5_VLDummyInputsBuilder
+from vllm.model_executor.models.qwen2_vl import (Qwen2VLMultiModalProcessor, Qwen2VLProcessingInfo,
                        apply_rotary_pos_emb_vision)
-from .utils import (AutoWeightsLoader, WeightsMapper, cast_overflow_tensors,
+from vllm.model_executor.models.utils import (AutoWeightsLoader, WeightsMapper, cast_overflow_tensors,
                     init_vllm_registered_model, maybe_prefix,
                     merge_multimodal_embeddings)
-from .vision import get_vit_attn_backend
+from vllm.model_executor.models.vision import get_vit_attn_backend
 
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 logger = init_logger(__name__)
 
@@ -173,6 +177,9 @@ class Qwen2_5_VisionMLP(nn.Module):
                  quant_config: Optional[QuantizationConfig] = None,
                  prefix: str = ""):
         super().__init__()
+        self.tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        self.tp_rank = parallel_state.get_tensor_model_parallel_rank()
+
         self.gate_proj = ColumnParallelLinear(in_features,
                                               hidden_features,
                                               bias=bias,
@@ -1022,7 +1029,7 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
         inputs_embeds = self.language_model.get_input_embeddings(input_ids)
-        if multimodal_embeddings is not None:
+        if multimodal_embeddings is not None and len(multimodal_embeddings) != 0:
             inputs_embeds = merge_multimodal_embeddings(
                 input_ids, inputs_embeds, multimodal_embeddings,
                 [self.config.image_token_id, self.config.video_token_id])
@@ -1033,17 +1040,43 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
+        kv_caches: List[torch.Tensor] = None,
+        attn_metadata: AttentionMetadata = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: object,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-    
+        """Run forward pass for Qwen2.5-VL.
+
+        Args:
+            input_ids: Flattened (concatenated) input_ids corresponding to a
+                batch.
+            positions: Flattened (concatenated) position ids corresponding to a
+                batch.
+                **NOTE**: If mrope is enabled (default setting for Qwen2.5-VL
+                opensource models), the shape will be `(3, seq_len)`,
+                otherwise it will be `(seq_len,).
+            pixel_values: Pixel values to be fed to a model.
+                `None` if no images are passed.
+            image_grid_thw: Tensor `(n_images, 3)` of image 3D grid in LLM.
+                `None` if no images are passed.
+            pixel_values_videos: Pixel values of videos to be fed to a model.
+                `None` if no videos are passed.
+            video_grid_thw: Tensor `(n_videos, 3)` of video 3D grid in LLM.
+                `None` if no videos are passed.
+            second_per_grid_ts: Tensor `(num_videos)` of video time interval (
+                in seconds) for each grid along the temporal dimension in the
+                3D position IDs. `None` if no videos are passed.
+        """
+
         if intermediate_tensors is not None:
             inputs_embeds = None
 
         hidden_states = self.language_model.model(
             input_ids=input_ids,
             positions=positions,
+            kv_caches=kv_caches,
+            attn_metadata=attn_metadata,
             intermediate_tensors=intermediate_tensors,
             inputs_embeds=inputs_embeds,
         )
@@ -1080,4 +1113,3 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[self.language_model.model.layers[self.language_model.model.start_layer].layer_name]
         return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
-
