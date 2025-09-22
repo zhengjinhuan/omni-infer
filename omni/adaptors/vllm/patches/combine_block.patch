@@ -6,7 +6,7 @@ index 4965df17e..c6ce67ac7 100644
          use_eagle: bool = False,
          log_stats: bool = False,
          enable_kv_cache_events: bool = False,
-+        combine_block: bool = False,
++        combine_block_num: int,
      ) -> None:
          assert len(kv_cache_config.kv_cache_groups) == 1, (
              "KVCacheManager does not support hybrid models with more than 1 "
@@ -14,7 +14,7 @@ index 4965df17e..c6ce67ac7 100644
              use_eagle=self.use_eagle,
              num_kv_cache_groups=1,
              caching_hash_fn=self.caching_hash_fn,
-+            combine_block=combine_block,
++            combine_block_num=combine_block_num,
          )
 
          # Mapping from request ID to kv block hashes.
@@ -29,14 +29,18 @@ diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
 index 403b5401b..5589f24c4 100644
 --- a/vllm/v1/core/kv_cache_utils.py
 +++ b/vllm/v1/core/kv_cache_utils.py
-@@ -631,6 +631,10 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
+@@ -631,6 +631,14 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
              "Overriding num_gpu_blocks=%d with "
              "num_gpu_blocks_override=%d", num_blocks, num_gpu_blocks_override)
          num_blocks = num_gpu_blocks_override
 +    additional_config = vllm_config.additional_config
-+    if additional_config and additional_config.get("combine_block", False):
++    if additional_config:
++        combine_block_num = int(additional_config.get(
++            "combine_block", "1"))
++        logger.info(f" combine_block_num is {combine_block_num}")
 +        from vllm.utils import cdiv
-+        num_blocks = cdiv(num_blocks, 4)*4 - 3
++        num_blocks = cdiv(num_blocks, combine_block_num)*
++            combine_block_num - (combine_block_num - 1)
 
      num_tokens = num_blocks * vllm_config.cache_config.block_size
      num_tokens_str = f"{num_tokens:,}"
@@ -44,13 +48,15 @@ diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
 index b7bc5f1f7..e270f0908 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -153,6 +153,9 @@ class Scheduler(SchedulerInterface):
+@@ -153,6 +153,11 @@ class Scheduler(SchedulerInterface):
                  self.num_lookahead_tokens = self.num_spec_tokens
 
          # Create the KV cache manager.
-+        self.combine_block = False
-+        if additional_config and additional_config.get("combine_block", False):
-+            self.combine_block = True
++        self.combine_block_num = 1
++        if additional_config:
++            self.combine_block_num = int(additional_config.get(
++                "combine_block", "1")):
++        logger.info(f" combine_block_num is {combine_block_num}")
          self.kv_cache_manager = KVCacheManager(
              kv_cache_config=kv_cache_config,
              max_model_len=self.max_model_len,
@@ -58,7 +64,7 @@ index b7bc5f1f7..e270f0908 100644
              use_eagle=self.use_eagle,
              log_stats=self.log_stats,
              enable_kv_cache_events=self.enable_kv_cache_events,
-+            combine_block=self.combine_block,
++            combine_block_num=self.combine_block_num,
          )
 
          self.preemption_mode = PreemptionMode.RECOMPUTE
@@ -70,7 +76,7 @@ index 0223c9cee..48008deb1 100644
          use_eagle: bool,
          num_kv_cache_groups: int,
          caching_hash_fn: Callable,
-+        combine_block: bool,
++        combine_block_num: int,
      ) -> None:
          """
          Initializes the SpecializedManager.
@@ -78,7 +84,7 @@ index 0223c9cee..48008deb1 100644
 
          self.num_kv_cache_groups = num_kv_cache_groups
          self.caching_hash_fn = caching_hash_fn
-+        self.combine_block = combine_block
++        self.combine_block_num = combine_block_num
 
      def get_num_blocks_to_allocate(
              self, request_id: str, num_tokens: int,
@@ -86,8 +92,8 @@ index 0223c9cee..48008deb1 100644
          """
          req_blocks = self.req_to_blocks[request_id]
          num_required_blocks = cdiv(num_tokens, self.block_size)
-+        if self.combine_block:
-+            num_required_blocks = cdiv(num_required_blocks, 4)*4
++        num_required_blocks = cdiv(num_required_blocks,
++            self.combine_block_num)*self.combine_block_num
          num_new_blocks = num_required_blocks - len(req_blocks)
          if num_new_blocks <= 0:
              return []
@@ -96,10 +102,10 @@ index 0223c9cee..48008deb1 100644
          # Free blocks in reverse order so that the tail blocks are
          # freed first.
 -        ordered_blocks = reversed(req_blocks)
-+        if self.combine_block:
-+            ordered_blocks = req_blocks
-+        else:
++        if self.combine_block_num == 1:
 +            ordered_blocks = reversed(req_blocks)
++        else:
++            ordered_blocks = req_blocks
 
          self.block_pool.free_blocks(ordered_blocks)
          self.num_cached_block.pop(request_id, None)
