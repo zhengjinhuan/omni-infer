@@ -68,7 +68,7 @@ class OfflineEagleModel(nn.Module):
         past_key_values_length = 0
 
         # Step 5.1: embed the input ids
-        inputs_embeds = self.draft_model.embed_input_ids(input_ids)
+        inputs_embeds = self.draft_model.embed_input_ids(input_ids.roll(-1, -1))
         inputs_embeds = inputs_embeds.to(hidden_states.dtype)
 
         # Step 5.2: run the draft model backbone
