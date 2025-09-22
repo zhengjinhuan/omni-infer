@@ -36,7 +36,7 @@ if size == 26:
     config["Bitcast"] = bit_cast
 
     if '910b' in config_file:
-        gmmfr_format_list = config["GroupedMatmulFinalizeRouting"]["input1"]["format"].split('.')
+        gmmfr_format_list = config["GroupedMatmulFinalizeRouting"]["input1"]["format"].split(',')
         gmmfr_format_list[2] = "FRACTAL_NZ"
         new_format = ','.join(gmmfr_format_list)
         config["GroupedMatmulFinalizeRouting"]["input1"]["format"] = new_format
