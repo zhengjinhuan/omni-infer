@@ -372,7 +372,7 @@ def start_decoder_api_servers(intf, args):
 def start_global_proxy(intf, args):
     """Start global proxy for routing requests"""
     env = os.environ.copy()
-    env['PATH'] = '/user/local/nginx:' + env.get('PATH', '')  # Ensure nginx in PATH
+    env['PATH'] = '/usr/local/nginx:' + env.get('PATH', '')  # Ensure nginx in PATH
 
     # Start proxy script
     cmd = [
