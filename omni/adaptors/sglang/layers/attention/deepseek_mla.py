@@ -33,6 +33,40 @@ from transformers import PretrainedConfig
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
 
 
+import torch
+
+from typing import Any, Dict, Iterable, Optional, Tuple
+from sglang.srt.layers.dp_attention import (
+    get_attention_tp_rank,
+    get_attention_tp_size,
+)
+from sglang.srt.layers.layernorm import RMSNorm
+from sglang.srt.layers.linear import (
+    ColumnParallelLinear,
+    ReplicatedLinear,
+)
+from omni.adaptors.sglang.layers.linear import(
+    RowParallelLinear,
+    MergedColumnParallelLinear,
+)
+from sglang.srt.layers.quantization.fp8_kernel import (
+    is_fp8_fnuz,
+    per_tensor_quant_mla_fp8,
+    per_token_group_quant_mla_deep_gemm_masked_fp8,
+)
+from sglang.srt.utils import (
+    BumpAllocator,
+    LazyValue,
+    add_prefix,
+    bind_or_assign,
+    get_bool_env_var,
+    get_device_sm,
+    get_int_env_var,
+    is_flashinfer_available,
+    is_non_idle_and_non_empty,
+    log_info_on_rank0,
+    use_intel_amx_backend,
+)
 class AttnForwardMethod(IntEnum):
     # Use multi-head attention
     MHA = auto()

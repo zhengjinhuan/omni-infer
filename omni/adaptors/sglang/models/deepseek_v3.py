@@ -35,8 +35,13 @@ from sglang.srt.layers.quantization.fp8_utils import (
     normalize_e4m3fn_to_e4m3fnuz, requant_weight_ue8m0_inplace)
 from sglang.srt.layers.quantization.int8_utils import \
     block_dequant as int8_block_dequant
-from sglang.srt.layers.vocab_parallel_embedding import (ParallelLMHead,
-                                                        VocabParallelEmbedding)
+
+from sglang.srt.layers.vocab_parallel_embedding import (
+    VocabParallelEmbedding,
+)
+from omni.adaptors.sglang.layers.vocab_parallel_embedding import (
+    ParallelLMHead,
+)
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
                                                           PPProxyTensors)
@@ -124,17 +129,25 @@ class DeepseekDecoderLayer(nn.Module):
         else:
             if enable_moe_dense_fully_dp():
                 mlp_tp_rank, mlp_tp_size = 0, 1
+                self.mlp = ParallelDeepseekMLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    prefix=add_prefix("mlp", prefix),
+                    tp_rank=mlp_tp_rank,
+                    tp_size=mlp_tp_size,
+                )
             else:
-                mlp_tp_rank, mlp_tp_size = None, None
-            self.mlp = ParallelDeepseekMLP(
-                hidden_size=config.hidden_size,
-                intermediate_size=config.intermediate_size,
-                hidden_act=config.hidden_act,
-                quant_config=quant_config,
-                prefix=add_prefix("mlp", prefix),
-                tp_rank=mlp_tp_rank,
-                tp_size=mlp_tp_size,
-            )
+                self.mlp = ParallelDeepseekMLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    prefix=add_prefix("mlp", prefix),
+                    tp_rank=get_mlp_tp_group_parallel_rank(),
+                    tp_size=get_mlp_tp_group_parallel_world_size(),
+                )
 
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
