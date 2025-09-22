@@ -38,6 +38,7 @@ all:
               disable-log-requests: ''
               max-num-seqs: 64
               no-enable-prefix-caching: ''
+              max-num-batched-tokens: 61440
             gpu-util: '0.88'
             kv-transfer-config:
               engine_id: 0
