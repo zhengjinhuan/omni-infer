@@ -266,7 +266,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
         new_state_dict = {}
         for weight_name, weight in state_dict.items():
             if weight_name in disable_names:
-                print(weight_name, "bf16")
+                # print(weight_name, "bf16")
                 new_state_dict[weight_name] = weight
                 new_weight_map[weight_name] = file_name
                 continue
@@ -275,7 +275,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                 assert weight.element_size() == 2
                 quant_count += 1
                 if weight_is_w4(weight_name):
-                    print(weight_name, "int4")
+                    # print(weight_name, "int4")
                     int4_weight, int4_scale, bias = quant_ssz(weight, w4_type, -1, w4=True)
 
                     new_state_dict[weight_name] = pack_4bit(int4_weight)
@@ -289,7 +289,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                     new_weight_map[new_scale_int4] = file_name
                     new_weight_map[new_bias] = file_name
                 else:
-                    print(weight_name, "int8")
+                    # print(weight_name, "int8")
                     int8_weight, scale_inv = weight_quant(weight)
                     new_state_dict[weight_name] = int8_weight
                     new_scale_name = scale_inv_name.replace("_scale_inv", "_scale")
@@ -303,6 +303,8 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
 
         new_safetensor_file = os.path.join(output_path, file_name)
         save_file(new_state_dict, new_safetensor_file)
+        del state_dict
+        del new_state_dict
 
     print(quant_count, scale_count)
     print(f"{quant_count} weights are quantized")
