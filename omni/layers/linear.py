@@ -918,7 +918,7 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
 
         if bias is not None:
             if x.ndim == 3:
-                return torch.matmul(bias, layer.weight) + bias
+                return torch.matmul(x, layer.weight) + bias
             # return F.linear(x, layer.weight, bias)
             return torch.addmm(bias, x, layer.weight)
         else:
