@@ -24,7 +24,7 @@ from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
                                        SchedulerOutput)
 from vllm.v1.core.sched.utils import check_stop, add_token_and_check_stop
-from vllm.v1.core.sched.scheduler import logger
+from vllm.v1.core.sched.scheduler import logger, PreemptionMode
 from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
                             EngineCoreOutputs)
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -51,12 +51,140 @@ class MixRequest:
         self.is_isolated = False
         self.num_new_tokens = request.num_prompt_tokens
 
-    def __lt__(self, other: MixRequest) -> bool:
-        return self.num_new_tokens < other.num_new_tokens
+def __init__(
+    self,
+    vllm_config: VllmConfig,
+    kv_cache_config: KVCacheConfig,
+    structured_output_manager: StructuredOutputManager,
+    mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
+    include_finished_set: bool = False,
+    log_stats: bool = False,
+) -> None:
+    self.vllm_config = vllm_config
+    self.scheduler_config = vllm_config.scheduler_config
+    self.cache_config = vllm_config.cache_config
+    self.lora_config = vllm_config.lora_config
+    self.kv_cache_config = kv_cache_config
+    self.kv_events_config = vllm_config.kv_events_config
+    self.log_stats = log_stats
+    self.structured_output_manager = structured_output_manager
+    additional_config = vllm_config.additional_config
+    self.async_schedule = False
+    if additional_config:
+        self.async_schedule = additional_config.get(
+                "async_schedule", False)
+        self.enable_mix_schedule = additional_config.get(
+                "mix_schedule", False)
 
-class PreemptionMode(enum.Enum):
-    SWAP = enum.auto()
-    RECOMPUTE = enum.auto()
+    # include_finished_set controls whether a separate set of finished
+    # request ids should be included in the EngineCoreOutputs returned
+    # by update_from_outputs(). This is currently used in the multi-engine
+    # case to track request lifetimes efficiently.
+    self.include_finished_set = include_finished_set
+
+    # Scheduling constraints.
+    self.max_num_running_reqs = self.scheduler_config.max_num_seqs
+    self.max_num_scheduled_tokens = \
+        self.scheduler_config.max_num_batched_tokens
+    self.max_model_len = self.scheduler_config.max_model_len
+    self.enable_kv_cache_events = (
+        self.kv_events_config is not None
+        and self.kv_events_config.enable_kv_cache_events)
+
+    # Create KVConnector for the Scheduler. Note that each Worker
+    # will have a corresponding KVConnector with Role=WORKER.
+    # KV Connector pushes/pull of remote KVs for P/D and offloading.
+    self.connector = None
+    if self.vllm_config.kv_transfer_config is not None:
+        self.connector = KVConnectorFactory.create_connector_v1(
+            config=self.vllm_config, role=KVConnectorRole.SCHEDULER)
+
+    self.kv_event_publisher = EventPublisherFactory.create(
+        self.kv_events_config)
+
+    num_gpu_blocks = self.cache_config.num_gpu_blocks
+    assert num_gpu_blocks is not None and num_gpu_blocks > 0
+
+    self.block_size = self.cache_config.block_size
+
+    # req_id -> Request
+    self.requests: dict[str, Request] = {}
+    # Priority queues for requests.
+    self.waiting: deque[Request] = deque()
+    self.running: list[Request] = []
+
+    # The request IDs that are finished in between the previous and the
+    # current steps. This is used to notify the workers about the finished
+    # requests so that they can free the cached states for those requests.
+    # This is flushed at the end of each scheduling step.
+    self.finished_req_ids: set[str] = set()
+
+    # P/D: requests in process of recving KV transfers
+    self.finished_recving_kv_req_ids: set[str] = set()
+
+    # OPTIMIZATION: Cache the CachedRequestData objects to avoid creating
+    # them at each scheduling step.
+    # Request id -> deque of CachedRequestData
+    self._cached_reqs_data: dict[
+        str, deque[CachedRequestData]] = defaultdict(deque)
+
+    # Encoder-related.
+    # Calculate encoder cache size if applicable
+    # NOTE: For now we use the same budget for both compute and space.
+    # This can be changed when we make encoder cache for embedding caching
+    # across requests.
+    encoder_compute_budget, encoder_cache_size = compute_encoder_budget(
+        model_config=vllm_config.model_config,
+        scheduler_config=vllm_config.scheduler_config,
+        mm_registry=mm_registry,
+    )
+
+    # NOTE(woosuk): Here, "encoder" includes the vision encoder (and
+    # projector if needed). Currently, we assume that the encoder also
+    # has the Transformer architecture (e.g., ViT).
+    self.max_num_encoder_input_tokens = encoder_compute_budget
+    # NOTE: For the models without encoder (e.g., text-only models),
+    # the encoder cache will not be initialized because cache size is 0
+    # for these models.
+    self.encoder_cache_manager = EncoderCacheManager(
+        cache_size=encoder_cache_size)
+
+    speculative_config = vllm_config.speculative_config
+
+    self.use_eagle = False
+    self.num_spec_tokens = self.num_lookahead_tokens = 0
+    if speculative_config:
+        self.num_spec_tokens = speculative_config.num_speculative_tokens
+        if speculative_config.use_eagle():
+            self.use_eagle = True
+            self.num_lookahead_tokens = self.num_spec_tokens
+
+    # Create the KV cache manager.
+    self.kv_cache_manager = KVCacheManager(
+        kv_cache_config=kv_cache_config,
+        max_model_len=self.max_model_len,
+        enable_caching=self.cache_config.enable_prefix_caching,
+        caching_hash_algo=self.cache_config.prefix_caching_hash_algo,
+        use_eagle=self.use_eagle,
+        log_stats=self.log_stats,
+        enable_kv_cache_events=self.enable_kv_cache_events,
+    )
+
+    self.preemption_mode = PreemptionMode.RECOMPUTE
+    if self.scheduler_config.preemption_mode == "swap":
+        self.preemption_mode = PreemptionMode.SWAP
+        cpu_kv_cache_config = copy.deepcopy(kv_cache_config)
+        cpu_kv_cache_spec = cpu_kv_cache_config.kv_cache_groups[0].kv_cache_spec
+        cpu_kv_cache_config.num_blocks = int(self.vllm_config.cache_config.swap_space_bytes //
+                                        cpu_kv_cache_spec.page_size_bytes // len(cpu_kv_cache_config.tensors))
+
+        cpu_kv_cache_manager = KVCacheManager(
+            kv_cache_config=kv_cache_config,
+            max_model_len=self.max_model_len,
+            enable_caching=False,
+        )
+
+        self.cpu_npu_kv_cache_manager = CpuNpuKVCacheManager(self.kv_cache_manager, cpu_kv_cache_manager, self.max_model_len)
 
 def schedule(self) -> SchedulerOutput:
     # NOTE(woosuk) on the scheduling algorithm:
@@ -103,33 +231,23 @@ def schedule(self) -> SchedulerOutput:
     # Whether we can continue scheduling.
     pre_scheduled: dict[str, int] = {}
     if role == "prefill":
-        t1 = time.time()
         budget = self.max_num_scheduled_tokens
-    
-        mix_requests = [MixRequest(req, True) for req in self.running] + [MixRequest(req, False) for req in self.waiting]
-
-        logger.info("------------------------------------------------------------------------------------------------------")
-        logger.info(f"waiting request id - token numbers: {[(mix_req.request.request_id, mix_req.request.num_prompt_tokens) for mix_req in mix_requests if not mix_req.is_running]}")
-        logger.info("------------------------------------------------------------------------------------------------------")
-        logger.info(f"running request id - token numbers: {[(mix_req.request.request_id, mix_req.request.num_prompt_tokens) for mix_req in mix_requests if mix_req.is_running]}")
-
+        if self.enable_mix_schedule:
+            mix_requests = [MixRequest(req, True) for req in self.running] + [MixRequest(req, False) for req in self.waiting]
+        else:
+            [MixRequest(req, False) for req in self.waiting]
         # 计算每个请求需要的新token数量
         for mix_req in mix_requests:
             pre_scheduled[mix_req.request.request_id] = False
             if mix_req.is_running:
                 num_new_tokens = mix_req.request.num_tokens_with_spec - mix_req.request.num_computed_tokens
-                logger.info(f"in running {mix_req.request.num_tokens_with_spec} - {mix_req.request.num_computed_tokens} = {num_new_tokens}")
-
                 if self.async_schedule and num_new_tokens < 0:
                     num_new_tokens = 0
-
                 mix_req.num_new_tokens = num_new_tokens
                 mix_req.is_isolated = True
 
         # 按token数量排序
-        mix_requests.sort()
-        logger.info("------------------------------------------------------------------------------------------------------")
-        logger.info(f"mix request id - token numbers: {[(mix_req.request.request_id, mix_req.num_new_tokens) for mix_req in mix_requests]}")
+        mix_requests.sort(key=lambda m: m.num_new_tokens)
 
         # 调度逻辑
         schedule_num = 0
@@ -159,11 +277,8 @@ def schedule(self) -> SchedulerOutput:
                 mix_requests = [mix_req for mix_req in mix_requests if not mix_req.is_isolated]
                 mix_requests.extend(isolated_requests)
 
-        logger.info(f"Prefill scheduling completed in {time.time() - t1:.3f}s")
-        t2 = time.time()
-        logger.info(f"--------------------------------{t2 - t1:7.6f}s------------------------------------------------------------")
-        logger.info(f"Scheduled {schedule_num} requests, remaining budget: {budget}")
-        logger.info(f"Final preScheduling : {[req_id for req_id, is_pre_sched in pre_scheduled.items() if is_pre_sched]}")
+        logger.info(f"Scheduled {schedule_num} requests, remaining token budget: {budget}")
+        logger.info(f"Final pre-scheduled requests: {[req_id for req_id, is_pre_sched in pre_scheduled.items() if is_pre_sched]}")
 
     # First, schedule the RUNNING requests.
     if role == "prefill":
@@ -171,7 +286,9 @@ def schedule(self) -> SchedulerOutput:
     req_index = 0
     while req_index < len(self.running) and token_budget > 0:
         request = self.running[req_index]
-        if( role == "prefill" and not pre_scheduled[request.request_id]):
+        if (role == "prefill" and
+            self.enable_mix_schedule
+            and not pre_scheduled[request.request_id]):
             break
         num_new_tokens = (request.num_tokens_with_spec -
                             request.num_computed_tokens)
