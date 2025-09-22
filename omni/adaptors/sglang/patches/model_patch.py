@@ -57,12 +57,20 @@ def patch_token_dispatcher():
 
 _patch_done = False
 
+def patch_sglang_distributed():
+    import sglang.srt.distributed.parallel_state as ps
+    import omni.adaptors.sglang.distributed as sgl_dist
+    ps.initialize_add_groups = sgl_dist.initialize_add_groups
+
+    print("+++++++++++++++++++++++++patch_sglang_distributed+++++++++++++++++++++")
+
 def patch_all():
     global _patch_done
     if _patch_done:
         return
     patch_dp_attention()
     patch_token_dispatcher()
+    patch_sglang_distributed()
     _patch_done = True
 
 patch_all()

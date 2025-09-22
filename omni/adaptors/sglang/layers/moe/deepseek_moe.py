@@ -10,9 +10,11 @@ from sglang.srt.distributed import (get_moe_expert_parallel_world_size,
                                     get_tensor_model_parallel_world_size,
                                     parallel_state)
 from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
+from omni.adaptors.sglang.layers.linear import (
+    MergedColumnParallelLinear,
+    RowParallelLinear,
+)
 from sglang.srt.layers.activation import SiluAndMul
-from sglang.srt.layers.linear import (MergedColumnParallelLinear,
-                                      RowParallelLinear)
 from sglang.srt.layers.moe.topk import TopK
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import global_server_args_dict

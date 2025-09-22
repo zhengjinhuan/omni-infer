@@ -31,6 +31,28 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
+from omni.adaptors.sglang.layers.linear import(
+    RowParallelLinear,
+    MergedColumnParallelLinear,
+)
+
+class AttnForwardMethod(IntEnum):
+    # Use multi-head attention
+    MHA = auto()
+
+    # Use absorbed multi-latent attention
+    MLA = auto()
+
+    # Use multi-head attention, but with KV cache chunked.
+    # This method can avoid OOM when prefix lengths are long.
+    MHA_CHUNKED_KV = auto()
+
+    # Use MLA but with fused RoPE
+    MLA_FUSED_ROPE = auto()
+
+    # Use MLA with fused RoPE kernel for CPU
+    MLA_FUSED_ROPE_CPU = auto()
+
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
     import math
