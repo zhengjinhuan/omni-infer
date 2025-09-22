@@ -50,7 +50,10 @@ from sglang.srt.utils import (BumpAllocator, LazyValue, add_prefix,
                               bind_or_assign, log_info_on_rank0)
 from torch import nn
 from transformers import PretrainedConfig
-
+from omni.adaptors.sglang.distributed import (
+    get_mlp_tp_group_parallel_world_size,
+    get_mlp_tp_group_parallel_rank,
+)
 from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.moe.deepseek_moe import (DeepseekMLP,

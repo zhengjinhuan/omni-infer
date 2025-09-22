@@ -15,7 +15,13 @@ from unittest.mock import patch
 import torch
 import torch.distributed
 from torch.distributed import Backend, ProcessGroup
-
+from sglang.srt.distributed.parallel_state import (
+    init_model_parallel_group,
+    get_world_group,
+    GroupCoordinator,
+)
+import logging
+logger = logging.getLogger(__file__)
 
 _MLP_TP: Optional[GroupCoordinator] = None
 _LOCAL_WORLD: Optional[GroupCoordinator] = None
@@ -40,7 +46,7 @@ def get_local_world_group() -> GroupCoordinator:
     return _LOCAL_WORLD
 
 
-def initialize_mlp_tp_group(backend: str = None) -> None:
+def initialize_mlp_tp_group(backend, tensor_model_parallel_size, dp_size) -> None:
     """Initialize tensor parallel group for MLP layers.
     
     Args:
@@ -56,9 +62,11 @@ def initialize_mlp_tp_group(backend: str = None) -> None:
 
     world_size: int = torch.distributed.get_world_size()
     rank: int = torch.distributed.get_rank()
-    mlp_tp_size = int(os.getenv("MLP_TP_SIZE"))
-    if mlp_tp_size = None:
-        mlp_tp_size = 
+    mlp_tp_size_str = os.getenv("MLP_TP_SIZE")
+    if mlp_tp_size_str is None:
+        mlp_tp_size = tensor_model_parallel_size
+    else:
+        mlp_tp_size = int(mlp_tp_size_str)
     if world_size % mlp_tp_size != 0:
         raise RuntimeError(
             f"MLP TP Size ({mlp_tp_size}) must divide world size ({world_size})"
@@ -107,12 +115,16 @@ def calculate_effective_local_size(local_size: int, world_size: int) -> int:
     return effective_local_size
 
 
-def initialize_o_proj_tp_group(backend) -> None:
+def initialize_o_proj_tp_group(backend, tensor_model_parallel_size, dp_size) -> None:
     # Get world size and rank. Ensure some consistencies.
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
     world_size: int = torch.distributed.get_world_size()
-    o_proj_tp_size = int(os.getenv("O_PROJ_TP_SIZE", "1"))
+    o_proj_tp_size_str = os.getenv("O_PROJ_TP_SIZE")
+    if o_proj_tp_size_str is None:
+        o_proj_tp_size = tensor_model_parallel_size // dp_size
+    else:
+        o_proj_tp_size = int(o_proj_tp_size_str)
     if world_size % o_proj_tp_size != 0:
         raise RuntimeError(f"o_proj TP Size ({o_proj_tp_size}) should be divisible by world size ({world_size})")
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
