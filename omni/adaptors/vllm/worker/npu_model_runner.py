@@ -872,7 +872,7 @@ class NPUModelRunner(GPUModelRunner):
             self.max_batch_size = self._get_max_token_num(
                 self.vllm_config.parallel_config.data_parallel_size > 1, num_tokens)
         if self.is_multimodal_model:
-            fake_input = torch.zeros((self.max_batch_size, inputs_embeds[1]) dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+            fake_input = torch.zeros((self.max_batch_size, inputs_embeds[1]), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
             if self.uses_mrope:
                 fake_positions = torch.zeros((self.mrope_positions.shape[0], self.max_batch_size), dtype=torch.int64, device=self.device)
             else:
