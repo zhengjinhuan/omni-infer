@@ -23,8 +23,8 @@
     # Global Configuration
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/model/kimi-k2-w4a8-mtp"
-    MODEL_LEN_MAX_PREFILL: "33008"
-    MODEL_LEN_MAX_DECODE: "33008"
+    MODEL_LEN_MAX_PREFILL: "65600"
+    MODEL_LEN_MAX_DECODE: "65600"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
 
@@ -181,9 +181,9 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill_k2.json"
-      EXTRA_ARGS='--max-num-batched-tokens 33008 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
+      EXTRA_ARGS='--max-num-batched-tokens 65600 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
       GPU_UTIL=0.85
-      ADDITIONAL_CONFIG='{"enable_omni_attn": true, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": true}'
+      ADDITIONAL_CONFIG='{"enable_omni_attn": false, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": false}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -265,9 +265,9 @@
           {% endfor %}
       )
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode_k2.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 45 --no-enable-prefix-caching'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 43 --no-enable-prefix-caching --preemption-mode swap'
       GPU_UTIL=0.85
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}, "enable_omni_attn": true, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": true}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}, "enable_omni_attn": false, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": false}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
