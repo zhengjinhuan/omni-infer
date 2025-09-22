@@ -6,7 +6,7 @@ index 4965df17e..c6ce67ac7 100644
          use_eagle: bool = False,
          log_stats: bool = False,
          enable_kv_cache_events: bool = False,
-+        combine_block_num: int,
++        combine_block_num: int = 1,
      ) -> None:
          assert len(kv_cache_config.kv_cache_groups) == 1, (
              "KVCacheManager does not support hybrid models with more than 1 "
@@ -39,7 +39,7 @@ index 403b5401b..5589f24c4 100644
 +            "combine_block", "1"))
 +        logger.info(f" combine_block_num is {combine_block_num}")
 +        from vllm.utils import cdiv
-+        num_blocks = cdiv(num_blocks, combine_block_num)*
++        num_blocks = cdiv(num_blocks, combine_block_num)*\
 +            combine_block_num - (combine_block_num - 1)
 
      num_tokens = num_blocks * vllm_config.cache_config.block_size
@@ -56,7 +56,7 @@ index b7bc5f1f7..e270f0908 100644
 +        if additional_config:
 +            self.combine_block_num = int(additional_config.get(
 +                "combine_block", "1")):
-+        logger.info(f" combine_block_num is {combine_block_num}")
++        logger.info(f" combine_block_num is {self.combine_block_num}")
          self.kv_cache_manager = KVCacheManager(
              kv_cache_config=kv_cache_config,
              max_model_len=self.max_model_len,
