@@ -47,11 +47,7 @@ from vllm.distributed import parallel_state
 from vllm.distributed import utils as dist_utils
 from vllm.logger import init_logger
 from vllm.model_executor import SamplingMetadata
-from vllm.model_executor.layers.activation import _ACTIVATION_REGISTRY
-from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.linear import (ColumnParallelLinear,
-                                               QKVParallelLinear,
-                                               RowParallelLinear)
+
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.gptq import GPTQConfig
 from vllm.model_executor.layers.quantization.gptq_marlin import (
@@ -62,7 +58,6 @@ from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import MultiModalFieldConfig
 from vllm.platforms import _Backend
 from vllm.sequence import IntermediateTensors
-from vllm.transformers_utils.config import uses_mrope
 
 from vllm.model_executor.models.interfaces import (MultiModalEmbeddings, SupportsLoRA,
                          SupportsMultiModal, SupportsPP)
@@ -72,9 +67,16 @@ from vllm.model_executor.models.qwen2_vl import (Qwen2VLMultiModalProcessor, Qwe
 from vllm.model_executor.models.utils import (AutoWeightsLoader, WeightsMapper, cast_overflow_tensors,
                     init_vllm_registered_model, maybe_prefix,
                     merge_multimodal_embeddings)
-from vllm.model_executor.models.vision import get_vit_attn_backend
 
+from omni.layers.activation import SiluAndMul
 from omni.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.layernorm import RMSNormFlashComm
+from omni.layers.linear import (
+    RowParallelFlashCommLinear,
+    QKVParallelFlashCommLinear,
+    ColumnParallelFlashCommLinear,
+    MergedColumnParallelFlashCommLinear,
+)
 
 logger = init_logger(__name__)
 
@@ -180,28 +182,27 @@ class Qwen2_5_VisionMLP(nn.Module):
         self.tp_size = parallel_state.get_tensor_model_parallel_world_size()
         self.tp_rank = parallel_state.get_tensor_model_parallel_rank()
 
-        self.gate_proj = ColumnParallelLinear(in_features,
-                                              hidden_features,
-                                              bias=bias,
-                                              quant_config=quant_config,
-                                              prefix=f"{prefix}.gate_proj")
-        self.up_proj = ColumnParallelLinear(in_features,
-                                            hidden_features,
-                                            bias=bias,
-                                            quant_config=quant_config,
-                                            prefix=f"{prefix}.up_proj")
-        self.down_proj = RowParallelLinear(hidden_features,
-                                           in_features,
-                                           bias=bias,
-                                           quant_config=quant_config,
-                                           prefix=f"{prefix}.down_proj")
+        self.gate_up_proj = MergedColumnParallelFlashCommLinear(in_features,
+                                                            [hidden_features] * 2,
+                                                            tp_size=self.tp_size,
+                                                            tp_rank=self.tp_rank,
+                                                            bias=bias,
+                                                            quant_config=quant_config,
+                                                            prefix=f"{prefix}.gate_up_proj")
+
+        self.down_proj = RowParallelFlashCommLinear(hidden_features,
+                                                    in_features,
+                                                    tp_size=self.tp_size,
+                                                    tp_rank=self.tp_rank,
+                                                    bias=bias,
+                                                    quant_config=quant_config,
+                                                    prefix=f"{prefix}.down_proj")
         self.act_fn = act_fn
 
     def forward(self, x: torch.Tensor):
-        x_gate, _ = self.gate_proj(x)
-        x_gate = self.act_fn(x_gate)
-        x_up, _ = self.up_proj(x)
-        x_down, _ = self.down_proj(x_gate * x_up)
+        gate_up, _ = self.gate_up_proj(x)
+        x = self.act_fn(gate_up)
+        x_down, _ = self.down_proj(x)
         return x_down
 
 
@@ -243,27 +244,22 @@ class Qwen2_5_VisionAttention(nn.Module):
         self.num_attention_heads_per_partition = dist_utils.divide(
             num_heads, self.tp_size)
 
-        self.qkv = QKVParallelLinear(
+        self.qkv = QKVParallelFlashCommLinear(
             hidden_size=embed_dim,
             head_size=self.hidden_size_per_attention_head,
             total_num_heads=num_heads,
             total_num_kv_heads=num_heads,
+            tp_size=self.tp_size,
+            tp_rank=self.tp_rank,
             bias=True,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv")
-        self.proj = RowParallelLinear(input_size=projection_size,
-                                      output_size=embed_dim,
-                                      quant_config=quant_config,
-                                      prefix=f"{prefix}.proj")
-
-        # Detect attention implementation.
-        self.attn_backend: _Backend = get_vit_attn_backend(support_fa=True)
-        if self.attn_backend not in {
-                _Backend.FLASH_ATTN, _Backend.TORCH_SDPA, _Backend.XFORMERS
-        }:
-            raise RuntimeError(
-                f"Qwen2.5-VL does not support {self.attn_backend} backend now."
-            )
+        self.proj = RowParallelFlashCommLinear(input_size=projection_size,
+                                                output_size=embed_dim,
+                                                tp_size=self.tp_size,
+                                                tp_rank=self.tp_rank,
+                                                quant_config=quant_config,
+                                                prefix=f"{prefix}.proj")
 
     def split_qkv(self, qkv: torch.Tensor) -> tuple[torch.Tensor, ...]:
         # [s, b, 3 * head * head_dim]
@@ -294,8 +290,6 @@ class Qwen2_5_VisionAttention(nn.Module):
             x: torch.Tensor,
             cu_seqlens: torch.Tensor,
             rotary_pos_emb: torch.Tensor,
-            max_seqlen: Optional[int] = None,  # Only used for Flash Attention
-            seqlens: Optional[list[int]] = None,  # Only used for xFormers
     ) -> torch.Tensor:
         # [s, b, c] --> [s, b, head * 3 * head_dim]
         x, _ = self.qkv(x)
@@ -325,7 +319,7 @@ class Qwen2_5_VisionAttention(nn.Module):
             next_tockens=2147483647,
             sparse_mode=0)[0]
         context_layer = rearrange(output,
-                                  "(b s) ... -> b s ...", b=1)
+                                  "(b s) ... -> b s ...", b=batch_size)
         context_layer = rearrange(context_layer,
                                   "b s h d -> s b (h d)").contiguous()
         output, _ = self.proj(context_layer)
@@ -366,14 +360,10 @@ class Qwen2_5_VisionBlock(nn.Module):
             x: torch.Tensor,
             cu_seqlens: torch.Tensor,
             rotary_pos_emb: torch.Tensor,
-            max_seqlen: Optional[int] = None,  # Only used for Flash Attention
-            seqlens: Optional[list[int]] = None,  # Only used for xFormers
     ) -> torch.Tensor:
         x = x + self.attn(self.norm1(x),
                           cu_seqlens=cu_seqlens,
-                          rotary_pos_emb=rotary_pos_emb,
-                          max_seqlen=max_seqlen,
-                          seqlens=seqlens)
+                          rotary_pos_emb=rotary_pos_emb)
 
         x = x + self.mlp(self.norm2(x))
         return x
@@ -420,22 +410,28 @@ class Qwen2_5_VisionPatchMerger(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        self.tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        self.tp_rank = parallel_state.get_tensor_model_parallel_rank()
         self.hidden_size = context_dim * (spatial_merge_size**2)
         if norm_layer is None:
             norm_layer = partial(nn.LayerNorm, eps=1e-6)
         self.ln_q = norm_layer(context_dim)
         self.mlp = nn.ModuleList([
-            ColumnParallelLinear(self.hidden_size,
-                                 self.hidden_size,
-                                 bias=True,
-                                 quant_config=quant_config,
-                                 prefix=f"{prefix}.mlp.0"),
+            ColumnParallelFlashCommLinear(self.hidden_size,
+                                    self.hidden_size,
+                                    tp_size=self.tp_size,
+                                    tp_rank=self.tp_rank,
+                                    bias=True,
+                                    quant_config=quant_config,
+                                    prefix=f"{prefix}.mlp.0"),
             nn.GELU(),
-            RowParallelLinear(self.hidden_size,
-                              d_model,
-                              bias=True,
-                              quant_config=quant_config,
-                              prefix=f"{prefix}.mlp.2"),
+            RowParallelFlashCommLinear(self.hidden_size,
+                                    d_model,
+                                    tp_size=self.tp_size,
+                                    tp_rank=self.tp_rank,
+                                    bias=True,
+                                    quant_config=quant_config,
+                                    prefix=f"{prefix}.mlp.2"),
         ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -510,8 +506,7 @@ class Qwen2_5_VisionTransformer(nn.Module):
             in_channels=in_channels,
             hidden_size=self.hidden_size,
         )
-
-        norm_layer = partial(RMSNorm, eps=norm_eps)
+        norm_layer = partial(RMSNormFlashComm, eps=norm_eps)
         head_dim = self.hidden_size // self.num_heads
         self.rotary_pos_emb = Qwen2_5_VisionRotaryEmbedding(head_dim // 2)
 
@@ -520,7 +515,7 @@ class Qwen2_5_VisionTransformer(nn.Module):
                 dim=self.hidden_size,
                 num_heads=self.num_heads,
                 mlp_hidden_dim=vision_config.intermediate_size,
-                act_fn=_ACTIVATION_REGISTRY[vision_config.hidden_act],
+                act_fn=SiluAndMul(),
                 norm_layer=norm_layer,
                 quant_config=quant_config,
                 prefix=f"{prefix}.blocks.{layer_idx}")
@@ -610,17 +605,6 @@ class Qwen2_5_VisionTransformer(nn.Module):
         return (rotary_pos_emb_thw, window_index_thw, cu_seqlens_window_thw,
                 cu_seqlens_thw)
 
-    def compute_attn_mask_seqlen(
-        self,
-        cu_seqlens: torch.Tensor,
-    ) -> tuple[Optional[int], Optional[list[int]]]:
-        max_seqlen, seqlens = None, None
-        if self.attn_backend == _Backend.FLASH_ATTN:
-            max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
-        elif self.attn_backend == _Backend.XFORMERS:
-            seqlens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
-        return max_seqlen, seqlens
-
     def forward(
         self,
         x: torch.Tensor,
@@ -670,13 +654,6 @@ class Qwen2_5_VisionTransformer(nn.Module):
         cu_seqlens = torch.cumsum(cu_seqlens, dim=0, dtype=torch.int32)
         cu_seqlens = F.pad(cu_seqlens, (1, 0), "constant", 0)
 
-        # transformers
-        # pre-compute seqlens for window/full attn to reduce cuMemcpy operations
-        max_seqlen_full, seqlens_full = self.compute_attn_mask_seqlen(
-            cu_seqlens)
-        max_seqlen_window, seqlens_window = self.compute_attn_mask_seqlen(
-            cu_window_seqlens)
-
         cu_seqlens = cu_seqlens.to(device=self.device, non_blocking=True)
         cu_window_seqlens = cu_window_seqlens.to(device=self.device,
                                                  non_blocking=True)
@@ -695,19 +672,12 @@ class Qwen2_5_VisionTransformer(nn.Module):
         for layer_num, blk in enumerate(self.blocks):
             if layer_num in self.fullatt_block_indexes:
                 cu_seqlens_now = cu_seqlens
-                max_seqlen_now = max_seqlen_full
-                seqlens_now = seqlens_full
             else:
                 cu_seqlens_now = cu_window_seqlens
-                max_seqlen_now = max_seqlen_window
-                seqlens_now = seqlens_window
-
             hidden_states = blk(
                 hidden_states,
                 cu_seqlens=cu_seqlens_now,
                 rotary_pos_emb=rotary_pos_emb,
-                max_seqlen=max_seqlen_now,
-                seqlens=seqlens_now,
             )
 
         # For Qwen2.5-VL-3B, float16 will overflow at last block
@@ -728,6 +698,8 @@ class Qwen2_5_VisionTransformer(nn.Module):
             ("attn.qkv.", "attn.q.", "q"),
             ("attn.qkv.", "attn.k.", "k"),
             ("attn.qkv.", "attn.v.", "v"),
+            ("mlp.gate_up_proj.","mlp.gate_proj.",0),
+            ("mlp.gate_up_proj.","mlp.up_proj.",1),
         ]
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         loaded_params: set[str] = set()
