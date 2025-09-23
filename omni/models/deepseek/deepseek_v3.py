@@ -493,10 +493,11 @@ class DeepseekV3Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        attn_metadata = self.get_layer_attn_metadata(attn_metadata, 0)
         if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
             # split input for sp attention
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
-            hidden_states = generate_sp_inputs(hidden_states, self.get_layer_attn_metadata(attn_metadata, 0))
+            hidden_states = generate_sp_inputs(hidden_states, attn_metadata)
 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
@@ -537,7 +538,7 @@ class DeepseekV3Model(nn.Module):
         if model_extra_config.parall_config.attn_sp_size > 1 and is_prefill:
             # reverse sp split
             if attn_metadata is not None:
-                prefill_meta = self.get_layer_attn_metadata(attn_metadata, 0).prefill
+                prefill_meta = attn_metadata.prefill
                 outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
                 hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
 

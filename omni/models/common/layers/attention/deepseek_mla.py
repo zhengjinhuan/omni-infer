@@ -181,7 +181,7 @@ class Indexer(nn.Module):
             if model_extra_config.parall_config.attn_sp_size > 1:
                 q_nope, q_nope_2 = torch.split(q_nope, q_nope.size(0) // 2, dim=0)
                 q_pe, q_pe_2 = torch.split(q_pe, q_pe.size(0) // 2, dim=0)
-                q2 = torch.cat([q_nope_2, q_pe_2], dim=-1)
+                q2 = torch.cat([q_pe_2, q_nope_2], dim=-1)
 
             q = torch.cat([q_pe, q_nope], dim=-1)  # [b*s,64,128]
 
@@ -210,6 +210,8 @@ class Indexer(nn.Module):
         with stream_context("22"):
             if not is_prefill:
                 tng.scope.npu_wait_tensor(x, kw)
+            if model_extra_config.parall_config.attn_sp_size == 1:
+                x = tensor_model_parallel_all_gather(x, dim=0)
             weights = self.weights_proj(x)[0]
             if model_extra_config.parall_config.attn_sp_size > 1:
                 weights, weights_2 = torch.split(weights, weights.size(0) // 2, dim=0)

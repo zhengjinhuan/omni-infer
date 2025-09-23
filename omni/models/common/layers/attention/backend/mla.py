@@ -445,7 +445,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         positions = self.pad_inputs(positions, query_lens_list, sp_size * 2, 0)
         cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
         # split input for sp attention
-        position_id_list = list(torch.split(positions, sp_split_list, dim=0))
+        position_id_list = torch.split(positions, sp_split_list, dim=0)
         positions = torch.cat([position_id_list[i] for i in sp_zigzag_index], dim=0)
 
         sp_seq_lens = torch.tensor(sp_seq_lens_list, dtype=torch.int64).npu()
