@@ -56,7 +56,6 @@ class OfflineEagleModel(nn.Module):
         hidden_states,
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
         target = self.target_head(hidden_states.roll(-1, -2))
-        loss_mask = loss_mask.roll(-1, -1)
         # Step 0: handle vocab size
         with torch.no_grad():
             target_p, position_mask = _compute_target_p(
@@ -69,7 +68,7 @@ class OfflineEagleModel(nn.Module):
         past_key_values_length = 0
 
         # Step 5.1: embed the input ids
-        inputs_embeds = self.draft_model.embed_input_ids(input_ids.roll(-1, -1))
+        inputs_embeds = self.draft_model.embed_input_ids(input_ids)
         inputs_embeds = inputs_embeds.to(hidden_states.dtype)
 
         # Step 5.2: run the draft model backbone

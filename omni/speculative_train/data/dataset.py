@@ -42,7 +42,7 @@ class OfflineEagleDataset(torch.utils.data.Dataset):
         hidden_states = data["hidden_states"][:self.max_len]
 
         input_ids = data["input_ids"][1 : self.max_len + 1]
-        loss_mask = data["loss_mask"][: self.max_len]
+        loss_mask = data["loss_mask"][1 : self.max_len + 1]
         loss_mask[-1] = 0
 
         pad_size = self.max_len - input_ids.numel()
@@ -51,7 +51,7 @@ class OfflineEagleDataset(torch.utils.data.Dataset):
         new_data["loss_mask"] = torch.cat([loss_mask, pad_zeros.to(loss_mask.dtype)])
         new_data["attention_mask"] = torch.ones_like(new_data["loss_mask"], dtype=torch.long)
         new_data["hidden_states"] = torch.cat(
-            [hidden_states, torch.zeros(pad_size, hidden_states.shape[-1], dtype=hidden_states.dtype, device=hidden_states.device)],
+            [hidden_states, torch.zeros(self.max_len - hidden_states.shape[0], hidden_states.shape[-1], dtype=hidden_states.dtype, device=hidden_states.device)],
             dim=0,
         )
         new_data["input_ids"] = torch.cat([input_ids, pad_zeros])
