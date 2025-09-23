@@ -204,6 +204,22 @@ print_with_rank(
     f"draft_accumulation_steps={args.draft_global_batch_size} // {args.dp_size} // {args.draft_micro_batch_size}={args.draft_accumulation_steps}"
 )
 
+# Validate report backend arguments
+tracker_class = get_tracker_class(args.report_to)
+if tracker_class:
+    tracker_class.validate_args(parser, args)
+else:
+    parser.error(f"Unknown tracker: {args.report_to}")
+
+tracker = create_tracker(args, args.output_dir)
+
+# detecting last ckpt for draft model
+draft_model_last_checkpoint = None
+if args.resume and os.path.isdir(args.output_dir):
+    print_on_rank0(args.output_dir)
+    draft_model_last_checkpoint = get_last_checkpoint(args.output_dir)
+    print_on_rank0(f"Last checkpoint detected: {draft_model_last_checkpoint}")
+
 # build target and draft model
 target_head = TargetHead(args.target_model_path)
 target_head.load_weights(
@@ -216,7 +232,8 @@ target_head = target_head.eval().npu().to(torch.bfloat16)
 print_with_rank("Initialized target head")
 
 config = AutoDraftModelConfig.from_file("/data/model/qwq-32b-eagle/config.json")
-draft_model = AutoEagleDraftModel.from_config(config).npu().to(torch.bfloat16)
+# draft_model = AutoEagleDraftModel.from_config(config).npu().to(torch.bfloat16)
+draft_model = AutoEagleDraftModel.from_pretrained("/data/model/qwq-32b-eagle/config.json").npu().to(torch.bfloat16)
 print(draft_model)
 names = [item[0] for item in draft_model.named_parameters()]
 print(names)
@@ -291,13 +308,7 @@ print_with_rank("Initialized optimizer and scheduler")
 
 last_time = time.time()
 
-tracker_class = get_tracker_class(args.report_to)
-if tracker_class:
-    tracker_class.validate_args(parser, args)
-else:
-    parser.error(f"Unknown tracker: {args.report_to}")
 
-tracker = create_tracker(args, args.output_dir)
 # start running
 for epoch in range(args.num_epochs):
     # Run training

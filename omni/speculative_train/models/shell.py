@@ -56,6 +56,7 @@ class OfflineEagleModel(nn.Module):
         hidden_states,
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
         target = self.target_head(hidden_states.roll(-1, -2))
+        loss_mask = loss_mask.roll(-1, -1)
         # Step 0: handle vocab size
         with torch.no_grad():
             target_p, position_mask = _compute_target_p(
