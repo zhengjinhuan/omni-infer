@@ -815,7 +815,8 @@ class DeepseekMLA(nn.Module):
                 # # consider padding in slot mapping
                 # ram_cache[cpu_slot_mapping//block_size, cpu_slot_mapping%block_size, self.layer_idx, self.tp_local_rank]=current_kv[..., self.tp_rank*kv_tp_size:(self.tp_rank+1)*kv_tp_size].cpu()
                 # attn_metadata.omni_cache.synchronize_d2h(kv_a.unsqueeze(1), k_pe, attn_metadata.slot_mapping, kv_event)
-                if attn_metadata.prefill.prefix_meta is not None:
+                if model_extra_config.operator_opt_config.use_omni_cache and \
+                    attn_metadata.prefill.prefix_meta is not None:
                     # attn_metadata.omni_cache.synchronize_h2d(
                     #     prefix_meta=attn_metadata.prefill.prefix_meta,
                     #     layer_idx=self.layer_idx,
@@ -861,7 +862,8 @@ class DeepseekMLA(nn.Module):
                         .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
                     k_pe = kv_cache_pe.reshape(-1, kv_cache[1].shape[-1]) \
                         .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
-                if prefill_metadata.prefix_meta is not None:
+                if model_extra_config.operator_opt_config.use_omni_cache and \
+                    prefill_metadata.prefix_meta is not None:
                     prefix_buffer = attn_metadata.omni_cache.prefix_buffer_npu
                     prefill_kv_a, prefill_k_pe = prefix_buffer[:actual_seq_kvlen[-1], :, :512], prefix_buffer[:actual_seq_kvlen[-1], :, 512:]
                     prefix_event = attn_metadata.omni_cache.h2d_event
@@ -902,7 +904,8 @@ class DeepseekMLA(nn.Module):
         else:
             attn_output.fill_(0)
 
-        if attn_metadata is not None:
+        if model_extra_config.operator_opt_config.use_omni_cache and \
+            attn_metadata is not None:
             attn_metadata.omni_cache.synchronize_d2h(kv_a.unsqueeze(1), k_pe, attn_metadata.slot_mapping, self.layer_idx, kv_event)
             attn_metadata.omni_cache.synchronize_h2d(
                 prefix_meta=attn_metadata.prefill.prefix_meta,

@@ -30,7 +30,6 @@ from omni.models.common.layers.attention.backend.attention import AscendAttentio
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
-from omni.adaptors.vllm.patches.model_patch import get_attr_by_names
 from omni.accelerators.cache.omni_cache import BaseOmniCache, PrefixCopyMeta
 
 from vllm.distributed.parallel_state import (
@@ -252,6 +251,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         scheduler_config = runner.scheduler_config
         self.chunked_prefill_enabled = scheduler_config.chunked_prefill_enabled
         self.block_size = self.runner.block_size
+        self.base_index = np.array(list(range(0, self.block_size)))
+        self.base_block = self.block_size * np.ones([1, self.block_size])
         self.kv_cache_spec = kv_cache_spec
         self.block_table = block_table
         self.decode_gear_list = model_extra_config.operator_opt_config.decode_gear_list
@@ -478,7 +479,9 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         input_positions = self.runner.positions_cpu[:num_actual_tokens].to(
             device, non_blocking=True)
 
-        assert isinstance(self.runner.omni_cache, BaseOmniCache), f"Omni cache type is {type(self.runner.omni_cache)}"
+        if self.runner.omni_cache is not None:
+            assert isinstance(self.runner.omni_cache, BaseOmniCache), \
+                f"Omni cache type is {type(self.runner.omni_cache)}"
         omni_cache = self.runner.omni_cache
 
         # pad prefill to avoid error of operator's shape assert
