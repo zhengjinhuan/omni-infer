@@ -428,7 +428,7 @@ index 19977012a..a4eae8b16 100644
  from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
  from sglang.srt.layers.quantization.w8a8_fp8 import W8A8Fp8Config
 -from sglang.srt.layers.quantization.w8a8_int8 import W8A8Int8Config
-+from omni.adaptors.sglang.layers.quantization.w8a8_int8 import W8A8Int8Config
++from omni.adaptors.sglang.layers.quantization.compressed_tensors.compressed_tensors import W8A8Int8Config
  
  if TYPE_CHECKING:
      from sglang.srt.layers.moe.topk import TopKOutput
