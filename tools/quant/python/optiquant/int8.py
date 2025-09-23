@@ -44,6 +44,14 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
     disable_names.append("model.norm.weight")
     disable_names.append("model.embed_tokens.weight")
 
+    if pangu_mode:
+        disable_names.append(f"model.layers.61.embed_tokens.weight")
+        disable_names.append(f"model.layers.61.enorm.weight")
+        disable_names.append(f"model.layers.61.hnorm.weight")
+        disable_names.append(f"model.layers.61.eh_proj.weight")
+        disable_names.append(f"model.layers.61.shared_head.norm.weight")
+        disable_names.append(f"model.layers.61.shared_head.head.weight")
+
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(output_path, exist_ok=True)
     model_index_file = os.path.join(output_path, "model.safetensors.index.json")
@@ -79,7 +87,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
         new_state_dict = {}
         for weight_name, weight in state_dict.items():
             if weight_name in disable_names:
-                print(weight_name, "bf16")
+                # print(weight_name, "bf16")
                 new_state_dict[weight_name] = weight
                 new_weight_map[weight_name] = file_name
                 continue
@@ -87,7 +95,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
             if scale_inv_name in weight_map or pangu_mode:
                 assert weight.element_size() == 2
                 quant_count += 1
-                print(weight_name, "int8")
+                # print(weight_name, "int8")
                 int8_weight, scale_inv = weight_quant(weight)
                 new_state_dict[weight_name] = int8_weight
                 new_scale_name = scale_inv_name.replace("_scale_inv", "_scale")

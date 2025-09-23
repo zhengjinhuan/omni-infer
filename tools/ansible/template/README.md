@@ -1,6 +1,6 @@
 [TOC]
 
-# 脚本介绍
+# 一、脚本介绍
 本目录 (tools/ansible/template) 下的脚本实现一键式部署多机PD分离服务和 Global Proxy 服务， 用户只需按要求进行部分配置的修改， 即可实现容器自动启动， 自动生成全局 ranktable 以及拉起 vllm 服务和 Proxy 服务。
 脚本文件目录结构如下：
 ```bash
@@ -11,7 +11,7 @@
     └── README.md
 ```
 
-# 相关文件解释说明
+# 二、相关文件解释说明
 ## omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml
 两个文件一个用于 2P1D 四机场景，一个用于 4P1D 八机场景，都是用于定义被管理目标机的配置信息；文件中参数配置说明如下:
 
@@ -77,7 +77,7 @@
 
 * `ranktable_save_path`: ansible 运行过程中， Prefill 和 Decode 实例对应的 ranktable 文件以及它们合并生成的 ranktable 文件存放路径。
 
-# 环境准备
+# 三、环境准备
 ## 在执行机安装 ansible-playbook
 ```bash
 # 安装ansible-playbook
@@ -108,7 +108,7 @@ yum install openssh-server
     ssh-copy-id -i ~/.ssh/id_ed25519.pub user@remote-host
     ```
 
-# 操作步骤
+# 四、操作步骤
 
 ## 修改配置
 在 **omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml** 中， 重点修改以下配置项 `ansible_user / ansible_ssh_private_key_file / ansible_host / node_rank / kv_rank / host_ip`;
@@ -152,3 +152,38 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 # 清理残余配置，主要是 stop 容器并且删除容器，以及删除 ranktable 和临时脚本
 ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags clean_up
 ```
+
+# 五、动态添加节点
+## 特性介绍
+在已有部署推理实例的情况下，为该实例动态新增推理节点，例如在已有 1P1D 实例，新增一个 Prefill 节点使该实例升级为 2P1D，这个过程中无需实例所有节点重启，除 nginx 重新连接导致服务断开几秒之外，实例服务其他大部分时间下都是可用状态。
+
+该特性可有效缓解在高并发场景下，由于节点性能达到瓶颈造成的推理实例请求阻塞问题。
+
+使用该特性需要注意以下几点：
+1. 新增节点和已有节点必须在同一超节点内；
+2. 该特性可以使用的前提，是**原推理实例的启动配置中，KV_CONNECTOR 必须为 "LMCacheConnectorV1"**，即使用 LMCache + Mooncake Store 的组合来管理KVCache；
+
+## 操作步骤
+假设现在已有一个 1P1D 的推理实例，使用 **omni_infer_inventory_used_for_1P1D.yml** 和 **omni_infer_server_template.yml** 两个脚本来启动，且启动时已将 KV_CONNECTOR 参数指定为"LMCacheConnectorV1"。将展示如何为该实例动态添加一个 Prefill 节点，使其变为 2P1D 的形态。
+
+### 第一步：节点准备
+1. 请参考本文中“密钥文件的准备”章节，为新节点同样配置好密钥；
+2. 在和其他节点 `MODEL_PATH` 相同路径中拷贝好模型权重；
+
+### 第二步：添加要新增的节点信息
+**omni_infer_inventory_used_for_1P1D.yml** 脚本中当前仅存在一个 Prefill 节点 **p0** ，将新增节点信息添加为 **p1**。增加后的效果参考 **omni_infer_inventory_used_for_2P1D.yml**，可直接对比两个脚本查看差异。
+
+由于我们修改好的节点配置文件内容已变为 2P1D，为防止混淆，下文该文件名称直接使用 **omni_infer_inventory_used_for_2P1D.yml**。
+
+### 第三步：修改启动配置
+请参考原实例启动所使用的脚本 **omni_infer_server_template.yml** 所修改的参数，对应修改 **omni_infer_server_add_node_template.yml**，配置参数一致即可。
+
+### 第四步：执行命令
+```bash
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_add_node_template.yml
+```
+执行以上命令后，可观察到实例中原有节点状态不会变化，新增节点上服务开始启动并加载权重。启动过程中，nginx会短暂断开重连，导致服务有几秒中断，正在推理的请求可能会失败。
+
+启动后，由于当前的 2P1D 实例，和直接使 **omni_infer_inventory_used_for_2P1D.yml**、**omni_infer_server_template.yml** 启动的服务并没有差异。如果需要修改代码或重启服务，可直接使用 **omni_infer_inventory_used_for_2P1D.yml**、**omni_infer_server_template.yml** 两个脚本，以及第四章提到的`--tags`方法。
+
+本章节中所使用的 **omni_infer_server_add_node_template.yml**，仅作为动态添加节点使用，不支持第四章中提到的`--tags`能力。

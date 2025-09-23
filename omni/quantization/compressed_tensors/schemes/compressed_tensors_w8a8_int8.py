@@ -8,13 +8,12 @@ from torch.nn import Parameter
 import torch_npu
 
 from compressed_tensors.quantization import QuantizationStrategy
+from vllm.model_executor.utils import set_weight_attrs
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import CompressedTensorsScheme
 from vllm.model_executor.parameter import (ChannelQuantScaleParameter,
                                            ModelWeightParameter,
                                            PerTensorScaleParameter)
 
-BEFORE_INIT = 0
-AFTER_INIT = 1
 
 class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
     _kernel_backends_being_used: set[str] = set()
@@ -60,11 +59,10 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
                 weight_loader=weight_loader)
 
         layer.register_parameter("weight_scale", weight_scale)
+        set_weight_attrs(weight_scale, {"is_2_dims": True})
         layer.register_parameter("weight_offset", weight_offset)
-
-        setattr(layer, "init_state", BEFORE_INIT)
-
-        self.empty_out = torch.empty(1, dtype=params_dtype)
+        self.params_dtype = params_dtype
+        layer.orig_dtype = self.params_dtype
 
     # Checkpoints are serialized in compressed-tensors format, which is
     # different from the format the kernel may want. Handle repacking here.
@@ -83,12 +81,11 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
 
     def apply_weights(self, layer: torch.nn.Module,
                     x: torch.Tensor,
-                    bias: Optional[torch.Tensor]
+                    bias: Optional[torch.Tensor],
+                    module_name: Optional[str] = "",
+                    x_transform: Optional[str] = None,
+                    is_prefill: Optional[bool] = True
                     ) -> Union[torch.Tensor, Dict[str, Any]]:
-
-        if layer.init_state == BEFORE_INIT:
-            layer.init_state = AFTER_INIT
-
         # activation per-token dynamic quant
         if isinstance(x, Dict):
             x_int8 = x.get('x_int8')
@@ -106,5 +103,5 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
                                     offset=None,
                                     pertoken_scale=pertoken_scale,
                                     bias=bias,
-                                    output_dtype=torch.bfloat16)
+                                    output_dtype=self.params_dtype)
         return out

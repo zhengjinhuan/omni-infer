@@ -290,7 +290,10 @@ function nginx_set_http_config() {
     local client_body_buffer_size_line="client_body_buffer_size ${client_body_buffer_size};"
     local client_max_body_size_line="client_max_body_size 100m;"
     local proxy_read_timeout_line="proxy_read_timeout 14400s;"
-    local subrequest_output_buffer_size_line="subrequest_output_buffer_size 1m;"
+    local subrequest_output_buffer_size_line="subrequest_output_buffer_size 2m;"
+    local proxy_buffering="proxy_buffering off;"
+    local proxy_send_timeout="proxy_send_timeout 300s;"
+    local proxy_connect_timeout="proxy_connect_timeout 600s;"
 
     if [[ ! -f "$nginx_conf_file" ]]; then
         echo "Error: nginx conf file '$nginx_conf_file' does not exist."
@@ -307,6 +310,9 @@ function nginx_set_http_config() {
     nginx_set_http_config_with_sed $nginx_conf_file "$client_max_body_size_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$proxy_read_timeout_line"
     nginx_set_http_config_with_sed $nginx_conf_file "$subrequest_output_buffer_size_line"
+    nginx_set_http_config_with_sed $nginx_conf_file "$proxy_buffering"
+    nginx_set_http_config_with_sed $nginx_conf_file "$proxy_send_timeout"
+    nginx_set_http_config_with_sed $nginx_conf_file "$proxy_connect_timeout"
 }
 
 function nginx_set_listen_port() {
@@ -371,6 +377,10 @@ function nginx_set_upstream() {
         "least_total_load")
             lb_sdk_line="least_total_load on;"
             lb_sdk_extra="least_total_load_batch_size 16;"
+            ;;
+        "prefix_cache_affinity")
+            lb_sdk_line="prefix_cache_affinity on;"
+            lb_sdk_extra="prefix_cache_affinity_block_size 640;"
             ;;
         "auto_balance_controller")
             lb_sdk_line="auto_balance_controller on;"

@@ -47,9 +47,9 @@ from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 
 from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
-from omni.models.common.layers.layernorm import RMSNormFlashComm
-from omni.models.common.layers.linear import QKVParallelFlashCommLinear
+from omni.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.layernorm import RMSNormFlashComm
+from omni.layers.linear import QKVParallelFlashCommLinear
 from omni.models.qwen.qwen2 import Qwen2DecoderLayer, Qwen2Model, Qwen2ForCausalLM
 
 class Eagle3Qwen2DecoderLayer(Qwen2DecoderLayer):

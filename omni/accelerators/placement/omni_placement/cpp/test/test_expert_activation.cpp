@@ -1,1125 +1,349 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-#include <gtest/gtest.h>
-#include <thread>
-#include <chrono>
 #include "config.h"
-#include "expert_activation.h" // Assuming ExpertActivation is in a header file
-#include <dirent.h> // Include for POSIX directory operations
-#include <fstream>
 #include "distribution.h"
+#include "expert_activation.h"
+#include "placement_mapping.h"
+#include <acl/acl.h>
+#include <chrono>
+#include <dirent.h>
+#include <fstream>
+#include <gtest/gtest.h>
+#include <memory>
+#include <stdexcept>
+#include <thread>
+#include <unistd.h>
 
+OmniConfig config;
 
-aclError static my_mem_fun(void* dst, size_t destMax, const void* src,
-                         size_t count, aclrtMemcpyKind kind) {
-    if (dst == nullptr || src == nullptr) {
-        return ACL_ERROR_INVALID_PARAM;
-    }
-    memcpy(dst, src, count);
-    return ACL_ERROR_NONE;
-}
-
+// ============================================================================
 // Test fixture for ExpertActivation
+// ============================================================================
 class ExpertActivationTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        // Initialize with max 3 activations and 1-second threshold
-        ea = std::make_unique<ExpertActivation>(3, 1.0);
-    }
+  protected:
+    void SetUp() override { ea = std::make_unique<ExpertActivation>(); }
 
     std::unique_ptr<ExpertActivation> ea;
 };
 
-// Helper function to simulate time passing
-void sleepFor(double seconds) {
-    std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+// Test 1: Verify activation updates accumulate correctly
+TEST_F(ExpertActivationTest, SumsActivations) {
+    ea->update(1);
+    ea->update(2);
+    EXPECT_EQ(ea->getTotalValue(), 3); // 1 + 2
 }
 
-// Test 1: Adding activations within threshold sums them up
-TEST_F(ExpertActivationTest, SumsActivationsWithinThreshold) {
-    ea->addActivation(1);
-    ea->addActivation(2); // Within 1s, should accumulate
-    EXPECT_EQ(ea->getTotalActivationCount(), 3); // 1 + 2 pending
-    // EXPECT_EQ(ea->activationArray.size(), 0);    // Nothing added to array yet
-}
-
-// Test 2: Adding activation after threshold adds to array
-TEST_F(ExpertActivationTest, AddsToArrayAfterThreshold) {
-    ea->addActivation(1);
-    sleepFor(1.5); // Wait > 1s
-    ea->addActivation(2);
-    EXPECT_EQ(ea->getTotalActivationCount(), 3); // 1 in array, 2 pending
-    // EXPECT_EQ(ea->activationArray.size(), 1);    // 1 activation in array
-}
-
-// Test 3: Ejects oldest activation when max is reached
+// Test 2: Verify oldest activation is overwritten when capacity is reached
 TEST_F(ExpertActivationTest, EjectsOldestWhenMaxReached) {
-    ea->addActivation(1);  // t=0
-    sleepFor(1.5);
-    ea->addActivation(2);  // t=1.5
-    sleepFor(1.5);
-    ea->addActivation(3);  // t=3
-    sleepFor(1.5);
-    ea->addActivation(4);  // t=4.5, should eject t=0
-    EXPECT_EQ(ea->getTotalActivationCount(), 10); // 2 + 3 + 4
-    // EXPECT_EQ(ea->activationArray.size(), 3);    // Max size maintained
-
-    // Verify oldest (1) is gone by checking total
-    // If 1 were still there, total would be 10, not 9
+    for (int i = 1; i <= 20; ++i) { // length_ = 20
+        ea->update(1);
+    }
+    EXPECT_EQ(ea->getTotalValue(), 20);
+    ea->update(2);                      // Overwrites the first '1'
+    EXPECT_EQ(ea->getTotalValue(), 21); // 19 * 1 + 2
 }
 
-// Test 4: Total count includes pending and array activations
+// Test 3: Verify total count correctness
 TEST_F(ExpertActivationTest, TotalCountCorrect) {
-    ea->addActivation(1);  // t=0
-    sleepFor(1.5);
-    ea->addActivation(2);  // t=1.5
-    ea->addActivation(3);  // t=1.5 + small, sums with 2
-    EXPECT_EQ(ea->getTotalActivationCount(), 6); // 1 in array, 2+3 pending
-    sleepFor(1.5);
-    ea->addActivation(4);  // t=3, adds 2+3 to array
-    EXPECT_EQ(ea->getTotalActivationCount(), 10); // 1 + (2+3) + 4
+    ea->update(1);
+    ea->update(2);
+    ea->update(3);
+    EXPECT_EQ(ea->getTotalValue(), 6); // 1 + 2 + 3
+    ea->update(4);
+    EXPECT_EQ(ea->getTotalValue(), 10); // 1 + 2 + 3 + 4
 }
 
-// Test 4-1: Total count includes pending and array activations
+// Test 4: Verify total count when exceeding capacity
 TEST_F(ExpertActivationTest, TotalCountExceedCapacityCorrect) {
-    ea->addActivation(1);  // t=0
-    sleepFor(3);
-    ea->addActivation(2);  // t=3
-    sleepFor(3);
-    ea->addActivation(3);  // t=6
-    EXPECT_EQ(ea->getTotalActivationCount(), 6); // 1 in array, 2+3 pending
-    sleepFor(3);
-    ea->addActivation(4);  // t=9
-    sleepFor(3);
-    ea->addActivation(5);  // t=12
-    EXPECT_EQ(ea->getTotalActivationCount(), 14); // 2 + 3 + (4+5)
-}
-
-// Test 5: Empty state has zero count
-TEST_F(ExpertActivationTest, EmptyState) {
-    EXPECT_EQ(ea->getTotalActivationCount(), 0);
-    // EXPECT_EQ(ea->activationArray.size(), 0);
-}
-
-// 测试fixture，用于设置测试环境
-class ClusterActivationTest : public ::testing::Test {
-protected:
-    int old_activation_quiesce;
-    void SetUp() override {
-        old_activation_quiesce = config.activation_quiesce;
-        config.activation_quiesce=0;
-        set_memcpy_fun(&my_mem_fun);
-        // 在每个测试用例前执行的初始化代码
+    for (int i = 0; i < 20; ++i) {
+        ea->update(1);
     }
-
-    void TearDown() override {
-        // 在每个测试用例后执行的清理代码
-        config.activation_quiesce = old_activation_quiesce;
-    }
-
-    // 辅助函数：创建Tensor对象
-    Tensor CreateTensor(size_t num_layers, size_t num_experts, std::string name = "test_tensor") {
-        size_t element_size = sizeof(int64_t);
-        size_t size = num_layers * num_experts * element_size;
-        size_t length = num_layers * num_experts;
-        void* data_ptr = malloc(size);
-        return Tensor(data_ptr, length, element_size, name);
-    }
-};
-
-// 测试正常构造情况
-TEST_F(ClusterActivationTest, ConstructorNormalCase) {
-    // 创建测试数据
-    size_t num_layers = 58;
-    size_t num_deploy_experts = 272;
-    int activation_window_size = 4;
-    size_t world_size = 2;
-    int rank = 0;
-
-    Tensor npu_count = CreateTensor(num_layers, num_deploy_experts, "int8_tensor");
-
-    // 测试构造函数
-    ASSERT_NO_THROW({
-        ClusterActivation ca(npu_count, num_layers, num_deploy_experts,
-                           activation_window_size, world_size, rank);
-
-        // 验证成员变量是否正确初始化
-        EXPECT_EQ(ca.get_num_layers(), num_layers);
-        EXPECT_EQ(ca.get_num_deploy_experts_per_rank(), num_deploy_experts);
-    });
+    ea->update(2);                      // Overwrites first '1'
+    ea->update(3);                      // Overwrites second '1'
+    EXPECT_EQ(ea->getTotalValue(), 23); // 18 * 1 + 2 + 3
 }
 
-// Test 6: setDumpDir sets the correct directory and checks its existence
-TEST_F(ClusterActivationTest, SetDumpDir) {
-    size_t num_layers = 58;
-    size_t num_deploy_experts = 272;
-    int activation_window_size = 4;
-    size_t world_size = 2;
-    int rank = 0;
-    Tensor npu_count = CreateTensor(num_layers, num_deploy_experts, "int8_tensor");
+// Test 5: Verify empty state
+TEST_F(ExpertActivationTest, EmptyState) { EXPECT_EQ(ea->getTotalValue(), 0); }
 
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts,
-                        activation_window_size, world_size, rank);
+// Test 6: Verify get_last_value works correctly
+TEST_F(ExpertActivationTest, GetLastValue) {
+    ea->update(10);
+    EXPECT_EQ(ea->get_last_value(), 10);
+    ea->update(25);
+    EXPECT_EQ(ea->get_last_value(), 25);
 
-    std::string test_dir = "./test_dump_dir";
-    ca.setDumpDir(test_dir);
-
-    // Check if the directory exists using POSIX function
-    struct stat info;
-    EXPECT_EQ(stat(test_dir.c_str(), &info), 0);
-    EXPECT_TRUE(info.st_mode & S_IFDIR);
-
-    // Clean up the created directory
-    rmdir(test_dir.c_str());
-}
-
-// 测试npu_count长度不匹配的情况
-TEST_F(ClusterActivationTest, ConstructorInvalidNpuCountLength) {
-    size_t num_layers = 58;
-    size_t num_deploy_experts = 272;
-    int activation_window_size = 4;
-    size_t world_size = 2;
-    int rank = 0;
-
-    // 创建一个长度不匹配的Tensor（故意多一个元素）
-    size_t element_size = sizeof(int64_t);
-    size_t wrong_length = num_layers * num_deploy_experts + 1;
-    size_t size = wrong_length * element_size;
-    void* data_ptr = malloc(size);
-    Tensor npu_count(data_ptr, wrong_length, element_size, "wrong_tensor");
-
-    // 验证是否抛出异常
-    EXPECT_THROW({
-        ClusterActivation ca(npu_count, num_layers, num_deploy_experts,
-                           activation_window_size, world_size, rank);
-    }, std::runtime_error);
-
-    free(data_ptr); // 手动清理
-}
-
-// 测试边界情况：最小有效值
-TEST_F(ClusterActivationTest, ConstructorMinimumValues) {
-    size_t num_layers = 1;
-    size_t num_deploy_experts = 1;
-    int activation_window_size = 1;
-    size_t world_size = 1;
-    int rank = 0;
-
-    Tensor npu_count = CreateTensor(num_layers, num_deploy_experts);
-
-    ASSERT_NO_THROW({
-        ClusterActivation ca(npu_count, num_layers, num_deploy_experts,
-                           activation_window_size, world_size, rank);
-
-        EXPECT_EQ(ca.get_num_layers(), 1);
-        EXPECT_EQ(ca.get_num_deploy_experts(), 1);
-    });
-}
-
-// 测试rank和world_size的边界情况
-TEST_F(ClusterActivationTest, ConstructorRankWorldSizeBoundary) {
-    size_t num_layers = 58;
-    size_t num_deploy_experts = 272;
-    int activation_window_size = 4;
-    size_t world_size = 2;
-    int rank = 1; // rank等于world_size-1
-
-    Tensor npu_count = CreateTensor(num_layers, num_deploy_experts);
-
-    ASSERT_NO_THROW({
-        ClusterActivation ca(npu_count, num_layers, num_deploy_experts,
-                           activation_window_size, world_size, rank);
-
-        EXPECT_EQ(ca.get_num_layers(), num_layers);
-        EXPECT_EQ(ca.get_num_deploy_experts_per_rank(), num_deploy_experts);
-    });
-}
-
-class ClusterActivationCollectWrapperTest : public ::testing::Test {
-protected:
-    int old_activation_quiesce;
-    void SetUp() override {
-        // 初始化测试环境
-        old_activation_quiesce = config.activation_quiesce;
-        config.activation_quiesce=0;
-        set_memcpy_fun(&my_mem_fun);
+    // Fill the buffer to test wrap-around
+    for (int i = 0; i < 20; ++i) {
+        ea->update(i);
     }
+    EXPECT_EQ(ea->get_last_value(), 19);
 
-    void TearDown() override {
-        // 清理测试环境
-        config.activation_quiesce = old_activation_quiesce;
-    }
-
-    // 辅助函数：创建Tensor对象
-    Tensor CreateTensor(size_t num_layers, size_t num_experts, std::string name = "test_tensor") {
-        size_t element_size = sizeof(int64_t); // 假设npu_count_存储int类型数据
-        size_t size = num_layers * num_experts * element_size;
-        size_t length = num_layers * num_experts;
-        void* data_ptr = malloc(size);
-        memset(data_ptr, 0, size); // 初始化为0
-        return Tensor(data_ptr, length, element_size, name);
-    }
-
-    // // 辅助函数：填充Tensor数据
-    // void FillTensor(Tensor& tensor, int value) {
-    //     int* data = static_cast<int*>(tensor.data_ptr); // 假设Tensor有public data_ptr成员
-    //     for (size_t i = 0; i < tensor.get_length(); ++i) {
-    //         data[i] = value;
-    //     }
-    // }
-};
-
-// 已不再activation中起thread，UT待重新調整
-/*
-class ClusterActivationThreadTest : public ::testing::Test {
-protected:
-    int old_activation_quiesce;
-    void SetUp() override {
-        // 初始化测试环境
-        old_activation_quiesce = config.activation_quiesce;
-        config.activation_quiesce=0;
-        set_memcpy_fun(&my_mem_fun);
-        dump_dir = "./test_dump_dir";
-    }
-
-    void TearDown() override {
-        config.activation_quiesce=old_activation_quiesce;
-        remove_dir(dump_dir);
-        // 清理测试环境
-    }
-
-    std::string dump_dir;
-
-    void remove_dir(const std::string& dir) {
-        DIR* dp = opendir(dir.c_str());
-        if (dp != nullptr) {
-            dirent* ep;
-            while ((ep = readdir(dp))) {
-                std::string filename = std::string(ep->d_name);
-                if (filename != "." && filename != "..") {
-                    std::string file_path = dir + "/" + filename;
-                    unlink(file_path.c_str());
-                }
-            }
-            closedir(dp);
-            rmdir(dir.c_str());
-        }
-    }
-
-};
-
-// 测试1：单线程启动collect_wrapper
-TEST_F(ClusterActivationThreadTest, SingleRankStartCollectWrapper) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 0;
-
-    size_t layer_idx = 2;
-    size_t deploy_expert_idx = 100;
-    size_t index = layer_idx*num_deploy_experts+deploy_expert_idx;
-
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size,
-                         world_size, rank);
-
-
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[index] = 40;
-
-    // 等待片刻，让线程运行
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // 验证基本功能
-    int64_t count = ca.getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-    EXPECT_EQ(count, 40); // 检查计数功能是否正常
+    ea->update(99); // idx becomes 1, last value is at index 0
+    EXPECT_EQ(ea->get_last_value(), 99);
 }
 
-// 测试用例 1: 不同 Rank 环境下启动和计数验证
-TEST_F(ClusterActivationThreadTest, DiffRankStartCollectWrapper) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 1;
-
-    size_t layer_idx = 2;
-    size_t deploy_expert_idx = 100;
-    size_t index = layer_idx*num_deploy_experts+deploy_expert_idx;
-
-
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size, world_size, rank);
-
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[index] = 25;
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    ASSERT_NO_THROW({
-        ca.stop_thread();
-    });
-
-    int64_t count = ca.getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-    EXPECT_EQ(count, 25); // 验证 rank 1 的计数
-}
-// 单元测试
-TEST_F(ClusterActivationThreadTest, ValidElementSize) {
-    // 验证合法的 element_size
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 1;
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-    size_t length = num_layers * num_deploy_experts;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    EXPECT_NO_THROW({
-        ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size, world_size, rank);
-    });
-}
-
-TEST_F(ClusterActivationThreadTest, InvalidElementSize) {
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 1;
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-    size_t length = num_layers * num_deploy_experts;
-
-    size_t element_size = sizeof(char);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    EXPECT_THROW(
-        ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size, world_size, rank),std::invalid_argument);
-}
-
-//边界条件测试（最小值）
-TEST_F(ClusterActivationThreadTest, BoundaryConditionMin) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 0;
-
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size, world_size, rank);
-
-    size_t layer_idx = 0;
-    size_t deploy_expert_idx = 0;
-    size_t index = layer_idx * num_deploy_experts + deploy_expert_idx;
-
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[index] = 42;
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    ASSERT_NO_THROW({
-        ca.stop_thread();
-    });
-
-    int64_t count = ca.getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-    EXPECT_EQ(count, 42); // 验证边界条件下的计数
-}
-
-TEST_F(ClusterActivationThreadTest, BoundaryConditionMax) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const size_t rank = world_size-1;
-
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size, world_size, rank);
-
-    size_t layer_idx = num_layers - 1;
-    size_t deploy_expert_idx = num_deploy_experts - 1;
-    size_t index = layer_idx * num_deploy_experts + deploy_expert_idx;
-
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[index] = 99;
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    ASSERT_NO_THROW({
-        ca.stop_thread();
-    });
-
-    int64_t count = ca.getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-    EXPECT_EQ(count, 99); // 验证边界条件下的计数
-}
-
-TEST_F(ClusterActivationThreadTest, NullPointerHandling) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-
-    size_t element_size = sizeof(int64_t);
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = nullptr; // 模拟空指针
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 0;
-
-    EXPECT_THROW({
-        ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size, world_size, rank);
-    }, std::invalid_argument); // 验证抛出异常
-}
-
-TEST_F(ClusterActivationThreadTest, MultiRankStartCollectWrapperV1) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-    const int activation_window_size = 4;
-    const size_t world_size = 4;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    std::vector<std::unique_ptr<ClusterActivation>> ca_vec(world_size);
-
-    for (size_t i = 0; i < world_size; ++i) {
-        ca_vec[i] = std::make_unique<ClusterActivation>(npu_count, num_layers, num_deploy_experts, activation_window_size,world_size, i);
-    }
-
-    // 修改数据以触发线程处理逻辑
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[1] = 60;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    for (size_t i = 0; i < world_size; ++i) {
-        // 验证基本功能
-        int64_t count = ca_vec[i]->getClusterTotalActivationCount(0, 1);
-        EXPECT_EQ(count, 60*world_size); // 检查计数功能是否正常
-    }
-
-}
-
-TEST_F(ClusterActivationThreadTest, MultiRankStartCollectWrapperV2) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-    const int activation_window_size = 100;
-    const size_t world_size = 4;
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-
-
-    size_t layer_idx = 44;
-    size_t deploy_expert_idx = 44;
-    size_t index = layer_idx * num_deploy_experts + deploy_expert_idx;
-
-    // 监听对象
-    void* tmp_ptr= malloc(size);
-    memset(tmp_ptr,0, size);
-    Tensor tmp_tensor(tmp_ptr, length, element_size, "test_tensor");
-    ClusterActivation ca(tmp_tensor, num_layers, num_deploy_experts, activation_window_size, world_size, 0);
-
-    std::vector<int> counts_world = {0,1,2,3};
-    std::vector<std::unique_ptr<ClusterActivation>> ca_vec(world_size);
-    std::atomic<bool> error_occurred(false);
-    // 模拟不同的Rank
-    std::vector<std::thread> threads;
-    for (size_t i = 0; i < world_size; ++i) {
-        threads.emplace_back([&, i]() {
-            try {
-                void* data_ptr = malloc(size);
-                memset(data_ptr,0, size);
-                int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-                tmp_ptr[index] = counts_world[i];
-                Tensor npu_count(data_ptr, length, element_size, "test_tensor");
-                ca_vec[i] = std::make_unique<ClusterActivation>(npu_count, num_layers, num_deploy_experts, activation_window_size,world_size, i);
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                int64_t count = ca_vec[i]->getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-                EXPECT_EQ(count, 6); // 检查计数功能是否正常
-            } catch (...) {
-                error_occurred = true;
-            }
-        });
-    }
-    // 等待所有线程完成
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    // 验证结果
-    EXPECT_FALSE(error_occurred);
-    int64_t count = ca.getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-    EXPECT_EQ(count, 6); // 验证边界条件下的计数
-}
-
-
-TEST_F(ClusterActivationThreadTest, MultiRankStartCollectWrapperV3) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-    const int activation_window_size = 4;
-    const size_t world_size = 4;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-
-
-    std::vector<std::unique_ptr<ClusterActivation>> ca_vec(world_size);
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[1] = 60;
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-    for (size_t i = 0; i < world_size; ++i) {
-        ca_vec[i] = std::make_unique<ClusterActivation>(npu_count, num_layers, num_deploy_experts, activation_window_size,world_size, i);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    for (size_t i = 0; i < world_size; ++i) {
-        // 验证基本功能
-        int64_t count = ca_vec[i]->getClusterTotalActivationCount(0, 1);
-        EXPECT_EQ(count, 60*world_size); // 检查计数功能是否正常
-    }
-
-}
-
-TEST_F(ClusterActivationThreadTest, MultiRankStartCollectWrapperV4) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 8;
-    const int activation_window_size = 10;
-    const size_t world_size = 32;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-
-
-    std::vector<std::unique_ptr<ClusterActivation>> ca_vec(world_size);
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[1] = 60;
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-    for (size_t i = 0; i < world_size; ++i) {
-        ca_vec[i] = std::make_unique<ClusterActivation>(npu_count, num_layers, num_deploy_experts, activation_window_size,world_size, i);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // for (size_t i = 0; i < world_size; ++i) {
-    //     // 验证基本功能
-    //     int64_t count = ca_vec[i]->getClusterTotalActivationCount(0, 1);
-    //     EXPECT_EQ(count, 60*world_size); // 检查计数功能是否正常
-    // }
-
-}
-
-
-// 测试1：单线程启动collect_wrapper连续改写
-TEST_F(ClusterActivationThreadTest, SingleRankStartContinueChangeCollectWrapper) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 0;
-
-    size_t layer_idx = 2;
-    size_t deploy_expert_idx = 100;
-    size_t index = layer_idx*num_deploy_experts+deploy_expert_idx;
-
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size,
-                         world_size, rank);
-
-
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    for(size_t i=0;i<100;++i)
-    {
-        tmp_ptr[index] = i;
-    }
-
-    // 等待片刻，让线程运行
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // 验证基本功能
-    int64_t count = ca.getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-    EXPECT_EQ(count, 99); // 检查计数功能是否正常
-}
-
-// 测试1：单线程启动collect_wrapper
-TEST_F(ClusterActivationThreadTest, BaseDumpActivateOnThread) {
-    const size_t num_layers = 58;
-    const size_t num_deploy_experts = 272;
-
-    size_t element_size = sizeof(int64_t);
-    size_t size = num_layers * num_deploy_experts * element_size;
-    size_t length = num_layers * num_deploy_experts;
-    void* data_ptr = malloc(size);
-    memset(data_ptr, 0, size);
-    Tensor npu_count = Tensor(data_ptr, length, element_size, "test_tensor");
-
-    const int activation_window_size = 4;
-    const size_t world_size = 2;
-    const int rank = 0;
-
-    size_t layer_idx = 2;
-    size_t deploy_expert_idx = 100;
-    size_t index = layer_idx*num_deploy_experts+deploy_expert_idx;
-
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, activation_window_size,
-                         world_size, rank);
-
-
-    int64_t* tmp_ptr = static_cast<int64_t*>(data_ptr);
-    tmp_ptr[index] = 40;
-
-    // 等待片刻，让线程运行
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-
-    // 当没有调用setDumpDir,不应该创建文件夹
-    struct stat info;
-    EXPECT_NE(stat(dump_dir.c_str(), &info), 0); // dump_dir文件夹不存在此时为预期情况
-    ca.setDumpDir(dump_dir);
-    EXPECT_EQ(stat(dump_dir.c_str(), &info), 0); // dump_dir文件夹存在此时为预期情况
-    EXPECT_TRUE(info.st_mode & S_IFDIR);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    // 打开目录并计算文件数目
-    DIR* dir = opendir(dump_dir.c_str());
-    if (dir == nullptr) {
-        FAIL() << "Failed to open directory: " << dump_dir;
-    }
-    int file_count = 0;
-    struct dirent* entry;
-
-    while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_type == DT_REG) { // 检查是否为常规文件
-            ++file_count;
-        }
-    }
-    closedir(dir);
-    EXPECT_GT(file_count, 0); // 文件数必须大于0
-
-    // 验证基本功能
-    int64_t count = ca.getClusterTotalActivationCount(layer_idx, deploy_expert_idx);
-    EXPECT_EQ(count, 40); // 检查计数功能是否正常
-    // remove_dir(dump_dir);
-}
-*/
-
-
+// ============================================================================
 // Test fixture for ClusterActivation
-class ClusterActivationDumpTest : public ::testing::Test {
-protected:
-    std::string dump_dir = "./test_dump_dir";
+// ============================================================================
+class ClusterActivationTest : public ::testing::Test {
+  protected:
+    // Test parameters
+    const int64_t max_activation_count = 10000;
+    const size_t num_layers = 2;
+    const size_t num_deploy_experts_per_rank = 4;
+    const int activation_window_size = 20;
+    const size_t world_size = 2;
+    const size_t hccl_comm_world_size = 2;
+    const size_t rank = 0;
+
+    // For PlacementMapping
+    const char *placement_filename = "test_placement_pattern.txt";
+    void *selector_ptr = nullptr;
+    void *num_redundant_ptr = nullptr;
+
     int old_activation_quiesce;
+    Tensor npu_count_tensor;
+    std::unique_ptr<ClusterActivation> ca;
+    std::unique_ptr<PlacementMapping> pm;
+
     void SetUp() override {
-        // Initialize with sample parameters
-        set_memcpy_fun(&my_mem_fun);
-        // Clear the dump directory if it exists
-        remove_dir(dump_dir);
-
+        ACLCHECK(aclInit(nullptr));
+        ACLCHECK(aclrtSetDevice(0));
         old_activation_quiesce = config.activation_quiesce;
-        config.activation_quiesce=0;
+        config.activation_quiesce = 0;
 
+        // Create a placement pattern file for initializing PlacementMapping
+        std::ofstream placement_file(placement_filename);
+        const int pm_num_experts = 2; // Logical experts for the pattern
+        placement_file << world_size << " " << num_layers << " "
+                       << pm_num_experts << "\n";
+        // R0, L0: deploy E0, E1
+        placement_file << "1 1\n";
+        // R0, L1: deploy E0
+        placement_file << "1 0\n";
+        // R1, L0: deploy E0, E1
+        placement_file << "1 1\n";
+        // R1, L1: deploy E1
+        placement_file << "0 1\n";
+        placement_file.close();
+
+        // Allocate memory for pointers required by PlacementMapping
+        const int max_redundant_per_expert = 4;
+        const int max_num_deployed_expert =
+            world_size * num_deploy_experts_per_rank;
+        size_t selector_size = num_layers * pm_num_experts * sizeof(int32_t);
+        size_t redundant_size = num_layers * pm_num_experts * sizeof(int32_t);
+
+        ACLCHECK(aclrtMalloc(&selector_ptr, selector_size,
+                             ACL_MEM_MALLOC_HUGE_FIRST));
+        ACLCHECK(aclrtMalloc(&num_redundant_ptr, redundant_size,
+                             ACL_MEM_MALLOC_HUGE_FIRST));
+
+        ACLCHECK(aclrtMemset(selector_ptr, selector_size, 0, selector_size));
+        ACLCHECK(
+            aclrtMemset(num_redundant_ptr, redundant_size, 0, redundant_size));
+
+        // Initialize PlacementMapping
+        pm = std::make_unique<PlacementMapping>(
+            placement_filename, rank, world_size, max_redundant_per_expert,
+            max_num_deployed_expert, 0, std::vector<int64_t>{},
+            (size_t)selector_ptr, true, (size_t)num_redundant_ptr);
+
+        // Create a valid tensor for the ClusterActivation constructor
+        npu_count_tensor =
+            CreateTensor(num_layers, num_deploy_experts_per_rank);
+
+        // Default initialization for ClusterActivation
+        ca = std::make_unique<ClusterActivation>(
+            npu_count_tensor, max_activation_count, num_layers,
+            num_deploy_experts_per_rank, activation_window_size, world_size,
+            hccl_comm_world_size, rank);
     }
 
     void TearDown() override {
-        // Clean up the created directory
-        remove_dir(dump_dir);
         config.activation_quiesce = old_activation_quiesce;
-    }
 
-    void remove_dir(const std::string& dir) {
-        DIR* dp = opendir(dir.c_str());
-        if (dp != nullptr) {
-            dirent* ep;
-            while ((ep = readdir(dp))) {
-                std::string filename = std::string(ep->d_name);
-                if (filename != "." && filename != "..") {
-                    std::string file_path = dir + "/" + filename;
-                    unlink(file_path.c_str());
-                }
-            }
-            closedir(dp);
-            rmdir(dir.c_str());
+        // Free allocated memory
+        ACLCHECK(aclrtFree(selector_ptr));
+        ACLCHECK(aclrtFree(num_redundant_ptr));
+        if (npu_count_tensor.get_data_ptr()) {
+            ACLCHECK(aclrtFree(npu_count_tensor.get_data_ptr()));
         }
+
+        // Clean up created files
+        remove(placement_filename);
+        if (access("./test_dump_dir", F_OK) == 0) {
+            rmdir("./test_dump_dir");
+        }
+        if (access("test_activations.txt", F_OK) == 0) {
+            remove("test_activations.txt");
+        }
+
+        ACLCHECK(aclrtResetDevice(0));
+        ACLCHECK(aclFinalize());
     }
 
-    Tensor createTensor(size_t num_layers, size_t num_experts, std::string name = "test_tensor") {
+    Tensor CreateTensor(size_t layers, size_t experts_per_rank,
+                        std::string name = "test_tensor") {
         size_t element_size = sizeof(int64_t);
-        size_t size = num_layers * num_experts * element_size;
-        size_t length = num_layers * num_experts;
-        void* data_ptr = malloc(size);
-        memset(data_ptr, 0, size); // Initialize to zero
+        size_t length = layers * experts_per_rank;
+        size_t size = length * element_size;
+        void *data_ptr = nullptr; // 初始化为 nullptr
+
+        ACLCHECK(aclrtMalloc(&data_ptr, size, ACL_MEM_MALLOC_HUGE_FIRST));
+        ACLCHECK(aclrtMemset(data_ptr, size, 0, size));
+
         return Tensor(data_ptr, length, element_size, name);
     }
 };
 
-// Test 1: Verify basic file creation and contents
-TEST_F(ClusterActivationDumpTest, BasicDump) {
-
-    size_t num_layers = 1;
-    size_t num_deploy_experts = 1;
-    size_t world_size = 4;
-    size_t rank = 0;
-
-
-    Tensor npu_count = createTensor(num_layers,num_deploy_experts);
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, 1, world_size, rank);
-    ca.stop_thread();
-    ca.setDumpDir(dump_dir);
-
-    size_t size = num_layers * num_deploy_experts;
-    int64_t* total_count_ptr = new int64_t[size];
-    int64_t* last_count_ptr = new int64_t[size];
-
-    total_count_ptr[0] = 10;
-    last_count_ptr[0] = 5;
-
-    size_t dump_count = 1;
-    ca.dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
-
-    // Check if the file exists
-    std::string filename = dump_dir + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_"+std::to_string(ca.get_rank())+".txt";
-    FILE* file = fopen(filename.c_str(), "r");
-    ASSERT_TRUE(file != nullptr);
-    fclose(file);
-
-    // Check if the file contains the correct content
-    std::ifstream inFile(filename);
-    std::string line;
-    std::getline(inFile, line);
-    EXPECT_EQ(line, "5\t");
-
-    delete[] total_count_ptr;
-    delete[] last_count_ptr;
-    remove_dir(dump_dir);
+// Test constructor validation
+TEST_F(ClusterActivationTest, ConstructorValidation) {
+    auto dummy_tensor = CreateTensor(1, 1);
+    EXPECT_THROW(ClusterActivation(dummy_tensor, 0, 1, 1, 1, 1, 1, 0),
+                 std::invalid_argument); // max_activation_count <= 0
+    EXPECT_THROW(ClusterActivation(dummy_tensor, 100, 0, 1, 1, 1, 1, 0),
+                 std::invalid_argument); // num_layers == 0
+    EXPECT_THROW(ClusterActivation(dummy_tensor, 100, 1, 0, 1, 1, 1, 0),
+                 std::invalid_argument); // num_deploy_experts_per_rank == 0
+    EXPECT_THROW(ClusterActivation(dummy_tensor, 100, 1, 1, 1, 0, 1, 0),
+                 std::invalid_argument); // world_size == 0
+    EXPECT_THROW(ClusterActivation(dummy_tensor, 100, 1, 1, 1, 1, 0, 0),
+                 std::invalid_argument); // hccl_comm_world_size == 0
+    EXPECT_THROW(ClusterActivation(dummy_tensor, 100, 1, 1, 1, 2, 1, 0),
+                 std::invalid_argument); // hccl_comm_world_size < world_size
+    EXPECT_THROW(ClusterActivation(dummy_tensor, 100, 1, 1, 1, 2, 2, 2),
+                 std::runtime_error); // rank >= hccl_comm_world_size
+    ACLCHECK(aclrtFree(dummy_tensor.get_data_ptr()));
 }
 
-// Test 2: Verify file creation and contents for multiple layers and experts
-TEST_F(ClusterActivationDumpTest, MultipleLayersExperts) {
+// Test updateDeltaActivationCount logic
+TEST_F(ClusterActivationTest, UpdateDeltaActivationCount) {
+    int64_t *last_count = static_cast<int64_t *>(ca->get_last_count_ptr());
+    int64_t *deployed_counts =
+        static_cast<int64_t *>(ca->get_deployed_experts_counts_host_ptr());
 
-    size_t num_layers = 3;
-    size_t num_deploy_experts = 2;
-    size_t world_size = 2;
-    size_t rank = 0;
+    // --- Scenario 1: Simple increment ---
+    last_count[0] = 10;
+    deployed_counts[0] = 15; // delta = 5
+    last_count[1] = 20;
+    deployed_counts[1] = 30; // delta = 10
 
-    Tensor npu_count = createTensor(num_layers, num_deploy_experts);
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, 1, world_size, rank);
-    ca.stop_thread();
-    ca.setDumpDir(dump_dir);
+    ca->updateDeltaActivationCount();
 
-    size_t size = num_layers * num_deploy_experts;
-    int64_t* total_count_ptr = new int64_t[size];
-    int64_t* last_count_ptr = new int64_t[size];
+    EXPECT_EQ(ca->getExpertActivationCount(0, 0), 5);  // layer 0, expert 0
+    EXPECT_EQ(ca->getExpertActivationCount(0, 1), 10); // layer 0, expert 1
 
-    for (size_t i = 0; i < size; ++i) {
-        total_count_ptr[i] = i ;
-        last_count_ptr[i] = i;
-    }
+    // --- Scenario 2: Test wraparound ---
+    // last_count is now {15, 30}
+    last_count = static_cast<int64_t *>(ca->get_last_count_ptr());
+    EXPECT_EQ(last_count[0], 15);
+    EXPECT_EQ(last_count[1], 30);
 
-    size_t dump_count = 1;
-    ca.dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
+    deployed_counts[0] = 5;  // Current (5) < Last (15), so current becomes 5 +
+                             // 10000. Delta = 9990
+    deployed_counts[1] = 25; // Current (25) < Last (30), so current becomes 25
+                             // + 10000. Delta = 9995
 
-    // Check if the file exists
-    std::string filename = dump_dir + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_"+std::to_string(ca.get_rank())+".txt";
-    FILE* file = fopen(filename.c_str(), "r");
-    ASSERT_TRUE(file != nullptr);
-    fclose(file);
+    ca->updateDeltaActivationCount();
 
-    // Check if the file contains the correct content
-    std::ifstream inFile(filename);
-    std::string expected_content = "0\t0\t\n0\t0\t\n0\t0\t\n";
-    std::string actual_content((std::istreambuf_iterator<char>(inFile)), std::istreambuf_iterator<char>());
-    EXPECT_EQ(actual_content, expected_content);
-
-    delete[] total_count_ptr;
-    delete[] last_count_ptr;
-    remove_dir(dump_dir);
+    EXPECT_EQ(ca->getExpertActivationCount(0, 0), max_activation_count - 10);
+    EXPECT_EQ(ca->getExpertActivationCount(0, 1), max_activation_count - 5);
 }
 
-// Test 3: Verify that the dump file is overwritten for the same dump count
-TEST_F(ClusterActivationDumpTest, OverwriteDumpFile) {
+// Test collecting activation data from a text file
+TEST_F(ClusterActivationTest, CollectFromTxt) {
+    const char *filename = "test_activations.txt";
+    std::ofstream test_file(filename);
+    // layer 0: 4 experts for rank 0, 4 for rank 1
+    test_file << "10\t20\t30\t40\t50\t60\t70\t80\n";
+    // layer 1: 4 experts for rank 0, 4 for rank 1
+    test_file << "11\t21\t31\t41\t51\t61\t71\t81\n";
+    test_file.close();
 
-    size_t num_layers = 1;
-    size_t num_deploy_experts = 1;
-    size_t world_size = 4;
-    size_t rank = 0;
+    ca->collect_from_txt(filename);
 
-    Tensor npu_count = createTensor(num_layers, num_deploy_experts);
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, 1, world_size, rank);
-    ca.stop_thread();
-    ca.setDumpDir(dump_dir);
+    // Verify values for layer 0
+    EXPECT_EQ(ca->getExpertActivationCount(0, 0), 10); // rank 0, local expert 0
+    EXPECT_EQ(ca->getExpertActivationCount(0, 3), 40); // rank 0, local expert 3
+    EXPECT_EQ(ca->getExpertActivationCount(0, 4), 50); // rank 1, local expert 0
+    EXPECT_EQ(ca->getExpertActivationCount(0, 7), 80); // rank 1, local expert 3
 
-    size_t size = num_layers * num_deploy_experts;
-    int64_t* total_count_ptr = new int64_t[size];
-    int64_t* last_count_ptr = new int64_t[size];
+    // Verify values for layer 1
+    EXPECT_EQ(ca->getExpertActivationCount(1, 0), 11); // rank 0, local expert 0
+    EXPECT_EQ(ca->getExpertActivationCount(1, 4), 51); // rank 1, local expert 0
 
-    // Dump first set of data
-    total_count_ptr[0] = 10;
-    last_count_ptr[0] = 5;
-
-    size_t dump_count = 1;
-    ca.dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
-
-    // Dump second set of data with the same dump count
-    total_count_ptr[0] = 8;
-    last_count_ptr[0] = 8;
-
-    ca.dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
-
-    // Check if the file exists
-    std::string filename = dump_dir + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_"+std::to_string(ca.get_rank())+".txt";
-    FILE* file = fopen(filename.c_str(), "r");
-    ASSERT_TRUE(file != nullptr);
-    fclose(file);
-
-    // Check if the file contains the correct content
-    std::ifstream inFile(filename);
-    std::string line;
-    std::getline(inFile, line);
-    EXPECT_EQ(line, "0\t");
-
-    delete[] total_count_ptr;
-    delete[] last_count_ptr;
-    remove_dir(dump_dir);
+    remove(filename);
 }
 
-// Test 4: Verify that directory is created if it does not exist
-TEST_F(ClusterActivationDumpTest, DirectoryCreation) {
+// Test dump directory setting
+TEST_F(ClusterActivationTest, SetDumpDirAndStopDump) {
+    const char *dirname = "./test_dump_dir";
 
-    size_t num_layers = 1;
-    size_t num_deploy_experts = 1;
-    size_t world_size = 4;
-    size_t rank = 0;
+    // Initially, dump is disabled
+    EXPECT_FALSE(ca->is_dump_enabled());
 
-    std::string non_existing_dump_dir = "./non_existing_dir";
-    Tensor npu_count = createTensor(num_layers, num_deploy_experts);
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, 1, world_size, rank);
-    ca.stop_thread();
-    ca.setDumpDir(non_existing_dump_dir);
+    // Set a new directory
+    ca->setDumpDir(dirname);
+    EXPECT_TRUE(ca->is_dump_enabled());
+    EXPECT_EQ(ca->get_dump_dir(), dirname);
 
-    size_t size = num_layers * num_deploy_experts;
-    int64_t* total_count_ptr = new int64_t[size];
-    int64_t* last_count_ptr = new int64_t[size];
+    // Check if directory was created
+    struct stat info;
+    EXPECT_EQ(stat(dirname, &info), 0);
+    EXPECT_TRUE(info.st_mode & S_IFDIR);
 
-    total_count_ptr[0] = 10;
-    last_count_ptr[0] = 5;
-
-    size_t dump_count = 1;
-    ca.dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
-
-    // Check if the file exists
-    std::string filename = non_existing_dump_dir + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_"+std::to_string(ca.get_rank())+".txt";
-    FILE* file = fopen(filename.c_str(), "r");
-    ASSERT_TRUE(file != nullptr);
-    fclose(file);
-
-    // Check if the file contains the correct content
-    std::ifstream inFile(filename);
-    std::string line;
-    std::getline(inFile, line);
-    EXPECT_EQ(line, "5\t");
-
-    delete[] total_count_ptr;
-    delete[] last_count_ptr;
-    remove_dir(non_existing_dump_dir);
-}
-
-// Test 5: Verify that an invalid directory does not cause crash
-TEST_F(ClusterActivationDumpTest, InvalidDirectory) {
-
-    size_t num_layers = 1;
-    size_t num_deploy_experts = 1;
-    size_t world_size = 4;
-    size_t rank = 0;
-
-    std::string invalid_dump_dir = "./invalid_dir/invalid_subdir";
-    Tensor npu_count = createTensor(num_layers, num_deploy_experts);
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, 1, world_size, rank);
-    ca.stop_thread();
-    ca.setDumpDir(invalid_dump_dir);
-
-    size_t size = num_layers * num_deploy_experts;
-    int64_t* total_count_ptr = new int64_t[size];
-    int64_t* last_count_ptr = new int64_t[size];
-
-    total_count_ptr[0] = 10;
-    last_count_ptr[0] = 5;
-
-    size_t dump_count = 1;
-
-    EXPECT_NO_THROW({
-        ca.dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
-    });
-
-    // Check that in case of an invalid directory, no file is created
-    std::string filename = invalid_dump_dir + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_"+std::to_string(ca.get_rank())+".txt";
-    FILE* file = fopen(filename.c_str(), "r");
-    EXPECT_TRUE(file == nullptr);
-    if (file != nullptr) {
-        fclose(file);
-    }
-
-    delete[] total_count_ptr;
-    delete[] last_count_ptr;
-}
-
-// Test 6: Verify the behavior when dump directory is removed during dump process
-TEST_F(ClusterActivationDumpTest, DumpDirRemovedDuringDump) {
-
-    size_t num_layers = 1;
-    size_t num_deploy_experts = 1;
-    size_t world_size = 4;
-    size_t rank = 0;
-
-    Tensor npu_count = createTensor(num_layers, num_deploy_experts);
-    ClusterActivation ca(npu_count, num_layers, num_deploy_experts, 1, world_size, rank);
-    ca.stop_thread();
-    ca.setDumpDir(dump_dir);
-
-    size_t size = num_layers * num_deploy_experts;
-    int64_t* total_count_ptr = new int64_t[size];
-    int64_t* last_count_ptr = new int64_t[size];
-
-    total_count_ptr[0] = 10;
-    last_count_ptr[0] = 5;
-
-    size_t dump_count = 1;
-
-    // Remove the directory while the dump process is in progress
-    std::thread remove_thread([&](){
-        remove_dir(dump_dir);
-    });
-
-    remove_thread.join();
-
-    // Dump the data
-    EXPECT_NO_THROW({
-        ca.dumpActivationCounts(dump_count, total_count_ptr, last_count_ptr);
-    });
-
-    // Check if the file exists
-    std::string filename = dump_dir + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_"+std::to_string(ca.get_rank())+".txt";
-    FILE* file = fopen(filename.c_str(), "r");
-    EXPECT_TRUE(file == nullptr);
-    if (file != nullptr) {
-        fclose(file);
-    }
-
-    delete[] total_count_ptr;
-    delete[] last_count_ptr;
-}
-
-// Test 2: Verify multi-threaded dump
-TEST_F(ClusterActivationDumpTest, MultiThreadedDump) {
-    size_t num_layers = 3;
-    size_t num_deploy_experts = 4;
-    const size_t world_size = 4; // Total number of threads
-    const size_t num_threads = world_size; // Number of threads to create
-
-    std::vector<std::thread> threads;
-    std::vector<ClusterActivation*> cas(world_size);
-    std::vector<int64_t*> total_count_ptrs(world_size);
-    std::vector<int64_t*> last_count_ptrs(world_size);
-
-    // Initialize ClusterActivation instances and count pointers for each thread
-    for (size_t rank = 0; rank < world_size; ++rank) {
-        Tensor npu_count = createTensor(num_layers, num_deploy_experts);
-        cas[rank] = new ClusterActivation(npu_count, num_layers, num_deploy_experts, 1, world_size, rank);
-        cas[rank]->stop_thread();
-        cas[rank]->setDumpDir(dump_dir);
-        size_t size = num_layers * num_deploy_experts;
-        total_count_ptrs[rank] = new int64_t[size];
-        last_count_ptrs[rank] = new int64_t[size];
-        // Initialize to avoid undefined behavior
-        for (size_t i = 0; i < size; ++i) {
-            total_count_ptrs[rank][i] = rank;
-            last_count_ptrs[rank][i] = 0;
-        }
-    }
-
-    size_t dump_count = 1;
-
-    // Start threads to dump activation counts
-    for (size_t rank = 0; rank < num_threads; ++rank) {
-        threads.emplace_back([&, rank] {
-            cas[rank]->dumpActivationCounts(dump_count, total_count_ptrs[rank], last_count_ptrs[rank]);
-        });
-    }
-
-    // Wait for all threads to complete
-    for (auto& th : threads) {
-        th.join();
-    }
-
-    // Check if the files exist and contain the correct content
-    for (size_t rank = 0; rank < world_size; ++rank) {
-        std::string filename = dump_dir + "/activation_counts_recordstep_" + std::to_string(dump_count) + "_rank_" + std::to_string(rank) + ".txt";
-        FILE* file = fopen(filename.c_str(), "r");
-        ASSERT_TRUE(file != nullptr);
-        fclose(file);
-
-        std::ifstream inFile(filename);
-        std::string line;
-        while (std::getline(inFile, line)) {
-            std::vector<std::string> expected = {
-                "0\t0\t0\t0\t",
-                "1\t1\t1\t1\t",
-                "2\t2\t2\t2\t",
-                "3\t3\t3\t3\t"
-                };
-            EXPECT_EQ(line, expected[rank]);
-        }
-    }
+    // Stop dumping
+    ca->stopDump();
+    EXPECT_FALSE(ca->is_dump_enabled());
 
     // Clean up
-    for (size_t rank = 0; rank < world_size; ++rank) {
-        delete[] total_count_ptrs[rank];
-        delete[] last_count_ptrs[rank];
-        delete cas[rank];
-    }
-    remove_dir(dump_dir);
+    rmdir(dirname);
+}
+
+// Test sliding window update and logit activation calculation using real
+// PlacementMapping
+TEST_F(ClusterActivationTest, SlidingWindowAndLogitActivation) {
+    const size_t num_logical_experts =
+        pm->get_num_experts(); // Should be 2 from file
+    ca->set_params(num_logical_experts);
+
+    // --- First update cycle ---
+    int64_t *delta_counts =
+        static_cast<int64_t *>(ca->get_delta_experts_counts_ptr());
+    size_t delta_counts_size =
+        num_layers * world_size * num_deploy_experts_per_rank * sizeof(int64_t);
+    ACLCHECK(
+        aclrtMemset(delta_counts, delta_counts_size, 0, delta_counts_size));
+
+    // Manually set delta counts for layer 0 based on the placement pattern
+    // From pattern: L0 mapping is: pos 0->E0, pos 1->E1, pos 4->E0, pos 5->E1
+    // Global positions are calculated as: rank * num_deploy_experts_per_rank +
+    // local_pos For layer 0: Rank 0 deploys E0 (local_pos 0 -> global_pos 0)
+    // and E1 (local_pos 1 -> global_pos 1) Rank 1 deploys E0 (local_pos 0 ->
+    // global_pos 4) and E1 (local_pos 1 -> global_pos 5)
+    delta_counts[pm->getGlobalPositionOffset(0, 0)] =
+        10; // L0, global pos 0 (E0)
+    delta_counts[pm->getGlobalPositionOffset(0, 1)] =
+        20; // L0, global pos 1 (E1)
+    delta_counts[pm->getGlobalPositionOffset(0, 4)] =
+        30; // L0, global pos 4 (E0)
+    delta_counts[pm->getGlobalPositionOffset(0, 5)] =
+        40; // L0, global pos 5 (E1)
+
+    ca->updateShiftWindows(pm.get());
+
+    // Verify activations for layer 0
+    // Logical expert 0 activation = 10 (from pos 0) + 30 (from pos 4) = 40
+    // Logical expert 1 activation = 20 (from pos 1) + 40 (from pos 5) = 60
+    int redundant_count_e0 = pm->get_redundant_count(0, 0); // Should be 2
+    int redundant_count_e1 = pm->get_redundant_count(0, 1); // Should be 2
+
+    EXPECT_EQ(redundant_count_e0, 2);
+    EXPECT_EQ(redundant_count_e1, 2);
+
+    EXPECT_EQ(ca->getLogitExpertShiftActivateion(0, 0, redundant_count_e0), 5);
+    EXPECT_EQ(ca->getLogitExpertShiftActivateion(0, 1, redundant_count_e1), 10);
 }
