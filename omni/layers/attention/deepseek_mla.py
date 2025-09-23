@@ -19,6 +19,7 @@ from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear
 )
+from vllm.distributed import get_world_group
 from vllm.distributed.communication_op import (
     tensor_model_parallel_all_gather)
 from vllm.distributed.parallel_state import (
@@ -30,15 +31,15 @@ from vllm.platforms import current_platform
 from contextlib import nullcontext
 
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.rotary_embedding import get_rope
-from omni.models.common.layers.linear import (
+from omni.layers.rotary_embedding import get_rope
+from omni.layers.linear import (
     MergedReplicatedLinear,
     RowParallelLinearWithReduceScatter,
     DP2TPRowParallelLinear,
     Tp2DpAndTpRowParallelLinear,
     RowParallelLinearCross
 )
-from omni.models.common.layers.layernorm import RMSNorm
+from omni.layers.layernorm import RMSNorm
 from omni.adaptors.vllm.distributed.communication_op import (
     mla_tensor_model_parallel_all_gather, reduce_scatter_cross, all_gather_world)
 from omni.adaptors.vllm.distributed.parallel_state import (

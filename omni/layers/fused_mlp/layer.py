@@ -15,8 +15,8 @@ from vllm.distributed import (
     tensor_model_parallel_reduce_scatter,
     get_tp_group
 )
-from omni.models.common.layers.activation import SiluAndMul
-from omni.models.common.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
+from omni.layers.activation import SiluAndMul
+from omni.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
 
 class FusedMLPMethodBase(QuantizeMethodBase):
     """Base method for FusedMLP
@@ -82,6 +82,7 @@ class FusedMLP(torch.nn.Module):
         super().__init__()
         tp_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
+        self.intermediate_size = intermediate_size
         self.gate_up_proj = MergedColumnParallelFlashCommLinear(
             hidden_size,
             [intermediate_size] * 2,

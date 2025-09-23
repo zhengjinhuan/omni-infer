@@ -44,7 +44,7 @@ from vllm.model_executor.models.llama import LlamaModel as GPULlamaModel
 from vllm.model_executor.models.llama import LlamaDecoderLayer as GPULlamaDecoderLayer
 from vllm.model_executor.models.llama import LlamaAttention as GPULlamaAttention
 from vllm.model_executor.models.utils import PPMissingLayer, make_empty_intermediate_tensors_factory, make_layers
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 
 class LlamaAttention(GPULlamaAttention):

@@ -19,7 +19,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
 from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
 from vllm.envs import VLLM_RPC_TIMEOUT
-from vllm.logger import init_logger
+from vllm.logger import logger
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -46,10 +46,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 GET_META_MSG = b"get_meta_msg"
 
-logger = init_logger(__name__)
-
 thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
-BLOCK_RELEASE_DELAY = 30  # seconds, use to free blocks when the request is finished for a long time 
+BLOCK_RELEASE_DELAY = int(os.environ.get("BLOCK_RELEASE_DELAY", 600))  # seconds, use to free blocks when the request is finished for a long time 
 
 from omni.accelerators.pd.llmdatadist_manager import LLMDataDistManager, LLMDataDistConfig
 
@@ -378,6 +376,8 @@ class DecodeConnectorScheduler:
         self.block_size = vllm_config.cache_config.block_size
         self._reqs_need_recv: dict[str, tuple[Request, list[int]]] = {}
         self.processed_request: set[str] = set()
+        self.ctx = zmq.Context()
+        self.zmq_socket_map = {}
 
         additional_config = vllm_config.additional_config
         if additional_config:
@@ -390,6 +390,22 @@ class DecodeConnectorScheduler:
             self.pub = self.context.socket(zmq.PUB)
             kv_rank = self.vllm_config.kv_transfer_config.kv_rank
             self.pub.bind(f"ipc:///tmp/sched-pub--{kv_rank}-{vllm_config.parallel_config.data_parallel_rank_local}")
+
+    def _send_pulled_kv_req_list(self, path, data):
+        if path in self.zmq_socket_map:
+            socket = self.zmq_socket_map[path]
+        else:
+            socket = self.ctx.socket(zmq.PUSH)
+            socket.connect(path)
+            self.zmq_socket_map[path] = socket
+            logger.info(f"create new socket path:{path}")
+
+        try:
+            json_data = json.dumps(data)
+            socket.send_string(json_data)
+            logger.info(f"send string {json_data} path:{path}")
+        except Exception as e:
+            logger.error(f"Failed to send reqest_id {json_data} to prefill: {e}")
 
     def get_num_new_matched_tokens(
             self, request: "Request",
@@ -468,6 +484,8 @@ class DecodeConnectorScheduler:
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         if request.request_id in self.processed_request:
             self.processed_request.remove(request.request_id)
+        if request.status == RequestStatus.FINISHED_ABORTED and request.kv_transfer_params is not None:
+            self._send_pulled_kv_req_list(request.kv_transfer_params.get("remote_host_ip"), [request.request_id])
         return False, None
 
 
@@ -478,6 +496,7 @@ class DecodeConnectorWorker:
         self.vllm_config = vllm_config
         self.cluster_id_start = cluster_id_start
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank_local
+        self.tp_rank = get_tensor_model_parallel_rank()
         additional_config = vllm_config.additional_config
         if additional_config:
             self.async_pull_kv = additional_config.get("async_pull_kv", False)
@@ -572,13 +591,14 @@ class DecodeConnectorWorker:
             for req_id, meta in metadata.requests.items():
                 if (len(meta.local_block_ids) > 0) and (len(meta.remote_block_ids) > 0):
                     self.start_load_kv(metadata)
-                    logger.info(
-                        "Received fast path request for request %s with "
-                        "local_block_ids: %s, remote_block_ids: %s.",
-                        req_id,
-                        len(meta.local_block_ids),
-                        len(meta.remote_block_ids)
-                    )
+                    if self.tp_rank == 0:
+                        logger.info(
+                            "Received fast path request for request %s with "
+                            "local_block_ids: %s, remote_block_ids: %s.",
+                            req_id,
+                            len(meta.local_block_ids),
+                            len(meta.remote_block_ids)
+                        )
 
     def worker(self, cluster_id):
         q = self.queues[cluster_id]
@@ -629,12 +649,13 @@ class DecodeConnectorWorker:
 
     # Now go asynchronous pull_kv
     def start_load_kv(self, metadata: DatadistConnectorMetadata):
-        logger.info(f" ***** start_load_kv: {len(metadata.requests)}")
+        logger.debug(f" ***** start_load_kv: {len(metadata.requests)}")
         futures = []
         for req_id, meta in metadata.requests.items():
             # if the local_block_ids is empty, skip pulling kv for the request
             if len(meta.local_block_ids) == 0:
-                logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
+                if self.tp_rank == 0:
+                    logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
                 continue
             # If local_block_ids is a flat list of int, omni-attention is not used
             # and we can directly use the local_block_ids and remote_block_ids
@@ -648,13 +669,14 @@ class DecodeConnectorWorker:
                 # where N is the number of local blocks
                 elif len(meta.remote_block_ids) > len(meta.local_block_ids):
                     meta.remote_block_ids = meta.remote_block_ids[-len(meta.local_block_ids):]
-                logger.info(
-                    " ***** start_load_kv for request %s "
-                    "Num local_block_ids: %s. Num remote_block_ids: %s.",
-                    req_id,
-                    len(meta.local_block_ids),
-                    len(meta.remote_block_ids)
-                )
+                if self.tp_rank == 0:
+                    logger.info(
+                        " ***** start_load_kv for request %s "
+                        "Num local_block_ids: %s. Num remote_block_ids: %s.",
+                        req_id,
+                        len(meta.local_block_ids),
+                        len(meta.remote_block_ids)
+                    )
             # If local_block_ids is a list of lists (e.g., [[], []]), omni-attention is used
             # local_block_ids[0] is a list of local block ids for uncompressed layers
             # local_block_ids[1] is a list of local block ids for compressed layers
@@ -664,7 +686,8 @@ class DecodeConnectorWorker:
                 meta.remote_block_ids = [meta.remote_block_ids] * len(meta.local_block_ids)
                 # If local_block_ids[0] is empty, skip pulling kv for the request
                 if len(meta.local_block_ids[0]) == 0:
-                    logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
+                    if self.tp_rank == 0:
+                        logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
                     continue
                 # remote_block_ids in P is less than local_block_ids[0] in D, 
                 # leaded by lookahead num, which is used by eagle and multi step
@@ -674,13 +697,14 @@ class DecodeConnectorWorker:
                 # If remote_block_ids in P is more than local_block_ids[0] in D, we only need the last N remote blocks
                 elif len(meta.remote_block_ids[0]) > len(meta.local_block_ids[0]):
                     meta.remote_block_ids[0] = meta.remote_block_ids[0][-len(meta.local_block_ids[0]):]
-                logger.info(
-                    " ***** start_load_kv for request %s "
-                    "Num local_block_ids: %s. Num remote_block_ids: %s.",
-                    req_id,
-                    len(meta.local_block_ids[0]),
-                    len(meta.remote_block_ids[0])
-                )
+                if self.tp_rank == 0:
+                    logger.info(
+                        " ***** start_load_kv for request %s "
+                        "Num local_block_ids: %s. Num remote_block_ids: %s.",
+                        req_id,
+                        len(meta.local_block_ids[0]),
+                        len(meta.remote_block_ids[0])
+                    )
             # handle the unexpected case where local_block_ids is not a list of int or list of lists
             else:
                 logger.error(f"Unexpected type for meta.local_block_ids[0]: {type(meta.local_block_ids[0])}")
@@ -794,7 +818,8 @@ class DecodeConnectorWorker:
                     self._recving_transfers.append(request_id)
         logger.debug(f" ***** read block, req_id:{request_id}, local_block_ids:{local_block_ids}, remote_block_ids:{remote_block_ids}")
         cost = time.time() - start
-        logger.info(f" ***** read block, req_id:{request_id}, cost:{cost:.6f}")
+        if self.tp_rank == 0:
+            logger.info(f" ***** read block, req_id:{request_id}, cost:{cost:.6f}")
 
 
     def _send_pulled_kv_req_list(self, path, data):

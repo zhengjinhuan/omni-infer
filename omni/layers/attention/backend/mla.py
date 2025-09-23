@@ -26,9 +26,9 @@ if TYPE_CHECKING:
     from vllm.v1.worker.gpu_input_batch import InputBatch
 
 from omni.models.common.config.model_config import model_extra_config
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
-from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
 from omni.adaptors.vllm.utils import get_attr_by_names
 

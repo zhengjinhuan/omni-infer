@@ -52,9 +52,9 @@ from vllm.model_executor.models.utils import (
     make_layers,
     maybe_prefix)
 
-from omni.models.common.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear, MergedColumnParallelFlashCommLinear
-from omni.models.common.layers.rotary_embedding import get_rope
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.linear import RowParallelFlashCommLinear, QKVParallelFlashCommLinear, MergedColumnParallelFlashCommLinear
+from omni.layers.rotary_embedding import get_rope
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 logger = init_logger(__name__)
 
