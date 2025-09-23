@@ -707,7 +707,25 @@ class DeepseekMoE(nn.Module):
             shared_experts_mask = torch.zeros(global_hidden_states.shape[0], 1, dtype=torch.int32, device="npu")
             shared_experts_mask[self.global_rank * avg_tokens_per_shared_experts : (self.global_rank + 1) * avg_tokens_per_shared_experts] = 1
             shared_experts_hidden_states = global_hidden_states * shared_experts_mask
-            shared_output = self.shared_experts(shared_experts_hidden_states)
+            if model_extra_config.operator_opt_config.shared_experts_to_gmm:
+                shared_experts_hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(shared_experts_hidden_states)
+                gate_up = torch_npu.npu_quant_matmul(shared_experts_hidden_states_int8, self.shared_experts.gate_up_proj.weight.squeeze(0), 
+                                                    self.shared_experts.gate_up_proj.weight_scale,
+                                                    bias=None, output_dtype=torch.int32)
+                if self.shared_experts.quant_symbol:
+                    shared_output = dict()
+                    shared_output['x_int8'] = gate_up
+                    shared_output['pertoken_scale'] = pertoken_scale
+                    shared_output['out_scale'] = self.shared_experts.gate_up_proj.weight_scale
+                shared_output = self.shared_experts.act_fn_obj(shared_output, self.shared_experts.quant_symbol)
+                shared_output = torch_npu.npu_quant_matmul(shared_output.get('x_int8'), self.shared_experts.down_proj.weight.squeeze(0),
+                                                            self.shared_experts.down_proj.weight_scale,
+                                                            offset=None,
+                                                            pertoken_scale=shared_output.get('pertoken_scale'),
+                                                            bias=None,
+                                                            output_dtype=torch.bfloat16)
+            else:
+                shared_output = self.shared_experts(shared_experts_hidden_states)
         else:
             shared_output = torch.zeros_like(global_hidden_states)
         shared_output = get_ep_group().reduce_scatter(shared_output)
