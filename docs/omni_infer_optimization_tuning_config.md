@@ -1,6 +1,6 @@
 # 一、DeepSeek模型部署  
 
-## 1、DeepSeek-R1-int8-A3-4P8-1D32 
+## 1、DeepSeek-R1-int8-A3-4P8-1D32
 ### 1.1 配置 omniinfer/tests/test_config/config_d.yaml:
     '''
 	pattern_path: "../../omni/accelerators/placement/patterns/base_patterns/DSV3_baseline_64_devices_58_MoE_Layers.npy"
@@ -19,10 +19,7 @@
 	vars:
 		run_vllm_server_decode_cmd: |
             ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
-            PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
-    tasks:
-        - name: Create a directory to store the log.
-        tags: sync_code
+
     '''
 
 ## 2、DeepSeek-R1-int8-A2-1P16-1D32
@@ -122,7 +119,7 @@
     
 ## 3、DeepSeek-R1-0528-BF16-A3-2P32-1D32
 
-### 3.1 配置 omniinfer/tests/test_config/config_p.yml                 
+### 3.1 配置 omniinfer/tests/test_config/config_p.yml
       
     ```
     pattern_path: "../../tests/test_config/placement_pattern_20250715_105711_58_redundant_layers_58_layers_64_ranks_epmaxdeploy_200_prefill.npy"
@@ -954,17 +951,17 @@
         "kv_connector_extra_config": {
             "kv_producer_dp_size": 4
         }
-    }
+    })
     export PYTHONPATH=/workspace/omni_infer:$PYTHONPATH
     export OMNI_USE_DSV3=0
     export MOE_DISPATCH_COMBINE=1
     export DP_SIZE=$NUM_DP
     export PYTORCH_NPU_ALLOC_CONF="expandable_segments: True"
-    export OMNI_USE_DSV3=0
     export SCALE_PARALLEL=1
     export INF_NAN_MODE_FORCE_DISABLE=1
-    export CPU_AFFINITY_CONF=1,npu0:1-19,npu1:20-39,npu2:40-59,npu3:60-79,npu4:80-99,npu5:100-119,npu6:120-139,npu7:140-159,npu8:160-179,npu9:180-199,npu10:200-219,npu11:220-239,npu12:240-259,npu13:260-279,npu14:280-299,npu15:300-319
+    export CPU_AFFINITY_CONF=1,npu0:0-19,npu1:20-39,npu2:40-59,npu3:60-79,npu4:80-99,npu5:100-119,npu6:120-139,npu7:140-159,npu8:160-179,npu9:180-199,npu10:200-219,npu11:220-239,npu12:240-259,npu13:260-279,npu14:280-299,npu15:300-319
     export ENABLE_OVERWRITE_REQ_IDS=1---删除
+    export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
     common_operations() {
         python start_api_servers.py \
             --enable-mtp \---删除
@@ -977,40 +974,127 @@
         MODEL_LEN_MAX_DECODE: "8192"
         ASCEND_TOOLKIT_HOME: "/usr/local/Ascend//ascend-toolkit/latest"
         DECODE_TENSOR_PARALLEL_SIZE: "4"
+        PREFILL_TENSOR_PARALLEL_SIZE: "4"
     vars：
         run_vllm_server_prefill_cmd: |
             HCCL_BUFFSIZE=500
             tp=4
             dp=4
             KV_PARALLEL_SIZE=$((DECODE_TENSOR_PARALLEL_SIZE + 0))
-            EXTRA_ARGS='--max-num-batched-tokens 8192 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 48 --no-enable-prefix-caching'
+            EXTRA_ARGS='--max-num-batched-tokens 60000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 48 --no-enable-prefix-caching'
             PROFILING_NAMELIST=/workspace/omniinfer/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
                 --num-dp ${dp} \
-                --num-server ${dp}
-                --tp ${tp}
+                --num-servers ${dp} \
+                --tp ${tp} \
             
-            run_vllm_server_decode_cmd: |
-                HCCL_BUFFSIZE=768
-                dp=16
-                NUM_SERVERS=4
-                KV_PARALLEL_SIZE=$((DECODE_TENSOR_PARALLEL_SIZE + 0))
-                EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 48 --no-enable-prefix-caching'
-                ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1,"use_ge_graph_cached":true}}'
-                PROFILING_NAMELIST=/workspace/omniinfer/omni/adaptors/vllm/patches/profiler_patches/proc_bind/proc_marker_namelist.yaml bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+        run_vllm_server_decode_cmd: |
+            HCCL_BUFFSIZE=768
+            dp=16
+            ((dp++))---删除
+            NUM_SERVERS=4
+            KV_PARALLEL_SIZE=$((DECODE_TENSOR_PARALLEL_SIZE + 0))
+            EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 48 --no-enable-prefix-caching'
+            ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1,"use_ge_graph_cached":true}}'
 
-            docker_start_vllm_cmd_p: >
-                {{ docker_exec_emd }}
-                -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME
-                -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
+        run_proxy_cmd: |
+            prefill_result=""
+            prefill_result=`echo "$prefill_result" | awk '$1=$1'`---删除
+            prefill_api_servers="{{ PREFILL_API_SERVER_LIST }}"
+            prefill_api_servers=`echo "$prefill_api_servers" | awk '$1=$1'`
+            prefill_array=(${prefill_api_servers//,/ })
+            for var in ${prefill_array[@]}; do
+                address=${var%@*}
+                ip=${address%:*}
+                port=${address#*:}
+                num=${var#*@}
+                for ((i=0; i<=$num;i++)); do
+                if [[ -z ${prefill_result} ]]; then
+                    prefill_result="$ip:$port"
+                else
+                    prefill_result="${prefill_result},$ip:$port"
+                fi
+                ((port++))
+                done
+            done
+            echo "Final prefill result: $prefill_result"
 
-            docker_start_vllm_cmd_d: >
-                {{ docker_exec_emd }}
-                -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME
+        docker_start_vllm_cmd_p: >
+            {{ docker_exec_emd }}
+            -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME
+            -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
+
+        docker_start_vllm_cmd_d: >
+            {{ docker_exec_emd }}
+            -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME
+    
+    tasks:
+        - name: Check and delete containers used for global proxy server.
+            tags:
+                - run_docker
+                - clean_up
+                - run_proxy
+
+        - name: Run container for global proxy server.
+            tags:
+                - run_docker
+                - run_proxy
+
+        - name: Create a directory to store the log.
+            tags: 
+                - run_docker
+                - run_proxy
+
+        - name: Delete temporary script files.
+            tags:
+                - ranktable
+                - clean_up
+                - run_proxy
+
+        - name: Register all values.
+            set_fact:
+                #PREFILL_API_SERVER_LIST全部替换为如下：
+                PREFILL_API_SERVER_LIST: >-
+                    {% set result = [] %}
+                    {% set tp_size = (vars.get('PREFILL_TENSOR_PARALLEL_SIZE', '4') | int) %}
+                    {% for host in groups['P'] | default([]) %}
+                        {% set h = hostvars[host] %}
+                        {% set ip = h.ansible_host | default('') %}
+                        {% if ip %}
+                        {% set devices = (h.ascend_rt_visible_devices | default('0')) %}
+                        {% set count = devices.split(',') | length | int %}
+                        {% set instances = (count / tp_size) | round(0, 'ceil') | int - 1%}
+                        {% set port = h.api_port | default('9000') %}
+                        {% set entry = ip ~ ':' ~ port ~ '@' ~ instances %}
+                        {% if entry not in result %}
+                            {% set _ = result.append(entry) %}
+                        {% endif %}
+                        {% endif %}
+                    {% endfor %}
+                    {{ result | join(',') }}
+                #DECODE_API_SERVER_LIST全部替换为如下：
+                DECODE_API_SERVER_LIST: >-
+                    {% set result = [] %}
+                    {% set tp_size = (vars.get('DECODE_TENSOR_PARALLEL_SIZE', '4') | int) %}
+                    {% for host in groups['D'] | default([]) %}
+                        {% set h = hostvars.get(host, {}) %}
+                        {% set ip = h.ansible_host | default('') %}
+                        {% if ip %}
+                        {% set devices = (h.ascend_rt_visible_devices | default('0')) %}
+                        {% set count = devices.split(',') | length | int %}
+                        {% set instances = (count / tp_size) | round(0, 'ceil') | int - 1%}
+                        {% set port = h.api_port | default('9100') %}
+                        {% set entry = ip ~ ':' ~ port ~ '@' ~ instances %}
+                        {% if entry not in result %}
+                            {% set _ = result.append(entry) %}
+                        {% endif %}
+                        {% endif %}
+                    {% endfor %}
+                    {{ result | join(',') }}
      ```
 
 # 三、Kimi模型部署  
 
-## 1、kimi-k2-int8-A3-2P8-1D16 
+## 1、kimi-k2-int8-A3-2P8-1D16
 ### 1.1 配置 omniinfer/tests/test_config/test_config_decode_k2.json:
     ```
     {
@@ -1022,12 +1106,25 @@
 ### 1.2 配置 omniinfer/tests/tools/ansible/template/omni_infer_server_template_k2.yml:
     ```
     environment:
+        MODEL_LEN_MAX_PREFILL: "33008"
         MODEL_LEN_MAX_DECODE: "33008"
+        PREFILL_LB_SDK: "least_total_load"
+        DECODE_LB_SDK: "weighted_least_active"
     vars:
+        docker_run_cmd: |
+            docker run -it --shm-size=500g \
+                -e CODE_PATH=$CODE_PATH---删除
+
         run_vllm_server_prefill_cmd: |
             ADDITIONAL_CONFIG='{"enable_omni_attn": false, "multi_rank_pull_kv": true}'
 
         run_vllm_server_decode_cmd:
             EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 48 --no-enable-prefix-caching'
             ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true},"enable_omni_attn": false , "multi_rank_pull_kv": true}'
+            if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then---删除
+                python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json---删除
+            else---删除
+                python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json---删除
+            fi---删除
+            python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
      ```
