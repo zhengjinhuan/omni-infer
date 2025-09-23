@@ -38,8 +38,8 @@ from vllm.model_executor.parameter import (
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.distributed import get_tp_group, get_dp_group, get_ep_group
 
-from omni.models.common.layers.fused_mlp import FusedMLP, FusedMLPMethodBase, W8A8DynamicFusedMLPMethod
-from omni.models.common.layers.linear import (
+from omni.layers.fused_mlp import FusedMLP, FusedMLPMethodBase, W8A8DynamicFusedMLPMethod
+from omni.layers.linear import (
     FlashCommLinearMethodBase,
     UnquantizedFlashCommLinearMethod,
     FlashCommLinearBase

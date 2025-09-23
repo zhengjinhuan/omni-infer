@@ -30,8 +30,8 @@ from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
 )
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsLinearMethod, CompressedTensorsKVCacheMethod
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import CompressedTensorsScheme
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
-from omni.models.common.layers.fused_mlp import FusedMLP, W8A8DynamicFusedMLPMethod
+from omni.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.fused_mlp import FusedMLP, W8A8DynamicFusedMLPMethod
 from omni.adaptors.vllm.utils import ASCEND_COMPRESSED_TENSORS
 from .schemes.compressed_tensors_w8a8_int8 import AscendCompressedTensorsW8A8Int8LinearMethod
 from .schemes.compressed_tensors_w4a8_int8 import AscendCompressedTensorsW4A8Int8LinearMethod

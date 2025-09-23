@@ -48,16 +48,16 @@ from vllm.model_executor.models.utils import (
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
-from omni.models.common.layers.activation import SiluAndMul
-from omni.models.common.layers.layernorm import RMSNorm
-from omni.models.common.layers.rotary_embedding import get_rope
+from omni.layers.activation import SiluAndMul
+from omni.layers.layernorm import RMSNorm
+from omni.layers.rotary_embedding import get_rope
 
-from omni.models.common.layers.vocab_parallel_embedding import (
+from omni.layers.vocab_parallel_embedding import (
     ParallelLMHead, 
     VocabParallelEmbedding
 )
 
-from omni.models.common.layers.linear import (
+from omni.layers.linear import (
     AscendMergedColumnParallelLinear,
     AscendRowParallelLinear
 )
@@ -71,9 +71,9 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_local_group_rank
 )
 
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
-from omni.models.common.layers.attention.deepseek_mla import DeepseekMLA
-from omni.models.common.layers.moe.deepseek_moe import DeepseekMoE
+from omni.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.attention.deepseek_mla import DeepseekMLA
+from omni.layers.moe.deepseek_moe import DeepseekMoE
 from omni.models.common.config.model_config import model_extra_config
 
 """MLP 模块激活拆分长度，按64G显存拆分，需要根据序列长度以及性能确认最佳拆分长度"""

@@ -32,7 +32,8 @@ pip install -e .
 
 cd $BUILD_ROOT/..
 python setup.py bdist_wheel
-pip install dist/ascend_lmcache-*.whl
+cd $BUILD_ROOT
+pip install ../dist/ascend_lmcache-*.whl
 
 # install mooncake
 bash $BUILD_ROOT/install_mooncake.sh

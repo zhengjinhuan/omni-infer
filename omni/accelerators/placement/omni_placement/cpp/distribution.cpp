@@ -239,7 +239,7 @@ size_t Distribution::get_recv_buff_maxsize() {
 void Distribution::allgather(void *src_addr, void *recv_addr, size_t length,
                              std::string dtype) {
 
-    assert(stream_ == nullptr && "stream_ should not be nullptr");
+    assert(stream_ != nullptr && "stream_ should not be nullptr");
     HCCLCHECK(HcclAllGather(src_addr, recv_addr, length,
                             NAME2DATATYPE.at(dtype), hcclComm_, stream_));
     ACLCHECK(aclrtSynchronizeStream(stream_));

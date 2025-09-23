@@ -72,7 +72,7 @@ from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.sequence import IntermediateTensors
 
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 from .fused_moe import patch_fused_moe_ops
 

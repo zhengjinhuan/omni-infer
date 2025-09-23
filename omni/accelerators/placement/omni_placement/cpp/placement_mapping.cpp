@@ -39,7 +39,7 @@ PlacementMapping::PlacementMapping(
 
     max_redundant_per_rank_ =
         num_deploy_experts_per_device_ - num_experts_per_device_;
-    assert(max_redundant_per_rank_ >= 1);
+    assert(max_redundant_per_rank_ >= 0);
 
     // Construct mappings
     init_DeployedPositionToLogisticsIdMapping();
@@ -243,7 +243,7 @@ void PlacementMapping::init_DeployedPositionToLogisticsIdMapping() {
                                                   expert]++;
                     // 确保冗余计数不超过最大允许值
                     assert(expert_id_deployed_nums_host_[layer * num_experts_ +
-                                                         expert] <
+                                                         expert] <=
                            max_redundant_per_expert_);
 
                     // 计算全局位置ID：使用设备编号乘以每设备最大专家数作为基础偏移，再加上当前位置

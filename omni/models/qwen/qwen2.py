@@ -44,7 +44,7 @@ from vllm.distributed import (
     tensor_model_parallel_reduce_scatter,
 )
 from vllm.logger import init_logger
-from omni.models.common.layers.activation import SiluAndMul
+from omni.layers.activation import SiluAndMul
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -59,16 +59,16 @@ from vllm.model_executor.models.interfaces import SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
-from omni.models.common.layers.layernorm import RMSNormFlashComm
-from omni.models.common.layers.linear import (
+from omni.layers.layernorm import RMSNormFlashComm
+from omni.layers.linear import (
     RowParallelFlashCommLinear,
     QKVParallelFlashCommLinear,
     ColumnParallelFlashCommLinear,
     MergedColumnParallelFlashCommLinear,
 )
-from omni.models.common.layers.rotary_embedding import get_rope, QwenRotaryEmbedding, QwenMRotaryEmbedding
-from omni.models.common.layers.fused_mlp import FusedMLP
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.rotary_embedding import get_rope, QwenRotaryEmbedding, QwenMRotaryEmbedding
+from omni.layers.fused_mlp import FusedMLP
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 
 # if use weight nz, this config must be True
@@ -77,16 +77,8 @@ torch.npu.config.allow_internal_format = True
 logger = init_logger(__name__)
 
 class Qwen2MLP(FusedMLP):
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        hidden_act: str,
-        quant_config: Optional[QuantizationConfig] = None,
-        prefix: str = "",
-    ) -> None:
-        super().__init__(hidden_size, intermediate_size, hidden_act, quant_config, prefix)
-        self.intermediate_size = intermediate_size
+    pass
+
 
 class Qwen2Attention(nn.Module):
 

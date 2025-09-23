@@ -29,7 +29,7 @@ from vllm.model_executor.model_loader import get_model
 from vllm.v1.spec_decode.eagle import EagleProposer
 
 from omni.adaptors.vllm.forward_context import set_forward_context
-from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 logger = init_logger(__name__)
 

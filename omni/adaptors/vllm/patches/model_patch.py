@@ -18,23 +18,23 @@ def patch_vllm_distributed():
 def patch_rope():
     from vllm.model_executor.layers import rotary_embedding
  
-    from omni.models.common.layers.rotary_embedding import get_rope
+    from omni.layers.rotary_embedding import get_rope
     rotary_embedding.get_rope = get_rope
     print("+++++++++++++++++++++++patch_rope+++++++++++++++++++++++++++")
  
 def patch_embedding():
     from vllm.model_executor.layers import vocab_parallel_embedding
-    from omni.models.common.layers.vocab_parallel_embedding import VocabParallelEmbedding, ParallelLMHead
+    from omni.layers.vocab_parallel_embedding import VocabParallelEmbedding, ParallelLMHead
     vocab_parallel_embedding.VocabParallelEmbedding = VocabParallelEmbedding
     vocab_parallel_embedding.ParallelLMHead = ParallelLMHead
     vocab_parallel_embedding.VocabParallelEmbedding.forward = VocabParallelEmbedding.forward_vocab
 
 def patch_sampler():
-    from omni.models.common.layers.sampler import AscendSampler
+    from omni.layers.sampler import AscendSampler
     from vllm.model_executor.layers import sampler
     sampler.Sampler = AscendSampler
     from vllm.model_executor.layers import rejection_sampler
-    from omni.models.common.layers.sampler import RejectionSampler, _multinomial
+    from omni.layers.sampler import RejectionSampler, _multinomial
     rejection_sampler.RejectionSampler = RejectionSampler
     rejection_sampler._multinomial = _multinomial
     print("++++++++++++++++++++++patch_sampler++++++++++++++++++++++++++++")
@@ -47,7 +47,7 @@ def patch_compilation():
 
 def patch_linear():
     from vllm.model_executor.layers import linear
-    from omni.models.common.layers.linear import AscendUnquantizedLinearMethod
+    from omni.layers.linear import AscendUnquantizedLinearMethod
     linear.UnquantizedLinearMethod = AscendUnquantizedLinearMethod
 
 def patch_scheduler():

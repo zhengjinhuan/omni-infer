@@ -8,8 +8,21 @@
 操作步骤  
 1、拷贝元数据到output路径（注：model.safetensors.index.json需使用fp8权重的对应配置）  
 2、执行量化命令  
+deepseek/kimi k2:  
 int8量化: python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu"  
-int4量化: python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --w4
+int4量化: python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --w4  
+
+qwen:  
+int8量化: python quant_qwen.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu"  
+
+gpt-oss:  
+gpt-oss-120b int8量化: python quant_gptoss.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --model-type "120b"  
+gpt-oss-20b int8量化: python quant_gptoss.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --model-type "20b"  
+
+C8量化: 先拉起服务化dump数据再使用量化工具  
+（1）拉起服务化时在config文件中加入c8_calib_path,对话后将knope保存至自定义的c8_calib_path
+（2）pytho quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-path {量化权重路径} --device "cpu" --w4 --c8-calib-path "your_path" --kvs-safetensor-name "your_name"  
+    若只想执行c8量化，可以将if args.w4后的部分注释后执行上述命令  
 
 编译步骤  
 进入python目录下执行： python setup.py bdist_wheel  

@@ -30,12 +30,12 @@ if os.getenv("ASCEND_PLATFORM", "A3")=="A2":
 else:
     from .pangu_ultra_moe import PanguUltraMoEDecoderLayer
 
-from omni.models.common.layers.layernorm import RMSNorm #zxp: not use
-from omni.models.common.layers.vocab_parallel_embedding import (
+from omni.layers.layernorm import RMSNorm #zxp: not use
+from omni.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding
 )
-from omni.models.common.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.models.common.config.model_config import model_extra_config
 
 def get_spec_layer_idx_from_weight_name(config: PretrainedConfig,
