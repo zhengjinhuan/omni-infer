@@ -5,32 +5,53 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
-from sglang.srt.layers.dp_attention import (attn_tp_all_gather_into_tensor,
-                                            get_attention_tp_rank,
-                                            get_attention_tp_size)
-from sglang.srt.layers.linear import (ColumnParallelLinear,
-                                      MergedColumnParallelLinear,
-                                      ReplicatedLinear, RowParallelLinear)
+from sglang.srt.layers.dp_attention import (
+    attn_tp_all_gather_into_tensor,
+    get_attention_tp_rank,
+    get_attention_tp_size,
+)
+from sglang.srt.layers.linear import (
+    ColumnParallelLinear,
+    MergedColumnParallelLinear,
+    ReplicatedLinear,
+    RowParallelLinear,
+)
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.fp8_kernel import (
-    is_fp8_fnuz, per_tensor_quant_mla_fp8,
-    per_token_group_quant_mla_deep_gemm_masked_fp8)
+    is_fp8_fnuz,
+    per_tensor_quant_mla_fp8,
+    per_token_group_quant_mla_deep_gemm_masked_fp8,
+)
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.rotary_embedding import get_rope, get_rope_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
-                                                          ForwardMode,
-                                                          PPProxyTensors)
-from sglang.srt.utils import (BumpAllocator, LazyValue, add_prefix,
-                              bind_or_assign, get_bool_env_var, get_device_sm,
-                              get_int_env_var, is_flashinfer_available,
-                              is_non_idle_and_non_empty, log_info_on_rank0,
-                              use_intel_amx_backend)
+from sglang.srt.model_executor.forward_batch_info import (
+    ForwardBatch,
+    ForwardMode,
+    PPProxyTensors,
+)
+from sglang.srt.utils import (
+    BumpAllocator,
+    LazyValue,
+    add_prefix,
+    bind_or_assign,
+    get_bool_env_var,
+    get_device_sm,
+    get_int_env_var,
+    is_flashinfer_available,
+    is_non_idle_and_non_empty,
+    log_info_on_rank0,
+    use_intel_amx_backend,
+)
 from torch import nn
 from transformers import PretrainedConfig
 
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
+from omni.adaptors.sglang.layers.linear import (
+    MergedColumnParallelLinear,
+    RowParallelLinear,
+)
 
 
 class AttnForwardMethod(IntEnum):
@@ -105,6 +126,15 @@ class DeepseekMLA(nn.Module):
         self.max_position_embeddings = max_position_embeddings
 
         self.layer_scatter_modes = layer_scatter_modes
+
+        self.mask_length = 2048
+        self.attn_mask = ~torch.tril(
+            torch.ones(
+                (self.mask_length, self.mask_length),
+                dtype=torch.bool,
+                device=global_server_args_dict["device"],
+            )
+        )
 
         # For tensor parallel attention
         if self.q_lora_rank is not None:
@@ -222,9 +252,6 @@ class DeepseekMLA(nn.Module):
             "disable_chunked_prefix_cache"
         ]
 
-        self.current_attention_backend = (
-            None  # Attention backend used by current forward batch
-        )
         self.rocm_fused_decode_mla = get_bool_env_var(
             "SGLANG_ROCM_FUSED_DECODE_MLA", "false"
         )
@@ -258,36 +285,6 @@ class DeepseekMLA(nn.Module):
 
         self.weight_block_size = None
 
-    def dispatch_attn_forward_method(
-        self, forward_batch: ForwardBatch
-    ) -> AttnForwardMethod:
-        def _dispatch_mla_subtype():
-            if forward_batch.is_extend and forward_batch.extend_num_tokens > 1:
-                return AttnForwardMethod.MHA
-            else:
-                return AttnForwardMethod.MLA
-
-        # Determine attention backend used by current forward batch
-        if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
-            attention_backend = global_server_args_dict["decode_attention_backend"]
-        else:
-            attention_backend = global_server_args_dict["prefill_attention_backend"]
-        self.current_attention_backend = attention_backend
-
-        if attention_backend == "ascend":
-            return AttnForwardMethod.MLA
-        else:
-            # Triton: Use normal computation for prefill and use weight absorption for extend/decode
-            if (
-                forward_batch.is_extend
-                and not forward_batch.is_target_verify
-                and not forward_batch.is_draft_extend
-                and sum(forward_batch.extend_prefix_lens_cpu) == 0
-            ):
-                return AttnForwardMethod.MHA
-            else:
-                return _dispatch_mla_subtype()
-
     def forward(
         self,
         positions: torch.Tensor,
@@ -307,7 +304,9 @@ class DeepseekMLA(nn.Module):
                 local_hidden_states,
             )
 
-        if forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle:
+        if (
+            forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle
+        ) or forward_batch.is_target_verify:
             return self._forward_decode(
                 positions, hidden_states, forward_batch, zero_allocator
             )
@@ -323,77 +322,11 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        s = self.forward_prepare(
-            positions=positions,
-            hidden_states=hidden_states,
-            forward_batch=forward_batch,
-            zero_allocator=zero_allocator,
-        )
-        return self.forward_core(s)
-
-    def _forward_decode(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
-        s = self.forward_prepare(
-            positions=positions,
-            hidden_states=hidden_states,
-            forward_batch=forward_batch,
-            zero_allocator=zero_allocator,
-        )
-        return self.forward_core(s)
-
-    def forward_prepare(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
         if hidden_states.shape[0] == 0:
             assert (
                 not self.o_proj.reduce_results
             ), "short-circuiting allreduce will lead to hangs"
-            return hidden_states, None, forward_batch, None
-
-        attn_forward_method = self.dispatch_attn_forward_method(forward_batch)
-
-        if attn_forward_method == AttnForwardMethod.MHA:
-            inner_state = self.forward_normal_prepare(
-                positions, hidden_states, forward_batch, zero_allocator
-            )
-        elif attn_forward_method == AttnForwardMethod.MLA:
-            inner_state = self.forward_absorb_prepare(
-                positions, hidden_states, forward_batch, zero_allocator
-            )
-        else:
-            raise NotImplementedError
-        return None, attn_forward_method, forward_batch, inner_state
-
-    def forward_core(self, intermediate_state):
-        hidden_states, attn_forward_method, forward_batch, inner_state = (
-            intermediate_state
-        )
-        if inner_state is None:
             return hidden_states
-
-        if attn_forward_method == AttnForwardMethod.MHA:
-            return self.forward_normal_core(*inner_state)
-        elif attn_forward_method == AttnForwardMethod.MLA:
-            return self.forward_absorb_core(*inner_state)
-        else:
-            raise NotImplementedError
-
-    def forward_normal_prepare(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
-        zero_allocator: BumpAllocator,
-    ):
         if self.q_lora_rank is not None:
             q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
                 [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
@@ -428,25 +361,51 @@ class DeepseekMLA(nn.Module):
         forward_batch.token_to_kv_pool.set_kv_buffer(
             self.attn_mha, forward_batch.out_cache_loc, latent_cache, None
         )
-
-        return q, k, v, forward_batch
-
-    def forward_normal_core(self, q, k, v, forward_batch):
-        attn_output = self.attn_mha(q, k, v, forward_batch, save_kv_cache=False)
+        if forward_batch.is_prefill_idle:
+            attn_output = q.new_empty(
+                q.shape[0], self.num_local_heads * self.v_head_dim
+            )
+        else:
+            k = k.view(-1, self.num_local_heads, self.qk_head_dim)
+            v = v.view(-1, self.num_local_heads, self.v_head_dim)
+            if q.ndim == 2:
+                q = q.view(q.shape[0], self.num_local_heads, -1)
+            bs_qlen, q_heads, q_dim = q.size()
+            q_nope, q_rope = q.split([self.v_head_dim, self.qk_rope_head_dim], dim=-1)
+            k_nope, k_rope = k.split([self.v_head_dim, self.qk_rope_head_dim], dim=-1)
+            metadata = forward_batch.attn_backend.forward_metadata
+            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                q_nope,
+                k_nope,
+                v,
+                query_rope=q_rope,
+                key_rope=k_rope,
+                num_heads=q_heads,
+                input_layout="TND",
+                atten_mask=self.attn_mask,
+                sparse_mode=3,
+                actual_seq_lengths=metadata.seq_lens_list_cumsum,
+                actual_seq_lengths_kv=metadata.seq_lens_list_cumsum,
+                scale=self.scaling,
+                next_tokens=0,
+            )
+            attn_output = attn_output[..., : self.v_head_dim]
         attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
         output, _ = self.o_proj(attn_output)
         return output
 
-    def forward_absorb_prepare(
+    def _forward_decode(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        from sglang.srt.model_executor.cuda_graph_runner import \
-            get_is_capture_mode
-
+        if hidden_states.shape[0] == 0:
+            assert (
+                not self.o_proj.reduce_results
+            ), "short-circuiting allreduce will lead to hangs"
+            return hidden_states
         if self.q_lora_rank is not None:
             fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
             q, latent_cache = fused_qkv_a_proj_out.split(
@@ -491,14 +450,53 @@ class DeepseekMLA(nn.Module):
 
         q_nope_out = q_nope_out.transpose(0, 1)
         q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+        k_nope = k_nope.view(-1, 1, self.kv_lora_rank)
+        forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+            self.attn_mqa,
+            forward_batch.out_cache_loc,
+            k_nope,
+            k_pe,
+        )
+        padding_bs = forward_batch.input_ids.size(0)
+        q_nope = q_nope_out.view(
+            padding_bs, -1, self.num_local_heads, self.kv_lora_rank
+        )
+        q_pe = q_pe.view(
+            padding_bs,
+            -1,
+            self.num_local_heads,
+            self.kv_lora_rank + self.qk_rope_head_dim - self.kv_lora_rank,
+        )
 
-        return q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
+        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id).to(
+            q_nope_out.dtype
+        )
+        PAGE_SIZE = 128
+        b, s, n, _ = q_nope.size()
+        q_nope_dim = q_nope.shape[-1]
+        _, k_heads, k_dim = k_cache.size()
+        k_cache = k_cache.view(-1, PAGE_SIZE, k_dim)
+        k_nope = k_cache[..., :q_nope_dim]
+        k_rope = k_cache[..., q_nope_dim:]
 
-    def forward_absorb_core(
-        self, q_pe, k_pe, q_nope_out, k_nope, forward_batch, zero_allocator
-    ):
-        attn_output = self.attn_mqa(
-            q_nope_out, k_nope, k_nope, forward_batch, q_rope=q_pe, k_rope=k_pe
+        metadata = forward_batch.attn_backend.forward_metadata
+        attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+            q_nope,
+            k_nope,
+            k_nope,
+            query_rope=q_pe,
+            key_rope=k_rope,
+            num_heads=n,
+            num_key_value_heads=1,
+            input_layout="BSND",
+            atten_mask=None,
+            sparse_mode=0,
+            scale=self.scaling,
+            antiquant_mode=0,
+            antiquant_scale=None,
+            block_table=metadata.block_kv_indices,
+            block_size=PAGE_SIZE,
+            actual_seq_lengths_kv=metadata.seq_lens_list,
         )
         attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
 

@@ -2,19 +2,29 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import (TYPE_CHECKING, List, NamedTuple, Optional, Protocol, Tuple,
-                    Union, runtime_checkable)
+from typing import (
+    TYPE_CHECKING,
+    List,
+    NamedTuple,
+    Optional,
+    Protocol,
+    Tuple,
+    Union,
+    runtime_checkable,
+)
 
 from sglang.srt.distributed import get_pp_group, get_world_group
-from sglang.srt.eplb.expert_distribution import \
-    get_global_expert_distribution_recorder
+from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.layers.moe.token_dispatcher.base_dispatcher import (
-    BaseDispatcher, BaseDispatcherConfig, DispatchOutput, DispatchOutputFormat)
+    BaseDispatcher,
+    BaseDispatcherConfig,
+    DispatchOutput,
+    DispatchOutputFormat,
+)
 from sglang.srt.layers.moe.utils import DeepEPMode
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.utils import (get_bool_env_var, get_int_env_var, is_npu,
-                              load_json_config)
+from sglang.srt.utils import get_bool_env_var, get_int_env_var, is_npu, load_json_config
 
 _is_npu = is_npu()
 
@@ -23,8 +33,9 @@ if _is_npu:
 
 try:
     from deep_ep import Buffer, Config
-    from sglang.srt.layers.quantization.fp8_kernel import \
-        sglang_per_token_group_quant_fp8
+    from sglang.srt.layers.quantization.fp8_kernel import (
+        sglang_per_token_group_quant_fp8,
+    )
 
     use_deepep = True
 except ImportError:
@@ -35,8 +46,10 @@ from enum import Enum, IntEnum, auto
 import torch
 import torch.distributed as dist
 from sglang.srt.layers.moe.ep_moe.kernels import (
-    deepep_permute_triton_kernel, deepep_post_reorder_triton_kernel,
-    deepep_run_moe_deep_preprocess)
+    deepep_permute_triton_kernel,
+    deepep_post_reorder_triton_kernel,
+    deepep_run_moe_deep_preprocess,
+)
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 logger = logging.getLogger(__name__)
