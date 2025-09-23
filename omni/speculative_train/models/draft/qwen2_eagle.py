@@ -26,6 +26,7 @@
 from collections.abc import Iterable
 from typing import Any, Optional, Union, List
 
+import math
 import torch
 from torch import nn
 from transformers import Qwen2Config
@@ -104,7 +105,6 @@ def eager_attention_forward(
     attention_mask: Optional[torch.Tensor],
     scaling: float,
     dropout: float = 0.0,
-    **kwargs,
 ):
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
@@ -144,9 +144,8 @@ class Qwen2Attention(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor],
-        past_key_value: Optional[Cache] = None,
+        past_key_value: Optional[List[List[torch.Tensor], List[torch.Tensor]]] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -158,23 +157,46 @@ class Qwen2Attention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
+
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        past_key_value_length = 1
         if past_key_value is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            past_key_value[0] = past_key_value[0] + [key_states]
+            past_key_value[1] = past_key_value[1] + [value_states]
+            key_states = past_key_value[0][0]
+            value_states = past_key_value[1][0]
+            past_key_value_length = len(past_key_value[0])
 
-        attn_output, attn_weights = eager_attention_forward(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            sliding_window=self.sliding_window,  # main diff with Llama
-            **kwargs,
+
+        
+        
+
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask
+        
+        attn_weights_list = [attn_weights]
+        for i in range(1, past_key_value_length):
+            ki = past_key_value[0][i]
+            qi = query_states
+            kiq = ki
+
+            attn_weightsi = (qi * kiq).sum(-1) / math.sqrt(self.head_dim)
+            attn_weights_list.append(attn_weightsi.unsqueeze(-1))
+
+        attn_weights = attn_weights if len(attn_weights_list) == 1 else torch.cat(
+            attn_weights_list, dim=-1,
         )
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_output = torch.matmul(attn_weights[..., :input_shape[-1]], value_states)
+        for i in range(1, past_key_value_length):
+            vi = past_key_value[1][i]
+            attn_weightsi = attn_weights[..., input_shape[-1] + i - 1 : input_shape[-1] + i]
+            attn_output = attn_output + attn_weightsi * vi
 
+        attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
@@ -220,7 +242,6 @@ class EagleQwen2DecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
         # hidden_states = self.input_layernorm(hidden_states)
@@ -235,7 +256,6 @@ class EagleQwen2DecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
-            **kwargs,
         )
         hidden_states = residual + hidden_states
 
@@ -246,34 +266,6 @@ class EagleQwen2DecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         return hidden_states
-
-
-def prepare_decoder_attention_mask(
-    attention_mask, input_shape, inputs_embeds, past_key_values_length
-):
-    # create causal mask
-    # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-    combined_attention_mask = None
-    if input_shape[-1] > 1:
-        combined_attention_mask = _make_causal_mask(
-            input_shape,
-            inputs_embeds.dtype,
-            device=inputs_embeds.device,
-            past_key_values_length=past_key_values_length,
-        )
-
-    if attention_mask is not None:
-        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-        expanded_attn_mask = _expand_mask(
-            attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]
-        ).to(inputs_embeds.device)
-        combined_attention_mask = (
-            expanded_attn_mask
-            if combined_attention_mask is None
-            else expanded_attn_mask + combined_attention_mask
-        )
-
-    return combined_attention_mask
 
 class EagleQwen2ForCausalLM(EagleDraftModel):
     config_class = Qwen2Config
@@ -307,13 +299,15 @@ class EagleQwen2ForCausalLM(EagleDraftModel):
         self,
         hidden_states: torch.Tensor,
         inputs_embeds: torch.Tensor,
+        position_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        past_key_value = None,
     ):
         batch_size, seq_length, _ = hidden_states.size()
         # make position ids
         device = hidden_states.device
-        position_ids = torch.arange(0, seq_length, dtype=torch.long, device=device)
-        position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+
+        
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
@@ -322,9 +316,9 @@ class EagleQwen2ForCausalLM(EagleDraftModel):
             attention_mask = torch.ones(
                 (batch_size, seq_length), dtype=torch.bool, device=hidden_states.device
             )
-        attention_mask = prepare_decoder_attention_mask(
-            attention_mask, (batch_size, seq_length), hidden_states, 0
-        )
+            attention_mask = self.prepare_decoder_attention_mask(
+                attention_mask, hidden_states, batch_size, seq_length, 0
+            )
 
         hidden_states = self.fc(
             torch.cat(
@@ -339,6 +333,7 @@ class EagleQwen2ForCausalLM(EagleDraftModel):
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 position_embeddings=position_embeddings,
+                past_key_value=past_key_value,
             )
 
         return hidden_states

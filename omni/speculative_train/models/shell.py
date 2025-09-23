@@ -4,16 +4,31 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, List
 
 
-def _compute_target_p(target, loss_mask):
+def _compute_target_p(target, loss_mask, pad_length):
     target_head = target
     target_max_token = target_head.argmax(-1)
-    target_mask = target_max_token
-    target_mask = target_mask[..., None].int()
-    position_mask = target_mask * loss_mask
+    target_mask = target_max_token.int()
+    position_mask = target_mask[..., None] * loss_mask
     target_head = target_head.float()
     target_p = nn.Softmax(dim=2)(target_head)
-    target_p = target_p.detach()
-    return target_p, position_mask
+
+    target_p_padded = F.pad(
+        target_p,
+        pad=(0, 0, 0, pad_length),
+        mode="constant",
+        # For bitwise equality with previous code
+        value=1 / target_p.shape[-1],
+    )
+
+    position_mask_padded = F.pad(
+        position_mask,
+        pad=(0, 0, 0, pad_length),
+        mode="constant",
+        value=0,
+    )
+
+    target_p_padded = target_p_padded.detach()
+    return target_p_padded, position_mask_padded
 
 def _compute_loss(logits, target_p, position_mask):
     logits = logits.float()
@@ -29,7 +44,7 @@ class OfflineEagleModel(nn.Module):
     """
 
     def __init__(
-        self, target_head, draft_model, length: int = 7, attention_backend="sdpa"
+        self, target_head, draft_model, length: int = 1, attention_backend="sdpa"
     ):
         """
         Args:
@@ -58,36 +73,57 @@ class OfflineEagleModel(nn.Module):
         target = self.target_head(hidden_states.roll(-1, -2))
         # Step 0: handle vocab size
         with torch.no_grad():
-            target_p, position_mask = _compute_target_p(
+            target_p_padded, position_mask_padded = _compute_target_p(
                 target=target,
                 loss_mask=loss_mask,
+                pad_length=self.length - 1,
             )
         del target
 
         batch_size, seq_length, _ = hidden_states.shape
         past_key_values_length = 0
 
-        # Step 5.1: embed the input ids
-        inputs_embeds = self.draft_model.embed_input_ids(input_ids)
-        inputs_embeds = inputs_embeds.to(hidden_states.dtype)
+        position_ids = torch.arange(0, seq_length, dtype=torch.long, device=hidden_states.device)
+        position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
 
-        # Step 5.2: run the draft model backbone
-        hidden_states_out = self.draft_model(
-            inputs_embeds=inputs_embeds,
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
+        # make attention mask
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (batch_size, seq_length), dtype=torch.bool, device=hidden_states.device
+            )
+        attention_mask = self.draft_model.prepare_decoder_attention_mask(
+            attention_mask, hidden_states, batch_size, seq_length, 0
         )
+        
+        plosses = []
+        acces = []
+        cache_hidden = [[], []]
+        for i in range(self.length):
+            target_p = target_p_padded[:, i : seq_length + i]
+            position_mask = position_mask_padded[:, i : seq_length + i]
+            # Step 5.1: embed the input ids
+            inputs_embeds = self.draft_model.embed_input_ids(input_ids.roll(-i, -1))
 
-        # Step 5.4: get logits
-        logits = self.compute_logits(hidden_states_out)
+            # Step 5.2: run the draft model backbone
+            hidden_states = self.draft_model(
+                inputs_embeds=inputs_embeds,
+                hidden_states=hidden_states,
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+                past_key_value=cache_hidden,
+            )
 
-        logits = logits.float()
-        out_logp = nn.LogSoftmax(dim=2)(logits)
-        plogp = target_p * out_logp
-        loss = -torch.sum(position_mask * plogp, 2).mean()
-        with torch.no_grad():
-            acc = ((logits.argmax(-1) == target_p.argmax(-1)) * position_mask.squeeze(-1)).sum() / loss_mask.sum().clamp_min(1e-6)
+            # Step 5.4: get logits
+            logits = self.compute_logits(hidden_states)
 
-        plosses = [loss]
-        acces = [acc]
+            logits = logits.float()
+            out_logp = nn.LogSoftmax(dim=2)(logits)
+            plogp = target_p * out_logp
+            loss = -torch.sum(position_mask * plogp, 2).mean()
+            with torch.no_grad():
+                acc = ((logits.argmax(-1) == target_p.argmax(-1)) * position_mask.squeeze(-1)).sum() / loss_mask.sum().clamp_min(1e-6)
+
+            plosses.append(loss)
+            acces.append(acc)
+
         return plosses, acces
