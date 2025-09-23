@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import torch
 import torch_npu
+import torch.distributed as dist
+from sglang.srt.distributed import get_moe_ep_group, get_world_group
 
 from sglang.srt.distributed.parallel_state import get_moe_expert_parallel_world_size
 from sglang.srt.layers.moe.ep_moe.kernels import (
@@ -24,10 +26,7 @@ from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.utils import dispose_tensor
 
-from omni.adaptors.sglang.layers.quantization.w8a8_int8 import (
-    W8A8Int8Config,
-    W8A8Int8MoEMethod,
-)
+from torch.distributed import ProcessGroup
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import DispatchOutput
@@ -99,11 +98,7 @@ class EPMoE(BaseFusedMoE):
 
         self.intermediate_size = intermediate_size
 
-        self.quant_method: Optional[QuantizeMethodBase] = W8A8Int8MoEMethod(
-            quant_config
-        )
         self.use_fp8_w8a8 = False
-        self.use_int8_w8a8 = isinstance(quant_config, W8A8Int8Config)
         self.use_block_quant = False
         self.block_shape = None
         self.activation_scheme = None
@@ -485,71 +480,31 @@ class FusedMoE(DeepEPMoE):
         )  # smooth scale, now dpsk use smooth_scale == 1
 
         assert self.quant_method is not None
-        # assert self.use_int8_w8a8, (
-        #     "NpuDeepEPMoE requires an int8_w8a8 model;"
-        #     "alternatively, you can disable NpuDeepEPMoE by removing arg: --enable-deepep-moe."
-        # )
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        expert_tokens=None,
+        topk_ids,
+        forward_batch,
         dynamic_scale=None,
+        comm_group: Optional[ProcessGroup] = None,
         **kwargs,
     ):
-        hidden_size = hidden_states.size(-1)
+        if self.quant_method is None:
+            raise RuntimeError("self.quant_method must not be None")
 
-        if dynamic_scale is not None and dynamic_scale.dim() > 1:
-            dynamic_scale = dynamic_scale.reshape(-1)
-            hidden_states = hidden_states.view(-1, hidden_size)
-
-        # GroupGemm-0
-        gateup_output = torch_npu.npu_grouped_matmul(
-            [hidden_states],
-            [self.w13_weight],
-            group_list=expert_tokens,
-            split_item=3,
-            group_type=0,
-            scale=None,
-            per_token_scale=None,
-            output_dtype=torch.int32,
-            tuning_config=[0],
-            group_list_type=1,
-        )[0]
-        if self.activation == "silu":
-            down_input, dynamic_scale = torch_npu.npu_dequant_swiglu_quant(
-                gateup_output,
-                weight_scale=self.w13_weight_scale.squeeze(-1),
-                activation_scale=dynamic_scale,
-                quant_scale=self.quant_scale,
-                group_index=expert_tokens,
-                activate_left=True,
-                quant_mode=1,
+        if forward_batch.is_extend_in_batch:
+            final_hidden_states = self.quant_method.apply(
+                layer=self,
+                hidden_states=hidden_states,
+                topk_ids=topk_ids,
+                scale=dynamic_scale,
+                forward_batch=forward_batch,
+                comm_group=comm_group
             )
         else:
-            raise ValueError(f"Unsupported activation: {self.activation=}")
-
-        del gateup_output
-
-        if dynamic_scale is not None and dynamic_scale.dim() > 1:
-            inter_size = down_input.size(-1)
-            dynamic_scale = dynamic_scale.reshape(-1)
-            down_input = down_input.view(-1, inter_size)
-
-        # GroupGemm-1
-        down_output = torch_npu.npu_grouped_matmul(
-            [down_input],
-            [self.w2_weight],
-            group_list=expert_tokens,
-            split_item=3,
-            group_type=0,
-            scale=[self.w2_weight_scale.squeeze(-1).to(torch.bfloat16)],
-            per_token_scale=[dynamic_scale],
-            output_dtype=torch.bfloat16,
-            tuning_config=[0],
-            group_list_type=1,
-        )[0]
-        return down_output
+            raise NotImplementedError("moe forward not support decode")
+        return final_hidden_states
 
     @staticmethod
     def select_experts(
@@ -622,3 +577,131 @@ def get_moe_impl_class():
         return EPMoE
 
     return BaseFusedMoE
+
+def moe_infer_fusion(
+    layer: torch.nn.Module,
+    hidden_states: torch.Tensor,
+    topk_ids: torch.Tensor,
+    scale: torch.Tensor,
+    forward_batch,
+    comm_group: Optional[ProcessGroup] = None
+) -> torch.Tensor:
+    world_size = get_world_group().world_size
+    hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+
+    max_num_deployed_expert = layer.w13_weight.shape[0] * get_moe_ep_group().world_size
+    expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = (
+        torch_npu.npu_moe_init_routing_v2(
+            hidden_states,
+            expert_idx=topk_ids.to(torch.int),
+            active_num=topk_ids.shape[0] * topk_ids.shape[1],
+            scale=scale,  # None: non-quant; tensor with shape [num_rows,]: quant
+            expert_num=max_num_deployed_expert,
+            expert_tokens_num_type=1,  # 0: cumsum mode(not supported now); 1: count mode
+            expert_tokens_num_flag=True,
+            active_expert_range=[0, max_num_deployed_expert],
+            quant_mode=1,  # -1: non-quant; 1: dynamic quant; 0: static quant(not supported now)
+        )
+    )
+    tokens_per_expert_group = tokens_per_expert.new_empty(
+        tokens_per_expert.shape[0]
+    )
+    dist.all_to_all_single(
+        tokens_per_expert_group, tokens_per_expert, group=comm_group
+    )
+    combine_tokens = torch.stack(
+        [tokens_per_expert_group, tokens_per_expert], dim=0
+    )
+    # view: EP, E // EP
+    combine_tokens = combine_tokens.view(2, world_size, -1).sum(2)
+    all_tokens = combine_tokens[0].sum()
+    combine_tokens_cpu = combine_tokens.cpu().tolist()
+    input_splits = combine_tokens_cpu[1]
+    output_splits = combine_tokens_cpu[0]
+
+    gathered_tokens = expanded_x.new_empty(all_tokens.item(), expanded_x.shape[1])
+    dist.all_to_all_single(
+        gathered_tokens,
+        expanded_x,
+        output_splits,
+        input_splits,
+        group=comm_group)
+
+    dynamic_scale = pertoken_scale.new_empty(gathered_tokens.shape[0])
+    dist.all_to_all_single(
+        dynamic_scale,
+        pertoken_scale,
+        output_splits,
+        input_splits,
+        group=comm_group)
+
+    # reroute
+    (
+        hidden_states,
+        dynamic_scale,
+        topk_ids,
+        expert_tokens,
+    ) = torch_npu.npu_moe_re_routing(
+        gathered_tokens,
+        tokens_per_expert_group.view(world_size, -1),
+        per_token_scales=dynamic_scale,
+    )
+    expert_tokens = expert_tokens.to(torch.int64)
+
+    hidden_size = hidden_states.size(-1)
+
+    if dynamic_scale is not None and dynamic_scale.dim() > 1:
+        dynamic_scale = dynamic_scale.reshape(-1)
+        hidden_states = hidden_states.view(-1, hidden_size)
+
+    # GroupGemm-0
+    gateup_output = torch_npu.npu_grouped_matmul(
+        [hidden_states],
+        [layer.w13_weight],
+        group_list=expert_tokens,
+        split_item=3,
+        group_type=0,
+        scale=None,
+        per_token_scale=None,
+        output_dtype=torch.int32,
+        tuning_config=[0],
+        group_list_type=1,
+    )[0]
+    down_input, dynamic_scale = torch_npu.npu_dequant_swiglu_quant(
+        gateup_output,
+        weight_scale=layer.w13_weight_scale.squeeze(-1),
+        activation_scale=dynamic_scale,
+        quant_scale=layer.quant_scale,
+        group_index=expert_tokens,
+        activate_left=True,
+        quant_mode=1,
+    )
+
+    del gateup_output
+
+    if dynamic_scale is not None and dynamic_scale.dim() > 1:
+        inter_size = down_input.size(-1)
+        dynamic_scale = dynamic_scale.reshape(-1)
+        down_input = down_input.view(-1, inter_size)
+
+    # GroupGemm-1
+    hidden_states = torch_npu.npu_grouped_matmul(
+        [down_input],
+        [layer.w2_weight],
+        group_list=expert_tokens,
+        split_item=3,
+        group_type=0,
+        scale=[layer.w2_weight_scale.squeeze(-1).to(torch.bfloat16)],
+        per_token_scale=[dynamic_scale],
+        output_dtype=torch.bfloat16,
+        tuning_config=[0],
+        group_list_type=1,
+    )[0]
+
+    new_x = torch.index_select(hidden_states, 0, topk_ids.float().argsort().int())
+    gathered_tokens = new_x.new_empty(*expanded_x.shape)
+    dist.all_to_all_single(
+        gathered_tokens, new_x, input_splits, output_splits, group=comm_group
+    )
+
+    return hidden_states, gathered_tokens, expanded_row_idx

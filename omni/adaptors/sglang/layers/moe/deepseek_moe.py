@@ -283,7 +283,7 @@ class DeepseekMoE(nn.Module):
         return (hidden_states, topk_idx, forward_batch, topk_weights, shared_output)
 
     def _forward_prefill(self, hidden_states, forward_batch) -> torch.Tensor:
-        
+
         # ====================== common ======================
 
         (
@@ -294,86 +294,20 @@ class DeepseekMoE(nn.Module):
             shared_output
         ) = self._forward_common(hidden_states, forward_batch)
 
-        # ======================dispatch======================
-
-        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-
-        expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = (
-            torch_npu.npu_moe_init_routing_v2(
-                hidden_states,
-                expert_idx=topk_idx.to(torch.int),
-                active_num=topk_idx.shape[0] * topk_idx.shape[1],
-                scale=self.smooth_scale,  # None: non-quant; tensor with shape [num_rows,]: quant
-                expert_num=self.num_experts,
-                expert_tokens_num_type=1,  # 0: cumsum mode(not supported now); 1: count mode
-                expert_tokens_num_flag=True,
-                active_expert_range=[0, self.num_experts],
-                quant_mode=1,  # -1: non-quant; 1: dynamic quant; 0: static quant(not supported now)
-            )
-        )
-        tokens_per_expert_group = tokens_per_expert.new_empty(
-            tokens_per_expert.shape[0]
-        )
-        dist.all_to_all_single(
-            tokens_per_expert_group, tokens_per_expert, group=self.group
-        )
-        # combine tensors, do reduceSum and D2H to gather
-        combine_tokens = torch.stack(
-            [tokens_per_expert_group, tokens_per_expert], dim=0
-        )
-        # view: EP, E // EP
-        combine_tokens = combine_tokens.view(2, self.world_size, -1).sum(2)
-        all_tokens = combine_tokens[0].sum()
-        combine_tokens_cpu = combine_tokens.cpu().tolist()
-        input_splits = combine_tokens_cpu[1]
-        output_splits = combine_tokens_cpu[0]
-
-        gathered_tokens = expanded_x.new_empty(all_tokens.item(), expanded_x.shape[1])
-        dist.all_to_all_single(
-            gathered_tokens,
-            expanded_x,
-            output_splits,
-            input_splits,
-            group=self.group)
-
-        dynamic_scale = pertoken_scale.new_empty(gathered_tokens.shape[0])
-        dist.all_to_all_single(
-            dynamic_scale,
-            pertoken_scale,
-            output_splits,
-            input_splits,
-            group=self.group)
-
-        # reroute
-        (
-            hidden_states,
-            dynamic_scale,
-            topk_idx,
-            expert_tokens,
-        ) = torch_npu.npu_moe_re_routing(
-            gathered_tokens,
-            tokens_per_expert_group.view(self.world_size, -1),
-            per_token_scales=dynamic_scale,
-        )
-        expert_tokens = expert_tokens.to(torch.int64)
-
         # ======================FusedMoE.forward======================
 
-        hidden_states = self.experts(
+        final_hidden_states_list = self.experts(
             hidden_states=hidden_states,
-            expert_tokens=expert_tokens,
-            dynamic_scale=dynamic_scale,
-            can_run_graph=forward_batch.can_run_graph,
+            topk_ids=topk_idx,
+            forward_batch=forward_batch,
+            comm_group=self.group,
+            dynamic_scale=self.smooth_scale,
         )
-
-        # ======================combine======================
-
-        # finalize-rerouting
-        new_x = torch.index_select(hidden_states, 0, topk_idx.float().argsort().int())
-        gathered_tokens = new_x.new_empty(*expanded_x.shape)
-        dist.all_to_all_single(
-            gathered_tokens, new_x, input_splits, output_splits, group=self.group
-        )
+        if len(final_hidden_states_list) != 3:
+            raise RuntimeError("len(final_hidden_states_list) != 3")
+        hidden_states = final_hidden_states_list[0]
+        gathered_tokens = final_hidden_states_list[1]
+        expanded_row_idx = final_hidden_states_list[2]
 
         # finalize-routing
         hidden_states = torch_npu.npu_moe_finalize_routing(
