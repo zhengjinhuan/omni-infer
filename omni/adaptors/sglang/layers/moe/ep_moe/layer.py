@@ -4,27 +4,22 @@ import logging
 from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import torch
-from sglang.srt.distributed.parallel_state import \
-    get_moe_expert_parallel_world_size
+import torch_npu
+
+from sglang.srt.distributed.parallel_state import get_moe_expert_parallel_world_size
 from sglang.srt.layers.moe.ep_moe.kernels import (
-    ep_gather, ep_scatter, moe_ep_deepgemm_preprocess,
+    moe_ep_deepgemm_preprocess,
     post_reorder_triton_kernel, silu_and_mul_masked_post_quant_fwd,
-    tma_align_input_scale)
-from sglang.srt.layers.moe.fused_moe_triton.layer import (FlashInferFusedMoE,
-                                                          FusedMoE)
+)
+from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE as BaseFusedMoE
 from sglang.srt.layers.moe.topk import TopKOutput
-from sglang.srt.layers.moe.utils import (DeepEPMode,
-                                         should_use_flashinfer_trtllm_moe)
+from sglang.srt.layers.moe.utils import DeepEPMode
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.layers.quantization.base_config import (QuantizationConfig,
                                                         QuantizeMethodBase)
-from sglang.srt.layers.quantization.fp8 import (Fp8Config, Fp8MoEMethod,
-                                                get_tile_tokens_dim)
-from sglang.srt.layers.quantization.fp8_kernel import (
-    is_fp8_fnuz, sglang_per_token_group_quant_fp8)
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.utils import ceil_div, dispose_tensor, get_bool_env_var, is_npu
+from sglang.srt.utils import dispose_tensor
 
 from omni.adaptors.sglang.layers.quantization.w8a8_int8 import (
     W8A8Int8Config, W8A8Int8MoEMethod)
@@ -32,14 +27,6 @@ from omni.adaptors.sglang.layers.quantization.w8a8_int8 import (
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import DispatchOutput
 
-    from omni.adaptors.sglang.layers.moe.token_dispatcher import (
-        DeepEPLLOutput, DeepEPNormalOutput)
-
-_is_npu = is_npu()
-_is_fp8_fnuz = is_fp8_fnuz()
-
-if _is_npu:
-    import torch_npu
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +47,9 @@ def _cast_to_e8m0_with_rounding_up(x: torch.Tensor) -> torch.Tensor:
     return new_x.transpose(1, 2).contiguous().transpose(1, 2)
 
 
-class EPMoE(FusedMoE):
+class EPMoE(BaseFusedMoE):
     """
     MoE Expert Parallel Impl
-
-
     """
 
     def __init__(
@@ -449,7 +434,8 @@ class DeepEPMoE(EPMoE):
         )
 
 
-class NpuDeepEPMoE(DeepEPMoE):
+class FusedMoE(DeepEPMoE):
+
     def __init__(
         self,
         num_experts: int,
@@ -562,27 +548,11 @@ class NpuDeepEPMoE(DeepEPMoE):
 
 
 def get_moe_impl_class():
+
     if global_server_args_dict["moe_a2a_backend"].is_deepep():
-        return NpuDeepEPMoE
-
-    # NEW: Direct FP4 detection (bypasses EP requirements)
-    # Check for FP4 quantization with TRTLLM flag, regardless of EP
-    if global_server_args_dict.get("enable_flashinfer_trtllm_moe", False):
-        try:
-            # Check the quantization argument directly
-            quantization = global_server_args_dict.get("quantization")
-            if quantization == "modelopt_fp4":
-                from sglang.srt.layers.moe.fused_moe_triton.layer import \
-                    FlashInferFP4MoE
-
-                return FlashInferFP4MoE
-        except:
-            pass
-
-    if should_use_flashinfer_trtllm_moe():
-        return FlashInferFusedMoE
-    if global_server_args_dict["enable_flashinfer_cutlass_moe"]:
         return FusedMoE
+
     if get_moe_expert_parallel_world_size() > 1:
         return EPMoE
-    return FusedMoE
+
+    return BaseFusedMoE
