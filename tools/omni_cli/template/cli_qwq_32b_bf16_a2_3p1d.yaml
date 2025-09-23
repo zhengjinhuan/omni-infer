@@ -32,7 +32,6 @@ all:
               graph_model_compile_config:
                 level: 1
                 use_ge_graph_cached: true
-              decode_gear_list: '[64]'
             base-api-port: $API_PORT
             extra-args:
               disable-log-requests: ''

@@ -31,12 +31,12 @@ all:
               graph_model_compile_config:
                 level: 1
                 use_ge_graph_cached: true
-              decode_gear_list: '[64]'
             base-api-port: $API_PORT
             extra-args:
               disable-log-requests: ''
               max-num-seqs: 64
               max-num-batched-tokens: 61440
+              no-enable-prefix-caching: ''
             gpu-util: '0.88'
             kv-transfer-config:
               engine_id: 0
@@ -153,6 +153,7 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 61440
               max-num-seqs: 64
+              no-enable-prefix-caching: ''
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 0
