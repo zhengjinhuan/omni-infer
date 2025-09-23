@@ -5,24 +5,28 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import torch
 import torch_npu
-
 from sglang.srt.distributed.parallel_state import get_moe_expert_parallel_world_size
 from sglang.srt.layers.moe.ep_moe.kernels import (
     moe_ep_deepgemm_preprocess,
-    post_reorder_triton_kernel, silu_and_mul_masked_post_quant_fwd,
+    post_reorder_triton_kernel,
+    silu_and_mul_masked_post_quant_fwd,
 )
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE as BaseFusedMoE
 from sglang.srt.layers.moe.topk import TopKOutput
 from sglang.srt.layers.moe.utils import DeepEPMode
 from sglang.srt.layers.quantization import deep_gemm_wrapper
-from sglang.srt.layers.quantization.base_config import (QuantizationConfig,
-                                                        QuantizeMethodBase)
+from sglang.srt.layers.quantization.base_config import (
+    QuantizationConfig,
+    QuantizeMethodBase,
+)
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.utils import dispose_tensor
 
 from omni.adaptors.sglang.layers.quantization.w8a8_int8 import (
-    W8A8Int8Config, W8A8Int8MoEMethod)
+    W8A8Int8Config,
+    W8A8Int8MoEMethod,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import DispatchOutput

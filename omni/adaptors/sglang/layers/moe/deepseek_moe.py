@@ -2,31 +2,28 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from enum import IntEnum, auto
-from typing import Any, Dict, Iterable, Optional, Tuple, Callable
-import torch
-from torch import nn
-import torch.distributed as dist
-import torchair as tng
-import torch_npu
-from transformers import PretrainedConfig
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
+import torch
+import torch.distributed as dist
+import torch_npu
+import torchair as tng
 from sglang.srt.distributed import (
     get_moe_expert_parallel_world_size,
-    get_tensor_model_parallel_world_size,
     get_pp_group,
+    get_tensor_model_parallel_world_size,
     get_world_group,
 )
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
+from sglang.srt.layers.linear import MergedColumnParallelLinear, RowParallelLinear
 from sglang.srt.layers.moe.topk import TopK
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.layers.linear import (
-    MergedColumnParallelLinear,
-    RowParallelLinear,
-)
 from sglang.srt.utils import add_prefix
+from torch import nn
+from transformers import PretrainedConfig
 
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import FusedMoE
 
@@ -72,25 +69,21 @@ class DeepseekMLP(nn.Module):
                 f"Unsupported activation: {hidden_act}. "
                 "Only silu is supported for now."
             )
-        
+
         from sglang.srt.layers.activation import SiluAndMul
+
         self.act_fn = SiluAndMul()
 
     def forward(
-            self,
-            x,
-            forward_batch=None,
-            use_reduce_scatter: bool = False,
-            **kwargs):
+        self, x, forward_batch=None, use_reduce_scatter: bool = False, **kwargs
+    ):
         if (self.tp_size == 1) and x.shape[0] == 0:
             return x
 
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
-        x, _ = self.down_proj(
-            x, skip_all_reduce=use_reduce_scatter
-        )
-        
+        x, _ = self.down_proj(x, skip_all_reduce=use_reduce_scatter)
+
         return x
 
 
@@ -114,6 +107,7 @@ class MoEGate(nn.Module):
 
     def forward(self, hidden_states):
         import torch.nn.functional as F
+
         return F.linear(hidden_states, self.weight, None)
 
 
@@ -170,7 +164,9 @@ class DeepseekMoE(nn.Module):
         ep_num_redundant_experts = global_server_args_dict["ep_num_redundant_experts"]
 
         self.experts = FusedMoE(
-            num_experts=config.n_routed_experts + self.num_fused_shared_experts + ep_num_redundant_experts,
+            num_experts=config.n_routed_experts
+            + self.num_fused_shared_experts
+            + ep_num_redundant_experts,
             top_k=config.num_experts_per_tok + self.num_fused_shared_experts,
             hidden_size=config.hidden_size,
             intermediate_size=config.moe_intermediate_size,
@@ -179,56 +175,69 @@ class DeepseekMoE(nn.Module):
             quant_config=quant_config,
             routed_scaling_factor=config.routed_scaling_factor,
             prefix=add_prefix("experts", prefix),
-            deepep_mode=deepep_mode, # moe_a2a_backend
+            deepep_mode=deepep_mode,  # moe_a2a_backend
         )
 
         self.shared_experts = None
-        if (config.n_shared_experts is not None
-            and self.num_fused_shared_experts == 0):
+        if config.n_shared_experts is not None and self.num_fused_shared_experts == 0:
 
             self.shared_experts = ReplicatedDeepseekMLP(
                 hidden_size=config.hidden_size,
-                intermediate_size=config.moe_intermediate_size * config.n_shared_experts,
+                intermediate_size=config.moe_intermediate_size
+                * config.n_shared_experts,
                 hidden_act=config.hidden_act,
                 quant_config=quant_config,
                 reduce_results=False,
                 prefix=add_prefix("shared_experts", prefix),
-                tp_size=1, # disable tp for shared experts when enable deepep moe
+                tp_size=1,  # disable tp for shared experts when enable deepep moe
                 tp_rank=0,
             )
 
             # shared_experts_is_fp8
             if self.shared_experts.gate_up_proj.weight.dtype == torch.float8_e4m3fn:
-                if (hasattr(self.shared_experts.gate_up_proj.quant_method, "quant_config")
-                    and self.shared_experts.gate_up_proj.quant_method.quant_config.get_name() == "moe_wna16"):
+                if (
+                    hasattr(
+                        self.shared_experts.gate_up_proj.quant_method, "quant_config"
+                    )
+                    and self.shared_experts.gate_up_proj.quant_method.quant_config.get_name()
+                    == "moe_wna16"
+                ):
                     assert (
                         self.shared_experts.gate_up_proj.quant_method.quant_config.weight_block_size
                         == self.shared_experts.down_proj.quant_method.quant_config.weight_block_size
                     )
 
         self.num_experts = config.n_routed_experts + ep_num_redundant_experts
-        
+
         self.group = get_world_group().device_group
         self.global_rank = get_world_group().rank_in_group
-        self.group_name = self.group._get_backend(torch.device("npu")).get_hccl_comm_name(self.global_rank)
+        self.group_name = self.group._get_backend(
+            torch.device("npu")
+        ).get_hccl_comm_name(self.global_rank)
 
         moe_rs_group = get_pp_group().device_group
         moe_rs_group_rank = get_pp_group().rank_in_group
-        self.moe_rs_group_name = moe_rs_group._get_backend(torch.device("npu")).get_hccl_comm_name(moe_rs_group_rank)
+        self.moe_rs_group_name = moe_rs_group._get_backend(
+            torch.device("npu")
+        ).get_hccl_comm_name(moe_rs_group_rank)
 
         self.experts_tp_size = 1
-        self.shared_expert_rank_num = 0 # route_share_on_same_card
+        self.shared_expert_rank_num = 0  # route_share_on_same_card
 
         epsilon = 1e-2
         self.smooth_scale = torch.nn.Parameter(
-            torch.ones(size=(self.num_experts, config.hidden_size), dtype=torch.float32) * (1 - epsilon) + epsilon)  # smooth scale, now dpsk use smooth_scale == 1
+            torch.ones(size=(self.num_experts, config.hidden_size), dtype=torch.float32)
+            * (1 - epsilon)
+            + epsilon
+        )  # smooth scale, now dpsk use smooth_scale == 1
 
     def forward(
-            self,
-            hidden_states: torch.Tensor,
-            forward_batch: Optional[ForwardBatch] = None,
-            use_reduce_scatter: bool = False,
-            **kwargs) -> torch.Tensor:
+        self,
+        hidden_states: torch.Tensor,
+        forward_batch: Optional[ForwardBatch] = None,
+        use_reduce_scatter: bool = False,
+        **kwargs,
+    ) -> torch.Tensor:
 
         if forward_batch.is_extend_in_batch:
             return self._forward_prefill(hidden_states, forward_batch)
@@ -240,7 +249,9 @@ class DeepseekMoE(nn.Module):
         shared_output = None
 
         if hidden_states.shape[0] > 0 and not forward_batch.is_prefill_idle:
-            router_logits = self.gate(hidden_states) # router_logits: (num_tokens, n_experts)
+            router_logits = self.gate(
+                hidden_states
+            )  # router_logits: (num_tokens, n_experts)
 
             if self.shared_experts is not None:
                 shared_output = self.shared_experts(hidden_states)
@@ -256,25 +267,22 @@ class DeepseekMoE(nn.Module):
                 ),
             )
         else:
-            topk_idx = torch.randperm(256)[:hidden_states.size(0) * self.top_k].reshape(
-                hidden_states.size(0), self.top_k
-                ).npu()
+            topk_idx = (
+                torch.randperm(256)[: hidden_states.size(0) * self.top_k]
+                .reshape(hidden_states.size(0), self.top_k)
+                .npu()
+            )
 
             topk_weights = torch.empty(
-                (hidden_states.size(0), self.top_k),
-                dtype=torch.float32,
-                device="npu")
+                (hidden_states.size(0), self.top_k), dtype=torch.float32, device="npu"
+            )
 
         return (hidden_states, topk_idx, forward_batch, topk_weights, shared_output)
 
     def _forward_prefill(self, hidden_states, forward_batch):
-        (
-            hidden_states,
-            topk_idx,
-            forward_batch,
-            topk_weights,
-            shared_output
-        ) = self._forward_common(hidden_states, forward_batch)
+        (hidden_states, topk_idx, forward_batch, topk_weights, shared_output) = (
+            self._forward_common(hidden_states, forward_batch)
+        )
 
         # ======================dispatch======================
 
@@ -312,19 +320,13 @@ class DeepseekMoE(nn.Module):
 
         gathered_tokens = expanded_x.new_empty(all_tokens.item(), expanded_x.shape[1])
         dist.all_to_all_single(
-            gathered_tokens,
-            expanded_x,
-            output_splits,
-            input_splits,
-            group=self.group)
+            gathered_tokens, expanded_x, output_splits, input_splits, group=self.group
+        )
 
         dynamic_scale = pertoken_scale.new_empty(gathered_tokens.shape[0])
         dist.all_to_all_single(
-            dynamic_scale,
-            pertoken_scale,
-            output_splits,
-            input_splits,
-            group=self.group)
+            dynamic_scale, pertoken_scale, output_splits, input_splits, group=self.group
+        )
 
         # reroute
         (
@@ -378,13 +380,9 @@ class DeepseekMoE(nn.Module):
         return hidden_states
 
     def _forward_decode(self, hidden_states, forward_batch):
-        (
-            hidden_states,
-            topk_idx,
-            forward_batch,
-            topk_weights,
-            shared_output
-        ) = self._forward_common(hidden_states, forward_batch)
+        (hidden_states, topk_idx, forward_batch, topk_weights, shared_output) = (
+            self._forward_common(hidden_states, forward_batch)
+        )
 
         # ======================dispatch======================
 
@@ -411,8 +409,10 @@ class DeepseekMoE(nn.Module):
             ep_world_size=self.world_size,
             ep_rank_id=self.global_rank,
             group_tp=self.moe_rs_group_name,
-            tp_world_size=self.experts_tp_size
-            )[:6]
+            tp_world_size=self.experts_tp_size,
+        )[
+            :6
+        ]
 
         get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
             [],
@@ -448,7 +448,8 @@ class DeepseekMoE(nn.Module):
             ep_rank_id=self.global_rank,
             tp_send_counts=tp_recv_counts,
             group_tp=self.moe_rs_group_name,
-            tp_world_size=self.experts_tp_size)
+            tp_world_size=self.experts_tp_size,
+        )
 
         return hidden_states
 

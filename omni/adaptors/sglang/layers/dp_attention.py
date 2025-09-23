@@ -7,11 +7,13 @@ from enum import IntEnum, auto
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
-from sglang.srt.distributed import (GroupCoordinator,
-                                    get_tensor_model_parallel_rank,
-                                    get_tensor_model_parallel_world_size,
-                                    get_tp_group,
-                                    tensor_model_parallel_all_reduce)
+from sglang.srt.distributed import (
+    GroupCoordinator,
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+    get_tp_group,
+    tensor_model_parallel_all_reduce,
+)
 from sglang.triton_utils import tl, triton
 
 logger = logging.getLogger(__name__)

@@ -7,8 +7,6 @@ import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
-from torch.nn.parameter import Parameter, UninitializedParameter
-
 from sglang.srt.distributed import (
     divide,
     get_tensor_model_parallel_rank,
@@ -16,17 +14,16 @@ from sglang.srt.distributed import (
     parallel_state,
     split_tensor_along_last_dim,
 )
-
-from omni.adaptors.sglang.distributed import (
-    get_mlp_tp_group,
-    get_o_proj_tp_group,
-)
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
 )
-
-from sglang.srt.layers.linear import MergedColumnParallelLinear as MergedColumnParallelLinearGPU
+from sglang.srt.layers.linear import (
+    MergedColumnParallelLinear as MergedColumnParallelLinearGPU,
+)
 from sglang.srt.layers.linear import RowParallelLinear as RowParallelLinearGPU
+from torch.nn.parameter import Parameter, UninitializedParameter
+
+from omni.adaptors.sglang.distributed import get_mlp_tp_group, get_o_proj_tp_group
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +50,7 @@ class MergedColumnParallelLinear(MergedColumnParallelLinearGPU):
             output = output_parallel
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
+
 
 class RowParallelLinear(RowParallelLinearGPU):
 
@@ -87,7 +85,7 @@ class RowParallelLinear(RowParallelLinearGPU):
         with use_symmetric_memory(tp_group) as sm:
             output_parallel = self.quant_method.apply(self, input_parallel, bias=bias_)
             sm.tag(output_parallel)
-        
+
         if self.reduce_results and self.tp_size > 1 and not skip_all_reduce:
             output = tp_group.all_reduce(output_parallel)
         else:
