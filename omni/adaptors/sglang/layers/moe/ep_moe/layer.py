@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import torch
 import torch_npu
+
 from sglang.srt.distributed.parallel_state import get_moe_expert_parallel_world_size
 from sglang.srt.layers.moe.ep_moe.kernels import (
     moe_ep_deepgemm_preprocess,
@@ -549,6 +550,67 @@ class FusedMoE(DeepEPMoE):
             group_list_type=1,
         )[0]
         return down_output
+
+    @staticmethod
+    def select_experts(
+            router_logits: torch.Tensor,
+            top_k: int,
+            use_grouped_topk: bool,
+            renormalize: bool,
+            topk_group: Optional[int] = None,
+            num_expert_group: Optional[int] = None,
+            e_score_correction_bias: Optional[torch.Tensor] = None,
+            routed_scaling_factor: Optional[torch.Tensor] = None
+        ):
+        # DeekSeekv2 uses grouped_top_k
+        # adapt: When num_expert_group=1, it degenerates to fused_topk.
+        if use_grouped_topk:  # and num_expert_group != 1:
+            # adapt end.
+            if topk_group is None:
+                raise ValueError(f"Unsupported topk_group is None")
+            if num_expert_group is None:
+                raise ValueError(f"Unsupported num_expert_group is None")
+
+            topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
+                router_logits.float(),
+                k=top_k,  # topk is currently 8
+                bias=e_score_correction_bias,  # float32
+                k_group=topk_group,  # fix: 4
+                group_count=num_expert_group,  # fix 8
+                group_select_mode=1,  # 0: maximum in group; 1: topk2.sum(fix)
+                renorm=0,  # 0: softmax->topk(fix); 1: topk->softmax
+                norm_type=1,  # 0: softmax; 1: sigmoid(fix)
+                routed_scaling_factor=routed_scaling_factor,
+                eps=float(1e-20))
+
+            row_idx = torch.arange(
+                topk_ids.numel(),
+                device="npu",
+                dtype=torch.int32
+            ).view(
+                -1,
+                router_logits.shape[0]
+            ).transpose(0, 1)
+
+        topk_weights, topk_ids, row_idx = FusedMoE.fused_topk(
+            gating_output=router_logits,
+            topk=top_k,
+            renormalize=renormalize)
+
+        return topk_weights, topk_ids, row_idx
+
+    @staticmethod
+    def fused_topk(
+            gating_output: torch.Tensor,
+            topk: int,
+            renormalize: bool,
+    ):
+        topk_weights, topk_ids, row_idx = torch_npu.npu_moe_gating_top_k_softmax(gating_output, k=topk)
+
+        if renormalize:
+            topk_weights /= topk_weights.sum(dim=-1, keepdim=True)
+
+        return topk_weights, topk_ids, row_idx
 
 
 def get_moe_impl_class():
