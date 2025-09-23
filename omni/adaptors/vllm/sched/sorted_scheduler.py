@@ -70,6 +70,7 @@ def __init__(
     self.structured_output_manager = structured_output_manager
     additional_config = vllm_config.additional_config
     self.async_schedule = False
+    self.enable_mix_schedule = False
     if additional_config:
         self.async_schedule = additional_config.get(
                 "async_schedule", False)
