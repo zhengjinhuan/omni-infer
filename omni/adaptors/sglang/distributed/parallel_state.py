@@ -14,41 +14,51 @@ from unittest.mock import patch
 
 import torch
 import torch.distributed
-from torch.distributed import Backend, ProcessGroup
-from sglang.srt.distributed.parallel_state import GroupCoordinator as GroupCoordinatorGPU
 from sglang.srt.distributed.parallel_state import (
-    init_model_parallel_group,
-    get_world_group,
+    GroupCoordinator as GroupCoordinatorGPU,
 )
-import logging
+from sglang.srt.distributed.parallel_state import (
+    get_world_group,
+    init_model_parallel_group,
+)
+from torch.distributed import Backend, ProcessGroup
+
 logger = logging.getLogger(__file__)
+
 
 class GroupCoordinator(GroupCoordinatorGPU):
     pass
+
+
 _MLP_TP: Optional[GroupCoordinator] = None
 _O_PROJ_TP: Optional[GroupCoordinator] = None
 _O_PROJ_DP: Optional[GroupCoordinator] = None
 _LOCAL_WORLD: Optional[GroupCoordinator] = None
 
+
 def get_mlp_tp_group() -> GroupCoordinator:
     assert _MLP_TP is not None, "MLP TP group is not initialized"
     return _MLP_TP
+
 
 def get_o_proj_tp_group() -> GroupCoordinator:
     assert _O_PROJ_TP is not None, "O PROJ TP group is not initialized"
     return _O_PROJ_TP
 
+
 def get_o_proj_dp_group() -> GroupCoordinator:
     assert _O_PROJ_DP is not None, "O PROJ DP group is not initialized"
     return _O_PROJ_DP
+
 
 def get_local_world_group() -> GroupCoordinator:
     assert _LOCAL_WORLD is not None, "Local world group is not initialized"
     return _LOCAL_WORLD
 
+
 def initialize_mlp_tp_group(backend, tensor_model_parallel_size, dp_size) -> None:
     """Initialize tensor parallel group for MLP layers.
-    
+
     Args:
         mlp_tp_size (int): TP size used for MLP layers.
         backend (str): torch.distributed backend, e.g. "nccl".
@@ -101,7 +111,9 @@ def initialize_o_proj_tp_group(backend, tensor_model_parallel_size, dp_size) -> 
     else:
         o_proj_tp_size = int(o_proj_tp_size_str)
     if world_size % o_proj_tp_size != 0:
-        raise RuntimeError(f"o_proj TP Size ({o_proj_tp_size}) should be divisible by world size ({world_size})")
+        raise RuntimeError(
+            f"o_proj TP Size ({o_proj_tp_size}) should be divisible by world size ({world_size})"
+        )
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
 
     num_local_groups: int = world_size // o_proj_tp_size
@@ -147,6 +159,7 @@ def initialize_o_proj_dp_group(backend) -> None:
         group_name="o_proj_dp_group",
     )
 
+
 def calculate_effective_local_size(local_size: int, world_size: int) -> int:
     """
     Calculate the effective local size based on available devices and world size.
@@ -164,7 +177,9 @@ def calculate_effective_local_size(local_size: int, world_size: int) -> int:
     """
     effective_local_size = min(local_size, world_size)
     if effective_local_size < local_size:
-        logger.info(f"Note: Using only {effective_local_size} of {local_size} available NPU devices")
+        logger.info(
+            f"Note: Using only {effective_local_size} of {local_size} available NPU devices"
+        )
 
     if world_size % effective_local_size != 0:
         raise AssertionError(
@@ -172,13 +187,20 @@ def calculate_effective_local_size(local_size: int, world_size: int) -> int:
         )
     return effective_local_size
 
+
 def initialize_local_world_group(backend) -> None:
     # Get world size and rank. Ensure some consistencies.
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
     world_size: int = torch.distributed.get_world_size()
-    local_size = calculate_effective_local_size(torch.npu.device_count() if not int(os.getenv("NO_NPU_MOCK", "0")) \
-        else len(os.getenv("ASCEND_RT_VISIBLE_DEVICES").split(",")), world_size)
+    local_size = calculate_effective_local_size(
+        (
+            torch.npu.device_count()
+            if not int(os.getenv("NO_NPU_MOCK", "0"))
+            else len(os.getenv("ASCEND_RT_VISIBLE_DEVICES").split(","))
+        ),
+        world_size,
+    )
 
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
 
@@ -200,6 +222,7 @@ def initialize_local_world_group(backend) -> None:
         group_name="world_local",
     )
 
+
 def initialize_add_groups(backend, tensor_model_parallel_size, dp_size):
 
     initialize_mlp_tp_group(backend, tensor_model_parallel_size, dp_size)
@@ -207,33 +230,41 @@ def initialize_add_groups(backend, tensor_model_parallel_size, dp_size):
     initialize_o_proj_tp_group(backend, tensor_model_parallel_size, dp_size)
     initialize_local_world_group(backend)
 
+
 def get_mlp_tp_group_parallel_world_size():
     """Return world size for the mlp tensor parallel group."""
     return get_mlp_tp_group().world_size
+
 
 def get_mlp_tp_group_parallel_rank():
     """Return my rank for the mlp tensor parallel group."""
     return get_mlp_tp_group().rank_in_group
 
+
 def get_o_proj_tp_group_parallel_world_size():
     """Return world size for the o_proj tensor parallel group."""
     return get_o_proj_tp_group().world_size
+
 
 def get_o_proj_tp_group_parallel_rank():
     """Return my rank for the o_proj tensor parallel group."""
     return get_o_proj_tp_group().rank_in_group
 
+
 def get_o_proj_dp_group_parallel_world_size():
     """Return world size for the o_proj data parallel group."""
     return get_o_proj_dp_group().world_size
+
 
 def get_o_proj_dp_group_parallel_rank():
     """Return my rank for the o_proj data parallel group."""
     return get_o_proj_dp_group().rank_in_group
 
+
 def get_local_world_size():
     """Return world size for the local world group."""
     return get_local_world_group().world_size
+
 
 def get_local_world_rank():
     """Return my rank for the local world group."""

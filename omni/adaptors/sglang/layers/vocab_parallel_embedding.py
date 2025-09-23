@@ -4,23 +4,32 @@ from typing import List, Optional, Sequence, Tuple
 
 import torch
 from sglang.srt.distributed import divide
-from sglang.srt.distributed.device_communicators.pynccl_allocator import \
-    use_symmetric_memory
-from sglang.srt.layers.dp_attention import (get_attention_tp_rank,
-                                            get_attention_tp_size)
+from sglang.srt.distributed.device_communicators.pynccl_allocator import (
+    use_symmetric_memory,
+)
+from sglang.srt.layers.dp_attention import get_attention_tp_rank, get_attention_tp_size
 from sglang.srt.layers.quantization.base_config import (
-    QuantizationConfig, QuantizeMethodBase, method_has_implemented_embedding)
+    QuantizationConfig,
+    QuantizeMethodBase,
+    method_has_implemented_embedding,
+)
 from sglang.srt.layers.quantization.unquant import UnquantizedEmbeddingMethod
-from sglang.srt.layers.vocab_parallel_embedding import \
-    VocabParallelEmbedding as VocabParallelEmbeddingGPU
 from sglang.srt.layers.vocab_parallel_embedding import (
-    get_masked_input_and_mask, pad_vocab_size)
+    VocabParallelEmbedding as VocabParallelEmbeddingGPU,
+)
+from sglang.srt.layers.vocab_parallel_embedding import (
+    get_masked_input_and_mask,
+    pad_vocab_size,
+)
 from sglang.srt.utils import set_weight_attrs
 from torch.nn.parameter import Parameter, UninitializedParameter
 
 from omni.adaptors.sglang.distributed import (
-    get_local_world_group, get_local_world_rank, get_local_world_size,
-    tensor_model_local_world_parallel_all_reduce)
+    get_local_world_group,
+    get_local_world_rank,
+    get_local_world_size,
+    tensor_model_local_world_parallel_all_reduce,
+)
 
 DEFAULT_VOCAB_PADDING_SIZE = 64
 
