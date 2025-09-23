@@ -35,12 +35,7 @@ from sglang.srt.layers.quantization.fp8_utils import (
     normalize_e4m3fn_to_e4m3fnuz, requant_weight_ue8m0_inplace)
 from sglang.srt.layers.quantization.int8_utils import \
     block_dequant as int8_block_dequant
-
-from sglang.srt.layers.vocab_parallel_embedding import (
-    VocabParallelEmbedding,
-    ParallelLMHead,
-)
-
+from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
                                                           PPProxyTensors)
@@ -58,7 +53,7 @@ from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.moe.deepseek_moe import (DeepseekMLP,
                                                           DeepseekMoE)
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
-
+from omni.adaptors.sglang.layers.vocab_parallel_embedding import ParallelLMHead
 _is_fp8_fnuz = is_fp8_fnuz()
 
 logger = logging.getLogger(__name__)

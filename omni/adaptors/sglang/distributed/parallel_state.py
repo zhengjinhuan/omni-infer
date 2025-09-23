@@ -28,6 +28,7 @@ class GroupCoordinator(GroupCoordinatorGPU):
 _MLP_TP: Optional[GroupCoordinator] = None
 _O_PROJ_TP: Optional[GroupCoordinator] = None
 _O_PROJ_DP: Optional[GroupCoordinator] = None
+_LOCAL_WORLD: Optional[GroupCoordinator] = None
 
 def get_mlp_tp_group() -> GroupCoordinator:
     assert _MLP_TP is not None, "MLP TP group is not initialized"
@@ -41,6 +42,9 @@ def get_o_proj_dp_group() -> GroupCoordinator:
     assert _O_PROJ_DP is not None, "O PROJ DP group is not initialized"
     return _O_PROJ_DP
 
+def get_local_world_group() -> GroupCoordinator:
+    assert _LOCAL_WORLD is not None, "Local world group is not initialized"
+    return _LOCAL_WORLD
 
 def initialize_mlp_tp_group(backend, tensor_model_parallel_size, dp_size) -> None:
     """Initialize tensor parallel group for MLP layers.
@@ -143,13 +147,65 @@ def initialize_o_proj_dp_group(backend) -> None:
         group_name="o_proj_dp_group",
     )
 
+def calculate_effective_local_size(local_size: int, world_size: int) -> int:
+    """
+    Calculate the effective local size based on available devices and world size.
+
+    Args:
+        local_size (int): Number of available NPU devices.
+        world_size (int): Total number of processes in the distributed setup.
+
+    Returns:
+        int: The effective local size (minimum of local_size and world_size).
+
+    Notes:
+        - Logs a warning if not all devices are used.
+        - Ensures world_size is divisible by the effective local size (raises AssertionError otherwise).
+    """
+    effective_local_size = min(local_size, world_size)
+    if effective_local_size < local_size:
+        logger.info(f"Note: Using only {effective_local_size} of {local_size} available NPU devices")
+
+    if world_size % effective_local_size != 0:
+        raise AssertionError(
+            f"world_size ({world_size}) must be divisible by effective_local_size ({effective_local_size})"
+        )
+    return effective_local_size
+
+def initialize_local_world_group(backend) -> None:
+    # Get world size and rank. Ensure some consistencies.
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
+    world_size: int = torch.distributed.get_world_size()
+    local_size = calculate_effective_local_size(torch.npu.device_count() if not int(os.getenv("NO_NPU_MOCK", "0")) \
+        else len(os.getenv("ASCEND_RT_VISIBLE_DEVICES").split(",")), world_size)
+
+    backend = backend or torch.distributed.get_backend(get_world_group().device_group)
+
+    num_local_groups: int = world_size // local_size
+    global _LOCAL_WORLD
+    if _LOCAL_WORLD is not None:
+        raise RuntimeError("_LOCAL_WORLD must be None")
+    group_ranks = []
+    for i in range(num_local_groups):
+        ranks = list(range(i * local_size, (i + 1) * local_size))
+        group_ranks.append(ranks)
+
+    # message queue broadcaster is only used in tensor model parallel group
+    _LOCAL_WORLD = init_model_parallel_group(
+        group_ranks,
+        get_world_group().local_rank,
+        backend,
+        use_message_queue_broadcaster=True,
+        group_name="world_local",
+    )
 
 def initialize_add_groups(backend, tensor_model_parallel_size, dp_size):
 
     initialize_mlp_tp_group(backend, tensor_model_parallel_size, dp_size)
-
     initialize_o_proj_dp_group(backend)
     initialize_o_proj_tp_group(backend, tensor_model_parallel_size, dp_size)
+    initialize_local_world_group(backend)
 
 def get_mlp_tp_group_parallel_world_size():
     """Return world size for the mlp tensor parallel group."""
@@ -174,3 +230,11 @@ def get_o_proj_dp_group_parallel_world_size():
 def get_o_proj_dp_group_parallel_rank():
     """Return my rank for the o_proj data parallel group."""
     return get_o_proj_dp_group().rank_in_group
+
+def get_local_world_size():
+    """Return world size for the local world group."""
+    return get_local_world_group().world_size
+
+def get_local_world_rank():
+    """Return my rank for the local world group."""
+    return get_local_world_group().rank_in_group
