@@ -75,6 +75,7 @@ def __init__(
                 "async_schedule", False)
         self.enable_mix_schedule = additional_config.get(
                 "mix_schedule", False)
+        
 
     # include_finished_set controls whether a separate set of finished
     # request ids should be included in the EngineCoreOutputs returned
@@ -231,7 +232,6 @@ def schedule(self) -> SchedulerOutput:
     # Whether we can continue scheduling.
     pre_scheduled: dict[str, int] = {}
     if role == "prefill":
-        budget = self.max_num_scheduled_tokens
         if self.enable_mix_schedule:
             mix_requests = [MixRequest(req, True) for req in self.running] + [MixRequest(req, False) for req in self.waiting]
         else:
@@ -250,34 +250,39 @@ def schedule(self) -> SchedulerOutput:
         mix_requests.sort(key=lambda m: m.num_new_tokens)
 
         # 调度逻辑
-        schedule_num = 0
+        num_reqs_sched = 0
+        total_num_tokens = 0
         if mix_requests and mix_requests[0].is_isolated:
             pre_scheduled[mix_requests[0].request.request_id] = True
+            num_reqs_sched += 1
         else:
             isolated_requests = [mix_req for mix_req in mix_requests if mix_req.is_isolated]
             for mix_req in mix_requests:
-                if budget - mix_req.num_new_tokens < 0:
+                if mix_req.is_isolated:
+                    continue
+
+                if (num_reqs_sched >= self.max_num_running_reqs or
+                    total_num_tokens > min(3000 * len(mix_requests), 16384)):
                     break
 
-                if mix_req.is_isolated:
-                    continue 
+                if self.max_num_scheduled_tokens - total_num_tokens < mix_req.num_new_tokens:
+                    break
 
-                if schedule_num > 0 and mix_req.num_new_tokens > 2 ** (2 - schedule_num) * 1024:
+                # Avoid batching too many long requests.
+                if num_reqs_sched * mix_req.num_new_tokens > self.max_num_scheduled_tokens / 4:
                     break
                 
-                budget -= mix_req.num_new_tokens
                 pre_scheduled[mix_req.request.request_id] = True  
 
-                schedule_num += 1
-                if (schedule_num >= self.max_num_running_reqs or
-                    budget < self.max_num_scheduled_tokens - 0.2 * min(len(mix_requests), 5) * 16384):
-                    break
+                num_reqs_sched += 1
+                total_num_tokens += mix_req.num_new_tokens
         
             if isolated_requests:
                 mix_requests = [mix_req for mix_req in mix_requests if not mix_req.is_isolated]
                 mix_requests.extend(isolated_requests)
 
-        logger.info(f"Scheduled {schedule_num} requests, remaining token budget: {budget}")
+        logger.info(f"Pre-scheduled {num_reqs_sched} requests, \
+                     used token budget {total_num_tokens}/{self.max_num_scheduled_tokens}")
         logger.info(f"Final pre-scheduled requests: {[req_id for req_id, is_pre_sched in pre_scheduled.items() if is_pre_sched]}")
 
     # First, schedule the RUNNING requests.
