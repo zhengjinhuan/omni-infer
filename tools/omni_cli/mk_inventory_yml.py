@@ -1,6 +1,10 @@
 import yaml
 import os
 
+INFO    = "\033[92m[INFO]\033[0m"      # green
+WARNING = "\033[93m[WARNING]\033[0m"   # yellow
+ERROR   = "\033[91m[ERROR]\033[0m"     # red
+
 def load_yaml(path):
     """Load YAML file content, return empty dict if file doesn't exist"""
     if not os.path.exists(path):
@@ -23,7 +27,7 @@ def add_node(args):
 
     # Validate default profiles structure
     if not default_profiles or 'profiles' not in default_profiles or 'vllm' not in default_profiles['profiles']:
-        print("[ERROR] default_profiles.yml not found or invalid.")
+        print(f"{ERROR} default_profiles.yml not found or invalid.")
         return
 
     # Load or create deployment file
@@ -40,12 +44,12 @@ def add_node(args):
 
     # Validate C node addition (only one allowed)
     if args.role == 'C' and hosts:
-        print("[ERROR] Only one C node allowed.")
+        print(f"{ERROR} Only one C node allowed.")
         return
 
     # Check for duplicate node name
     if args.name in hosts:
-        print(f"[ERROR] Node name '{args.name}' already exists in role '{args.role}'.")
+        print(f"{ERROR} Node name '{args.name}' already exists in role '{args.role}'.")
         return
 
     # Calculate port offset based on role and existing nodes
@@ -57,20 +61,17 @@ def add_node(args):
     elif args.role == 'C':
         offset = 200
     else:
-        print("[ERROR] role must be P, D, or C.")
+        print(f"{ERROR} role must be P, D, or C.")
         return
 
-    # Set master IP if not provided
-    if not args.master_ip:
-        args.master_ip = args.host_ip
 
     # Set container name prefix based on role
     if args.role == 'P':
-        container_name_prefix = "you_name_omni_infer_prefill"
+        container_name_prefix = "omni_infer_prefill"
     elif args.role == 'D':
-        container_name_prefix = "you_name_omni_infer_decode"
+        container_name_prefix = "omni_infer_decode"
     elif args.role == 'C':
-        container_name_prefix = "you_name_omni_infer_proxy"
+        container_name_prefix = "omni_infer_proxy"
 
     # Create node information dictionary
     node = {
@@ -86,12 +87,29 @@ def add_node(args):
     if hasattr(args, 'docker_image_id') and args.docker_image_id:
         node['DOCKER_IMAGE_ID'] = args.docker_image_id
 
-    # For P/D roles, add master_ip
-    if args.role in ['P', 'D']:
-        node['host_ip'] = args.master_ip
     # Get role-specific configuration from default profiles
     role_config = default_profiles['profiles']['vllm']['deepseek'].get(args.role)
     env = role_config.get('env', {}).copy()
+
+    # Set master IP if not provided
+    if not args.master_node:
+        args.master_node = args.name
+    is_slave_node = args.master_node != args.name
+    if is_slave_node:
+        if args.master_node not in hosts:
+            print(f"{ERROR} Master node '{args.master_node}' not found in role '{args.role}'. Please add the master node first.")
+            return
+        master_ip = hosts[args.master_node]['ansible_host']
+        master_port = hosts[args.master_node]['env'].get('MASTER_PORT', None)
+    else:
+        master_ip = args.host_ip
+        master_port = env.get('MASTER_PORT', None) # use default in default_profiles.yml
+
+    # For P/D roles, add master_ip
+    if args.role in ['P', 'D']:
+        node['host_ip'] = master_ip
+        node['master_node'] = args.master_node
+        env['MASTER_PORT'] = master_port
 
     # Copy arguments if present
     if role_config.get('args', {}):
@@ -100,7 +118,7 @@ def add_node(args):
 
     # Update PORT fields in environment variables
     for k in env:
-        if k.endswith('PORT'):
+        if k.endswith('PORT') and k != 'MASTER_PORT':
             user_port = None
             if user_port is not None:
                 env[k] = user_port
@@ -112,7 +130,7 @@ def add_node(args):
     # Add node to hosts and save deployment
     hosts[args.name] = node
     save_yaml(deploy_path, deployment)
-    print(f"[INFO] Node '{args.name}' added successfully to role '{args.role}'.")
+    print(f"{INFO} Node '{args.name}' added successfully to role '{args.role}'.")
 
 def rm_node(args):
     """Remove node from server_profiles.yml and reassign ports for the role"""
@@ -122,12 +140,12 @@ def rm_node(args):
 
     # Validate deployment structure
     if 'all' not in deployment or 'children' not in deployment['all'] or args.role not in deployment['all']['children']:
-        print(f"[ERROR] Role '{args.role}' not found.")
+        print(f"{ERROR} Role '{args.role}' not found.")
         return
 
     hosts = deployment['all']['children'][args.role]['hosts']
     if args.name not in hosts:
-        print(f"[ERROR] Node '{args.name}' not found in role '{args.role}'.")
+        print(f"{ERROR} Node '{args.name}' not found in role '{args.role}'.")
         return
 
     # Remove node
@@ -162,4 +180,4 @@ def rm_node(args):
 
     # Save updated deployment
     save_yaml(deploy_path, deployment)
-    print(f"[INFO] Node '{args.name}' removed from role '{args.role}'. Ports reassigned.")
+    print(f"{INFO} Node '{args.name}' removed from role '{args.role}'. Ports reassigned.")

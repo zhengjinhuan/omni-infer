@@ -2,406 +2,283 @@
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <vector>
+
 #include "dynamic_eplb_greedy.h"
-#include "placement_mapping.h"
-#include "tensor.h"
-#include "expert_activation.h"
-#include "placement_optimizer.h" 
-#include "expert_load_balancer.h"
 
-std::vector<int32_t> read_flat_array(const std::string& filename) {
-    std::vector<int32_t> result;
-    std::ifstream file(filename);
-    std::string line;
-    
-    if (std::getline(file, line)) {
-        std::stringstream ss(line);
-        int value;
-        while (ss >> value) {
-            result.push_back(value);
-        }
-    }
+// Base Fixture class containing common logic
+class BaseGreedyExpertLoadBalancerTest : public ::testing::Test {
+  protected:
+    GreedyExpertLoadBalancer *balancer_ = nullptr;
 
-    return result;
-}
-std::vector<int> read_vector(const std::string& filename) {
-    std::vector<int> result;
-    std::ifstream file(filename);
-    std::string line;
-    
-    if (file.is_open()) {
-        if (std::getline(file, line)) {
-            std::stringstream ss(line);
-            int value;
-            while (ss >> value) {
-                result.push_back(value);
+    virtual void SetUp() override = 0; // Implemented by subclasses
+    void TearDown() override { delete balancer_; }
+
+    // Helper function: Generate placement and activations data
+    virtual std::vector<int> GenerateSimplePlacement() = 0;
+    std::vector<int64_t> GenerateBalancedActivations(int num_deploy_experts) {
+        std::vector<int64_t> activations(num_layers_ * num_deploy_experts, 0);
+        for (int layer = 0; layer < num_layers_; ++layer) {
+            int offset = layer * num_deploy_experts;
+            for (int i = 0; i < num_deploy_experts; ++i) {
+                int pos = offset + i;
+                activations[pos] = 50;
             }
         }
-        file.close();
-    } else {
-        std::cerr << "Unable to open file for reading: " << filename << std::endl;
+        return activations;
     }
 
-    return result;
-}
-
-std::vector<int64_t> read_int64_vector(const std::string& filename) {
-    std::vector<int64_t> result;
-    std::ifstream file(filename);
-    std::string line;
-    
-    if (file.is_open()) {
-        if (std::getline(file, line)) {
-            std::stringstream ss(line);
-            int value;
-            while (ss >> value) {
-                result.push_back(value);
+    std::vector<int64_t> GenerateImbalancedActivations(int num_deploy_experts) {
+        std::vector<int64_t> activations(num_layers_ * num_deploy_experts, 0);
+        for (int layer = 0; layer < num_layers_; ++layer) {
+            int offset = layer * num_deploy_experts;
+            activations[offset + 0] = 1000; // Expert 0 (hot)
+            for (int i = 1; i < num_deploy_experts; ++i) {
+                activations[offset + i] = 50;
             }
         }
-        file.close();
-    } else {
-        std::cerr << "Unable to open file for reading: " << filename << std::endl;
+        return activations;
     }
 
-    return result;
-}
-class GreedyAlgorithmTest : public ::testing::Test {
-protected:
-    int max_redundants_per_expert=20;
-    int num_layers=58;
-    int rank = 0;
-    int num_devices_per_host = 16;
-    int world_size=32;
-    int num_logits_expert = 256;
-    int deployed_experts_per_layer = num_logits_expert+world_size;
-    void* redundant_expert_mapping;
-    void* global_expert_mapping;
-    void* redundant_count_per_expert;
-    PlacementMapping *placement_mapping;
-    std::vector<int32_t> placement_pattern_cpu;
-    void* selector;
+    // Test parameters, set by subclasses
+    int rank_;
+    int world_size_;
+    int num_layers_;
+    int num_experts_;
+    int num_deploy_experts_per_rank_;
+    int num_deploy_experts_;
+    int expert_redundant_limit_;
+};
 
-    // For Activation
-    void* npu_count_ptr;
-    ClusterActivation* activation_ptr;
-    int activation_window_size = 10;
-    size_t num_deploy_experts_per_rank = deployed_experts_per_layer/world_size;
-    int64_t max_activation_count= 10000000000000;
-
-    PlacementOptimizer* optimizer_;
-
+// Fixture class: num_deploy_experts_per_rank_ = 3
+class GreedyExpertLoadBalancerTestWithRedundantSlot
+    : public BaseGreedyExpertLoadBalancerTest {
+  protected:
     void SetUp() override {
-        // placement_pattern_cpu.resize(world_size*num_layers*num_logits_expert,0);
-        // // // g
-        // int num_expert_per_rank = num_logits_expert/world_size;
-        // for(int rank_id=0;rank_id<world_size;++rank_id){
-        //     for (int layer_id=0;layer_id<num_layers;++layer_id){
-        //         for(int idx = 0;idx<num_expert_per_rank;++idx){
-        //             int local_pos_id = rank_id*num_expert_per_rank+idx;
-        //             int offset = rank_id*num_layers*num_logits_expert+layer_id*num_logits_expert+local_pos_id;
-        //             placement_pattern_cpu[offset] = 1;
-        //         }
-        //     }
-        // }
-        placement_pattern_cpu = read_flat_array("/data/kww/debug/20250709_2121/basepattern32.txt");
+        rank_ = 1;
+        world_size_ = 2;
+        num_layers_ = 2;
+        num_experts_ = 4;
+        num_deploy_experts_per_rank_ = 3; // 2 experts + 1 redundant slot
+        num_deploy_experts_ = num_deploy_experts_per_rank_ * world_size_;
+        expert_redundant_limit_ = 2;
 
-        aclInit(NULL); // 初始化 ACL
-        aclrtContext context;
-        aclrtCreateContext(&context, 0);
-        aclrtSetCurrentContext(context);
+        balancer_ = new GreedyExpertLoadBalancer(
+            num_layers_, world_size_, num_experts_, num_deploy_experts_,
+            expert_redundant_limit_, rank_);
+    }
 
-        size_t size = num_layers*max_redundants_per_expert*num_logits_expert*sizeof(int32_t);
-        aclrtMalloc(&redundant_expert_mapping, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(redundant_expert_mapping, size, 0,size);
-
-        size = num_layers*num_logits_expert*max_redundants_per_expert*sizeof(int32_t);
-        aclrtMalloc(&global_expert_mapping, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(global_expert_mapping, size, 0,size);
-
-        size = num_layers*num_logits_expert*sizeof(int32_t);
-        aclrtMalloc(&redundant_count_per_expert, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(redundant_count_per_expert, size, 0,size);
-
-        std::vector<int64_t> shape1 = {num_layers,max_redundants_per_expert,num_logits_expert};
-        std::vector<int64_t> shape2 = {num_layers,num_logits_expert,max_redundants_per_expert};
-        std::vector<int64_t> shape3 = {num_layers,num_logits_expert};
-        std::vector<int64_t> shape4 = {world_size,num_layers,num_logits_expert};
-        void* tmp = placement_pattern_cpu.data();
-
-        size = num_layers*num_logits_expert*sizeof(int32_t);
-        aclrtMalloc(&selector, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(selector, size, 0,size);
-        
-        placement_mapping = new PlacementMapping("",rank,num_devices_per_host,deployed_experts_per_layer,(size_t) redundant_expert_mapping,shape1,
-        (size_t)redundant_count_per_expert, shape3,
-        (size_t) tmp,shape4,
-        (size_t) selector);
-        
-
-        size = num_layers*num_deploy_experts_per_rank*sizeof(int64_t);
-        aclrtMalloc(&npu_count_ptr, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(npu_count_ptr, size, 0,size);
-
-        Tensor tensor((uint64_t) npu_count_ptr,num_layers*num_deploy_experts_per_rank,sizeof(int64_t),"int64_t","");
-        activation_ptr = new ClusterActivation(tensor,max_activation_count,num_layers,num_deploy_experts_per_rank,activation_window_size,world_size,rank);
-        activation_ptr->set_params(num_logits_expert);
-
-        optimizer_ = new PlacementOptimizer(placement_mapping, activation_ptr);
-
-        
-    };
-    void TearDown() override {
-
+    std::vector<int> GenerateSimplePlacement() override {
+        // Rank 0: pos 0 (expert 0), pos 1 (expert 1), pos 2 (empty, -1)
+        // Rank 1: pos 3 (expert 2), pos 4 (expert 3), pos 5 (empty, -1)
+        std::vector<int> placement(num_layers_ * num_deploy_experts_, -1);
+        for (int layer = 0; layer < num_layers_; ++layer) {
+            int offset = layer * num_deploy_experts_;
+            placement[offset + 0] = 0; // Rank 0, expert 0
+            placement[offset + 1] = 1; // Rank 0, expert 1
+            placement[offset + 3] = 2; // Rank 1, expert 2
+            placement[offset + 4] = 3; // Rank 1, expert 3
+        }
+        return placement;
     }
 };
 
-// ./test_placement --gtest_filter=GreedyAlgorithmTest.DefaultConstructor*
-TEST_F(GreedyAlgorithmTest, DefaultConstructor) {
-    std::cout<<"222222222222222222222"<<std::endl;
-    std::cout<<"placement_mapping->get_num_deploy_experts():" << placement_mapping->get_num_deploy_experts() <<std::endl;
-    std::cout<<"activation_ptr->get_num_deploy_experts_per_rank(): "<<activation_ptr->get_num_deploy_experts_per_rank()<<std::endl;
-    std::vector<ChangeInstruction> changeInstructions;
-
-    // activation_ptr->collect_from_txt("/data/kww/activation_counts_recordstep_1_rank_0.txt");
-    // std::vector<ChangeInstruction> changeInstructions = optimizer_->optimize();
-    // activation_ptr->collect_from_txt("/data/kww/debug/type-1/activation_counts_recordstep_1_rank_0.txt");
-    // std::vector<ChangeInstruction> changeInstructions = optimizer_->optimize();
-    activation_ptr->collect_from_txt("/data/kww/debug/20250709_2121/activation_counts_recordstep_4_rank_0.txt");
-    changeInstructions = optimizer_->optimize();
-    for (auto& instruction : changeInstructions)
-    {
-        if (instruction.layer_idx!=8) continue;
-        if (instruction.source_rank !=rank && instruction.target_rank!=rank) continue;
-        std::cout<<"type["<<(int) instruction.type<<"] layer_idx["<<instruction.layer_idx<<"] source_rank["<<instruction.source_rank<<"] source_global_position["<<instruction.source_global_position<<"] target_rank["<<instruction.target_rank<<"] target_expert_id["<<instruction.target_expert_id<<"] target_global_position["<<instruction.target_global_position<<"]"<<std::endl;
-    }
-    
-    std::cout<<"---------------------------"<<std::endl;
-
-    for (auto& instruction : changeInstructions)
-    {
-        if (instruction.layer_idx!=8) continue;
-        if (instruction.source_rank !=13 && instruction.target_rank!=13) continue;
-        std::cout<<"type["<<(int) instruction.type<<"] layer_idx["<<instruction.layer_idx<<"] source_rank["<<instruction.source_rank<<"] source_global_position["<<instruction.source_global_position<<"] target_rank["<<instruction.target_rank<<"] target_expert_id["<<instruction.target_expert_id<<"] target_global_position["<<instruction.target_global_position<<"]"<<std::endl;
-
-        int layer = instruction.layer_idx;
-        OperationType type = instruction.type;
-        bool need_enqueue_recv_buff=true;
-        int t_rank = (instruction.source_rank == rank) ? instruction.target_rank : instruction.source_rank;
-        int global_position_id_this_layer = (instruction.source_rank == rank) ? instruction.source_global_position : instruction.target_global_position;
-        int expert_id = (instruction.source_rank == rank) ? instruction.target_expert_id : instruction.source_expert_id;
-        int position_offset = placement_mapping->getGlobalPositionOffset(layer,global_position_id_this_layer);
-        if (type==OperationType::ADD && instruction.source_rank == rank){
-            need_enqueue_recv_buff=false;
-            position_offset = -1; // add的source端不更新
-        }
-
-        if (type==OperationType::REMOVE && instruction.target_rank == rank){
-            t_rank = rank; // 自己跟自己握手
-            expert_id = -1; // 告诉该位置专家id修改为-1
-        }
-        std::cout<<"t_rank["<<t_rank<<"]"<<"expert_id["<<expert_id<<"]"<<"position_offset["<<position_offset<<"] \n";
-    }
-
-    // for(int i=0;i<24;++i){
-    //     std::string name = "/data/kww/debug/type-1/mapping-log/log_"+std::to_string(rank)+"_"+std::to_string(i)+".txt";
-    //     std::vector<int> tmp  =read_vector(name);
-    //     placement_mapping->update_globalDeployedPositionToLogisticsIdMapping(tmp,3);
-    // }
-
-    
-}
-
-// ./test_placement --gtest_filter=GreedyAlgorithmTest.Optimize_UpdateMapping*
-TEST_F(GreedyAlgorithmTest, Optimize_UpdateMapping) {
-    std::vector<ChangeInstruction> changeInstructions;
-    activation_ptr->collect_from_txt("/data/kww/debug/20250709_2121/activation_counts_recordstep_4_rank_0.txt");
-    changeInstructions = optimizer_->optimize();
-    std::vector<bool> layer_update(num_layers,true);
-    
-    size_t offset;
-    for (auto& instruction : changeInstructions)
-    {
-        if (instruction.type==OperationType::REMOVE){
-            offset = instruction.layer_idx*deployed_experts_per_layer+instruction.target_global_position;
-            placement_mapping->update_globalDeployedPositionToLogisticsIdMapping(instruction.layer_idx,offset,-1);
-        }
-        else if (instruction.type==OperationType::ADD){
-            offset = instruction.layer_idx*deployed_experts_per_layer+instruction.target_global_position;
-            placement_mapping->update_globalDeployedPositionToLogisticsIdMapping(instruction.layer_idx,offset,instruction.source_expert_id);
-            std::cout<<"type["<<(int) instruction.type<<"] layer_idx["<<instruction.layer_idx<<"] source_rank["<<instruction.source_rank<<"] source_global_position["<<instruction.source_global_position<<"] target_rank["<<instruction.target_rank<<"] target_expert_id["<<instruction.target_expert_id<<"] target_global_position["<<instruction.target_global_position<<"]"<<std::endl;
-        }
-        else {
-            offset = instruction.layer_idx*deployed_experts_per_layer+instruction.target_global_position;
-            placement_mapping->update_globalDeployedPositionToLogisticsIdMapping(instruction.layer_idx,offset,instruction.source_expert_id);
-            offset = instruction.layer_idx*deployed_experts_per_layer+instruction.source_global_position;
-            placement_mapping->update_globalDeployedPositionToLogisticsIdMapping(instruction.layer_idx,offset,instruction.target_expert_id);
-        }
-        // std::cout<<"type["<<(int) instruction.type<<"] layer_idx["<<instruction.layer_idx<<"] source_rank["<<instruction.source_rank<<"] source_global_position["<<instruction.source_global_position<<"] target_rank["<<instruction.target_rank<<"] target_expert_id["<<instruction.target_expert_id<<"] target_global_position["<<instruction.target_global_position<<"]"<<std::endl;
-    }
-
-    // std::cout<<"---------------------------"<<std::endl;
-    // size_t size = num_layers*num_logits_expert*sizeof(int32_t);
-    // std::vector<int32_t> tmp(size,0);
-    // Tensor selector = placement_mapping->get_selector();
-    // selector.to_host(tmp.data());
-    // int layer_id =13;
-    // for (int expert_id=0; expert_id<num_logits_expert;++expert_id){
-    //     std::cout<<tmp[layer_id*num_logits_expert+expert_id]<<" ";
-    // }
-    // std::cout<<std::endl;
-    
-    // std::cout<<"********************************************"<<std::endl;
-    // for (int rank_id =0; rank_id < world_size;rank_id++){
-    //     placement_mapping->set_rank(rank_id);
-    //     placement_mapping->update_selector(layer_update);
-    //     std::cout<<std::endl;
-    //     selector.to_host(tmp.data());
-    //     // std::cout<<"rank_id["<<rank_id<<"] "<<tmp[layer_id*num_logits_expert+129]<<std::endl;
-    //     for (int expert_id=0; expert_id<num_logits_expert;++expert_id){
-    //         std::cout<<tmp[layer_id*num_logits_expert+expert_id]<<" ";
-    //     }
-    //     std::cout<<std::endl<<std::endl;;
-    // }
-
-    // std::cout<<"---------------------------"<<std::endl;
-    activation_ptr->collect_from_txt("/data/kww/debug/20250709_2121/activation_counts_recordstep_5_rank_0.txt");
-    changeInstructions = optimizer_->optimize();
-
-
-    
-}
-
-// ./test_placement --gtest_filter=GreedyAlgorithmTest.SpecialPatternConstructor*
-TEST_F(GreedyAlgorithmTest, SpecialPatternConstructor) {
-
-    std::vector<int> placement = read_vector("/data/kww/dump_data/placement-1.txt");
-    std::vector<int64_t> activation = read_int64_vector("/data/kww/dump_data/activations-1.txt");
-    optimizer_->optimize(placement, activation);
-
-    // placement = read_vector("/data/kww/vllm-09/debug/placement.txt");
-    // activation = read_int64_vector("/data/kww/vllm-09/debug/activations.txt");
-    // optimizer_->optimize(placement, activation);
-    // activation_ptr->collect_from_txt("/data/kww/vllm-09/debug/activation_counts_recordstep_10_rank_0.txt");
-    // optimizer_->optimize();
-}
-
-// TEST_F(GreedyAlgorithmTest, SpecialPatternConstructor1) {
-//     for(int i=0;i<59;++i){
-//         std::string name = "/data/kww/debug/log_"+std::to_string(rank)+"_"+std::to_string(i)+".txt";
-//         std::vector<int> tmp  =read_vector(name);
-//         placement_mapping->update_globalDeployedPositionToLogisticsIdMapping(tmp,3);
-//     }
-// }
-
-class SelectorTest : public ::testing::Test {
-protected:
-    int max_redundants_per_expert=10;
-    int num_layers=58;
-    int rank = 0;
-    int num_devices_per_host = 16;
-    int deployed_experts_per_layer = 288;
-    int world_size=32;
-    int num_logits_expert = 256;
-    void* redundant_expert_mapping;
-    void* global_expert_mapping;
-    void* redundant_count_per_expert;
-    void* selector;
-    PlacementMapping *placement_mapping;
-    std::vector<int32_t> placement_pattern_cpu;
-
-    // For Activation
-    void* npu_count_ptr;
-    ClusterActivation* activation_ptr;
-    int activation_window_size = 10;
-    size_t num_deploy_experts_per_rank = deployed_experts_per_layer/world_size;
-    int64_t max_activation_count= 10000000000000;
-
-    PlacementOptimizer* optimizer_;
-
+// Fixture class: num_deploy_experts_per_rank_ = 2
+class GreedyExpertLoadBalancerTestNoRedundantSlot
+    : public BaseGreedyExpertLoadBalancerTest {
+  protected:
     void SetUp() override {
-        // placement_pattern_cpu.resize(world_size*num_layers*num_logits_expert,0);
-        // // g
-        // int num_expert_per_rank = num_logits_expert/world_size;
-        // for(int rank_id=0;rank_id<world_size;++rank_id){
-        //     for (int layer_id=0;layer_id<num_layers;++layer_id){
-        //         for(int idx = 0;idx<num_expert_per_rank;++idx){
-        //             int local_pos_id = rank_id*num_expert_per_rank+idx;
-        //             int offset = rank_id*num_layers*num_logits_expert+layer_id*num_logits_expert+local_pos_id;
-        //             placement_pattern_cpu[offset] = 1;
-        //         }
-        //     }
-        // }
-        // np.savetxt('/data/kww/debug/20250709_2121/basepattern32.txt', tmp.flatten(), fmt='%d', newline=' ')
-        // placement_pattern_cpu = read_flat_array("./test_data/basepattern.txt");
-        placement_pattern_cpu = read_flat_array("/data/kww/debug/20250709_2121/basepattern32.txt");
-        
+        rank_ = 1;
+        world_size_ = 2;
+        num_layers_ = 2;
+        num_experts_ = 4;
+        num_deploy_experts_per_rank_ = 2; // 2 experts, no redundant slot
+        num_deploy_experts_ = num_deploy_experts_per_rank_ * world_size_;
+        expert_redundant_limit_ = 2;
 
-        aclInit(NULL); // 初始化 ACL
-        aclrtContext context;
-        aclrtCreateContext(&context, 0);
-        aclrtSetCurrentContext(context);
+        balancer_ = new GreedyExpertLoadBalancer(
+            num_layers_, world_size_, num_experts_, num_deploy_experts_,
+            expert_redundant_limit_, rank_);
+    }
 
-        size_t size = num_layers*max_redundants_per_expert*num_logits_expert*sizeof(int32_t);
-        aclrtMalloc(&redundant_expert_mapping, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(redundant_expert_mapping, size, 0,size);
-
-        size = num_layers*num_logits_expert*max_redundants_per_expert*sizeof(int32_t);
-        aclrtMalloc(&global_expert_mapping, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(global_expert_mapping, size, 0,size);
-
-        size = num_layers*num_logits_expert*sizeof(int32_t);
-        aclrtMalloc(&redundant_count_per_expert, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(redundant_count_per_expert, size, 0,size);
-
-        std::vector<int64_t> shape1 = {num_layers,max_redundants_per_expert,num_logits_expert};
-        std::vector<int64_t> shape2 = {num_layers,num_logits_expert,max_redundants_per_expert};
-        std::vector<int64_t> shape3 = {num_layers,num_logits_expert};
-        std::vector<int64_t> shape4 = {world_size,num_layers,num_logits_expert};
-        void* tmp = placement_pattern_cpu.data();
-
-        size = num_layers*num_logits_expert*sizeof(int32_t);
-        aclrtMalloc(&selector, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemset(selector, size, 0,size);
-        
-        placement_mapping = new PlacementMapping("",rank,num_devices_per_host,deployed_experts_per_layer,(size_t) redundant_expert_mapping,shape1,
-        (size_t) global_expert_mapping,shape2 ,
-        (size_t)redundant_count_per_expert, shape3,
-        (size_t) tmp,shape4,
-        (size_t) selector);
-        
-    };
-    void TearDown() override {
-
+    std::vector<int> GenerateSimplePlacement() override {
+        // Rank 0: pos 0 (expert 0), pos 1 (expert 1)
+        // Rank 1: pos 2 (expert 2), pos 3 (expert 3)
+        std::vector<int> placement(num_layers_ * num_deploy_experts_, -1);
+        for (int layer = 0; layer < num_layers_; ++layer) {
+            int offset = layer * num_deploy_experts_;
+            placement[offset + 0] = 0; // Rank 0, expert 0
+            placement[offset + 1] = 1; // Rank 0, expert 1
+            placement[offset + 2] = 2; // Rank 1, expert 2
+            placement[offset + 3] = 3; // Rank 1, expert 3
+        }
+        return placement;
     }
 };
 
-// ./test_placement --gtest_filter=SelectorTest.DefaultConstructor*
-TEST_F(SelectorTest, DefaultConstructor) {
-    size_t size = num_layers*num_logits_expert*sizeof(int32_t);
-    // std::vector<int32_t> selector_host = placement_mapping->getSelector();
-    // for (int layer_id =0; layer_id<num_layers;layer_id++){
-    //     for (int expert_id=0; expert_id<num_logits_expert;++expert_id){
-    //         std::cout<<selector_host[layer_id*num_logits_expert+expert_id]<<" ";
-    //     }
-    //     std::cout<<std::endl;
-    // }
-
-    std::vector<int32_t> tmp(size,0);
-    Tensor selector = placement_mapping->get_selector();
-    selector.to_host(tmp.data());
-    std::cout<<"********************************************"<<std::endl;
-    for (int layer_id =0; layer_id<num_layers;layer_id++){
-        for (int expert_id=0; expert_id<num_logits_expert;++expert_id){
-            std::cout<<tmp[layer_id*num_logits_expert+expert_id]<<" ";
-        }
-        std::cout<<std::endl;
-    }
-
+// Test case: Balanced load (with redundant slot)
+TEST_F(GreedyExpertLoadBalancerTestWithRedundantSlot, OptimizeBalancedLoad) {
+    auto placement = GenerateSimplePlacement();
+    auto activations = GenerateBalancedActivations(num_deploy_experts_);
+    auto instructions =
+        balancer_->optimize_and_generate_instructions(placement, activations);
+    EXPECT_TRUE(instructions.empty())
+        << "No instructions should be generated for balanced load.";
 }
-// ./test_placement --gtest_filter=SelectorTest.TimeTest*
-TEST_F(SelectorTest, TimeTest) {
-    std::vector<bool> layer_update(num_layers,true);
-    TIME_IT_LABEL("update_placement--rank_"+std::to_string(rank),{
-        placement_mapping->update_selector(layer_update);
-    });
+
+// Test case: Imbalanced load (with redundant slot, ADD instruction)
+TEST_F(GreedyExpertLoadBalancerTestWithRedundantSlot,
+       OptimizeImbalancedLoadAdd) {
+    auto placement = GenerateSimplePlacement();
+    auto activations = GenerateImbalancedActivations(num_deploy_experts_);
+    auto instructions =
+        balancer_->optimize_and_generate_instructions(placement, activations);
+
+    ASSERT_EQ(instructions.size(), 2); // One instruction per layer
+    for (const auto &instr : instructions) {
+        EXPECT_EQ(instr.type, OperationType::ADD);
+        EXPECT_EQ(instr.source_expert_id, 0);  // Hot expert
+        EXPECT_EQ(instr.target_expert_id, -1); // Target is empty slot
+        EXPECT_TRUE(instr.target_global_position == 2 ||
+                    instr.target_global_position == 5 ||
+                    instr.target_global_position == 8 ||
+                    instr.target_global_position == 11); // Empty slot
+    }
+}
+
+// Test case: Balanced load (no redundant slot)
+TEST_F(GreedyExpertLoadBalancerTestNoRedundantSlot, OptimizeBalancedLoad) {
+    auto placement = GenerateSimplePlacement();
+    auto activations = GenerateBalancedActivations(num_deploy_experts_);
+    auto instructions =
+        balancer_->optimize_and_generate_instructions(placement, activations);
+    EXPECT_TRUE(instructions.empty())
+        << "No instructions should be generated for balanced load.";
+}
+
+// Test case: SWAP instruction (no redundant slot)
+TEST_F(GreedyExpertLoadBalancerTestNoRedundantSlot, OptimizeSwap) {
+    std::vector<int> placement = GenerateSimplePlacement();
+    std::vector<int64_t> activations(num_layers_ * num_deploy_experts_, 0);
+    for (int layer = 0; layer < num_layers_; ++layer) {
+        int offset = layer * num_deploy_experts_;
+        activations[offset + 0] = 1000; // Expert 0
+        activations[offset + 1] = 150;  // Expert 1
+        activations[offset + 2] = 50;   // Expert 2
+        activations[offset + 3] = 50;   // Expert 3
+    }
+    auto instructions =
+        balancer_->optimize_and_generate_instructions(placement, activations);
+
+    EXPECT_FALSE(instructions.empty());
+    bool found_swap = false;
+    for (const auto &instr : instructions) {
+        if (instr.type == OperationType::SWAP) {
+            found_swap = true;
+            EXPECT_EQ(instr.source_expert_id, 0); // Hot expert
+            EXPECT_TRUE(instr.target_expert_id == 2 ||
+                        instr.target_expert_id == 3); // Cold expert
+        }
+    }
+    EXPECT_TRUE(found_swap) << "Expected at least one SWAP instruction.";
+}
+
+// Test case: Imbalanced load (with redundant slot, ADD2 instruction)
+TEST_F(GreedyExpertLoadBalancerTestWithRedundantSlot,
+       OptimizeImbalancedLoadADD2) {
+    std::vector<int> placement(num_layers_ * num_deploy_experts_, -1);
+    for (int layer = 0; layer < num_layers_; ++layer) {
+        int offset = layer * num_deploy_experts_;
+        placement[offset + 0] = 0;  // Rank 0, expert 0
+        placement[offset + 1] = 1;  // Rank 0, expert 1
+        placement[offset + 2] = 0;  // Rank 0, expert 0 (redundant)
+        placement[offset + 3] = 2;  // Rank 1, expert 2
+        placement[offset + 4] = 3;  // Rank 1, expert 3
+        placement[offset + 5] = -1; // Rank 1, empty slot
+    }
+    auto activations = GenerateImbalancedActivations(num_deploy_experts_);
+    auto instructions =
+        balancer_->optimize_and_generate_instructions(placement, activations);
+
+    // Expected: Two instructions per layer
+    // First instruction: REMOVE, remove redundant expert 0 from Rank 0
+    // (position 2) Second instruction: ADD, add expert 0 to empty slot on Rank
+    // 1 (position 5)
+    ASSERT_EQ(instructions.size(), 4); // Two layers, two instructions per layer
+
+    // Verify instructions per layer
+    for (int layer = 0; layer < num_layers_; ++layer) {
+        // Find instructions for the current layer
+        std::vector<ChangeInstruction> layer_instructions;
+        for (const auto &instr : instructions) {
+            if (instr.layer_idx == layer) {
+                layer_instructions.push_back(instr);
+            }
+        }
+        ASSERT_EQ(layer_instructions.size(), 2)
+            << "Layer " << layer << " should have exactly two instructions.";
+
+        // Verify first instruction: REMOVE
+        EXPECT_EQ(layer_instructions[0].type, OperationType::REMOVE);
+        EXPECT_EQ(layer_instructions[0].target_expert_id, 0)
+            << "Layer " << layer
+            << " first instruction should remove expert 0.";
+        EXPECT_EQ(layer_instructions[0].target_global_position, 2)
+            << "Layer " << layer
+            << " first instruction should target position 2.";
+
+        // Verify second instruction: ADD
+        EXPECT_EQ(layer_instructions[1].type, OperationType::ADD);
+        EXPECT_EQ(layer_instructions[1].source_expert_id, 0)
+            << "Layer " << layer << " second instruction should add expert 0.";
+        EXPECT_EQ(layer_instructions[1].target_expert_id, -1)
+            << "Layer " << layer
+            << " second instruction should target an empty slot.";
+        EXPECT_EQ(layer_instructions[1].target_global_position, 5)
+            << "Layer " << layer
+            << " second instruction should target position 5.";
+    }
+}
+
+// Verify if optimize_placement correctly generates the final placement under
+// imbalanced load.
+TEST_F(GreedyExpertLoadBalancerTestWithRedundantSlot,
+       OptimizePlacementImbalancedLoad) {
+    // 1. Prepare the initial placement and imbalanced activations.
+    auto initial_placement = GenerateSimplePlacement();
+    auto activations = GenerateImbalancedActivations(num_deploy_experts_);
+
+    // 2. Call the function under test.
+    auto optimized_placement =
+        balancer_->optimize_placement(initial_placement, activations);
+
+    // 3. Determine the expected final placement.
+    // Based on the logic from the OptimizeImbalancedLoadAdd test, we expect the
+    // hottest expert (expert 0) to be duplicated (ADDed) to an empty slot to
+    // balance the load. The optimal choice is to copy it to the less loaded
+    // Rank 1. Initial placement (Layer 0): [0, 1, -1, 2, 3, -1] (Rank0: pos
+    // 0,1,2; Rank1: pos 3,4,5) The empty slot on Rank 1 is at global
+    // position 5. Therefore, we expect expert 0 to be added to position 5 in
+    // Layer 0 and position 11 in Layer 1.
+    std::vector<int> expected_placement = initial_placement;
+
+    // Layer 0: Expect expert 0 to be added to global position 5.
+    int layer0_target_pos = 5;
+    expected_placement[layer0_target_pos] = 0; // source_expert_id is 0
+
+    // Layer 1: Expect expert 0 to be added to global position 11 (5 +
+    // num_deploy_experts_).
+    int layer1_target_pos = 5 + num_deploy_experts_;
+    expected_placement[layer1_target_pos] = 0; // source_expert_id is 0
+
+    // 4. Verify the result.
+    ASSERT_EQ(optimized_placement.size(), expected_placement.size());
+    for (size_t i = 0; i < optimized_placement.size(); ++i) {
+        EXPECT_EQ(optimized_placement[i], expected_placement[i])
+            << "Optimized placement mismatch at index " << i;
+    }
 }

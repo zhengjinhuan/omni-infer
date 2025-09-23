@@ -53,6 +53,7 @@ ADDITIONAL_CONFIG=""
 VLLM_ENABLE_MC2=0
 HCCL_BUFFSIZE=0
 HCCL_OP_EXPANSION_MODE=""
+NUM_SPECULATIVE_TOKENS=1
 
 # Help information
 print_help() {
@@ -100,6 +101,7 @@ print_help() {
     echo "  --vllm-enable-mc2                vLLM framework: GRAPH parameter (default: $VLLM_ENABLE_MC2)"
     echo "  --hccl-op-expansion-mode         vLLM framework: HCCL_OP_EXPANSION_MODE"
     echo "  --hccl-buffsize                  vLLM framework: HCCL_BUFFSIZE"
+    echo "  --num-speculative-tokens         vLLM framework: Speculative decoding parameter, number of speculative tokens per step (default: $NUM_SPECULATIVE_TOKENS)"
     exit 0
 }
 
@@ -235,6 +237,9 @@ parse_long_option() {
             ;;
         --hccl-op-expansion-mode)
             HCCL_OP_EXPANSION_MODE="$2"
+            ;;
+        --num-speculative-tokens)
+            NUM_SPECULATIVE_TOKENS="$2"
             ;;
         --help)
             print_help
@@ -401,6 +406,7 @@ common_operations() {
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
     --enable-mtp \
+    --num-speculative-tokens "$NUM_SPECULATIVE_TOKENS" \
     --extra-args "$EXTRA_ARGS"
 }
 

@@ -35,6 +35,14 @@ if size == 26:
     bit_cast = json.loads(bit_cast)
     config["Bitcast"] = bit_cast
 
+    if '910b' in config_file:
+        gmmfr_format_list = config["GroupedMatmulFinalizeRouting"]["input1"]["format"].split(',')
+        gmmfr_format_list[2] = "FRACTAL_NZ"
+        new_format = ','.join(gmmfr_format_list)
+        config["GroupedMatmulFinalizeRouting"]["input1"]["format"] = new_format
+        config["GroupedMatmulFinalizeRouting"]["input1"]["unknownshape_format"] = new_format
+        config["Bitcast"]["heavyOp"] = {"flag": "true"}
+
     with open(config_file, 'w') as f:
         json.dump(config, f, indent=4)
     print("process aic-ascend910_93-ops-info.json done")

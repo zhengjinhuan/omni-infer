@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-from omni.adaptors.vllm.patches import model_patch 
 from vllm import ModelRegistry
 import os
 from omni.models.common.config.model_config import model_extra_config
@@ -22,10 +21,16 @@ def register_model():
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3_a2:DeepseekV3ForCausalLM")
+        ModelRegistry.register_model(
+            "PanguUltraMoEForCausalLM",
+            "omni.models.pangu.pangu_ultra_moe_a2:PanguUltraMoEForCausalLM")
     else:
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
+        ModelRegistry.register_model(
+            "PanguUltraMoEForCausalLM",
+            "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
 
     ModelRegistry.register_model(
         "DeepSeekMTPModel",
@@ -61,8 +66,16 @@ def register_model():
     )
 
     ModelRegistry.register_model(
-        "PanguUltraMoEForCausalLM",
-        "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
+        "LlamaForCausalLM",
+        "omni.models.llama.llama:LlamaForCausalLM")
+
+    ModelRegistry.register_model(
+        "Qwen2_5_VLForConditionalGeneration",
+        "omni.models.qwen.qwen2_5_vl:Qwen2_5_VLForConditionalGeneration")
+
+    ModelRegistry.register_model(
+        "Qwen2VLForConditionalGeneration",
+        "omni.models.qwen.qwen2_vl:Qwen2VLForConditionalGeneration")
 
     ModelRegistry.register_model(
         "PanguUltraMoEMTPModel",
@@ -75,6 +88,23 @@ def register_model():
     ModelRegistry.register_model(
         "PanguEmbeddedForCausalLM",
         "omni.models.pangu.pangu_dense:PanguEmbeddedForCausalLM")
+
+    ModelRegistry.register_model(
+        "InternLM2ForCausalLM",
+        "omni.models.internvl.internlm2:InternLM2ForCausalLM")
+    
+    ModelRegistry.register_model(
+        "InternVLChatModel",
+        "omni.models.internvl.internvl:InternVLChatModel")
+    
+    ModelRegistry.register_model(
+        "Gemma3ForCausalLM",
+        "omni.models.gemma.gemma3:Gemma3ForCausalLM")
+
+    ModelRegistry.register_model(
+        "Gemma3ForConditionalGeneration",
+        "omni.models.gemma.gemma3_mm:Gemma3ForConditionalGeneration")
+
 
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or

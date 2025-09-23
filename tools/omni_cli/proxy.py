@@ -11,7 +11,7 @@ def register_values(inventory):
     
     for host, vars in inventory['all']['children']['P']['hosts'].items():
         ansible_host_val = vars.get('ansible_host', '')
-        host_ip_val = vars.get('ansible_host', '')
+        host_ip_val = vars.get('host_ip', '')
         api_port_val = vars.get('env', '').get('API_PORT', '')
         
         if ansible_host_val and host_ip_val and ansible_host_val == host_ip_val:
@@ -26,8 +26,18 @@ def register_values(inventory):
     
     for host, vars in inventory['all']['children']['D']['hosts'].items():
         ip = vars.get('ansible_host', '')
-        api_port_val = vars.get('env', '').get('API_PORT', '')
-        num = vars.get('ascend_rt_visible_devices', '').count(',') + 1 
+        api_port_val = vars.get('env', {}).get('API_PORT', '')
+
+        tp_str = vars.get('args', {}).get('tp', '1')
+        try:
+            tp = int(tp_str)
+        except (ValueError, TypeError):
+            tp = 1
+
+        devices_str = vars.get('ascend_rt_visible_devices', '')
+        device_count = devices_str.count(',') + 1
+
+        num = int(device_count / tp)
         
         if ip:
             entry = f"{ip}:{api_port_val}@{num}"

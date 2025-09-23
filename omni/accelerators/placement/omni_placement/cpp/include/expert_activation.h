@@ -128,17 +128,26 @@ class ClusterActivation {
     void updateShiftWindows(PlacementMapping *placement_mapping);
 
     // For Unittest
-    Tensor &get_npu_count() { return npu_count_; }
-    void *get_total_count_ptr() { return total_count_ptr_; }
-    void *get_last_count_ptr() { return last_count_ptr_; }
-
-    // 线程控制相关操作
     void collect_from_txt(const std::string &txt_path);
     void collect(Distribution *dist_ptr, aclrtStream stream);
     void dump_and_collect(Distribution *dist_ptr, aclrtStream stream,
                           size_t dump_count);
     void start_thread();
     void stop_thread();
+
+    // For Unittest
+    Tensor &get_npu_count() { return npu_count_; }
+    void *get_total_count_ptr() { return total_count_ptr_; }
+    void *get_last_count_ptr() { return last_count_ptr_; }
+    void *get_deployed_experts_counts_host_ptr() {
+        return deployed_experts_counts_host_;
+    }
+    void *get_delta_experts_counts_ptr() { return delta_experts_counts_; }
+    std::vector<ExpertActivation> &get_all_logit_experts_activation() {
+        return all_logit_experts_activation_;
+    }
+    bool is_dump_enabled() const { return enable_dump_; }
+    const std::string &get_dump_dir() const { return dump_dir_; }
 };
 
 #endif // EXPERT_ACTIVATION_H

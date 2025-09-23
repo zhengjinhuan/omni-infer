@@ -254,7 +254,7 @@ class ConfigUpdater:
 
     @staticmethod
     def _may_enable_omni_attn(vllm_config: 'VllmConfig') -> None:
-        if vllm_config.additional_config is None:
+        if vllm_config.additional_config is None or "enable_omni_attn" not in vllm_config.additional_config:
             return
         from omni.accelerators.cache import apply_omni_attn_patch, check_omni_attn_cmd_arg
         enable_omni_attn = check_omni_attn_cmd_arg(vllm_config.additional_config)
@@ -422,8 +422,8 @@ class NPUPlatform(Platform):
             str: The module path to the attention backend class.
         """
         ensure_v1_engine()
-        return ("omni.models.common.layers.attention.backend.mla.AscendMLABackend" if use_mla
-                else "omni.models.common.layers.attention.backend.attention.AscendAttentionBackend")
+        return ("omni.layers.attention.backend.mla.AscendMLABackend" if use_mla
+                else "omni.layers.attention.backend.attention.AscendAttentionBackend")
 
     @classmethod
     def get_punica_wrapper(cls) -> str:

@@ -3,6 +3,10 @@ import os
 import re
 import shlex
 
+INFO    = "\033[92m[INFO]\033[0m"      # green
+WARNING = "\033[93m[WARNING]\033[0m"   # yellow
+ERROR   = "\033[91m[ERROR]\033[0m"     # red
+
 def get_data_from_yaml(yml_file_path):
     try:
         with open(yml_file_path, 'r') as file:
@@ -31,13 +35,13 @@ def parse_node_name(name):
 def convert_to_dict(s):
     if ':' not in s:
         return s
-    
+
     parts = s.split(":", 1)
     key = parts[0].strip()
     value_str = parts[1].strip()
     if not key or not value_str:
         return s
-    
+
     return {key: value_str}
 
 def parse_remaining_args_for_set(arg, remaining_args, sections, i):
@@ -175,7 +179,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
 def check_model_path(sections, data, node_type, node_name):
     if node_type == 'C':
         return True
-    
+
     model_path_is_none = 'MODEL_PATH' in data['all']['children'][node_type]['hosts'][node_name]['env'] and \
         (data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == '' or \
         data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == None)
@@ -215,19 +219,19 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
             for n_type in data['all']['children']:
                 for n_name in data['all']['children'][n_type]['hosts']:
                     updata_dict(filtered_sections, data['all']['children'][n_type]['hosts'][n_name])
-            print("[INFO] You have modified the configuration of all nodes")
+            print(f"{INFO} You have modified the configuration of all nodes")
         elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][n_name])
-            print("[INFO] You have modified the configuration of all nodes in the group %s" % node_type)
+            print(f"{INFO} You have modified the configuration of all nodes in the group {node_type}")
         else:
             updata_dict(filtered_sections, data['all']['children'][node_type]['hosts'][node_name])
-            print("[INFO] You have modified the configuration of node %s" % node_name)
+            print(f"{INFO} You have modified the configuration of node {node_name}")
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
-        print(f"[ERROR] There is no data in {yml_file_path}.")
+        print(f"{ERROR} There is no data in {yml_file_path}.")
         return
 
 def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
@@ -238,13 +242,13 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if key in vars_dict['env']:
             del vars_dict['env'][key]
         else:
-            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
+            print(f"{WARNING} No matching configuration {key} found in {node_name}.")
 
     for key in arg_list:
         if key in vars_dict['args']:
             del vars_dict['args'][key]
         else:
-            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
+            print(f"{WARNING} No matching configuration {key} found in {node_name}.")
 
     if DOCKER_IMAGE_ID and 'DOCKER_IMAGE_ID' in vars_dict:
         del vars_dict['DOCKER_IMAGE_ID']
@@ -259,7 +263,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if 'extra-args' in vars_dict['args'] and key in vars_dict['args']['extra-args']:
             del vars_dict['args']['extra-args'][key]
         else:
-            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
+            print(f"{WARNING} No matching configuration {key} found in {node_name}.")
 
     if 'extra-args' in vars_dict['args'] and vars_dict['args']['extra-args'] == {}:
         vars_dict['args']['extra-args'] = ''
@@ -268,7 +272,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if 'additional-config' in vars_dict['args'] and key in vars_dict['args']['additional-config']:
             del vars_dict['args']['additional-config'][key]
         else:
-            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
+            print(f"{WARNING} No matching configuration {key} found in {node_name}.")
 
     if 'additional-config' in vars_dict['args'] and vars_dict['args']['additional-config'] == {}:
         vars_dict['args']['additional-config'] = ''
@@ -277,7 +281,7 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
         if key in vars_dict['args']['kv-transfer-config']:
             del vars_dict['args']['kv-transfer-config'][key]
         else:
-            print(f"[WARNING] No matching configuration {key} found in {node_name}.")
+            print(f"{WARNING} No matching configuration {key} found in {node_name}.")
 
     if 'kv-transfer-config' in vars_dict['args'] and vars_dict['args']['kv-transfer-config'] == {}:
         vars_dict['args']['kv-transfer-config'] = ''
@@ -288,7 +292,7 @@ def delete_model_path(sections):
 
     if 'MODEL_PATH' in sections['env']:
         if 'model_path_used' not in default_cfg:
-            print("[WARNING] The key 'MODEL_PATH' does not exist, there is no need to delete it")
+            print(f"{WARNING} The key 'MODEL_PATH' does not exist, there is no need to delete it")
             return
 
         del default_cfg['model_path_used']
@@ -314,25 +318,25 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
                     delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                         ascend_rt_visible_devices, container_name, extra_args_list, \
                         additional_config_list, kv_transfer_config_list)
-            print("[INFO] You have deleted the configuration of all nodes")
+            print(f"{INFO} You have deleted the configuration of all nodes")
         elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                     ascend_rt_visible_devices, container_name, extra_args_list, \
                     additional_config_list, kv_transfer_config_list)
-            print("[INFO] You have deleted the configuration of all nodes in group %s" % node_type)
+            print(f"{INFO} You have deleted the configuration of all nodes in group {node_type}")
         else:
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                 ascend_rt_visible_devices, container_name, extra_args_list, \
                 additional_config_list, kv_transfer_config_list)
-            print("[INFO] You have deleted the configuration of node %s" % node_name)
+            print(f"{INFO} You have deleted the configuration of node {node_name}")
 
         with open(yml_file_path, 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
-        print(f"[ERROR] There is no data in {yml_file_path}.")
+        print(f"{ERROR} There is no data in {yml_file_path}.")
         return
-    
+
 def modify_by_use_default_file(sections, default_cfg, data, node_type, node_name):
     if check_model_path(sections, data, node_type, node_name) is False:
         return False
@@ -349,7 +353,7 @@ def modify_by_use_default_file(sections, default_cfg, data, node_type, node_name
 
 def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
-        print(f"[ERROR] Invalid node name: '{args.name[0]}'。")
+        print(f"{ERROR} Invalid node name: '{args.name[0]}'。")
         print("The node name must conform to one of the following formats:")
         print("  - prefill_<number> (for example: p0, p1, p11)")
         print("  - decode_<number> (for example: d0, d1, d11)")
@@ -381,7 +385,7 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
 
 def cfg_delete_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
-        print(f"[ERROR] Invalid node name: '{args.name[0]}'。")
+        print(f"{ERROR} Invalid node name: '{args.name[0]}'。")
         print("The node name must conform to one of the following formats:")
         print("  - prefill_<number> (for example: p0, p1, p11)")
         print("  - decode_<number> (for example: d0, d1, d11)")

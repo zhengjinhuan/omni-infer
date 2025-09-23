@@ -69,7 +69,7 @@ from vllm.model_executor.models.utils import (
 from vllm.sequence import IntermediateTensors
 
 import omni.adaptors.vllm.envs as envs_ascend
-from omni.models.common.layers.fused_moe.layer import FusedMoE
+from omni.layers.fused_moe.layer import FusedMoE
 
 
 VLLM_ENABLE_MC2: bool = envs_ascend.VLLM_ENABLE_MC2
