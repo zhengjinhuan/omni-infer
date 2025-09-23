@@ -300,8 +300,9 @@ class Qwen2_5_VisionAttention(nn.Module):
 
         q, k, v = (rearrange(x, "s b ... -> b s ...").contiguous() for x in (q, k, v))
         if rotary_pos_emb is not None:
-            q = apply_rotary_pos_emb_vision(q, rotary_pos_emb)
-            k = apply_rotary_pos_emb_vision(k, rotary_pos_emb)
+            qk_concat = torch.cat([q, k], dim=0)
+            qk_rotated = apply_rotary_pos_emb_vision(qk_concat, rotary_pos_emb)
+            q, k = torch.chunk(qk_rotated, 2, dim=0)
 
         q, k, v = (rearrange(x, "b s ... -> (b s) ...") for x in (q, k, v))
 
@@ -318,10 +319,8 @@ class Qwen2_5_VisionAttention(nn.Module):
             pre_tockens=2147483647,
             next_tockens=2147483647,
             sparse_mode=0)[0]
-        context_layer = rearrange(output,
-                                  "(b s) ... -> b s ...", b=batch_size)
-        context_layer = rearrange(context_layer,
-                                  "b s h d -> s b (h d)").contiguous()
+
+        context_layer = rearrange(output, "(b s) h d -> s b (h d)", b=batch_size).contiguous()
         output, _ = self.proj(context_layer)
         return output
 
@@ -831,7 +830,7 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
                 raise ValueError(f"{name} should be 2D or batched 3D tensor. "
                                  f"Got ndim: {mm_input.ndim} "
                                  f"(shape={mm_input.shape})")
-            return torch.concat(list(mm_input))
+            return return mm_input.reshape(-1, mm_input.shape[-1])
         else:
             return torch.concat(mm_input)
 
