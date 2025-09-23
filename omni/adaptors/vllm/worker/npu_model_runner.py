@@ -425,7 +425,10 @@ class NPUModelRunner(GPUModelRunner):
                     attn_metadata_i.slot_mapping % block_size], dim=1)
                 input_positions = positions[:total_num_scheduled_tokens]
                 attn_metadata_i.seq_lens[:total_num_scheduled_tokens] = (input_positions + 1).to(self.seq_lens.dtype)
-                attn_metadata_i.seq_lens_list = attn_metadata_i.seq_lens.tolist()
+                if attn_metadata_i.attn_state == AscendAttentionState.PrefillNoCache:
+                    attn_metadata_i.seq_lens_list = attn_metadata_i.seq_lens.tolist()
+                else:
+                    attn_metadata_i.seq_lens_list = []
             if kv_cache_group_id == 0:
                 self.full_attn_metadata = attn_metadata_i
 
@@ -435,7 +438,7 @@ class NPUModelRunner(GPUModelRunner):
                 attn_metadata[layer_name] = attn_metadata_i
 
         index = torch.argmin(torch.cat([cached_token, torch.full((num_reqs, 1), -1, device=self.device)], dim = 1), dim = 1) - 1
-        last_tokens = cached_token[torch.arange(num_reqs), index]
+        last_tokens = cached_token[torch.arange(num_reqs, device=self.device), index]
         if token_each_reqs == 1:
             self.input_ids[:num_reqs] = last_tokens.to(dtype=self.input_ids.dtype)
         else:
@@ -636,6 +639,7 @@ class NPUModelRunner(GPUModelRunner):
         accepted_num = 0
         finished_recving = set()
         loading_kv_failure = set()
+        sampled_token_ids_list = []
         for self.curr_step in range(self.total_step):
             start_1 = time.time()
             if not scheduler_output.total_num_scheduled_tokens:
@@ -757,11 +761,29 @@ class NPUModelRunner(GPUModelRunner):
 
             # NOTE: NPU -> CPU Sync happens here.
             # Move as many CPU operations as possible before this sync point.
-            logprobs_tensors = sampler_output.logprobs_tensors
-            logprobs_lists = logprobs_tensors.tolists() if logprobs_tensors is not None else None
 
             # Get the valid generated tokens.
             sampled_token_ids = sampler_output.sampled_token_ids
+            sampled_token_ids_list.append(sampled_token_ids)
+            sampled_tokens = sampled_token_ids
+
+            # Clear KVConnector state after all KVs are generated.
+            if has_kv_transfer_group():
+                get_kv_transfer_group().clear_connector_metadata()
+
+            cost_upd_states = start_1 - start
+            cost_proc_reqs = start_2 - start_1
+            cost_logits = start_3 - start_2
+            cost_bitmask = start_4 - start_3
+            cost_disc = start_5 - start_4
+            cost_sampler = start_6 - start_5
+            cost_output = time.time() - start_6
+            cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_output
+            logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
+        spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
+        logprobs_tensors = sampler_output.logprobs_tensors
+        logprobs_lists = logprobs_tensors.tolists() if logprobs_tensors is not None else None
+        for sampled_token_ids in sampled_token_ids_list:
             max_gen_len = sampled_token_ids.shape[-1]
             if max_gen_len == 1:
                 # No spec decode tokens.
@@ -773,27 +795,10 @@ class NPUModelRunner(GPUModelRunner):
                     sampled_token_ids,
                     self.input_batch.vocab_size,
                 )
-            sampled_tokens = sampled_token_ids
-            # Clear KVConnector state after all KVs are generated.
-            if has_kv_transfer_group():
-                get_kv_transfer_group().clear_connector_metadata()
-
             if cached_sampled_token_ids is None:
                 cached_sampled_token_ids = valid_sampled_token_ids
             else:
                 _ = [x.extend(y) for x, y in zip(cached_sampled_token_ids, valid_sampled_token_ids)]
-
-            cost_upd_states = start_1 - start
-            cost_proc_reqs = start_2 - start_1
-            cost_logits = start_3 - start_2
-            cost_bitmask = start_4 - start_3
-            cost_disc = start_5 - start_4
-            cost_sampler = start_6 - start_5
-            cost_output = time.time() - start_6
-            cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_output
-            logger.info(f" ***** execute model cost:{cost:.6f}={cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}+{cost_sampler:.6f}+{cost_disc:.6f}+{cost_output:.6f}")
-
-        spec_token_ids = None if spec_tokens_tensor is None else spec_tokens_tensor.tolist()
 
         # Mask out the sampled tokens that should not be sampled.
         for i in discard_sampled_tokens_req_indices:
