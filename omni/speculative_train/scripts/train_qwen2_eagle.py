@@ -232,8 +232,8 @@ target_head = target_head.eval().npu().to(torch.bfloat16)
 print_with_rank("Initialized target head")
 
 config = AutoDraftModelConfig.from_file("/data/model/qwq-32b-eagle/config.json")
-# draft_model = AutoEagleDraftModel.from_config(config).npu().to(torch.bfloat16)
-draft_model = AutoEagleDraftModel.from_pretrained("/data/model/qwq-32b-eagle/config.json").npu().to(torch.bfloat16)
+draft_model = AutoEagleDraftModel.from_config(config).npu().to(torch.bfloat16)
+# draft_model = AutoEagleDraftModel.from_pretrained("/data/model/qwq-32b-eagle/config.json").npu().to(torch.bfloat16)
 print(draft_model)
 names = [item[0] for item in draft_model.named_parameters()]
 print(names)
