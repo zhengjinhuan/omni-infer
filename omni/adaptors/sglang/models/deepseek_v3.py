@@ -18,48 +18,50 @@ from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
+from torch import nn
 import torch_npu
+from transformers import PretrainedConfig
+
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
-from sglang.srt.eplb.expert_distribution import \
-    get_global_expert_distribution_recorder
+from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
-from sglang.srt.layers.communicator import (LayerCommunicator,
-                                            LayerScatterModes,
-                                            enable_moe_dense_fully_dp)
+from sglang.srt.layers.communicator import (
+    LayerCommunicator,
+    LayerScatterModes,
+    enable_moe_dense_fully_dp,
+)
 from sglang.srt.layers.logits_processor import LogitsProcessor
+from omni.adaptors.sglang.layers.moe.ep_moe.layer import FusedMoE
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.quantization.fp8_kernel import is_fp8_fnuz
 from sglang.srt.layers.quantization.fp8_utils import (
-    block_quant_to_tensor_quant, channel_quant_to_tensor_quant,
-    normalize_e4m3fn_to_e4m3fnuz, requant_weight_ue8m0_inplace)
-from sglang.srt.layers.quantization.int8_utils import \
-    block_dequant as int8_block_dequant
-
+    block_quant_to_tensor_quant,
+    channel_quant_to_tensor_quant,
+    requant_weight_ue8m0_inplace,
+)
+from sglang.srt.layers.quantization.int8_utils import block_dequant as int8_block_dequant
 from sglang.srt.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
     ParallelLMHead,
 )
-
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.model_executor.forward_batch_info import (ForwardBatch,
-                                                          PPProxyTensors)
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
-from sglang.srt.utils import (BumpAllocator, LazyValue, add_prefix,
-                              bind_or_assign, log_info_on_rank0)
-from torch import nn
-from transformers import PretrainedConfig
+from sglang.srt.utils import (
+    BumpAllocator,
+    LazyValue,
+    add_prefix,
+    bind_or_assign,
+    log_info_on_rank0,
+)
+
+from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
+from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekMoE, DeepseekMLP
+from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.distributed import (
     get_mlp_tp_group_parallel_world_size,
     get_mlp_tp_group_parallel_rank,
 )
-from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
-from omni.adaptors.sglang.layers.layernorm import RMSNorm
-from omni.adaptors.sglang.layers.moe.deepseek_moe import (DeepseekMLP,
-                                                          DeepseekMoE)
-from omni.adaptors.sglang.layers.moe.ep_moe.layer import NpuDeepEPMoE
-
-_is_fp8_fnuz = is_fp8_fnuz()
 
 logger = logging.getLogger(__name__)
 
@@ -442,30 +444,17 @@ class DeepseekV3ForCausalLM(nn.Module):
                 ):
                     weight_block_size = self.quant_config.weight_block_size
                     assert hasattr(self_attn.kv_b_proj, "weight_scale_inv")
-                    if _is_fp8_fnuz:
-                        weight, weight_scale, _ = normalize_e4m3fn_to_e4m3fnuz(
-                            weight=w,
-                            weight_scale=self_attn.kv_b_proj.weight_scale_inv,
-                            input_scale=None,
-                        )
-                    else:
-                        weight = w
-                        weight_scale = self_attn.kv_b_proj.weight_scale_inv
+                    
+                    weight = w
+                    weight_scale = self_attn.kv_b_proj.weight_scale_inv
 
                     w, scale = block_quant_to_tensor_quant(
                         weight, weight_scale, weight_block_size
                     )
                     self_attn.w_scale = scale
                 else:
-                    if _is_fp8_fnuz:
-                        weight, weight_scale, _ = normalize_e4m3fn_to_e4m3fnuz(
-                            weight=w,
-                            weight_scale=self_attn.kv_b_proj.weight_scale,
-                            input_scale=None,
-                        )
-                    else:
-                        weight = w
-                        weight_scale = self_attn.kv_b_proj.weight_scale
+                    weight = w
+                    weight_scale = self_attn.kv_b_proj.weight_scale
 
                     w, scale = channel_quant_to_tensor_quant(weight, weight_scale)
                     self_attn.w_scale = scale
@@ -526,7 +515,7 @@ class DeepseekV3ForCausalLM(nn.Module):
                 if not is_nextn
                 else self.model.decoder.mlp
             )
-            if hasattr(mlp, "experts") and isinstance(mlp.experts, NpuDeepEPMoE):
+            if hasattr(mlp, "experts") and isinstance(mlp.experts, FusedMoE):
                 experts = mlp.experts
                 for w in [
                     experts.w13_weight,
@@ -584,7 +573,7 @@ class DeepseekV3ForCausalLM(nn.Module):
                 experts = layer.mlp.experts
             else:
                 mlp = layer.mlp
-                assert isinstance(mlp, ReplicatedDeepseekMLP)
+                assert isinstance(mlp, ParallelDeepseekMLP)
                 for module in [
                     mlp.gate_up_proj,
                     mlp.down_proj,
@@ -616,7 +605,7 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         # Params for weights, fp8 weight scales, fp8 activation scales
         # (param_name, weight_name, expert_id, shard_id)
-        expert_params_mapping = NpuDeepEPMoE.make_expert_params_mapping(
+        expert_params_mapping = FusedMoE.make_expert_params_mapping(
             ckpt_gate_proj_name="gate_proj",
             ckpt_down_proj_name="down_proj",
             ckpt_up_proj_name="up_proj",
@@ -624,7 +613,7 @@ class DeepseekV3ForCausalLM(nn.Module):
         )
         if self.quant_config and self.quant_config.get_name() == "w4afp8":
             expert_params_mapping += (
-                NpuDeepEPMoE.make_expert_input_scale_params_mapping(
+                FusedMoE.make_expert_input_scale_params_mapping(
                     num_experts=self.config.n_routed_experts
                 )
             )
