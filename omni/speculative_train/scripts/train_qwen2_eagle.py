@@ -243,8 +243,6 @@ def main():
             draft_model_last_checkpoint,
         ).npu().to(torch.bfloat16)
 
-    print_with_rank(f"{draft_model.device=}")
-
     draft_model.load_embedding(args.target_model_path, embedding_key=args.embedding_key)
     draft_model.freeze_embedding()
     print_with_rank("Initialized draft model")
