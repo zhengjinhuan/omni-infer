@@ -1,4 +1,5 @@
-from typing import Optional
+from collections.abc import Sequence
+from typing import Optional, Union
 
 from vllm.entrypoints.openai.protocal import (ChatCompletionRequest,
                                               DeltaMessage)
@@ -67,7 +68,7 @@ def patch_extract_reasoning_content_streaming(
             # Adapt: 适配delta tokens不出一个tokens的情况，Reasoning content需要去除start_token
             start_index = delta_text.find(self.start_token)
             reasoning_content = delta_text[start_index +
-                                           len(self.start_token)]
+                                           len(self.start_token):]
             return DeltaMessage(reasoning_content=reasoning_content)
     else:
         # No <think> in previous or delta, also need to check for </think>.
