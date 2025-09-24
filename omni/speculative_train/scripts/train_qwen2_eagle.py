@@ -329,8 +329,8 @@ for epoch in range(args.num_epochs):
     for data in progress_bar:
         batch_index += 1
 
-        # if batch_index % args.draft_accumulation_steps == 0:
-        #     optimizer.zero_grad()
+        if batch_index % args.draft_accumulation_steps == 0:
+            optimizer.zero_grad()
         plosses, acces = eagle_model(
             input_ids=data["input_ids"].npu(),  # [B, S]
             attention_mask=data["attention_mask"].npu(),  # [B, S]
