@@ -152,7 +152,7 @@ class Indexer(nn.Module):
                                                                 block_table=block_table,
                                                                 layout_query="TND",
                                                                 layout_key="PA_BSND",
-                                                                selected_count=2048,
+                                                                sparse_count=2048,
                                                                 sparse_mode=3)
         return topk_indices
 
@@ -530,13 +530,13 @@ class DeepseekMLA(nn.Module):
                 else:
                     actual_seq_kvlen = actual_seq_kvlen * (sp_rank + 1)
 
-            attn_output = torch.ops.custom.npu_selected_flash_attention(
+            attn_output = torch.ops.custom.npu_sparse_flash_attention(
                 query=q_nope,
                 key=k_nope,
                 value=k_nope,
-                selected_indices=topk_indices,
+                sparse_indices=topk_indices,
                 scale_value=self.scale,
-                selected_block_size=1,
+                sparse_block_size=1,
                 block_table=prefill_metadata.block_table,
                 actual_seq_lengths_query=actual_seq_qlen.to(torch.int32),# todo 等接口支持后切换成tensor
                 actual_seq_lengths_kv=actual_seq_kvlen.to(torch.int32),
@@ -1092,13 +1092,13 @@ class DeepseekMLA(nn.Module):
                 # todo indexer only support bsnd
                 topk_indices, _ = self.indexer(hidden_states, qr, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)
-                attn_output = torch.ops.custom.npu_selected_flash_attention(
+                attn_output = torch.ops.custom.npu_sparse_flash_attention(
                     query=q_nope,
                     key=k_nope,
                     value=k_nope,
-                    selected_indices=topk_indices,
+                    sparse_indices=topk_indices,
                     scale_value=self.scale,
-                    selected_block_size=1,
+                    sparse_block_size=1,
                     block_table=attn_metadata.decode.block_table,
                     actual_seq_lengths_query=self.actual_seq_lengths[bsz].to(torch.int32),
                     actual_seq_lengths_kv=attn_metadata.decode.seq_lens.to(torch.int32),
