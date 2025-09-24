@@ -234,7 +234,7 @@ def main():
     print_with_rank("Initialized target head")
 
     if draft_model_last_checkpoint is None:
-        config = AutoDraftModelConfig.from_file("/data/model/qwq-32b-eagle/config.json")
+        config = AutoDraftModelConfig.from_file(args.draft_model_config)
         draft_model = AutoEagleDraftModel.from_config(
             config, device_map='auto',
         ).to(torch.bfloat16)
@@ -251,7 +251,7 @@ def main():
 
     with rank_0_priority():
         train_eagle3_dataset = build_offline_eagle_dataset(
-            args.train_hidden_states_path,
+            args.train_data_path,
             args.max_length,
             'pt',
         )
