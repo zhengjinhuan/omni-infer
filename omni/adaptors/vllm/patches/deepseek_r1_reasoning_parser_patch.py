@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from typing import Optional, Union
 
-from vllm.entrypoints.openai.protocal import (ChatCompletionRequest,
+from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               DeltaMessage)
 
 
@@ -65,7 +65,7 @@ def patch_extract_reasoning_content_streaming(
             # <think> in delta, no </think> in delta,
             # reasoning content continues
             # <think> in delta, </think> in delta, extract reasoning content
-            # Adapt: 适配delta tokens不出一个tokens的情况，Reasoning content需要去除start_token
+            # Adapt: 适配delta tokens不止一个tokens的情况，Reasoning content需要去除start_token
             start_index = delta_text.find(self.start_token)
             reasoning_content = delta_text[start_index +
                                            len(self.start_token):]
