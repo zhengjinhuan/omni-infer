@@ -371,61 +371,61 @@ for epoch in range(args.num_epochs):
                 {"loss": f"{avg_loss:.2f}", "acc": f"{avg_acc:.2f}"}
             )
 
-    # Log epoch-level training metrics
-    train_epoch_logdict = {}
-    for i in range(len(epoch_acces)):
-        acc_i = torch.tensor(epoch_acces[i]).npu().mean()
-        dist.all_reduce(acc_i)
-        acc_i = (acc_i / dist.get_world_size()).item()
-        train_epoch_logdict[f"train/epoch_acc_{i}"] = acc_i
-        print_on_rank0(
-            f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
-        )
-    for i in range(len(epoch_plosses)):
-        loss_i = torch.tensor(epoch_plosses[i]).npu().mean()
-        dist.all_reduce(loss_i)
-        loss_i = (loss_i / dist.get_world_size()).item()
-        train_epoch_logdict[f"train/epoch_ploss_{i}"] = loss_i
-        print_on_rank0(
-            f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
-        )
-    tracker.log(train_epoch_logdict, step=global_step)
+    # # Log epoch-level training metrics
+    # train_epoch_logdict = {}
+    # for i in range(len(epoch_acces)):
+    #     acc_i = torch.tensor(epoch_acces[i]).npu().mean()
+    #     dist.all_reduce(acc_i)
+    #     acc_i = (acc_i / dist.get_world_size()).item()
+    #     train_epoch_logdict[f"train/epoch_acc_{i}"] = acc_i
+    #     print_on_rank0(
+    #         f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
+    #     )
+    # for i in range(len(epoch_plosses)):
+    #     loss_i = torch.tensor(epoch_plosses[i]).npu().mean()
+    #     dist.all_reduce(loss_i)
+    #     loss_i = (loss_i / dist.get_world_size()).item()
+    #     train_epoch_logdict[f"train/epoch_ploss_{i}"] = loss_i
+    #     print_on_rank0(
+    #         f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
+    #     )
+    # tracker.log(train_epoch_logdict, step=global_step)
 
-    if epoch % args.save_interval == 0:
-        # Save the model
-        epoch_output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+    # if epoch % args.save_interval == 0:
+    #     # Save the model
+    #     epoch_output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
 
-        if dist.get_rank() == 0:
-            os.makedirs(epoch_output_dir, exist_ok=True)
-        dist.barrier()
+    #     if dist.get_rank() == 0:
+    #         os.makedirs(epoch_output_dir, exist_ok=True)
+    #     dist.barrier()
 
-        with FSDP.state_dict_type(eagle_model, StateDictType.FULL_STATE_DICT):
-            model_state_dict = eagle_model.state_dict()
-            state_to_save = {
-                "epoch": epoch,
-                "args": args,
-            }
-            state_to_save.update(optimizer.state_dict())
-            draft_model_state_dict = {
-                k.replace("draft_model.", ""): v
-                for k, v in model_state_dict.items()
-                if "draft_model." in k and "embed" not in k.lower()
-            }
+    #     with FSDP.state_dict_type(eagle_model, StateDictType.FULL_STATE_DICT):
+    #         model_state_dict = eagle_model.state_dict()
+    #         state_to_save = {
+    #             "epoch": epoch,
+    #             "args": args,
+    #         }
+    #         state_to_save.update(optimizer.state_dict())
+    #         draft_model_state_dict = {
+    #             k.replace("draft_model.", ""): v
+    #             for k, v in model_state_dict.items()
+    #             if "draft_model." in k and "embed" not in k.lower()
+    #         }
 
-            if dist.get_rank() == 0:
-                torch.save(
-                    state_to_save,
-                    os.path.join(epoch_output_dir, "training_state.pt"),
-                )
-                print_on_rank0(
-                    f"Saved full training state to {epoch_output_dir}/training_state.pt"
-                )
-                draft_model.save_pretrained(
-                    epoch_output_dir,
-                    state_dict=draft_model_state_dict,
-                )
-                print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
-            dist.barrier()
+    #         if dist.get_rank() == 0:
+    #             torch.save(
+    #                 state_to_save,
+    #                 os.path.join(epoch_output_dir, "training_state.pt"),
+    #             )
+    #             print_on_rank0(
+    #                 f"Saved full training state to {epoch_output_dir}/training_state.pt"
+    #             )
+    #             draft_model.save_pretrained(
+    #                 epoch_output_dir,
+    #                 state_dict=draft_model_state_dict,
+    #             )
+    #             print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
+    #         dist.barrier()
 
 # Close the tracker at the end of training
 tracker.close()
