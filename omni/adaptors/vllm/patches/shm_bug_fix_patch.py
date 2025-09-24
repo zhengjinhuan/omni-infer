@@ -3,6 +3,7 @@ import pickle
 from threading import Event
 from typing import Optional
 
+from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 from vllm.logger import init_logger
 from zmq import IPV6
 from zmq import SUB, SUBSCRIBE, XPUB, XPUB_VERBOSE, Context
@@ -43,7 +44,5 @@ def dequeue(self,
 def patch_shm_to_zmq():
     use_zmq_broadcast = bool(int(os.environ.get("USE_ZMQ_BROADCAST", "1")))
     if use_zmq_broadcast:
-        from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
-
         MessageQueue.enqueue = enqueue
         MessageQueue.dequeue = dequeue
