@@ -209,7 +209,11 @@ class Indexer(nn.Module):
 
         with stream_context("22"):
             if not is_prefill:
-                tng.scope.npu_wait_tensor(x, kw)
+                if model_extra_config.operator_opt_config.moe_multi_stream_tune:
+                    if isinstance(x, Dict):
+                        tng.scope.npu_wait_tensor(x["xint_8"], kw)
+                    else:
+                        tng.scope.npu_wait_tensor(x, kw)
             if model_extra_config.parall_config.attn_sp_size == 1:
                 x = tensor_model_parallel_all_gather(x, dim=0)
             weights = self.weights_proj(x)[0]
@@ -1084,7 +1088,7 @@ class DeepseekMLA(nn.Module):
                 )
             elif model_extra_config.operator_opt_config.enable_fgsa:
                 if model_extra_config.operator_opt_config.moe_multi_stream_tune:
-                    tng.scope.npu_wait_tensor(qr, q_pe)
+                    tng.scope.npu_wait_tensor(qr, k_rope)
                 # todo indexer only support bsnd
                 topk_indices, _ = self.indexer(hidden_states, qr, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)
