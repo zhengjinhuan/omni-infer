@@ -1,3 +1,5 @@
+LOGFILE=re_$(date +%Y-%m%d-%H%M-%S).log
+
 NUM_GPUS=${1:-16}
 
 torchrun \
@@ -12,6 +14,7 @@ torchrun \
     --learning-rate 1e-4 \
     --max-length 4096 \
     --chat-template qwen \
-    --output-dir ./ \
-    --ttt-length 1 \
-    --resume
+    --output-dir ./train-result/ \
+    --ttt-length 4 \
+    --resume \
+    | tee $LOGFILE
