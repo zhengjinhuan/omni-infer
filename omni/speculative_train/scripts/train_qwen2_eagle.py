@@ -68,9 +68,7 @@ def parse_args():
 
     # add training-related arguments
     parser.add_argument("--train-data-path", type=str, required=True)
-    parser.add_argument("--train-hidden-states-path", type=str, required=True)
     parser.add_argument("--eval-data-path", type=str, default=None)
-    parser.add_argument("--eval-hidden-states-path", type=str, default=None)
     parser.add_argument("--num-epochs", type=int, default=10)
     parser.add_argument("--draft-global-batch-size", type=int, default=16)
     parser.add_argument("--draft-micro-batch-size", type=int, default=1)
@@ -109,6 +107,7 @@ def parse_args():
     parser.add_argument("--cache-key", type=str, default=None)
     parser.add_argument("--cache-dir", type=str, default="./cache")
     parser.add_argument("--output-dir", type=str, required=True)
+    parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--eval-interval", type=int, default=1)
     parser.add_argument("--save-interval", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
@@ -187,247 +186,258 @@ def parse_args():
 
     return parser, args
 
+def main():
+    # initialize
+    parser, args = parse_args()
+    init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
+    args.dp_size = dist.get_world_size() // args.tp_size
 
-# initialize
-parser, args = parse_args()
-init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
-args.dp_size = dist.get_world_size() // args.tp_size
-
-args.draft_accumulation_steps = (
-    args.draft_global_batch_size // args.dp_size // args.draft_micro_batch_size
-)
-assert (
-    args.draft_accumulation_steps * args.draft_micro_batch_size * args.dp_size
-    == args.draft_global_batch_size
-), f"draft_global_batch_size={args.draft_global_batch_size} must be divisible by dp_size={args.dp_size} and micro_batch_size={args.draft_micro_batch_size}"
-print_with_rank(
-    f"draft_accumulation_steps={args.draft_global_batch_size} // {args.dp_size} // {args.draft_micro_batch_size}={args.draft_accumulation_steps}"
-)
-
-# Validate report backend arguments
-tracker_class = get_tracker_class(args.report_to)
-if tracker_class:
-    tracker_class.validate_args(parser, args)
-else:
-    parser.error(f"Unknown tracker: {args.report_to}")
-
-tracker = create_tracker(args, args.output_dir)
-
-# detecting last ckpt for draft model
-draft_model_last_checkpoint = None
-if args.resume and os.path.isdir(args.output_dir):
-    print_on_rank0(args.output_dir)
-    draft_model_last_checkpoint = get_last_checkpoint(args.output_dir)
-    print_on_rank0(f"Last checkpoint detected: {draft_model_last_checkpoint}")
-
-# build target and draft model
-target_head = TargetHead(args.target_model_path)
-target_head.load_weights(
-    model_path=args.target_model_path,
-    lm_head_key=args.lm_head_key,
-    cache_dir=args.cache_dir,
-)
-target_head.freeze_weights()
-target_head = target_head.eval().npu().to(torch.bfloat16)
-print_with_rank("Initialized target head")
-
-config = AutoDraftModelConfig.from_file("/data/model/qwq-32b-eagle/config.json")
-draft_model = AutoEagleDraftModel.from_config(config).npu().to(torch.bfloat16)
-# draft_model = AutoEagleDraftModel.from_pretrained("/data/model/qwq-32b-eagle/config.json").npu().to(torch.bfloat16)
-print(draft_model)
-names = [item[0] for item in draft_model.named_parameters()]
-print(names)
-draft_model.load_embedding(args.target_model_path, embedding_key=args.embedding_key)
-draft_model.freeze_embedding()
-print_with_rank("Initialized draft model")
-
-with rank_0_priority():
-    train_eagle3_dataset = build_offline_eagle_dataset(
-        args.train_hidden_states_path,
-        args.max_length,
-        'pt',
+    args.draft_accumulation_steps = (
+        args.draft_global_batch_size // args.dp_size // args.draft_micro_batch_size
     )
-
-train_dataloader = prepare_dp_dataloaders(
-    train_eagle3_dataset,
-    args.draft_micro_batch_size,
-    num_workers=4,
-    shuffle=True,
-    process_group=get_dp_group(),
-    pin_memory=True,
-)
-print_with_rank("Initialized train dataloader")
-print(train_dataloader)
-
-# Calculate total steps if not provided
-if args.total_steps is None:
-    steps_per_epoch = math.ceil(
-        len(train_dataloader) / args.draft_accumulation_steps
-    )
-    args.total_steps = args.num_epochs * steps_per_epoch
+    assert (
+        args.draft_accumulation_steps * args.draft_micro_batch_size * args.dp_size
+        == args.draft_global_batch_size
+    ), f"draft_global_batch_size={args.draft_global_batch_size} must be divisible by dp_size={args.dp_size} and micro_batch_size={args.draft_micro_batch_size}"
     print_with_rank(
-        f"Auto-calculated total_steps: {args.total_steps} (num_epochs={args.num_epochs} * steps_per_epoch={steps_per_epoch})"
+        f"draft_accumulation_steps={args.draft_global_batch_size} // {args.dp_size} // {args.draft_micro_batch_size}={args.draft_accumulation_steps}"
     )
-else:
-    print_with_rank(f"Using provided total_steps: {args.total_steps}")
 
-# build Eagle3 model
-eagle_model = OfflineEagleModel(
-    target_head=target_head,
-    draft_model=draft_model,
-    length=args.ttt_length,
-    attention_backend=args.draft_attention_backend,
-)
-eagle_model = FSDP(
-    eagle_model,
-    use_orig_params=True,
-    mixed_precision=MixedPrecision(
-        param_dtype=torch.bfloat16,
-        buffer_dtype=torch.bfloat16,
-        reduce_dtype=torch.float32,
-        keep_low_precision_grads=False,
-    ),
-    sharding_strategy=ShardingStrategy.NO_SHARD,
-    ignored_modules=[],
-    process_group=get_dp_group(),
-)
-print_with_rank(f"Initialized Eagle FSDP model")
-global_step, batch_index = 0, 0
-log_dict = defaultdict(float)
-# build other components
-optimizer = BF16Optimizer(
-    eagle_model,
-    lr=args.learning_rate,
-    max_grad_norm=args.max_grad_norm,
-    warmup_ratio=args.warmup_ratio,
-    total_steps=args.total_steps,
-)
-print_with_rank("Initialized optimizer and scheduler")
+    # Validate report backend arguments
+    tracker_class = get_tracker_class(args.report_to)
+    if tracker_class:
+        tracker_class.validate_args(parser, args)
+    else:
+        parser.error(f"Unknown tracker: {args.report_to}")
 
+    tracker = create_tracker(args, args.output_dir)
 
+    # detecting last ckpt for draft model
+    draft_model_last_checkpoint = None
+    if args.checkpoint is not None:
+        draft_model_last_checkpoint = args.checkpoint
+        print_on_rank0(f"Drafter will be trained start from {draft_model_last_checkpoint}")
+    elif args.resume and os.path.isdir(args.output_dir):
+        print_on_rank0(args.output_dir)
+        draft_model_last_checkpoint = get_last_checkpoint(args.output_dir)
+        print_on_rank0(f"Last checkpoint detected: {draft_model_last_checkpoint}")
 
-last_time = time.time()
+    # build target and draft model
+    target_head = TargetHead(args.target_model_path)
+    target_head.load_weights(
+        model_path=args.target_model_path,
+        lm_head_key=args.lm_head_key,
+        cache_dir=args.cache_dir,
+    )
+    target_head.freeze_weights()
+    target_head = target_head.eval().npu().to(torch.bfloat16)
+    print_with_rank("Initialized target head")
 
+    if draft_model_last_checkpoint is None:
+        config = AutoDraftModelConfig.from_file("/data/model/qwq-32b-eagle/config.json")
+        draft_model = AutoEagleDraftModel.from_config(
+            config, device_map='auto',
+        ).to(torch.bfloat16)
+    else:
+        draft_model = AutoEagleDraftModel.from_pretrained(
+            draft_model_last_checkpoint, device_map='auto',
+        ).to(torch.bfloat16)
 
-# start running
-for epoch in range(args.num_epochs):
-    # Run training
-    train_dataloader.sampler.set_epoch(epoch + 1)
-    draft_model.train()
+    print_with_rank(f"{draft_model.device=}")
 
-    epoch_acces = [[] for _ in range(args.ttt_length)]
-    epoch_plosses = [[] for _ in range(args.ttt_length)]
+    draft_model.load_embedding(args.target_model_path, embedding_key=args.embedding_key)
+    draft_model.freeze_embedding()
+    print_with_rank("Initialized draft model")
 
+    with rank_0_priority():
+        train_eagle3_dataset = build_offline_eagle_dataset(
+            args.train_hidden_states_path,
+            args.max_length,
+            'pt',
+        )
 
-    if dist.get_rank() == 0:
-        progress_bar = tqdm(
-            train_dataloader, desc=f"Training Epoch {epoch}", leave=True
+    train_dataloader = prepare_dp_dataloaders(
+        train_eagle3_dataset,
+        args.draft_micro_batch_size,
+        num_workers=4,
+        shuffle=True,
+        process_group=get_dp_group(),
+        pin_memory=True,
+    )
+    print_with_rank("Initialized train dataloader")
+
+    # Calculate total steps if not provided
+    if args.total_steps is None:
+        steps_per_epoch = math.ceil(
+            len(train_dataloader) / args.draft_accumulation_steps
+        )
+        args.total_steps = args.num_epochs * steps_per_epoch
+        print_with_rank(
+            f"Auto-calculated total_steps: {args.total_steps} (num_epochs={args.num_epochs} * steps_per_epoch={steps_per_epoch})"
         )
     else:
-        progress_bar = train_dataloader
+        print_with_rank(f"Using provided total_steps: {args.total_steps}")
 
-    for data in progress_bar:
-        batch_index += 1
+    # build Eagle3 model
+    eagle_model = OfflineEagleModel(
+        target_head=target_head,
+        draft_model=draft_model,
+        length=args.ttt_length,
+        attention_backend=args.draft_attention_backend,
+    )
+    eagle_model = FSDP(
+        eagle_model,
+        use_orig_params=True,
+        mixed_precision=MixedPrecision(
+            param_dtype=torch.bfloat16,
+            buffer_dtype=torch.bfloat16,
+            reduce_dtype=torch.float32,
+            keep_low_precision_grads=False,
+        ),
+        sharding_strategy=ShardingStrategy.NO_SHARD,
+        ignored_modules=[],
+        process_group=get_dp_group(),
+    )
+    print_with_rank(f"Initialized Eagle FSDP model")
+    global_step, batch_index = 0, 0
+    log_dict = defaultdict(float)
+    # build other components
+    optimizer = BF16Optimizer(
+        eagle_model,
+        lr=args.learning_rate,
+        max_grad_norm=args.max_grad_norm,
+        warmup_ratio=args.warmup_ratio,
+        total_steps=args.total_steps,
+    )
+    print_with_rank("Initialized optimizer and scheduler")
 
-        plosses, acces = eagle_model(
-            input_ids=data["input_ids"].npu(),  # [B, S]
-            attention_mask=data["attention_mask"].npu(),  # [B, S]
-            loss_mask=data["loss_mask"].unsqueeze(-1).npu(),  # [B, S, 1] This is different from the online version
-            hidden_states=data["hidden_states"].npu(),  # [B, S, D]
-        )
-        acces = torch.stack(acces).cpu().tolist()
 
-        # calculate weighted loss
-        ploss_weight = [0.8**i for i in range(len(plosses))]
-        ploss = (
-            sum([ploss_weight[i] * plosses[i] for i in range(len(plosses))])
-            / args.draft_accumulation_steps
-        )
-        ploss.backward()
-        log_dict["train/lr"] = optimizer.get_learning_rate()
-        for i in range(len(plosses)):
-            log_dict[f"train/ploss_{i}"] += (
-                plosses[i].item() / args.draft_accumulation_steps
-            )
-        for i in range(len(acces)):
-            log_dict[f"train/acc_{i}"] += acces[i] / args.draft_accumulation_steps
-        if batch_index % args.draft_accumulation_steps == 0:
-            optimizer.step()
-            global_step += 1
-            # Pass global_step to the tracker
-            if global_step % args.log_steps == 0:
-                tracker.log(log_dict, step=global_step)
-            log_dict = defaultdict(float)
 
-        epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
-        epoch_plosses = [
-            epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))
-        ]
+    last_time = time.time()
 
-        if dist.get_rank() == 0:
-            avg_loss = sum(pl.item() for pl in plosses) / len(plosses)
-            avg_acc = sum(acces) / len(acces)
-            progress_bar.set_postfix(
-                {"loss": f"{avg_loss:.2f}", "acc": f"{avg_acc:.2f}"}
-            )
 
-    # Log epoch-level training metrics
-    train_epoch_logdict = {}
-    for i in range(len(epoch_acces)):
-        acc_i = torch.tensor(epoch_acces[i]).npu().mean()
-        dist.all_reduce(acc_i)
-        acc_i = (acc_i / dist.get_world_size()).item()
-        train_epoch_logdict[f"train/epoch_acc_{i}"] = acc_i
-        print_on_rank0(
-            f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
-        )
-    for i in range(len(epoch_plosses)):
-        loss_i = torch.tensor(epoch_plosses[i]).npu().mean()
-        dist.all_reduce(loss_i)
-        loss_i = (loss_i / dist.get_world_size()).item()
-        train_epoch_logdict[f"train/epoch_ploss_{i}"] = loss_i
-        print_on_rank0(
-            f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
-        )
-    tracker.log(train_epoch_logdict, step=global_step)
+    # start running
+    for epoch in range(args.num_epochs):
+        # Run training
+        train_dataloader.sampler.set_epoch(epoch + 1)
+        draft_model.train()
 
-    if epoch % args.save_interval == 0:
-        # Save the model
-        epoch_output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+        epoch_acces = [[] for _ in range(args.ttt_length)]
+        epoch_plosses = [[] for _ in range(args.ttt_length)]
+
 
         if dist.get_rank() == 0:
-            os.makedirs(epoch_output_dir, exist_ok=True)
-        dist.barrier()
+            progress_bar = tqdm(
+                train_dataloader, desc=f"Training Epoch {epoch}", leave=True
+            )
+        else:
+            progress_bar = train_dataloader
 
-        with FSDP.state_dict_type(eagle_model, StateDictType.FULL_STATE_DICT):
-            state_to_save = {
-                "epoch": epoch,
-                "args": args,
-            }
-            state_to_save.update(optimizer.state_dict())
-            draft_model_state_dict = {
-                k.replace("draft_model.", ""): v
-                for k, v in eagle_model.state_dict().items()
-                if "draft_model." in k and "embed" not in k.lower()
-            }
+        for data in progress_bar:
+            batch_index += 1
+
+            plosses, acces = eagle_model(
+                input_ids=data["input_ids"].npu(),  # [B, S]
+                attention_mask=data["attention_mask"].npu(),  # [B, S]
+                loss_mask=data["loss_mask"].unsqueeze(-1).npu(),  # [B, S, 1] This is different from the online version
+                hidden_states=data["hidden_states"].npu(),  # [B, S, D]
+            )
+            acces = torch.stack(acces).cpu().tolist()
+
+            # calculate weighted loss
+            ploss_weight = [0.8**i for i in range(len(plosses))]
+            ploss = (
+                sum([ploss_weight[i] * plosses[i] for i in range(len(plosses))])
+                / args.draft_accumulation_steps
+            )
+            ploss.backward()
+            log_dict["train/lr"] = optimizer.get_learning_rate()
+            for i in range(len(plosses)):
+                log_dict[f"train/ploss_{i}"] += (
+                    plosses[i].item() / args.draft_accumulation_steps
+                )
+            for i in range(len(acces)):
+                log_dict[f"train/acc_{i}"] += acces[i] / args.draft_accumulation_steps
+            if batch_index % args.draft_accumulation_steps == 0:
+                optimizer.step()
+                global_step += 1
+                # Pass global_step to the tracker
+                if global_step % args.log_steps == 0:
+                    tracker.log(log_dict, step=global_step)
+                log_dict = defaultdict(float)
+
+            epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
+            epoch_plosses = [
+                epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))
+            ]
 
             if dist.get_rank() == 0:
-                torch.save(
-                    state_to_save,
-                    os.path.join(epoch_output_dir, "training_state.pt"),
+                avg_loss = sum(pl.item() for pl in plosses) / len(plosses)
+                avg_acc = sum(acces) / len(acces)
+                progress_bar.set_postfix(
+                    {"loss": f"{avg_loss:.2f}", "acc": f"{avg_acc:.2f}"}
                 )
-                print_on_rank0(
-                    f"Saved full training state to {epoch_output_dir}/training_state.pt"
-                )
-                draft_model.save_pretrained(
-                    epoch_output_dir,
-                    state_dict=draft_model_state_dict,
-                )
-                print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
-            dist.barrier()
-            del state_to_save
-            del draft_model_state_dict
 
-# Close the tracker at the end of training
-tracker.close()
-destroy_distributed()
+        # Log epoch-level training metrics
+        train_epoch_logdict = {}
+        for i in range(len(epoch_acces)):
+            acc_i = torch.tensor(epoch_acces[i]).npu().mean()
+            dist.all_reduce(acc_i)
+            acc_i = (acc_i / dist.get_world_size()).item()
+            train_epoch_logdict[f"train/epoch_acc_{i}"] = acc_i
+            print_on_rank0(
+                f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
+            )
+        for i in range(len(epoch_plosses)):
+            loss_i = torch.tensor(epoch_plosses[i]).npu().mean()
+            dist.all_reduce(loss_i)
+            loss_i = (loss_i / dist.get_world_size()).item()
+            train_epoch_logdict[f"train/epoch_ploss_{i}"] = loss_i
+            print_on_rank0(
+                f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
+            )
+        tracker.log(train_epoch_logdict, step=global_step)
+
+        if epoch % args.save_interval == 0:
+            # Save the model
+            epoch_output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+
+            if dist.get_rank() == 0:
+                os.makedirs(epoch_output_dir, exist_ok=True)
+            dist.barrier()
+
+            with FSDP.state_dict_type(eagle_model, StateDictType.FULL_STATE_DICT):
+                state_to_save = {
+                    "epoch": epoch,
+                    "args": args,
+                }
+                state_to_save.update(optimizer.state_dict())
+                draft_model_state_dict = {
+                    k.replace("draft_model.", ""): v
+                    for k, v in eagle_model.state_dict().items()
+                    if "draft_model." in k and "embed" not in k.lower()
+                }
+
+                if dist.get_rank() == 0:
+                    torch.save(
+                        state_to_save,
+                        os.path.join(epoch_output_dir, "training_state.pt"),
+                    )
+                    print_on_rank0(
+                        f"Saved full training state to {epoch_output_dir}/training_state.pt"
+                    )
+                    draft_model.save_pretrained(
+                        epoch_output_dir,
+                        state_dict=draft_model_state_dict,
+                    )
+                    print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
+                dist.barrier()
+                del state_to_save
+                del draft_model_state_dict
+
+    # Close the tracker at the end of training
+    tracker.close()
+    destroy_distributed()
+
+if __name__ == "__main__":
+    main()
