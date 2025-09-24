@@ -371,25 +371,25 @@ for epoch in range(args.num_epochs):
                 {"loss": f"{avg_loss:.2f}", "acc": f"{avg_acc:.2f}"}
             )
 
-    # # Log epoch-level training metrics
-    # train_epoch_logdict = {}
-    # for i in range(len(epoch_acces)):
-    #     acc_i = torch.tensor(epoch_acces[i]).npu().mean()
-    #     dist.all_reduce(acc_i)
-    #     acc_i = (acc_i / dist.get_world_size()).item()
-    #     train_epoch_logdict[f"train/epoch_acc_{i}"] = acc_i
-    #     print_on_rank0(
-    #         f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
-    #     )
-    # for i in range(len(epoch_plosses)):
-    #     loss_i = torch.tensor(epoch_plosses[i]).npu().mean()
-    #     dist.all_reduce(loss_i)
-    #     loss_i = (loss_i / dist.get_world_size()).item()
-    #     train_epoch_logdict[f"train/epoch_ploss_{i}"] = loss_i
-    #     print_on_rank0(
-    #         f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
-    #     )
-    # tracker.log(train_epoch_logdict, step=global_step)
+    # Log epoch-level training metrics
+    train_epoch_logdict = {}
+    for i in range(len(epoch_acces)):
+        acc_i = torch.tensor(epoch_acces[i]).npu().mean()
+        dist.all_reduce(acc_i)
+        acc_i = (acc_i / dist.get_world_size()).item()
+        train_epoch_logdict[f"train/epoch_acc_{i}"] = acc_i
+        print_on_rank0(
+            f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
+        )
+    for i in range(len(epoch_plosses)):
+        loss_i = torch.tensor(epoch_plosses[i]).npu().mean()
+        dist.all_reduce(loss_i)
+        loss_i = (loss_i / dist.get_world_size()).item()
+        train_epoch_logdict[f"train/epoch_ploss_{i}"] = loss_i
+        print_on_rank0(
+            f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
+        )
+    tracker.log(train_epoch_logdict, step=global_step)
 
     # if epoch % args.save_interval == 0:
     #     # Save the model
