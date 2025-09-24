@@ -23,18 +23,24 @@ ngx_module_srcs="$ngx_addon_dir/ngx_http_omni_proxy_module.c \
 ngx_module_incs="$ngx_addon_dir"
 
 detect_python_config() {
-    if command -v python3-config >/dev/null 2>&1; then
+    if command -v python3.11-config >/dev/null 2>&1; then
+        PYTHON_INCLUDES=$(python3.11-config --includes)
+        PYTHON_LDFLAGS=$(python3.11-config --ldflags --embed 2>/dev/null || python3.11-config --ldflags)
+    elif command -v python3-config >/dev/null 2>&1; then
         PYTHON_INCLUDES=$(python3-config --includes)
-        PYTHON_LDFLAGS=$(python3-config --ldflags 2>/dev/null || python3-config --ldflags)
-    elif command -v pkg-config >/dev/null 2>&1; then
+        PYTHON_LDFLAGS=$(python3-config --ldflags --embed 2>/dev/null || python3-config --ldflags)
+    elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists python-3.11; then
+        PYTHON_INCLUDES=$(pkg-config --cflags python-3.11)
+        PYTHON_LDFLAGS=$(pkg-config --libs python-3.11)
+    elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists python3; then
         PYTHON_INCLUDES=$(pkg-config --cflags python3)
         PYTHON_LDFLAGS=$(pkg-config --libs python3)
     else
-        PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.8")
-        PYTHON_INCLUDES="-I/usr/include/python$PYTHON_VERSION"
-        PYTHON_LDFLAGS="-lpython$PYTHON_VERSION"
+        PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.11")
+        PYTHON_INCLUDES="-I/usr/include/python${PYTHON_VERSION}"
+        PYTHON_LDFLAGS="-lpython${PYTHON_VERSION}"
     fi
-    
+
     echo "$PYTHON_INCLUDES $PYTHON_LDFLAGS"
 }
 
@@ -64,11 +70,28 @@ detect_zeromq_config() {
     echo "$ZMQ_CFLAGS $ZMQ_LIBS"
 }
 
+detect_msgpack_config() {
+    if [ -f /usr/include/msgpack.h ]; then
+        MSGPACK_CFLAGS="-I/usr/include"
+        MSGPACK_LIBS="-L/usr/lib64 -lmsgpack-c"
+    elif [ -f /usr/local/include/msgpack/msgpack.h ]; then
+        MSGPACK_CFLAGS="-I/usr/local/include"
+        MSGPACK_LIBS="-L/usr/local/lib64 -lmsgpack-c"
+    else
+        echo "msgpack-c not found!" >&2
+        MSGPACK_CFLAGS=""
+        MSGPACK_LIBS="-lmsgpack-c"
+    fi
+
+    echo "$MSGPACK_CFLAGS $MSGPACK_LIBS"
+}
+
+MSGPACK_FLAGS=$(detect_msgpack_config)
 PYTHON_FLAGS=$(detect_python_config)
 ZMQ_FLAGS=$(detect_zeromq_config)
 
-CFLAGS="$CFLAGS $PYTHON_FLAGS $ZMQ_FLAGS"
-ngx_module_libs="$ngx_module_libs $ZMQ_FLAGS -lmsgpack-c -Wl,-Bdynamic -L/usr/local/lib -lpython3.11 $PYTHON_FLAGS"
+CFLAGS="$CFLAGS $PYTHON_FLAGS $ZMQ_FLAGS $MSGPACK_FLAGS"
+ngx_module_libs="$ngx_module_libs $PYTHON_FLAGS $ZMQ_FLAGS $MSGPACK_FLAGS"
 
 CFLAGS="$CFLAGS -Wno-unused-function -Wno-unused-variable"
 
