@@ -339,6 +339,9 @@ export TOKENIZER_PROC_POOL=1
 # enable to overwrite request IDs
 export ENABLE_OVERWRITE_REQ_IDS=0
 
+# enable apc event
+export ENABLE_APC_EVENT=0
+
 # Print current configuration
 echo "==== Current Configuration ===="
 echo "GLOBAL_RANK_TABLE_FILE_PATH: $GLOBAL_RANK_TABLE_FILE_PATH"
