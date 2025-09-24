@@ -15,6 +15,6 @@ torchrun \
     --chat-template qwen \
     --output-dir ./train-result/ \
     --ttt-length 2 \
-    --checkpoint /data/model/QwQ-32B 
+    --checkpoint /data/model/qwq-32b-eagle \
     --resume \
     | tee $LOGFILE
