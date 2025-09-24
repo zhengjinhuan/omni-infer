@@ -34,9 +34,9 @@ omni_worker_local_state_t *omni_get_local_state()
 
 static omni_req_t *omni_req_init(ngx_http_request_t *r)
 {
-    ngx_shmtx_lock(&local_state.g_shmtx);
+    ngx_shmtx_lock(&g_state->shmtx);
     omni_req_t *req = omni_allocate_request(&g_state->request_pool, r);
-    ngx_shmtx_unlock(&local_state.g_shmtx);
+    ngx_shmtx_unlock(&g_state->shmtx);
 
     omni_req_context_t *ctx = ngx_pcalloc(r->pool, sizeof(omni_req_context_t));
     ctx->req = req;
@@ -49,10 +49,10 @@ static omni_req_t *omni_req_init(ngx_http_request_t *r)
     omni_add_req_to_group(req->slot_index, &g_state->groups[0]);
     ngx_shmtx_unlock(&g_state->shmtx);
 
-    req->worker_pid = ngx_getpid();
+    req->worker_pid = ngx_pid;
 
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "Allocate Req:%d, at:%d",
-                  req->slot_index, req->phase);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "Allocate Req:%d",
+                  req->slot_index);
 
     return req;
 }
@@ -80,6 +80,7 @@ static inline omni_req_context_t *omni_get_req_ctx(ngx_http_request_t *r)
 {
     return ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 }
+
 
 static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 {
@@ -110,13 +111,14 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
         if (tree != NULL)
         {
             match_depth = omni_radix_tree_match_optimistic(tree,
-                                                           (uint64_t *)req->tokenizer_req.block_hashes,
-                                                           req->tokenizer_req.block_hashes_len);
+                                                            (uint64_t *)req->tokenizer_req.block_hashes,
+                                                            req->tokenizer_req.block_hashes_len);
         }
         local_match_depths[i] = (uint32_t)match_depth;
         if ((ngx_uint_t)match_depth > computed_max)
             computed_max = match_depth;
     }
+    
 
     /* 3) write results to shared request */
     for (uint16_t i = 0; i < num_prefill; ++i)
@@ -248,7 +250,7 @@ static inline void omni_proxy_cleanup_req(omni_req_t *req)
 static void omni_proxy_main_req_cleanup(void *data)
 {
     omni_req_t *req = data;
-    omni_proxy_remove_req_from_groups(req);
+    omni_proxy_cleanup_req(req);
 
     ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                   "[Decode-%d]: Done from %d.",
@@ -315,9 +317,8 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     omni_req_context_t *ctx = omni_get_req_ctx(subr);
     req->metrics.time_prefilled = ngx_current_msec;
 
-    ngx_connection_t *c;
+    ngx_connection_t *c = r->connection;
 
-    c = r->connection;
     ctx = ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 
     if (c->read->timer_set)
@@ -382,23 +383,24 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     us->num_tokens -= req->metrics.prompt_num_tokens;
 
     omni_batch_metrics_t *current_batch = &us->his.his[us->his.head];
-    ngx_msec_t delta = (current_batch->last_response_receive_time > 0) ? (ngx_current_msec - current_batch->last_response_receive_time) : (21); // If first，force delta > 20 to get a new batch
+    ngx_msec_t delta = (current_batch->last_response_receive_time > 0) ? 
+                     (ngx_current_msec - current_batch->last_response_receive_time) : 
+                     (21); // If first，force delta > 20 to get a new batch
 
     // Need a smarter value from statistics or work out by the number of tokens scheduled
     if (delta > 20)
     {
         // 1. **calculate last batch**
-        if (current_batch->num_requests > 0)
+        if (current_batch->num_requests > 0) 
         { // not a empty batch
             current_batch->time_taken += current_batch->last_response_receive_time - current_batch->first_response_receive_time;
-            ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
+             ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                           "[Prefill-Batch-End] Batch at head %ui finalized. Duration: %ui ms, Tokens: %ui",
                           us->his.head, current_batch->time_taken, current_batch->num_tokens);
         }
 
         // 2. **start a new batch**
-        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS)
-        {
+        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS) { 
             us->his.count++;
         }
         us->his.head = (us->his.head + 1) % NUM_PREFILL_BATCH_METRICS_HIS;
@@ -418,7 +420,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
         current_batch->last_response_receive_time = ngx_current_msec;
         current_batch->num_requests++;
         current_batch->num_tokens += req->metrics.prompt_num_tokens;
-        // average_delta
+        // average_delta 
         current_batch->average_delta = current_batch->average_delta * (current_batch->num_requests - 1) +
                                        delta / (current_batch->num_requests);
     }
@@ -984,8 +986,6 @@ static void omni_proxy_run_group(int phase_from, omni_run_handle_t handle)
 {
     omni_req_group_t *group = &local_state.groups[phase_from];
 
-    omni_req_group_t *g_group = &g_state->groups[phase_from];
-
     for (uint32_t i = 0; i < group->watermark; ++i)
     {
         omni_req_info_t *info = &group->requests[i];
@@ -994,149 +994,12 @@ static void omni_proxy_run_group(int phase_from, omni_run_handle_t handle)
             omni_req_t *req = omni_info_to_req(info);
             ngx_http_request_t *r = omni_get_http_request(req);
             ngx_int_t rc = handle(req);
-            if (rc != NGX_OK)
+            if (!(rc == NGX_OK || rc == NGX_DONE))
             {
-                // TODO:
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Wakeup-%d] Failed: %d",
+                              req->slot_index, rc);
             }
         }
-    }
-}
-
-static void update_prefill_weights(omni_req_group_t *group)
-{
-    uint32_t max_prompt_tokens = 0;
-    uint32_t max_wait_time = 0;
-    for (int i = 0; i < group->watermark; i++)
-    {
-        omni_req_info_t *info = &group->requests[i];
-        if (!info->in_use)
-        {
-            continue;
-        }
-        omni_req_t *req = omni_info_to_req(info);
-
-        if (max_prompt_tokens < req->metrics.prompt_num_tokens)
-        {
-            max_prompt_tokens = req->metrics.prompt_num_tokens;
-        }
-
-        uint32_t waited = ngx_current_msec - req->metrics.time_received;
-
-        if (max_wait_time < waited)
-        {
-            max_wait_time = waited;
-        }
-    }
-
-    if (max_wait_time < 50)
-    {
-        max_wait_time = 50;
-    }
-
-    for (int i = 0; i < group->watermark; i++)
-    {
-        omni_req_info_t *info = &group->requests[i];
-        if (!info->in_use)
-        {
-            continue;
-        }
-        omni_req_t *req = omni_info_to_req(info);
-        uint32_t waited = ngx_current_msec - req->metrics.time_received;
-
-        double token_weight = (double)(max_prompt_tokens - req->metrics.prompt_num_tokens) / max_prompt_tokens;
-        double time_weight = (double)waited / max_wait_time;
-
-        info->weight = token_weight * 0.8 + time_weight * 0.2;
-    }
-
-    omni_sort_compact_group(group);
-}
-
-static void omni_proxy_schedule_prefill(omni_global_state_t *gs)
-{
-    omni_req_group_t *group = &gs->groups[PHASE_PREFILL_WAITING_SCHEDULE];
-
-    // TODO: Check should schedule or wait based on upstream expected come back time
-
-    update_prefill_weights(group);
-
-    for (int i = 0; i < group->num_requests; i++)
-    {
-        omni_req_info_t *info = &group->requests[i];
-        omni_req_t *req = omni_info_to_req(info);
-        ngx_http_request_t *r = req->data;
-
-        assert(req->phase == PHASE_PREFILL_WAITING_SCHEDULE);
-
-        uint32_t least_load = UINT32_MAX;
-        uint32_t selected = UINT32_MAX;
-        for (int j = 0; j < g_state->num_prefill_endpoints; j++)
-        {
-            if (gs->prefill_states[j].num_tokens < least_load)
-            {
-                least_load = gs->prefill_states[j].num_tokens;
-                selected = j;
-                if (least_load == 0)
-                {
-                    break;
-                }
-            }
-        }
-
-        req->upstream_endpoint_idx = selected;
-        gs->prefill_states[selected].num_running++;
-        gs->prefill_states[selected].num_tokens += req->metrics.prompt_num_tokens;
-
-        omni_phase_transition_local(PHASE_PREFILL_SCHEDULED, req);
-        req->metrics.time_prefill_scheduled = ngx_current_msec;
-
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Prefill-%d] Schedule to: %d",
-                      req->slot_index, req->upstream_endpoint_idx);
-    }
-
-    // TODO: estimated expected next schedule time
-}
-
-static void omni_proxy_schedule_decode(omni_global_state_t *gs)
-{
-    omni_req_group_t *group = &gs->groups[PHASE_DECODE_WAITING_SCHEDULE];
-    // TODO: Check should schedule or wait based on upstream expected come back time
-    // TODO: Here we can do some estimation of pull kv finish time to make sure pull kv
-    // workloads are balanced
-
-    for (int i = 0; i < group->watermark; i++)
-    {
-        omni_req_info_t *info = &group->requests[i];
-        if (!info->in_use)
-        {
-            continue;
-        }
-        omni_req_t *req = omni_info_to_req(info);
-        assert(req->phase == PHASE_DECODE_WAITING_SCHEDULE);
-
-        uint32_t least_load = UINT32_MAX;
-        uint32_t selected = UINT32_MAX;
-        for (int j = 0; j < g_state->num_decode_endpoints; j++)
-        {
-            if (gs->decode_states[j].num_running < least_load)
-            {
-                least_load = gs->decode_states[j].num_running;
-                selected = j;
-                if (least_load == 0)
-                {
-                    break;
-                }
-            }
-        }
-
-        req->upstream_endpoint_idx = selected;
-        gs->decode_states[selected].num_running++;
-
-        omni_phase_transition_local(PHASE_DECODE_SCHEDULED, req);
-        req->metrics.time_decode_scheduled = ngx_current_msec;
-
-        ngx_log_error(NGX_LOG_INFO, req->data->connection->log, 0, "[Decode-%d] Schedule to: %d",
-                      req->slot_index, req->upstream_endpoint_idx);
     }
 }
 
@@ -1226,7 +1089,7 @@ static void omni_proxy_init_req_groups(omni_req_group_t groups[])
     }
 }
 
-static void omni_proxy_init_req_groups(omni_req_group_t groups[])
+static ngx_int_t omni_proxy_global_state_init(ngx_shm_zone_t *zone, void *data)
 {
     ngx_uint_t i;
 
@@ -1247,7 +1110,7 @@ static void omni_proxy_init_req_groups(omni_req_group_t groups[])
 
     omni_proxy_init_req_groups(g_state->groups);
 
-    ngx_shmtx_create(&local_state.g_shmtx, &g_state->lock,
+    ngx_shmtx_create(&g_state->shmtx, &g_state->lock,
                      (u_char *)"omni_proxy_lock");
 
     printf("shared memory initialed: %p\n", zone->shm.addr);
@@ -1258,6 +1121,7 @@ static void omni_proxy_init_req_groups(omni_req_group_t groups[])
 ngx_int_t omni_proxy_init_global_state(ngx_conf_t *cf)
 {
     ngx_str_t name = ngx_string("omni_proxy_state");
+    printf("Init global state with size:%ldK\n", GLOBAL_STATE_SIZE / 1024);
 
     ngx_shm_zone_t *zone = ngx_shared_memory_add(
         cf,
@@ -1659,9 +1523,9 @@ static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
 }
 
 static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
-                                        const char *topic,
-                                        const void *message,
-                                        size_t length)
+                      const char *topic,
+                      const void *message,
+                      size_t length)
 {
     KVEventBatch *batch = parse_kv_event_batch(message, length);
     if (!batch)
@@ -1671,7 +1535,7 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
     }
 
     ngx_log_error(NGX_LOG_INFO, handler->log, 0, "[%ld - %ld] Received KV event batch with %ld events",
-                  handler->index, ngx_worker, batch->events_count);
+           handler->index, ngx_worker, batch->events_count);
 
     omni_upstream_prefill_t *prefill = &g_state->prefill_states[handler->index];
     // assert(!prefill->radix_tree==null)
@@ -1999,4 +1863,5 @@ ngx_module_t ngx_http_omni_proxy_module = {
     NULL,                    /* exit thread */
     omni_proxy_exit_process, /* exit process */
     NULL,                    /* exit master */
-    NGX_MODULE_V1_PADDING};
+    NGX_MODULE_V1_PADDING,
+};
