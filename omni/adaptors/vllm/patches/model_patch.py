@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 from omni.adaptors.vllm.patches.pangu_patch import patch_pangu
+ENABLE_LOW_LATENCY_SCHEDULER = os.getenv("ENABLE_LOW_LATENCY_SCHEDULER", "0") == "1"
 
 def patch_vllm_distributed():
     from vllm import distributed
@@ -70,7 +71,8 @@ def patch_all():
     patch_compilation()
     patch_pangu()
     patch_linear()
-    patch_scheduler()
+    if ENABLE_LOW_LATENCY_SCHEDULER:
+        patch_scheduler()
     _patch_done = True
 
 patch_all() 

@@ -69,14 +69,12 @@ def __init__(
     self.log_stats = log_stats
     self.structured_output_manager = structured_output_manager
     additional_config = vllm_config.additional_config
-    self.async_schedule = False
-    self.enable_mix_schedule = False
-    if additional_config:
-        self.async_schedule = additional_config.get(
-                "async_schedule", False)
-        self.enable_mix_schedule = additional_config.get(
-                "mix_schedule", False)
-        
+    if additional_config is None:
+        additional_config = {}
+    self.async_schedule = additional_config.get(
+            "async_schedule", False)
+    self.enable_mix_schedule = additional_config.get(
+            "mix_schedule", False)        
 
     # include_finished_set controls whether a separate set of finished
     # request ids should be included in the EngineCoreOutputs returned
@@ -261,10 +259,6 @@ def schedule(self) -> SchedulerOutput:
             for mix_req in mix_requests:
                 if mix_req.is_isolated:
                     continue
-
-                if (num_reqs_sched >= self.max_num_running_reqs or
-                    total_num_tokens > min(3000 * len(mix_requests), 16384)):
-                    break
 
                 if self.max_num_scheduled_tokens - total_num_tokens < mix_req.num_new_tokens:
                     break
@@ -633,9 +627,6 @@ def schedule(self) -> SchedulerOutput:
                 for i in encoder_inputs_to_schedule:
                     self.encoder_cache_manager.allocate(request, i)
                 encoder_budget = new_encoder_budget
-            if role == "prefill" and token_budget < self.max_num_scheduled_tokens - 0.2 * min(len(self.waiting),5) * 16384:
-                break
-
 
     # Put back any skipped requests at the head of the waiting queue
     if skipped_waiting_requests:
