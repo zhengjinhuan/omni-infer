@@ -427,6 +427,7 @@ for epoch in range(args.num_epochs):
                 print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
             dist.barrier()
             del state_to_save
+            del draft_model_state_dict
 
 # Close the tracker at the end of training
 tracker.close()
