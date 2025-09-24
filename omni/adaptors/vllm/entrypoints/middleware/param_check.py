@@ -46,10 +46,11 @@ class SupportedValidator(BaseValidator):
 
     def validate(self, value: Any) -> Optional[str]:
         # The value must be included within the subfield.
-        if isinstance(value, Dict):
-            return self.check_subfield_dict(value)
-        if isinstance(value, list):
-            return self.check_subfield_list(value)
+        if self.subfield is not None:
+            if isinstance(value, Dict):
+                return self.check_subfield_dict(value)
+            if isinstance(value, list):
+                return self.check_subfield_list(value)
         return None
     
 
