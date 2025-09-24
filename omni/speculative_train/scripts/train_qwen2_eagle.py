@@ -400,17 +400,16 @@ for epoch in range(args.num_epochs):
         dist.barrier()
 
         with FSDP.state_dict_type(eagle_model, StateDictType.FULL_STATE_DICT):
-            model_state_dict = eagle_model.state_dict()
             state_to_save = {
                 "epoch": epoch,
                 "args": args,
             }
             state_to_save.update(optimizer.state_dict())
-            # draft_model_state_dict = {
-            #     k.replace("draft_model.", ""): v
-            #     for k, v in model_state_dict.items()
-            #     if "draft_model." in k and "embed" not in k.lower()
-            # }
+            draft_model_state_dict = {
+                k.replace("draft_model.", ""): v
+                for k, v in eagle_model.state_dict().items()
+                if "draft_model." in k and "embed" not in k.lower()
+            }
 
             if dist.get_rank() == 0:
                 torch.save(
@@ -420,15 +419,14 @@ for epoch in range(args.num_epochs):
                 print_on_rank0(
                     f"Saved full training state to {epoch_output_dir}/training_state.pt"
                 )
-                # draft_model.save_pretrained(
-                #     epoch_output_dir,
-                #     state_dict=draft_model_state_dict,
-                # )
-                # print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
+                draft_model.save_pretrained(
+                    epoch_output_dir,
+                    state_dict=draft_model_state_dict,
+                )
+                print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
             dist.barrier()
             del state_to_save
-            del model_state_dict
-            # del draft_model_state_dict
+            del draft_model_state_dict
 
 # Close the tracker at the end of training
 tracker.close()
