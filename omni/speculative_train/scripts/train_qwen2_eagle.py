@@ -315,8 +315,8 @@ for epoch in range(args.num_epochs):
     train_dataloader.sampler.set_epoch(epoch + 1)
     draft_model.train()
 
-    epoch_acces = [[] for _ in range(1)]
-    epoch_plosses = [[] for _ in range(1)]
+    epoch_acces = [[] for _ in range(args.ttt_length)]
+    epoch_plosses = [[] for _ in range(args.ttt_length)]
 
 
     if dist.get_rank() == 0:
