@@ -126,4 +126,7 @@ class OfflineEagleModel(nn.Module):
             plosses.append(loss)
             acces.append(acc)
 
+        for i in range(len(cache_hidden)):
+            for j in range(len(cache_hidden[i])):
+                cache_hidden[i][j] = None
         return plosses, acces
