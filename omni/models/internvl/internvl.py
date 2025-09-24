@@ -12,7 +12,7 @@ from vllm.attention import AttentionMetadata
 from vllm.model_executor.models.internvl import InternVLChatModel
 from vllm.sequence import IntermediateTensors
 from vllm.compilation.decorators import support_torch_compile
-from omni.layers.attention.bakend.attention import AscendAttentionState
+from omni.layers.attention.backend.attention import AscendAttentionState
 
 @support_torch_compile()
 class InternVLChatModel(InternVLChatModel):
