@@ -24,7 +24,7 @@
 # limitations under the License.
 """Inference-only Qwen2 model compatible with HuggingFace weights."""
 from collections.abc import Iterable
-from typing import Any, Optional, Union, List
+from typing import Any, Optional, Union, List, Tuple
 
 import math
 import torch
@@ -144,7 +144,7 @@ class Qwen2Attention(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor],
-        past_key_value: Optional[List[List[torch.Tensor]]] = None,
+        past_key_value: Optional[Tuple[List[torch.Tensor], List[torch.Tensor]]] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
@@ -157,44 +157,41 @@ class Qwen2Attention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         past_key_value_length = 1
         if past_key_value is not None:
-            past_key_value[0] = past_key_value[0] + [key_states]
-            past_key_value[1] = past_key_value[1] + [value_states]
+            past_key_value[0].append(key_states)
+            past_key_value[1].append(value_states)
             key_states = past_key_value[0][0]
             value_states = past_key_value[1][0]
             past_key_value_length = len(past_key_value[0])
 
-
-        
-        
-
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
-        
-        attn_weights_list = [attn_weights]
-        for i in range(1, past_key_value_length):
-            ki = past_key_value[0][i]
-            qi = query_states
-            kiq = ki
 
-            attn_weightsi = (qi * kiq).sum(-1) / math.sqrt(self.head_dim)
-            attn_weights_list.append(attn_weightsi.unsqueeze(-1))
+        if past_key_value_length > 1:
+            attn_weights_list = [attn_weights]
+            for i in range(1, past_key_value_length):
+                ki = past_key_value[0][i]
+                qi = query_states
+                kiq = ki
 
-        attn_weights = attn_weights if len(attn_weights_list) == 1 else torch.cat(
-            attn_weights_list, dim=-1,
-        )
+                attn_weightsi = (qi * kiq).sum(-1) / math.sqrt(self.head_dim)
+                attn_weights_list.append(attn_weightsi.unsqueeze(-1))
+
+            attn_weights = torch.cat(
+                attn_weights_list, dim=-1,
+            )
+
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_output = torch.matmul(attn_weights[..., :input_shape[-1]], value_states)
         for i in range(1, past_key_value_length):
             vi = past_key_value[1][i]
             attn_weightsi = attn_weights[..., input_shape[-1] + i - 1 : input_shape[-1] + i]
-            attn_output = attn_output + attn_weightsi * vi
+            attn_output += attn_weightsi * vi
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()

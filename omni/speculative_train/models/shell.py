@@ -97,7 +97,7 @@ class OfflineEagleModel(nn.Module):
         
         plosses = []
         acces = []
-        cache_hidden = [[], []]
+        cache_hidden = ([], [])
         for i in range(self.length):
             target_p = target_p_padded[:, i : seq_length + i]
             position_mask = position_mask_padded[:, i : seq_length + i]
@@ -126,7 +126,4 @@ class OfflineEagleModel(nn.Module):
             plosses.append(loss)
             acces.append(acc)
 
-        for i in range(len(cache_hidden)):
-            for j in range(len(cache_hidden[i])):
-                cache_hidden[i][j] = None
         return plosses, acces
