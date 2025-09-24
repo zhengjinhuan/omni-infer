@@ -11,8 +11,6 @@ echo "NGINX_VERSION is $NGINX_VERSION"
 NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
 echo "NGINX_SBIN_PATH is $NGINX_SBIN_PATH"
 
-export proxy=http://10.155.96.5:8081 && export http_proxy=$proxy && export https_proxy=${http_proxy}
-
 if [ ! -d nginx-${NGINX_VERSION} ]; then
 	wget --no-check-certificate https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
 	tar -zxf nginx-${NGINX_VERSION}.tar.gz
@@ -28,6 +26,7 @@ CFLAGS="-O2" ./configure --sbin-path=${NGINX_SBIN_PATH} \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_prefill_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_prefill_refactor_module \
     --add-dynamic-module=$WORKDIR/modules/ngx_http_set_request_id_module \
+    --add-dynamic-module=$WORKDIR/modules/ngx_http_internal_metrics_module \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_length_balance_module \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_greedy_timeout_module \
     --add-dynamic-module=$WORKDIR/lb_sdk/modules/ngx_http_upstream_prefill_score_balance_module \
