@@ -15,6 +15,6 @@ torchrun \
     --max-length 4096 \
     --chat-template qwen \
     --output-dir ./train-result/ \
-    --ttt-length 2 \
+    --ttt-length 1 \
     --resume \
     | tee $LOGFILE
