@@ -400,7 +400,7 @@ for epoch in range(args.num_epochs):
         dist.barrier()
 
         with FSDP.state_dict_type(eagle_model, StateDictType.FULL_STATE_DICT):
-            # model_state_dict = eagle_model.state_dict()
+            model_state_dict = eagle_model.state_dict()
             state_to_save = {
                 "epoch": epoch,
                 "args": args,
