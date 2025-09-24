@@ -236,12 +236,12 @@ def main():
     if draft_model_last_checkpoint is None:
         config = AutoDraftModelConfig.from_file(args.draft_model_config)
         draft_model = AutoEagleDraftModel.from_config(
-            config, device_map='auto',
-        ).to(torch.bfloat16)
+            config,
+        ).npu().to(torch.bfloat16)
     else:
         draft_model = AutoEagleDraftModel.from_pretrained(
-            draft_model_last_checkpoint, device_map='auto',
-        ).to(torch.bfloat16)
+            draft_model_last_checkpoint,
+        ).npu().to(torch.bfloat16)
 
     print_with_rank(f"{draft_model.device=}")
 
