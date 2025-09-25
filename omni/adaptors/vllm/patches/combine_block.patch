@@ -92,8 +92,8 @@ index 0223c9cee..48008deb1 100644
          """
          req_blocks = self.req_to_blocks[request_id]
          num_required_blocks = cdiv(num_tokens, self.block_size)
-+        num_required_blocks = cdiv(num_required_blocks,
-+            self.combine_block_num)*self.combine_block_num
++        if self.combine_block_num > 1:
++           num_required_blocks = cdiv(num_required_blocks, self.combine_block_num)*self.combine_block_num
          num_new_blocks = num_required_blocks - len(req_blocks)
          if num_new_blocks <= 0:
              return []
@@ -102,10 +102,10 @@ index 0223c9cee..48008deb1 100644
          # Free blocks in reverse order so that the tail blocks are
          # freed first.
 -        ordered_blocks = reversed(req_blocks)
-+        if self.combine_block_num == 1:
-+            ordered_blocks = reversed(req_blocks)
-+        else:
++        if self.combine_block_num > 1:
 +            ordered_blocks = req_blocks
++        else:
++            ordered_blocks = reversed(req_blocks)
 
          self.block_pool.free_blocks(ordered_blocks)
          self.num_cached_block.pop(request_id, None)
