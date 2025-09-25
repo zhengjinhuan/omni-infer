@@ -41,7 +41,7 @@ from .schemes.compressed_tensors_w8a8_int8 import (
 )
 
 
-class W8A8Int8Config(CompressedTensorsConfig):
+class AscendCompressedTensorsConfig(CompressedTensorsConfig):
     """Config class for Ascend
 
     This class is a general class that parse quantization configs

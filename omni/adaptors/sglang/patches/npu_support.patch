@@ -1,41 +1,5 @@
-From 11e70c173754eba6285e42f4e4760a93686fdf42 Mon Sep 17 00:00:00 2001
-From: fengye <vinsmoke.feng@huawei.com>
-Date: Fri, 19 Sep 2025 09:52:09 +0800
-Subject: [PATCH] NPU adaptation for SGL
-
----
- python/sglang/bench_serving.py                |   2 +-
- python/sglang/launch_server.py                |   1 +
- .../sglang/srt/distributed/parallel_state.py  |   2 +-
- python/sglang/srt/eplb/expert_distribution.py |  21 +-
- .../srt/layers/attention/base_attn_backend.py |   4 +-
- python/sglang/srt/layers/communicator.py      |   3 +-
- python/sglang/srt/layers/layernorm.py         |   5 +-
- python/sglang/srt/layers/linear.py            |  12 +-
- python/sglang/srt/layers/logits_processor.py  |  89 ++++---
- python/sglang/srt/layers/moe/topk.py          |   4 +-
- .../srt/layers/quantization/__init__.py       |   2 +-
- .../srt/layers/quantization/fp8_kernel.py     |   4 +-
- .../srt/layers/quantization/moe_wna16.py      |   3 +-
- .../sglang/srt/layers/quantization/unquant.py |  25 +-
- .../srt/managers/data_parallel_controller.py  |   1 +
- python/sglang/srt/managers/schedule_batch.py  |  18 +-
- python/sglang/srt/managers/scheduler.py       |   6 +-
- .../srt/managers/scheduler_profiler_mixin.py  |  31 ++-
- python/sglang/srt/managers/tp_worker.py       |   2 +
- .../srt/managers/tp_worker_overlap_thread.py  |   8 +-
- python/sglang/srt/mem_cache/memory_pool.py    |  65 +++--
- .../srt/model_executor/cuda_graph_runner.py   | 244 +++++++++++++++---
- .../srt/model_executor/forward_batch_info.py  |  36 ++-
- .../sglang/srt/model_executor/model_runner.py | 116 ++++++---
- .../sglang/srt/model_loader/weight_utils.py   |   5 +-
- python/sglang/srt/models/registry.py          |   5 +-
- python/sglang/srt/server_args.py              |   7 +-
- python/sglang/srt/utils.py                    |  41 ++-
- 28 files changed, 598 insertions(+), 164 deletions(-)
-
 diff --git a/python/sglang/bench_serving.py b/python/sglang/bench_serving.py
-index 3ba4eae0f..072cd4fc7 100644
+index 3ba4eae0..072cd4fc 100644
 --- a/python/sglang/bench_serving.py
 +++ b/python/sglang/bench_serving.py
 @@ -1359,7 +1359,7 @@ async def benchmark(
@@ -48,7 +12,7 @@ index 3ba4eae0f..072cd4fc7 100644
          image_data=test_request.image_data,
          extra_request_body=extra_request_body,
 diff --git a/python/sglang/launch_server.py b/python/sglang/launch_server.py
-index caae7b0f6..44df8bb64 100644
+index caae7b0f..44df8bb6 100644
 --- a/python/sglang/launch_server.py
 +++ b/python/sglang/launch_server.py
 @@ -3,6 +3,7 @@
@@ -60,7 +24,7 @@ index caae7b0f6..44df8bb64 100644
  from sglang.srt.server_args import prepare_server_args
  from sglang.srt.utils import kill_process_tree
 diff --git a/python/sglang/srt/distributed/parallel_state.py b/python/sglang/srt/distributed/parallel_state.py
-index ad336c808..71fe73686 100644
+index ad336c80..71fe7368 100644
 --- a/python/sglang/srt/distributed/parallel_state.py
 +++ b/python/sglang/srt/distributed/parallel_state.py
 @@ -591,7 +591,7 @@ class GroupCoordinator:
@@ -73,7 +37,7 @@ index ad336c808..71fe73686 100644
          else:
              torch.ops.sglang.reg_all_gather_into_tensor(
 diff --git a/python/sglang/srt/eplb/expert_distribution.py b/python/sglang/srt/eplb/expert_distribution.py
-index c954394e6..5c2964842 100644
+index c954394e..5c296484 100644
 --- a/python/sglang/srt/eplb/expert_distribution.py
 +++ b/python/sglang/srt/eplb/expert_distribution.py
 @@ -114,6 +114,20 @@ class _ExpertDistributionRecorderNoop(ExpertDistributionRecorder):
@@ -112,7 +76,7 @@ index c954394e6..5c2964842 100644
  
  def set_global_expert_distribution_recorder(value):
 diff --git a/python/sglang/srt/layers/attention/base_attn_backend.py b/python/sglang/srt/layers/attention/base_attn_backend.py
-index 3025d0b11..22175983c 100644
+index 3025d0b1..22175983 100644
 --- a/python/sglang/srt/layers/attention/base_attn_backend.py
 +++ b/python/sglang/srt/layers/attention/base_attn_backend.py
 @@ -65,9 +65,9 @@ class AttentionBackend(ABC):
@@ -128,7 +92,7 @@ index 3025d0b11..22175983c 100644
                  q,
                  k,
 diff --git a/python/sglang/srt/layers/communicator.py b/python/sglang/srt/layers/communicator.py
-index 4ef752d75..5ec3bbee3 100644
+index 4ef752d7..5ec3bbee 100644
 --- a/python/sglang/srt/layers/communicator.py
 +++ b/python/sglang/srt/layers/communicator.py
 @@ -36,7 +36,7 @@ from sglang.srt.layers.dp_attention import (
@@ -149,7 +113,7 @@ index 4ef752d75..5ec3bbee3 100644
              )
          else:
 diff --git a/python/sglang/srt/layers/layernorm.py b/python/sglang/srt/layers/layernorm.py
-index 4c1f2268b..b114c35e5 100644
+index 4c1f2268..b114c35e 100644
 --- a/python/sglang/srt/layers/layernorm.py
 +++ b/python/sglang/srt/layers/layernorm.py
 @@ -49,12 +49,11 @@ if _use_aiter:
@@ -168,7 +132,7 @@ index 4c1f2268b..b114c35e5 100644
  class RMSNorm(CustomOp):
      def __init__(
 diff --git a/python/sglang/srt/layers/linear.py b/python/sglang/srt/layers/linear.py
-index 2a9dfda59..587cb2fb1 100644
+index 2a9dfda5..587cb2fb 100644
 --- a/python/sglang/srt/layers/linear.py
 +++ b/python/sglang/srt/layers/linear.py
 @@ -39,6 +39,12 @@ if TYPE_CHECKING:
@@ -219,7 +183,7 @@ index 2a9dfda59..587cb2fb1 100644
  
      def weight_loader_v2(self, param: BasevLLMParameter, loaded_weight: torch.Tensor):
 diff --git a/python/sglang/srt/layers/logits_processor.py b/python/sglang/srt/layers/logits_processor.py
-index 3384f5efa..238621c2b 100644
+index 3384f5ef..238621c2 100644
 --- a/python/sglang/srt/layers/logits_processor.py
 +++ b/python/sglang/srt/layers/logits_processor.py
 @@ -21,10 +21,12 @@ import torch
@@ -400,7 +364,7 @@ index 3384f5efa..238621c2b 100644
          if logits_metadata.next_token_logits_buffer is not None:
              logits_buffer = logits_metadata.next_token_logits_buffer
 diff --git a/python/sglang/srt/layers/moe/topk.py b/python/sglang/srt/layers/moe/topk.py
-index 78bd6f08d..1cfbff498 100644
+index 78bd6f08..1cfbff49 100644
 --- a/python/sglang/srt/layers/moe/topk.py
 +++ b/python/sglang/srt/layers/moe/topk.py
 @@ -248,13 +248,13 @@ class TopK(CustomOp):
@@ -419,21 +383,8 @@ index 78bd6f08d..1cfbff498 100644
                  eps=float(1e-20),
              )
          else:
-diff --git a/python/sglang/srt/layers/quantization/__init__.py b/python/sglang/srt/layers/quantization/__init__.py
-index 19977012a..a4eae8b16 100644
---- a/python/sglang/srt/layers/quantization/__init__.py
-+++ b/python/sglang/srt/layers/quantization/__init__.py
-@@ -72,7 +72,7 @@ from sglang.srt.layers.quantization.qoq import QoQConfig
- from sglang.srt.layers.quantization.utils import get_linear_quant_method
- from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
- from sglang.srt.layers.quantization.w8a8_fp8 import W8A8Fp8Config
--from sglang.srt.layers.quantization.w8a8_int8 import W8A8Int8Config
-+from omni.adaptors.sglang.layers.quantization.compressed_tensors.compressed_tensors import W8A8Int8Config
- 
- if TYPE_CHECKING:
-     from sglang.srt.layers.moe.topk import TopKOutput
 diff --git a/python/sglang/srt/layers/quantization/fp8_kernel.py b/python/sglang/srt/layers/quantization/fp8_kernel.py
-index 16d1a4d7f..ae7074a9b 100644
+index 16d1a4d7..ae7074a9 100644
 --- a/python/sglang/srt/layers/quantization/fp8_kernel.py
 +++ b/python/sglang/srt/layers/quantization/fp8_kernel.py
 @@ -33,6 +33,7 @@ from sglang.srt.utils import (
@@ -462,7 +413,7 @@ index 16d1a4d7f..ae7074a9b 100644
          _per_token_group_quant_fp8_hopper_moe_mn_major
      )
 diff --git a/python/sglang/srt/layers/quantization/moe_wna16.py b/python/sglang/srt/layers/quantization/moe_wna16.py
-index fbbf11066..fc06cd8f7 100644
+index fbbf1106..fc06cd8f 100644
 --- a/python/sglang/srt/layers/quantization/moe_wna16.py
 +++ b/python/sglang/srt/layers/quantization/moe_wna16.py
 @@ -166,7 +166,8 @@ class MoeWNA16Config(QuantizationConfig):
@@ -476,7 +427,7 @@ index fbbf11066..fc06cd8f7 100644
          )
          # Avoid circular import
 diff --git a/python/sglang/srt/layers/quantization/unquant.py b/python/sglang/srt/layers/quantization/unquant.py
-index 9c33e3173..7f5dea980 100644
+index 9c33e317..7f5dea98 100644
 --- a/python/sglang/srt/layers/quantization/unquant.py
 +++ b/python/sglang/srt/layers/quantization/unquant.py
 @@ -19,6 +19,7 @@ from sglang.srt.utils import (
@@ -544,7 +495,7 @@ index 9c33e3173..7f5dea980 100644
  
  class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
 diff --git a/python/sglang/srt/managers/data_parallel_controller.py b/python/sglang/srt/managers/data_parallel_controller.py
-index 76b9e1a01..c30bf6898 100644
+index 76b9e1a0..c30bf689 100644
 --- a/python/sglang/srt/managers/data_parallel_controller.py
 +++ b/python/sglang/srt/managers/data_parallel_controller.py
 @@ -343,6 +343,7 @@ def run_data_parallel_controller_process(
@@ -556,7 +507,7 @@ index 76b9e1a01..c30bf6898 100644
      configure_logger(server_args)
      parent_process = psutil.Process().parent()
 diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
-index dca2cbfb7..8c0d9fb70 100644
+index dca2cbfb..8c0d9fb7 100644
 --- a/python/sglang/srt/managers/schedule_batch.py
 +++ b/python/sglang/srt/managers/schedule_batch.py
 @@ -64,7 +64,7 @@ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, Forw
@@ -624,7 +575,7 @@ index dca2cbfb7..8c0d9fb70 100644
      ):
          impl = get_last_loc_triton
 diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
-index 5d2204c3f..9e3dc81ac 100644
+index 5d2204c3..9e3dc81a 100644
 --- a/python/sglang/srt/managers/scheduler.py
 +++ b/python/sglang/srt/managers/scheduler.py
 @@ -13,6 +13,7 @@
@@ -655,7 +606,7 @@ index 5d2204c3f..9e3dc81ac 100644
      prefix = ""
      if dp_rank is not None:
 diff --git a/python/sglang/srt/managers/scheduler_profiler_mixin.py b/python/sglang/srt/managers/scheduler_profiler_mixin.py
-index 3d061a8fe..4e78ec855 100644
+index 3d061a8f..4e78ec85 100644
 --- a/python/sglang/srt/managers/scheduler_profiler_mixin.py
 +++ b/python/sglang/srt/managers/scheduler_profiler_mixin.py
 @@ -8,6 +8,11 @@ import torch
@@ -718,7 +669,7 @@ index 3d061a8fe..4e78ec855 100644
          if "MEM" in activities:
              torch.cuda.memory._record_memory_history(max_entries=100000)
 diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
-index 77dac1ea6..36fba0881 100644
+index 77dac1ea..36fba088 100644
 --- a/python/sglang/srt/managers/tp_worker.py
 +++ b/python/sglang/srt/managers/tp_worker.py
 @@ -63,6 +63,7 @@ class TpModelWorker:
@@ -738,7 +689,7 @@ index 77dac1ea6..36fba0881 100644
          if server_args.skip_tokenizer_init:
              self.tokenizer = self.processor = None
 diff --git a/python/sglang/srt/managers/tp_worker_overlap_thread.py b/python/sglang/srt/managers/tp_worker_overlap_thread.py
-index 674a94195..3b6a7ed33 100644
+index 674a9419..3b6a7ed3 100644
 --- a/python/sglang/srt/managers/tp_worker_overlap_thread.py
 +++ b/python/sglang/srt/managers/tp_worker_overlap_thread.py
 @@ -35,7 +35,7 @@ from sglang.srt.managers.io_struct import (
@@ -778,7 +729,7 @@ index 674a94195..3b6a7ed33 100644
                  self.forward_thread_func_()
          except Exception:
 diff --git a/python/sglang/srt/mem_cache/memory_pool.py b/python/sglang/srt/mem_cache/memory_pool.py
-index cc3faea0a..aaa8490cd 100644
+index cc3faea0..aaa8490c 100644
 --- a/python/sglang/srt/mem_cache/memory_pool.py
 +++ b/python/sglang/srt/mem_cache/memory_pool.py
 @@ -36,13 +36,15 @@ import triton.language as tl
@@ -924,7 +875,7 @@ index cc3faea0a..aaa8490cd 100644
              key=cache_k.view(-1, 1, self.kv_lora_rank + self.qk_rope_head_dim),
              key_cache=self.kv_buffer[layer_id - self.start_layer].view(
 diff --git a/python/sglang/srt/model_executor/cuda_graph_runner.py b/python/sglang/srt/model_executor/cuda_graph_runner.py
-index 05599c697..7fd1002f6 100644
+index 05599c69..7fd1002f 100644
 --- a/python/sglang/srt/model_executor/cuda_graph_runner.py
 +++ b/python/sglang/srt/model_executor/cuda_graph_runner.py
 @@ -20,8 +20,18 @@ import gc
@@ -1235,7 +1186,7 @@ index 05599c697..7fd1002f6 100644
  
  CUDA_GRAPH_CAPTURE_FAILED_MSG = (
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index e5793a269..8559184a9 100644
+index e5793a26..8559184a 100644
 --- a/python/sglang/srt/model_executor/forward_batch_info.py
 +++ b/python/sglang/srt/model_executor/forward_batch_info.py
 @@ -29,6 +29,7 @@ ScheduleBatch -> ModelWorkerBatch -> ForwardBatch
@@ -1331,7 +1282,7 @@ index e5793a269..8559184a9 100644
          if self.mrope_positions is not None:
              self.mrope_positions = self._pad_tensor_to_size(self.mrope_positions, bs)
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 923482d72..a6aae6bca 100644
+index 923482d7..a6aae6bc 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
 @@ -92,6 +92,7 @@ from sglang.srt.mem_cache.memory_pool import (
@@ -1559,7 +1510,7 @@ index 923482d72..a6aae6bca 100644
      def _preprocess_logits(
          self, logits_output: LogitsProcessorOutput, sampling_info: SamplingBatchInfo
 diff --git a/python/sglang/srt/model_loader/weight_utils.py b/python/sglang/srt/model_loader/weight_utils.py
-index a326e3f10..6f7d2b348 100644
+index a326e3f1..6f7d2b34 100644
 --- a/python/sglang/srt/model_loader/weight_utils.py
 +++ b/python/sglang/srt/model_loader/weight_utils.py
 @@ -37,7 +37,7 @@ from sglang.srt.configs.model_config import ModelConfig
@@ -1582,7 +1533,7 @@ index a326e3f10..6f7d2b348 100644
      except Exception:
          # NOTE: This exception is added for the purpose of setting breakpoint to
 diff --git a/python/sglang/srt/models/registry.py b/python/sglang/srt/models/registry.py
-index f81d3c76e..12c1dd2cb 100644
+index f81d3c76..12c1dd2c 100644
 --- a/python/sglang/srt/models/registry.py
 +++ b/python/sglang/srt/models/registry.py
 @@ -104,4 +104,7 @@ def import_model_classes():
@@ -1595,7 +1546,7 @@ index f81d3c76e..12c1dd2cb 100644
 +tmp_.models["DeepseekV3ForCausalLM"] = module.EntryClass
 +ModelRegistry = tmp_
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
-index 7bfd443bf..f2d2c26e2 100644
+index 7bfd443b..f2d2c26e 100644
 --- a/python/sglang/srt/server_args.py
 +++ b/python/sglang/srt/server_args.py
 @@ -409,7 +409,7 @@ class ServerArgs:
@@ -1641,7 +1592,7 @@ index 7bfd443bf..f2d2c26e2 100644
          )
          parser.add_argument(
 diff --git a/python/sglang/srt/utils.py b/python/sglang/srt/utils.py
-index edf441945..5d631cc7b 100644
+index edf44194..5d631cc7 100644
 --- a/python/sglang/srt/utils.py
 +++ b/python/sglang/srt/utils.py
 @@ -203,7 +203,7 @@ def get_int_env_var(name: str, default: int = 0) -> int:
@@ -1715,6 +1666,3 @@ index edf441945..5d631cc7b 100644
  
          npu_backend = torchair.get_npu_backend(compiler_config=compiler_config)
          return npu_backend
--- 
-2.43.0.windows.1
-
