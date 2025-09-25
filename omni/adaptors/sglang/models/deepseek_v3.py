@@ -294,7 +294,6 @@ class DeepseekV3Model(nn.Module):
                     next_layer = self.layers[i + 1]
                     kwargs = {
                         "next_attn_weights": {
-                            "fused_qkv_a_proj_with_mqa": next_layer.self_attn.fused_qkv_a_proj_with_mqa.weight,
                             "q_b_proj": next_layer.self_attn.q_b_proj.weight,
                             "w_kc": next_layer.self_attn.w_kc,
                         }
@@ -332,9 +331,10 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         # for quark model load
         # Fuse q_a_proj and kv_a_proj_with_mqa along output dimension when q_lora_rank is not None
-        self.fuse_qkv_a_proj = (
-            hasattr(config, "q_lora_rank") and config.q_lora_rank is not None
-        )
+        # self.fuse_qkv_a_proj = (
+        #     hasattr(config, "q_lora_rank") and config.q_lora_rank is not None
+        # )
+        self.fuse_qkv_a_proj = False
         if self.fuse_qkv_a_proj:
             self.packed_modules_mapping["fused_qkv_a_proj_with_mqa"] = [
                 "q_a_proj",
@@ -549,7 +549,8 @@ class DeepseekV3ForCausalLM(nn.Module):
                 layer = self.model.layers[layer_id]
 
             for module in [
-                layer.self_attn.fused_qkv_a_proj_with_mqa,
+                layer.self_attn.q_a_proj,
+                layer.self_attn.kv_a_proj_with_mqa,
                 layer.self_attn.q_b_proj,
                 layer.self_attn.kv_b_proj,
                 layer.self_attn.o_proj,
@@ -616,9 +617,10 @@ class DeepseekV3ForCausalLM(nn.Module):
             )
 
         # Fuse q_a_proj and kv_a_proj_with_mqa along output dimension when q_lora_rank is not None
-        fuse_qkv_a_proj = hasattr(self.config, "q_lora_rank") and (
-            self.config.q_lora_rank is not None
-        )
+        # fuse_qkv_a_proj = hasattr(self.config, "q_lora_rank") and (
+        #     self.config.q_lora_rank is not None
+        # )
+        fuse_qkv_a_proj = False
         cached_a_proj = {} if fuse_qkv_a_proj else None
 
         if is_nextn:
