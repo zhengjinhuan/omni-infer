@@ -2,7 +2,6 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 
-from omni.adaptors.vllm.patches.deepseek_r1_reasoning_parser_patch import patch_deepseek_r1_reasoning_parser
 from omni.adaptors.vllm.patches.pangu_patch import patch_pangu
 from omni.adaptors.vllm.patches.shm_bug_fix_patch import patch_shm_to_zmq
 
@@ -68,7 +67,6 @@ def patch_all():
     patch_pangu()
     patch_linear()
     patch_shm_to_zmq()
-    patch_deepseek_r1_reasoning_parser()
     _patch_done = True
 
 patch_all() 

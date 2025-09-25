@@ -25,3 +25,6 @@ git apply --whitespace=nowarn $PATCH_ROOT/prometheus_dp_logging.patch
 git apply --whitespace=nowarn $PATCH_ROOT/swap_kv_cache.patch
 git apply --whitespace=nowarn $PATCH_ROOT/vllm_tool_call_adapt.patch
 git apply --whitespace=nowarn $PATCH_ROOT/params_check.patch
+git apply --whitespace=nowarn $PATCH_ROOT/vllm_fix_serving_chat.patch
+git apply --whitespace=nowarn $PATCH_ROOT/function_call.patch
+
