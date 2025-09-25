@@ -378,7 +378,11 @@ echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
 echo "=================="
 
-EXTRA_ARGS="$EXTRA_ARGS"
+if [ "$ROLE" == "prefill"]; then
+    EXTRA_ARGS="$EXTRA_ARGS --middleware omni.adaptors.vllm.entrypoints.middleware.param_check.ValidateSamplingParams"
+else
+    EXTRA_ARGS="$EXTRA_ARGS"
+fi
 # Execute Python script
 
 common_operations() {
