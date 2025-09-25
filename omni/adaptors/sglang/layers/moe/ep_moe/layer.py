@@ -508,12 +508,14 @@ class FusedMoE(DeepEPMoE):
 
     @staticmethod
     def select_experts(
+            hidden_states: torch.Tensor,
             router_logits: torch.Tensor,
             top_k: int,
             use_grouped_topk: bool,
             renormalize: bool,
             topk_group: Optional[int] = None,
             num_expert_group: Optional[int] = None,
+            custom_routing_function: Optional[Callable] = None,
             e_score_correction_bias: Optional[torch.Tensor] = None,
             routed_scaling_factor: Optional[torch.Tensor] = None
         ):
@@ -543,14 +545,19 @@ class FusedMoE(DeepEPMoE):
                 device="npu",
                 dtype=torch.int32
             ).view(
-                -1,
-                router_logits.shape[0]
+                -1, router_logits.shape[0]
             ).transpose(0, 1)
-
-        topk_weights, topk_ids, row_idx = FusedMoE.fused_topk(
-            gating_output=router_logits,
-            topk=top_k,
-            renormalize=renormalize)
+        elif custom_routing_function is None:
+            topk_weights, topk_ids, row_idx = FusedMoE.fused_topk(
+                gating_output=router_logits,
+                topk=top_k,
+                renormalize=renormalize)
+        else:
+            topk_weights, topk_ids, row_idx = custom_routing_function(
+                hidden_states=hidden_states,
+                gating_output=router_logits,
+                topk=top_k,
+                renormalize=renormalize)
 
         return topk_weights, topk_ids, row_idx
 

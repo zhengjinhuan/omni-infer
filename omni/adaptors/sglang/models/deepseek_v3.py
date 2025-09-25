@@ -14,11 +14,12 @@
 
 import concurrent.futures
 import logging
-from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
-import torch_npu
+from torch import nn
+from transformers import PretrainedConfig
+
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
@@ -35,10 +36,11 @@ from sglang.srt.layers.quantization.fp8_utils import (
     channel_quant_to_tensor_quant,
     requant_weight_ue8m0_inplace,
 )
-from sglang.srt.layers.quantization.int8_utils import (
-    block_dequant as int8_block_dequant,
+from sglang.srt.layers.quantization.int8_utils import block_dequant as int8_block_dequant
+from sglang.srt.layers.vocab_parallel_embedding import (
+    VocabParallelEmbedding,
+    ParallelLMHead,
 )
-from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -49,24 +51,92 @@ from sglang.srt.utils import (
     bind_or_assign,
     log_info_on_rank0,
 )
-from torch import nn
-from transformers import PretrainedConfig
 
-from omni.adaptors.sglang.distributed import (
-    get_mlp_tp_group_parallel_rank,
-    get_mlp_tp_group_parallel_world_size,
-)
 from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
-from omni.adaptors.sglang.layers.layernorm import RMSNorm
-from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekMLP, DeepseekMoE
+from omni.adaptors.sglang.layers.activation import SiluAndMul
+from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekMoE
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import FusedMoE
+from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.vocab_parallel_embedding import ParallelLMHead
+from omni.adaptors.sglang.distributed import (
+    get_mlp_tp_group_parallel_world_size,
+    get_mlp_tp_group_parallel_rank,
+)
+from omni.adaptors.sglang.layers.linear import (
+    MergedColumnParallelLinear,
+    RowParallelLinear,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class ParallelDeepseekMLP(DeepseekMLP):
-    pass
+# TODO: not same as vLLM's yet
+class ParallelDeepseekMLP(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        hidden_act: str,
+        quant_config: Optional[QuantizationConfig] = None,
+        reduce_results: bool = True,
+        prefix: str = "",
+        tp_rank: Optional[int] = None,
+        tp_size: Optional[int] = None,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.tp_size = tp_size
+
+        self.gate_up_proj = MergedColumnParallelLinear(
+            hidden_size,
+            [intermediate_size] * 2,
+            bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("gate_up_proj", prefix),
+            tp_rank=tp_rank,
+            tp_size=tp_size,
+        )
+        self.gate_up_proj.throw_dequant = True
+
+        self.down_proj = RowParallelLinear(
+            intermediate_size,
+            hidden_size,
+            bias=False,
+            quant_config=quant_config,
+            reduce_results=reduce_results,
+            prefix=add_prefix("down_proj", prefix),
+            tp_rank=tp_rank,
+            tp_size=tp_size,
+        )
+        if hidden_act != "silu":
+            raise ValueError(
+                f"Unsupported activation: {hidden_act}. "
+                "Only silu is supported for now."
+            )
+
+        self.act_fn_obj = SiluAndMul()
+        self.quant_symbol = True if quant_config else False
+
+    def act_fn(self, x, quant_symbol):
+        if quant_symbol and isinstance(x, tuple):
+            x = dict(zip(['x_int8', 'pertoken_scale'], x))
+            x['out_scale'] = self.gate_up_proj.weight_scale
+        return self.act_fn_obj(x, quant_symbol)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        use_reduce_scatter: bool = False,
+        **kwargs):
+        x = hidden_states
+        if (self.tp_size == 1) and x.shape[0] == 0:
+            return x
+
+        gate_up, _ = self.gate_up_proj(x)
+        x = self.act_fn(gate_up, self.quant_symbol)
+        x, bias = self.down_proj(x, skip_all_reduce=use_reduce_scatter)
+        return x
 
 
 class DeepseekDecoderLayer(nn.Module):
@@ -220,8 +290,10 @@ class DeepseekDecoderLayer(nn.Module):
         )
 
         hidden_states = self.mlp(
-            hidden_states, forward_batch, use_reduce_scatter, **kwargs
-        )
+            hidden_states=hidden_states,
+            forward_batch=forward_batch,
+            use_reduce_scatter=use_reduce_scatter,
+            **kwargs)
 
         hidden_states, residual = self.layer_communicator.postprocess_layer(
             hidden_states, residual, forward_batch
