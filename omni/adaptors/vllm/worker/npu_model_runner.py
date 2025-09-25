@@ -198,7 +198,7 @@ class NPUModelRunner(GPUModelRunner):
 
         rank = get_tensor_model_parallel_rank()
         self.training_data_save_path = os.environ.get('TRAINING_DATA_SAVE_PATH', "")
-        self.token_threshold = os.environ.get("TRAINING_DATA_TOKEN_THRESHOLD", 1024)
+        self.token_threshold = int(os.environ.get("TRAINING_DATA_TOKEN_THRESHOLD", 1024))
         prepare_for_training = self.training_data_save_path != "" and rank == 0
         self.save_hidden_states = False
         self.save_token_ids = False
