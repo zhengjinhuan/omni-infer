@@ -46,6 +46,8 @@ class DeepseekMLP(nn.Module):
         super().__init__()
         self.tp_size = tp_size
 
+
+
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             [intermediate_size] * 2,
@@ -70,9 +72,18 @@ class DeepseekMLP(nn.Module):
                 f"Unsupported activation: {hidden_act}. "
                 "Only silu is supported for now."
             )
-        
-        from sglang.srt.layers.activation import SiluAndMul
-        self.act_fn = SiluAndMul()
+
+        from omni.adaptors.sglang.layers.activation import SiluAndMul
+        self.act_fn_obj = SiluAndMul()
+        self.quant_symbol = True if quant_config else False
+
+        self.gate_up_proj.throw_dequant = True
+
+    def act_fn(self, x, quant_symbol):
+        if quant_symbol and isinstance(x, tuple):
+            x = dict(zip(['x_int8', 'pertoken_scale'], x))
+            x['out_scale'] = self.gate_up_proj.weight_scale
+        return self.act_fn_obj(x, quant_symbol)
 
     def forward(
             self,
@@ -84,7 +95,7 @@ class DeepseekMLP(nn.Module):
             return x
 
         gate_up, _ = self.gate_up_proj(x)
-        x = self.act_fn(gate_up)
+        x = self.act_fn(gate_up, self.quant_symbol)
         x, _ = self.down_proj(x, skip_all_reduce=use_reduce_scatter)
 
         return x
