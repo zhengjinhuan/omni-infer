@@ -54,7 +54,7 @@ class InternLMDecoderLayer(nn.Module):
             max_position_embeddings=max_position_embeddings,
             cache_config=cache_config,
             quant_config=quant_config,
-            prefix=f"{prefix}.attention",
+            prefix=f"{prefix}.self_attn",
         )
         self.feed_forward = InternLM2MLP(
             hidden_size=self.hidden_size,
