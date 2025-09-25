@@ -22,7 +22,9 @@ tar -zxf %{SOURCE1} -C .
 cd nginx-1.28.0
 CFLAGS="-O2" ./configure --sbin-path=/usr/sbin/nginx \
     --add-dynamic-module=../global_proxy/modules/ngx_http_prefill_module \
+    --add-dynamic-module=../global_proxy/modules/ngx_http_prefill_refactor_module \
     --add-dynamic-module=../global_proxy/modules/ngx_http_set_request_id_module \
+    --add-dynamic-modules=../global_proxy/modules/ngx_http_internal_metrics_module \
     --add-dynamic-module=../global_proxy/lb_sdk/modules/ngx_http_upstream_length_balance_module \
     --add-dynamic-module=../global_proxy/lb_sdk/modules/ngx_http_upstream_greedy_timeout_module \
     --add-dynamic-module=../global_proxy/lb_sdk/modules/ngx_http_upstream_prefill_score_balance_module \
