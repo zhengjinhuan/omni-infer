@@ -198,6 +198,7 @@ class NPUModelRunner(GPUModelRunner):
 
         rank = get_tensor_model_parallel_rank()
         self.training_data_save_path = os.environ.get('TRAINING_DATA_SAVE_PATH', "")
+        self.token_threshold = os.environ.get("TRAINING_DATA_TOKEN_THRESHOLD", 1024)
         prepare_for_training = self.training_data_save_path != "" and rank == 0
         self.save_hidden_states = False
         self.save_token_ids = False
@@ -597,7 +598,9 @@ class NPUModelRunner(GPUModelRunner):
             input_ids_cpu = input_ids.cpu()
             hidden_states_cpu = raw_hidden_states.cpu()
             for i, req_id in enumerate(self.input_batch.req_ids):
-                # req = self.requests.get(req_id, None)
+                req = self.requests.get(req_id, None)
+                if len(req.prompt_token_ids) < self.token_threshold:
+                    continue
                 data = {
                     'req_id': req_id,
                     'input_ids': input_ids_cpu[req_slice[i]:req_slice[i + 1]].clone(),
@@ -652,19 +655,15 @@ class NPUModelRunner(GPUModelRunner):
         self,
         scheduler_output: "SchedulerOutput",
     ) -> None:
-        to_save = []
         for req_id in scheduler_output.finished_req_ids:
             req = self.requests.get(req_id, None)
-            if req is None:
+            if req is None or len(req.output_token_ids) < self.token_threshold:
                 continue
-            
-        
-            to_save.append({
+            to_save = {
                 'req_id' : req_id,
                 'prompt_token_ids' : req.prompt_token_ids,
                 'output_token_ids' : req.output_token_ids,
-            })
-        if len(to_save) > 0:
+            }
             filename = os.path.join(self.training_data_save_path, f"token-ids-{time.time_ns()}.pt")
             torch.save(to_save, filename)
             
