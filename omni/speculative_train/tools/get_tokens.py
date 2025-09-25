@@ -3,6 +3,7 @@ import requests
 import json
 from multiprocessing import Pool
 import time
+import functools
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple curl")
@@ -20,33 +21,43 @@ def parse_args():
     args = parser.parse_args()
     return parser, args
 
+def call_one(input, model_name, temperature, max_tokens, input_key, url, headers):
+    data = {
+        "model": model_name,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "include_stop_str_in_output": True,
+        "messages":[{"role": "user", "content": input[input_key]}],
+        "ignore_eos": True,
+        "skip_special_tokens": False,
+    }
+    response = requests.post(url, headers=headers, data=json.dumps(data))
+
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return {"Error": response.status_code}
+
 
 def run_requests(
         max_concurrency, ip, port, datafile, input_key, model_name, temperature, max_tokens):
     url = f"http://{ip}:{port}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
-    def call_one(input):
-        data = {
-            "model": model_name,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "include_stop_str_in_output": True,
-            "messages":[{"role": "user", "content": input[input_key]}],
-            "ignore_eos": True,
-            "skip_special_tokens": False,
-        }
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"Error": response.status_code}
+    partial_call_one = functools.partial(
+        call_one,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        input_key=input_key,
+        url=url,
+        headers=headers
+    )
 
     with open(datafile, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
     with Pool(max_concurrency) as pool:
-        results = pool.map(call_one, data)
+        results = pool.map(partial_call_one, data)
     
     return results
 

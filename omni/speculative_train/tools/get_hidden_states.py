@@ -4,7 +4,7 @@ import json
 from multiprocessing import Pool
 import os
 import torch
-
+import functools
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple curl")
@@ -20,29 +20,31 @@ def parse_args():
     return parser, args
 
 
+def call_one(file, input_dir, model_name, url, headers):
+    input = torch.load(os.path.join(input_dir, file))
+    data = {
+        "model": model_name,
+        "max_tokens": 2,
+        "include_stop_str_in_output": True,
+        "prompt": input["prompt_token_ids"] + input['output_token_ids']
+    }
+    response = requests.post(url, headers=headers, data=json.dumps(data))
+
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return {"Error": response.status_code}
+
 def run_requests(
         max_concurrency, ip, port, input_dir, model_name):
     url = f"http://{ip}:{port}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
-    def call_one(file):
-        input = torch.load(os.path.join(input_dir, file))
-        data = {
-            "model": model_name,
-            "max_tokens": 2,
-            "include_stop_str_in_output": True,
-            "prompt": input["prompt_token_ids"] + input['output_token_ids']
-        }
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"Error": response.status_code}
+    partial_call_one = functools.partial(call_one, input_dir=input_dir, model_name=model_name, url=url, headers=headers)
 
     files = os.listdir(input_dir)
     
     with Pool(max_concurrency) as pool:
-        results = pool.map(call_one, files)
+        results = pool.map(partial_call_one, files)
     
     return results
 
