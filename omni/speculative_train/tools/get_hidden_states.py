@@ -1,48 +1,65 @@
+import argparse
+import requests
 import json
 from multiprocessing import Pool
 import os
-import requests
-import sys
-import time
 import torch
 
-url = ""
-headers = {}
-model_id = ""
 
-def make_api_call(input):
-    data = {
-        "model": model_id,
-        "temperature": 0.6,
-        "max_tokens": 2,
-        "include_stop_str_in_output": True,
-        "prompt": input["prompt_token_ids"] + input['output_token_ids']
-    }
-    response = requests.post(url, headers=headers, data=json.dumps(data))
+def parse_args():
+    parser = argparse.ArgumentParser(description="Simple curl")
 
-    return response.status_code == 200
+    parser.add_argument("--ip", type=str, required=True)
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--model-name", type=str, required=True)
+    parser.add_argument("--input-dir", type=str, required=True)
+    parser.add_argument("--max-concurrency", type=int, default=64)
+    parser.add_argument("--output", type=str, default=None)
 
-def main(ip, port, model_name, n_num, datafile):
-    global url
-    url = f"http://{ip}:{port}/v1/completions"
-    global headers
+    args = parser.parse_args()
+    return parser, args
+
+
+def run_requests(
+        max_concurrency, ip, port, input_dir, model_name):
+    url = f"http://{ip}:{port}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
-    global model_id
-    model_id = model_name
-    data = torch.load(datafile)
-    with Pool(n_num) as pool:
-        results = pool.map(make_api_call, data)
+    def call_one(file):
+        input = torch.load(os.path.join(input_dir, file))
+        data = {
+            "model": model_name,
+            "max_tokens": 2,
+            "include_stop_str_in_output": True,
+            "prompt": input["prompt_token_ids"] + input['output_token_ids']
+        }
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"Error": response.status_code}
+
+    files = os.listdir(input_dir)
+    
+    with Pool(max_concurrency) as pool:
+        results = pool.map(call_one, files)
+    
     return results
 
+def main():
+    parser, args = parse_args()
+    results = run_requests(
+        max_concurrency=args.max_concurrency,
+        ip=args.ip,
+        port=args.port,
+        input_key=args.input_dir,
+        model_name=args.model_name,
+    )
+    if args.output is not None:
+        with open(args.output, 'w', encoding='utf-8') as f:
+            json.dump(results, f)
+        
+
 if __name__ == "__main__":
-    ip = "7.150.13.75"
-    port = 7000
-    model_name = "qwen"
-    datafile = sys.argv[1]
-    n_num = 64
-    
-    results = main(ip, port, model_name, n_num, datafile)
-
-    print(f"succeed case : {sum(results)} / {len(results)}")
-
+    main()
 
