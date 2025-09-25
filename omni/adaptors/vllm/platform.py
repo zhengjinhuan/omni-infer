@@ -304,7 +304,7 @@ class ConfigUpdater:
     
     @staticmethod
     def _may_enable_omni_cache(vllm_config: 'VllmConfig') -> None:
-        from omni.models.common.config.model_config import model_extra_config
+        from omni.models.config_loader.loader import model_extra_config
         enable_omni_cache = model_extra_config.operator_opt_config.use_omni_cache
         if not enable_omni_cache:
             return
@@ -317,7 +317,7 @@ class ConfigUpdater:
         from omni.accelerators.cache import apply_omni_cache_patch
         is_kv_consumer = kv_transfer_config.kv_role == "kv_consumer"
         apply_omni_cache_patch(enable=enable_omni_cache, is_kv_consumer=is_kv_consumer)
-
+    
     @staticmethod
     def _update_scheduler_config(vllm_config: 'VllmConfig') -> None:
         scheduler_config = vllm_config.scheduler_config

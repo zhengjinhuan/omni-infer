@@ -151,6 +151,7 @@ class NPUWorker(WorkerBase):
             logger.error(info)
             raise RuntimeError(info)
         # Initialize the model best practice configs.
+        self._init_omni_placement_configs()
         self._init_model_best_practice_configs()
         # Initialize the distributed environment.
         self._init_worker_distributed_environment()
@@ -200,6 +201,15 @@ class NPUWorker(WorkerBase):
             decode_gear_list=self.decode_gear_list,
             enable_graph_mode=self.enable_torchair_graph_mode
         )
+    
+    def _init_omni_placement_configs(self)-> None:
+        if self.vllm_config.additional_config is None:
+            return
+        if not self.vllm_config.additional_config.get("enable_omni_placement", False):
+            return
+        else:            
+            from omni.accelerators.placement.omni_placement.utils import apply_omni_placement_attributes
+            apply_omni_placement_attributes(additional_config=self.vllm_config.additional_config)
 
     def page_size_bytes(self) -> int:
         # For MLA we only store a single latent vector

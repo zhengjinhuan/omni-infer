@@ -11,8 +11,9 @@ import torch
 import torch_npu
 import torchair as tng
 import ctypes
+import importlib.resources
+import yaml
 
-from typing import Optional
 from .cluster_status import ClusterStatus
 from .placement_handler import create_cluster_activation, create_placement_manager, init_dram_weights, do_placement_optimizer
 from .optim.optimizers import Optimizer
@@ -22,6 +23,7 @@ from .expert_mapping import ExpertMapping
 from .utils import calculate_time
 from . import omni_placement
 from datetime import datetime
+from pathlib import Path
 
 import time
 
@@ -53,7 +55,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         optimizers: List of optimization algorithms
         expert_mapping: Expert deployment pattern mapping
     """
-    def __init__(self, config_file: str = "/etc/omni/config.yaml", device: str = "npu",
+    def __init__(self, config_file: str = None, device: str = "npu",
                  rank: int = None, world_size: int = None, num_devices_per_host: int = 16,
                  num_experts = 256, num_redundancy_shared_expert_rank=0, max_redundant_per_expert: int = None,
                  max_redundant_per_rank: int = None, first_k_dense_replace: int = 0, num_layers: int = None):
@@ -66,8 +68,16 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             world_size: Total number of processes in distributed environment
             num_devices_per_host: Number of devices per host machine (default: 8)
         """
-        # Load configuration
+        current_file_path = Path(__file__).resolve()
+        default_config_path = current_file_path.parent.parent / "config.yaml"
+        config_file = config_file or str(default_config_path)
+                
+        if not os.path.exists(config_file):
+            raise FileNotFoundError(f"[Error] Config file not found at: {config_file}")
+        
         self.config = Config(config_file)
+        print(f"[Info] Config file loaded from: {config_file}")
+        
         self.device = torch.device(device)
         self.first_k_dense_replace = first_k_dense_replace
         

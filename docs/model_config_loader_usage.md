@@ -49,7 +49,7 @@
 ## 关于enable_omni_placement场景的使用
 `enable_omni_placement`配置项都需要通过cli或ansible传入，传入途径为`run_vllm_server_prefill_cmd`或`run_vllm_server_decode_cmd`的`addtional_config`，参数名分别`enable_omni_placement`，需要传入的对应的打开的指令`True`或`False`，placement的其他相关配置参数也需要`addtional_config`进行传入。参入参数格式如下：
 ```yaml
-ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}, "enable_omni_placement":true,"omni_placement_config":{"pattern_path":"../../omni/accelerators/placement/patterns/base_patterns/DSV3_baseline_32_devices_58_MoE_Layers.npy","max_moe_layer_num":58,"enale_dynamic":true,"max_redundant_per_expert":1,"max_redundant_per_rank":0,"enable_rank_round_robin":true,"enable_dump":false,"dump_dir":"/home/profiling/dump_data"}}'
+ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}, "enable_omni_placement":true,"omni_placement_config":{"pattern_path":"../../omni/accelerators/placement/patterns/base_patterns/DSV3_baseline_32_devices_58_MoE_Layers.npy","max_moe_layer_num":58,"enable_dynamic":true,"max_redundant_per_expert":1,"max_redundant_per_rank":0,"enable_rank_round_robin":true,"enable_dump":false,"dump_dir":"/home/profiling/dump_data"}}'
 ```
 注意，`enable_omni_placement`设为`True`，其他参数必须一起传入。
 ## 关于新增模型配置项

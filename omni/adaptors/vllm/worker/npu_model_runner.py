@@ -56,18 +56,13 @@ from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
 from omni.adaptors.vllm.utils import get_attr_by_names
 
-
-
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
     from vllm.v1.core.sched.output import SchedulerOutput
 else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
 
-if model_extra_config.task_config.enable_omni_placement:
-    from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
-    _GLOBAL_STEP = 0
-
+_GLOBAL_STEP = 0
 MAX_GEAR_NUM = 6
 NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which is 4 on cuda.
 
@@ -1038,10 +1033,11 @@ class NPUModelRunner(GPUModelRunner):
             logger.info("Loading model weights took %.4f GB", m.consumed_memory / float(2**30))
 
         if model_extra_config.task_config.enable_omni_placement:
+            from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
             first_k_dense_replace_names = ['num_dense_layers', 'first_k_dense_replace']
             first_k_dense_replace = get_attr_by_names(self.model.config, first_k_dense_replace_names, 3)
             param_dict = dict(self.model.named_parameters())
-            self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
+            self.planner = OmniPlanner()
             self.planner.init_dram_weights(param_dict, first_k_dense_replace=first_k_dense_replace)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
