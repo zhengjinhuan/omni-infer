@@ -289,14 +289,12 @@ class DeepseekMoE(nn.Module):
 
         if hidden_states.shape[0] > 0 and not forward_batch.is_prefill_idle:
 
-            router_logits, _ = self.gate(hidden_states.float())
-
             if self.shared_experts is not None:
                 shared_output = self.shared_experts(
                     x=hidden_states,
                     can_run_graph=forward_batch.can_run_graph)
-
-            topk_weights, topk_idx, _ = FusedMoE.select_experts(
+            router_logits, _ = self.gate(hidden_states.float())
+            topk_weights, topk_ids, _ = FusedMoE.select_experts(
                 hidden_states=hidden_states,
                 router_logits=router_logits,
                 top_k=self.experts.top_k,
@@ -306,8 +304,9 @@ class DeepseekMoE(nn.Module):
                 num_expert_group=self.config.n_group,
                 e_score_correction_bias=self.gate.e_score_correction_bias,
                 routed_scaling_factor=self.config.routed_scaling_factor)
+            topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids)
         else:
-            topk_idx = torch.randperm(256)[:hidden_states.size(0) * self.top_k].reshape(
+            topk_ids = torch.randperm(256)[:hidden_states.size(0) * self.top_k].reshape(
                 hidden_states.size(0), self.top_k
                 ).npu()
 
@@ -318,7 +317,7 @@ class DeepseekMoE(nn.Module):
 
         final_hidden_states_list = self.experts(
             hidden_states=hidden_states,
-            topk_ids=topk_idx,
+            topk_ids=topk_ids,
             forward_batch=forward_batch,
             comm_group=self.group,
             dynamic_scale=self.smooth_scale,

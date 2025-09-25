@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import torch
 import torch_npu
+import torchair as tng
 import torch.distributed as dist
 from sglang.srt.distributed import get_moe_ep_group, get_world_group
 
@@ -456,6 +457,7 @@ class FusedMoE(DeepEPMoE):
         activation: str = "silu",
         routed_scaling_factor: Optional[float] = None,
         deepep_mode: DeepEPMode = DeepEPMode.NORMAL,
+        **kwargs
     ):
         super().__init__(
             num_experts=num_experts,
@@ -471,7 +473,9 @@ class FusedMoE(DeepEPMoE):
             routed_scaling_factor=routed_scaling_factor,
             deepep_mode=deepep_mode,
         )
-
+        self.planner = kwargs.get("planner", None)
+        self.moe_layer_idx = kwargs.get("moe_layer_idx", None)
+        self.expert_mapping = kwargs.get("expert_mapping", None)
         self.quant_scale = torch.nn.Parameter(
             torch.ones(
                 size=(self.num_local_experts, self.w2_weight.size(-1)),
@@ -574,6 +578,35 @@ class FusedMoE(DeepEPMoE):
 
         return topk_weights, topk_ids, row_idx
 
+    def apply_expert_load_balance(
+            self,
+            topk_ids: torch.Tensor,
+            best_topk_ids: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # omni placement
+        if self.planner is not None:
+            _, topk_ids, _ = self.planner.plan(
+                layer_idx_moe=self.moe_layer_idx,
+                tokens=None,
+                token_expert_ids=topk_ids,
+                token_expert_scores=None,
+                expert_mapping=self.expert_mapping
+            )
+
+        # Forced load balance
+        #to do: get best_ep from model_extra_config
+        import os
+        best_ep=os.getenv("BEST_EP", 'False') == 'True'
+        if best_ep:
+            if best_topk_ids is None:
+                t = (topk_ids.shape[0] * 8) // 256
+                topk_ids = torch.arange(256, device='npu', dtype=torch.int32).unsqueeze(
+                    0).repeat(t + 1, 1).view(-1, 8)[:topk_ids.shape[0]]
+            elif global_server_args_dict["enable_torch_compile"]:
+                topk_ids = tng.scope.npu_wait_tensor(best_topk_ids, topk_ids)
+            else:
+                topk_ids = best_topk_ids
+        return topk_ids
 
 def get_moe_impl_class():
 
