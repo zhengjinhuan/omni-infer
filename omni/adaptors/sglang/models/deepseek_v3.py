@@ -41,10 +41,6 @@ from sglang.srt.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
     ParallelLMHead,
 )
-from sglang.srt.layers.linear import (
-    MergedColumnParallelLinear,
-    RowParallelLinear,
-)
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -55,6 +51,7 @@ from sglang.srt.utils import (
     bind_or_assign,
     log_info_on_rank0,
 )
+
 from omni.adaptors.sglang.layers.attention.deepseek_mla import DeepseekMLA
 from omni.adaptors.sglang.layers.activation import SiluAndMul
 from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekMoE
@@ -64,6 +61,10 @@ from omni.adaptors.sglang.layers.vocab_parallel_embedding import ParallelLMHead
 from omni.adaptors.sglang.distributed import (
     get_mlp_tp_group_parallel_world_size,
     get_mlp_tp_group_parallel_rank,
+)
+from omni.adaptors.sglang.layers.linear import (
+    MergedColumnParallelLinear,
+    RowParallelLinear,
 )
 
 logger = logging.getLogger(__name__)

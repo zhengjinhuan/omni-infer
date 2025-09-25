@@ -21,16 +21,15 @@ from sglang.srt.distributed import (
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.layers.linear import (
-    MergedColumnParallelLinear,
-    RowParallelLinear,
-    ReplicatedLinear,
-)
+from sglang.srt.layers.linear import ReplicatedLinear
 from sglang.srt.utils import add_prefix
 
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import FusedMoE
 from omni.adaptors.sglang.layers.activation import SiluAndMul
-
+from omni.adaptors.sglang.layers.linear import (
+    MergedColumnParallelLinear,
+    RowParallelLinear,
+)
 
 # TODO: not aligned with vLLM's yet
 class ReplicatedDeepseekMLP(nn.Module):
