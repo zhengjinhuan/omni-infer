@@ -17,8 +17,8 @@ all:
   vars:
     ansible_user: root
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
-    ansible_ssh_private_key_file: /data/longwen/ansible/key.pem  # Private key path on the executor
-    # ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+    ansible_ssh_private_key_file: /path/to/key.pem  # Private key path on the executor
+    # ansible_ssh_pass: pwd 
     global_port_base: 8000
     base_api_port: 9000
     proxy_port: 7000

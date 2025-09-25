@@ -38,11 +38,11 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 
 #### 修改配置文件
 
-需要修改`omni_infer_inventory_used_for_xP1D.yml`和 `omni_infer_server_template` 两处配置文件，位于`omniinfer/tools/ansible/templete/`路径下。以2P1D为例:
+需要修改`omni_infer_inventory_used_for_x.yml`和 `omni_infer_server_template_xx.yml` 两处配置文件，位于`omniinfer/tools/ansible/templete/`路径下。以1P1D为例(4机组P,4机组D):
 
-1. **omni_infer_inventory_used_for_2P1D.yml**
+1. **tools/ansible/template/omni_infer_inventory_used_for_1P32_1D32.yml**
 
-   将`p0/p1/d0/d1/c0`下面的`ansible_host` 与 `host_ip` 值改为对应的IP。<span style="color:red; font-weight:bold">对于多机组 D 的场景，所有 D 节点的 `host_ip` 为主节点 d0 的 IP。</span>
+   将`p/d/c`下面的`ansible_host` 与 `host_ip` 值改为对应的IP。<span style="color:red; font-weight:bold">对于多机组 D 的场景，所有 D 节点的 `host_ip` 为主节点 d0 的 IP。</span>
 
 
    ```YAML
@@ -58,8 +58,9 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
          p1:
            ansible_host: "127.0.0.2"  # P1节点的IP
            ...
-           host_ip: "127.0.0.2"  # P1节点的IP
+           host_ip: "127.0.0.1"  # P0节点的IP, 即 P 节点的主节点 IP
            ...
+        ...
 
      D:
        hosts:
@@ -74,6 +75,7 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
            ...
            host_ip: "127.0.0.3"       # D0 节点的IP, 即 D 节点的主节点 IP
            ...
+        ...
 
      C:
        hosts:
@@ -93,14 +95,14 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
         ...
    ```
 
-2. **omni_infer_server_template.yml**
+2. **tools/ansible/template/omni_infer_server_template_a3_ds.yml**
 
     修改以下环境变量
     ```yaml
     environment:
         # Global Configuration
         LOG_PATH: "/data/log_path"
-        MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"  #模型文件路径
+        MODEL_PATH: "/data/models/origin/bf16"  #模型文件路径
         LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
         CODE_PATH: "/data/local_code_path"  # omniinfer本地代码路径
         HTTP_PROXY: ""  # 下载nginx的HTTP代理地址，如果不需要代理可以留空
@@ -118,7 +120,10 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 
 ```bash
 cd omniinfer/tools/ansible/template
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml
+# 方式1 使用原始镜像代码（建议）
+ansible-playbook -i omni_infer_inventory_1p32_1d32.yml omni_infer_server_template.yml --skip-tags 'sync_code'
+# 方式2 使用本地CODE_PATH代码替换镜像的omniinfer代码
+ansible-playbook -i omni_infer_inventory_1p32_1d32.yml omni_infer_server_template.yml
 ```
 
 #### curl 测试
@@ -132,33 +137,3 @@ curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/j
 #### 注意事项
 
 - ansible 每次执行时，会对vllm代码进行`checkout -f`，若修改代码，请确保代码已提交或暂存。
-
-## 更高性能
-
-可以使能以下特性来获得更高的性能：
-
-**1. 使用图缓存**
-
-首次启动服务时，模型会从头编译。建议首次成功启动后，重新执行以下命令以启用图缓存，提升性能：
-
-```bash
-cd omniinfer/tools/ansible/template
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server
-```
-
-
-**2. 调整 proxy batch size**
-
-当前的默认值为 25。建议根据每个 die 的平均并发量大小(n)进行调整。推荐值为(n+1)。进入proxy容器，在 /usr/local/nginx/conf/nginx.conf 文件中修改该值，然后执行 `nginx -c /usr/local/nginx/conf/nginx.conf -s reload` 以应用更改。
-
-
-
-**3. 增加 batch size**
-
-ansible部署默认开启 MTP 以优化性能。如需调整 `--max-num-seqs`（batch size），需同步修改omniinfer本地代码路径下 omniinfer/tests/test_config/test_config_decode.json中`decode_gear_list` 的值：
-
-```JSON
-"decode_gear_list": [batch_size * (1+num_speculative_tokens)]
-```
-
- 以MTP 1为例，`--max-num-seqs`设置为32，`"decode_gear_list":[64]`。
