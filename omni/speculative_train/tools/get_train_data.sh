@@ -1,5 +1,5 @@
 #!/bin/bash
-IP=10.150.13.75
+IP=7.150.13.75
 PORT=7000
 MODEL_NAME=qwen
 
@@ -28,16 +28,16 @@ python get_tokens.py \
     --temperature $TEMPERATURE \
     --output $TOKEN_OUTPUT
 
-python get_hidden_states.py \
-    --ip $IP \
-    --port $PORT \
-    --model-name $MODEL_NAME \
-    --input-dir $TOKEN_SAVED_DIR \
-    --max-concurrency $MAX_CONCURRENCY \
-    --output $HIDDENSTATES_OUTPUT
+# python get_hidden_states.py \
+#     --ip $IP \
+#     --port $PORT \
+#     --model-name $MODEL_NAME \
+#     --input-dir $TOKEN_SAVED_DIR \
+#     --max-concurrency $MAX_CONCURRENCY \
+#     --output $HIDDENSTATES_OUTPUT
 
-python make_loss_mask.py \
-    --data-dir $HIDDENSTATES_SAVED_DIR \
-    --key-token $KEY_TOKEN \
-    --mask-delta $MASK_DELTA
+# python make_loss_mask.py \
+#     --data-dir $HIDDENSTATES_SAVED_DIR \
+#     --key-token $KEY_TOKEN \
+#     --mask-delta $MASK_DELTA
 

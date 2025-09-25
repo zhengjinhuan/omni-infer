@@ -54,7 +54,7 @@ def main():
         max_concurrency=args.max_concurrency,
         ip=args.ip,
         port=args.port,
-        input_key=args.input_dir,
+        input_dir=args.input_dir,
         model_name=args.model_name,
     )
     if args.output is not None:
