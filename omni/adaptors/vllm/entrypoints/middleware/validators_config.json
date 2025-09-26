@@ -1,0 +1,62 @@
+{
+    "model": {
+        "type": "supported"
+    },
+    "messages": {
+        "type": "supported",
+        "subfield": ["role", "content"]
+    },
+    "stream": {
+        "type": "supported"
+    },
+    "stream_options": {
+        "type": "supported",
+        "subfield": ["include_usage"]
+    },
+    "top_k": {
+        "type": "supported"
+    },
+    "top_p": {
+        "type": "supported"
+    },
+    "temperature": {
+        "type": "supported"
+    },
+    "stop": {
+        "type": "supported"
+    },
+    "max_tokens": {
+        "type": "supported"
+    },
+    "tool_choice": {
+        "type": "supported"
+    },
+    "tools": {
+        "type": "supported"
+    },
+    "frequency_penalty": {
+        "type": "supported"
+    },
+    "presence_penalty": {
+        "type": "supported"
+    },
+    "n": {
+        "type": "supported"
+    },
+    "length_penalty": {
+        "type": "supported"
+    },
+    "repetition_penalty": {
+        "type": "supported"
+    },
+    "chat_template_kwargs": {
+        "type": "supported",
+        "subfield": ["thinking", "enable_thinking"]
+    },
+    "ignore_eos": {
+        "type": "supported"
+    },
+    "max_completion_tokens": {
+        "type": "supported"
+    }
+}

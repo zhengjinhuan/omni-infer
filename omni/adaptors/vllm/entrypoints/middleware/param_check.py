@@ -1,10 +1,11 @@
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Type, Union
-from fastapi import Request
+from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from http import HTTPStatus
+import os
 from vllm.entrypoints.openai.protocol import ErrorResponse
 
 
@@ -68,25 +69,52 @@ class RangeValidator(BaseValidator):
         return None
 
 
-VALIDATORS: Dict[str, BaseValidator] = {
-    "model": SupportedValidator("model"),
-    "messages": SupportedValidator("messages", subfield=["role", "content"]),
-    "stream": SupportedValidator("stream"),
-    "stream_options": SupportedValidator("stream_options", subfield=["include_usage"]),
-    "top_k": SupportedValidator("top_k"),
-    "top_p": SupportedValidator("top_p"),
-    "temperature": SupportedValidator("temperature"),
-    "stop": SupportedValidator("stop"),
-    "max_tokens": SupportedValidator("max_tokens"),
-    "tool_choice": SupportedValidator("tool_choice"),
-    "tools": SupportedValidator("tools"),
-    "frequency_penalty": SupportedValidator("frequency_penalty"),
-    "presence_penalty": SupportedValidator("presence_penalty"),
-    "n": SupportedValidator("n"),
-    "length_penalty": SupportedValidator("length_penalty"),
-    "repetition_penalty": SupportedValidator("repetition_penalty"),
-    "chat_template_kwargs": SupportedValidator("chat_template_kwargs", subfield=["thinking", "enable_thinking"]),
-}
+def load_validators_from_json(config_path: str) -> Dict[str, BaseValidator]:
+    validators: Dict[str, BaseValidator] = {}
+    if config_path == "":
+        return validators
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    
+    type_map = {
+        "int": int,
+        "float": float,
+        "str": str,
+        "bool": bool
+    }
+
+    for param_name, spec in config.items():
+        vtype = spec["type"]
+
+        if vtype == "supported":
+            validators[param_name] = SupportedValidator(
+                param_name,
+                subfield=spec.get("subfield")
+            )
+        
+        elif vtype == "validated":
+            dtype_str = spec["data_type"]
+            dtype = type_map.get(dtype_str)
+
+            validators[param_name] = RangeValidator(
+                param_name,
+                data_type=dtype,
+                min_val=spec.get("min_val"),
+                max_val=spec.get("max_val"),
+                subfield=spec.get("subfield")
+            )
+        elif vtype == "unsupported":
+            validators[param_name] = UnsupportedValidator(
+                param_name
+            )
+        else:
+            raise ValueError(f"validators config json ValueError, Unknown validator type: {vtype} for {param_name}")
+    
+    return validators
+
+
+VALIDATORS: Dict[str, BaseValidator] = load_validators_from_json(os.getenv("VALIDATORS_CONFIG_PATH", ""))
 
 
 class ValidateSamplingParams(BaseHTTPMiddleware):
@@ -100,8 +128,14 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             ).model_dump()
         )
     
+    def replace_with_stars(self, text):
+        return "*" * len(text)
+    
     async def dispatch(self, request: Request, call_next):
         if request.method == "POST" and request.url.path in ("/v1/completions", "/v1/chat/completions"):
+            if not VALIDATORS:
+                return await call_next(request)
+            
             body = await request.body()
             if not body:
                 return await call_next(request)
@@ -120,4 +154,23 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                 if error is not None:
                     return self.create_error_response(status_code, error)
                 
+        if request.method == "GET" and request.url.path == "/v1/models":
+            response = await call_next(request)
+            chunk = await anext(response.body_iterator)
+            chunk_json = json.loads(chunk.decode("utf-8"))
+            
+            if chunk_json is not None and len(chunk_json.get("data", [])) > 0 and chunk_json.get("data")[0].get("root"):
+                chunk_json.get("data")[0]["root"] = self.replace_with_stars(chunk_json.get("data")[0].get("root"))
+            
+            new_json_str = json.dumps(chunk_json, ensure_ascii=False)
+            new_chunk = new_json_str.encode("utf-8")
+
+            return Response(
+                content=new_chunk,
+                headers={
+                    "Content-Length": str(len(new_chunk)),
+                    'content-type': 'application/json'
+                }
+            )
+
         return await call_next(request)
