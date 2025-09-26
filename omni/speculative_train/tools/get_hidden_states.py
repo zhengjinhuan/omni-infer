@@ -37,7 +37,7 @@ def call_one(file, input_dir, model_name, url, headers):
 
 def run_requests(
         max_concurrency, ip, port, input_dir, model_name):
-    url = f"http://{ip}:{port}/v1/chat/completions"
+    url = f"http://{ip}:{port}/v1/completions"
     headers = {"Content-Type": "application/json"}
     partial_call_one = functools.partial(call_one, input_dir=input_dir, model_name=model_name, url=url, headers=headers)
 

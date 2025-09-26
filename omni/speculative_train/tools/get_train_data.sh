@@ -17,24 +17,24 @@ KEY_TOKEN=151667
 MASK_DELTA=1
 
 
-python get_tokens.py \
-    --ip $IP \
-    --port $PORT \
-    --model-name $MODEL_NAME \
-    --datafile $DATAFILE \
-    --input-key $INPUT_KEY \
-    --max-tokens $MAX_TOKENS \
-    --max-concurrency $MAX_CONCURRENCY \
-    --temperature $TEMPERATURE \
-    --output $TOKEN_OUTPUT
-
-# python get_hidden_states.py \
+# python get_tokens.py \
 #     --ip $IP \
 #     --port $PORT \
 #     --model-name $MODEL_NAME \
-#     --input-dir $TOKEN_SAVED_DIR \
+#     --datafile $DATAFILE \
+#     --input-key $INPUT_KEY \
+#     --max-tokens $MAX_TOKENS \
 #     --max-concurrency $MAX_CONCURRENCY \
-#     --output $HIDDENSTATES_OUTPUT
+#     --temperature $TEMPERATURE \
+#     --output $TOKEN_OUTPUT
+
+python get_hidden_states.py \
+    --ip $IP \
+    --port $PORT \
+    --model-name $MODEL_NAME \
+    --input-dir $TOKEN_SAVED_DIR \
+    --max-concurrency $MAX_CONCURRENCY \
+    --output $HIDDENSTATES_OUTPUT
 
 # python make_loss_mask.py \
 #     --data-dir $HIDDENSTATES_SAVED_DIR \
