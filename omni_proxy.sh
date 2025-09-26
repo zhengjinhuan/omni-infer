@@ -10,8 +10,14 @@ core_num="4"
 start_core_index="0"
 prefill_endpoints=""
 decode_endpoints=""
-log_file="/tmp/nginx_4p1d.log"
-log_level="info"
+log_file="/tmp/nginx_error.log"
+log_level="notice"
+omni_proxy_pd_policy="sequential"
+omni_proxy_model_path=""
+
+dry_run=false
+stop=false
+rollback=false
 
 print_help() {
     echo "Usage:"
@@ -24,17 +30,24 @@ print_help() {
     echo "  --start-core-index <N>          Starting CPU core index (default: 0)"
     echo "  --prefill-endpoints <list>      Comma-separated backend servers for prefill"
     echo "  --decode-endpoints <list>       Comma-separated backend servers for decode"
-    echo "  --log-file <path>               Log file path (default: /tmp/nginx_4p1d.log)"
-    echo "  --log-level <LEVEL>             Log level (default: info)"
+    echo "  --log-file <path>               Log file path (default: /tmp/nginx_error.log)"
+    echo "  --log-level <LEVEL>             Log level (default: notice)"
+    echo "  --omni-proxy-pd-policy <policy> sequential or parallel (default: sequential)"
+    echo "  --omni-proxy-model-path <path>  Path to model directory (default: unset)"
+    echo "  --dry-run                       Only generate nginx config, do not start nginx"
+    echo "  --stop                          Stop nginx"
+    echo "  --rollback                      Rollback nginx config if backup exists (must be used with --stop)"
     echo "  --help                          Show this help message"
     echo ""
     echo "EXAMPLE:"
     echo "  bash $0 \\"
     echo "      --nginx-conf-file /usr/local/nginx/conf/nginx.conf \\"
-    echo "      --listen-port 7150 \\"
+    echo "      --listen-port 7000 \\"
     echo "      --core-num 4 \\"
-    echo "      --prefill-endpoints 7.150.8.32:9000,7.150.8.47:9001 \\"
-    echo "      --decode-endpoints 7.150.10.13:9100,7.150.10.13:9101"
+    echo "      --prefill-endpoints 127.0.0.1:9000,127.0.0.2:9001 \\"
+    echo "      --decode-endpoints 127.0.0.3:9100,127.0.0.3:9101 \\"
+    echo "      --omni-proxy-pd-policy  sequential \\"
+    echo "      --omni-proxy-model-path /data/models/deepseek"
     exit 0
 }
 
@@ -56,11 +69,11 @@ while [[ $# -gt 0 ]]; do
             start_core_index="$2"
             shift 2
             ;;
-        --prefill-servers-list)
+        --prefill-endpoints)
             prefill_endpoints="$2"
             shift 2
             ;;
-        --decode-servers-list)
+        --decode-endpoints)
             decode_endpoints="$2"
             shift 2
             ;;
@@ -72,6 +85,30 @@ while [[ $# -gt 0 ]]; do
             log_level="$2"
             shift 2
             ;;
+        --omni-proxy-pd-policy)
+            if [[ "$2" != "sequential" && "$2" != "parallel" ]]; then
+                echo "Error: --omni-proxy-pd-policy must be 'sequential' or 'parallel'"
+                exit 1
+            fi
+            omni_proxy_pd_policy="$2"
+            shift 2
+            ;;
+        --omni-proxy-model-path)
+            omni_proxy_model_path="$2"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=true
+            shift 1
+            ;;
+        --stop)
+            stop=true
+            shift 1
+            ;;
+        --rollback)
+            rollback=true
+            shift 1
+            ;;
         --help|-h)
             print_help
             ;;
@@ -82,10 +119,36 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$prefill_endpoints" || -z "$decode_endpoints" ]]; then
-    echo "Error: --prefill-endpoints and --decode-endpoints are required"
-    exit 1
-fi
+function stop_nginx() {
+    while pgrep nginx > /dev/null; do
+        echo "Stopping existing nginx ..."
+        pgrep nginx | xargs kill -15
+        sleep 1
+    done
+    echo "Nginx stopped."
+}
+
+function start_nginx() {
+    local nginx_conf_file="$1"
+    # nginx -t -c "$nginx_conf_file"
+    if [ $? -ne 0 ]; then
+        echo "Error: nginx config $nginx_conf_file is invalid. Exiting."
+        exit 1
+    fi
+    echo "Starting nginx with config $nginx_conf_file..."
+    nginx -c "$nginx_conf_file"
+}
+
+function rollback_nginx_conf() {
+    local nginx_conf_file="$1"
+    local backup_file="${nginx_conf_file}_bak"
+    if [[ -f "$backup_file" ]]; then
+        \cp "$backup_file" "$nginx_conf_file"
+        echo "Rolled back nginx config to $backup_file"
+    else
+        echo "No backup config found to rollback."
+    fi
+}
 
 function gen_affinity_masks() {
     local count=$1
@@ -107,8 +170,6 @@ function gen_affinity_masks() {
     echo "${masks[@]}"
 }
 
-affinity_masks=$(gen_affinity_masks "$core_num")
-
 function gen_upstream_block() {
     local name="$1"
     local endpoints="$2"
@@ -121,7 +182,14 @@ function gen_upstream_block() {
     echo -e "$block"
 }
 
-cat > "$nginx_conf_file" <<EOF
+function generate_nginx_conf() {
+    affinity_masks=$(gen_affinity_masks "$core_num")
+    # backup config if exists
+    if [[ -f "$nginx_conf_file" ]]; then
+        \cp -n "$nginx_conf_file" "${nginx_conf_file}_bak"
+    fi
+
+    cat > "$nginx_conf_file" <<EOF
 load_module /usr/local/nginx/modules/ngx_http_omni_proxy_module.so;
 load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;
 
@@ -167,7 +235,17 @@ $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
         location /v1 {
             set_request_id on;
             omni_proxy decode_endpoints;
-            omni_proxy_pd_policy sequential;
+            omni_proxy_pd_policy $omni_proxy_pd_policy;
+EOF
+
+    if [[ -n "$omni_proxy_model_path" ]]; then
+        cat >> "$nginx_conf_file" <<EOF
+            omni_proxy_model_path $omni_proxy_model_path;
+            omni_proxy_vllm_kv_port_offset 100;
+EOF
+    fi
+
+    cat >> "$nginx_conf_file" <<EOF
             chunked_transfer_encoding off;
             proxy_buffering off;
             send_timeout 1h;
@@ -188,4 +266,39 @@ $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
 }
 EOF
 
-echo "nginx.conf generated at $nginx_conf_file"
+    echo "nginx.conf generated at $nginx_conf_file"
+}
+
+function do_start() {
+    if [[ -z "$prefill_endpoints" || -z "$decode_endpoints" ]]; then
+        echo "Error: --prefill-endpoints and --decode-endpoints are required"
+        exit 1
+    fi
+
+    generate_nginx_conf
+
+    if [ "$dry_run" = true ]; then
+        echo "Dry run complete. Configuration generated at $nginx_conf_file."
+        exit 0
+    fi
+
+    stop_nginx
+    start_nginx "$nginx_conf_file"
+}
+
+function do_stop() {
+    stop_nginx
+    if [ "$rollback" = true ]; then
+        rollback_nginx_conf "$nginx_conf_file"
+    fi
+}
+
+function main() {
+    if [ "$stop" = false ]; then
+        do_start
+    else
+        do_stop
+    fi
+}
+
+main
