@@ -14,7 +14,7 @@ def parse_args():
     return parser, args
 
 def main(data_dir, key_token, mask_delta):
-    files = os.list(data_dir)
+    files = os.listdir(data_dir)
     for i, file in enumerate(files):
         filepath = os.path.join(data_dir, file)
         data = torch.load(filepath)

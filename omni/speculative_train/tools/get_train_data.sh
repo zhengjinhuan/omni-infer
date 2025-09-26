@@ -28,16 +28,16 @@ MASK_DELTA=1
 #     --temperature $TEMPERATURE \
 #     --output $TOKEN_OUTPUT
 
-python get_hidden_states.py \
-    --ip $IP \
-    --port $PORT \
-    --model-name $MODEL_NAME \
-    --input-dir $TOKEN_SAVED_DIR \
-    --max-concurrency $MAX_CONCURRENCY \
-    --output $HIDDENSTATES_OUTPUT
+# python get_hidden_states.py \
+#     --ip $IP \
+#     --port $PORT \
+#     --model-name $MODEL_NAME \
+#     --input-dir $TOKEN_SAVED_DIR \
+#     --max-concurrency $MAX_CONCURRENCY \
+#     --output $HIDDENSTATES_OUTPUT
 
-# python make_loss_mask.py \
-#     --data-dir $HIDDENSTATES_SAVED_DIR \
-#     --key-token $KEY_TOKEN \
-#     --mask-delta $MASK_DELTA
+python make_loss_mask.py \
+    --data-dir $HIDDENSTATES_SAVED_DIR \
+    --key-token $KEY_TOKEN \
+    --mask-delta $MASK_DELTA
 
