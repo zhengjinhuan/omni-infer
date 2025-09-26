@@ -1013,7 +1013,7 @@ class DeepseekMLA(nn.Module):
                 hidden_states_origin = hidden_states
                 if self.quant_symbol and not model_extra_config.operator_opt_config.enable_fgsa:
                     hidden_states, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
-                    hidden_states = {"x_int8":hidden_states, "pertoken_scale":pertoken_scale}
+                    hidden_states = {"x_int8": hidden_states, "pertoken_scale": pertoken_scale}
                 if self.q_lora_rank is not None:
                     q_lowrank = self.q_a_proj(hidden_states)[0]
                 else:
