@@ -155,6 +155,7 @@ class DeepseekDecoderLayer(nn.Module):
         self.speculative_algorithm = global_server_args_dict["speculative_algorithm"]
         self.layer_id = layer_id
         self.is_nextn = is_nextn
+        self.quant_symbol = quant_config is not None
 
         self.is_layer_sparse = is_nextn or (
                 self.config.n_routed_experts is not None
@@ -249,13 +250,24 @@ class DeepseekDecoderLayer(nn.Module):
                     hidden_states, residual
                 )
             else:
-                if residual is None:
-                    residual = hidden_states
-                    hidden_states = self.input_layernorm.forward_npu(hidden_states)
+                if (
+                    forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle
+                ) or forward_batch.is_target_verify:
+                    if residual is None:
+                        residual = hidden_states
+                        hidden_states = self.input_layernorm.forward_npu(hidden_states)
+                    else:
+                        hidden_states, residual = self.input_layernorm.forward_npu(
+                            hidden_states, residual
+                        )
                 else:
-                    hidden_states, residual = self.input_layernorm.forward_npu(
-                        hidden_states, residual
-                    )
+                    if residual is None:
+                        residual = hidden_states
+                        hidden_states = self.input_layernorm(hidden_states)
+                    else:
+                        hidden_states, residual = self.input_layernorm(
+                            hidden_states, residual, quant_symbol=self.quant_symbol
+                        )
 
         hidden_states = self.self_attn(
             positions=positions,

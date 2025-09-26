@@ -11,6 +11,7 @@ from transformers import PretrainedConfig
 from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
 from sglang.srt.layers.dp_attention import (
     attn_tp_all_gather_into_tensor,
+    get_attention_tp_group,
     get_attention_tp_rank,
     get_attention_tp_size,
 )
@@ -128,6 +129,7 @@ class DeepseekMLA(nn.Module):
         self.max_position_embeddings = max_position_embeddings
 
         self.layer_scatter_modes = layer_scatter_modes
+        self.quant_symbol = quant_config is not None
 
         self.mask_length = 2048
         self.attn_mask = ~torch.tril(
@@ -293,18 +295,6 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
-            self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
-        ):
-            hidden_states, local_hidden_states = (
-                forward_batch.gathered_buffer[: forward_batch.input_ids.shape[0]],
-                hidden_states,
-            )
-            attn_tp_all_gather_into_tensor(
-                hidden_states,
-                local_hidden_states,
-            )
-
         if (
             forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle
         ) or forward_batch.is_target_verify:
@@ -323,17 +313,35 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if hidden_states.shape[0] == 0:
+        if isinstance(hidden_states, torch.Tensor) and hidden_states.shape[0] == 0:
             assert (
                 not self.o_proj.reduce_results
             ), "short-circuiting allreduce will lead to hangs"
             return hidden_states
+        need_all_gather = (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
+                            self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
+                        )
         if self.q_lora_rank is not None:
-            q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
-                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
-            )
-            q = self.q_a_layernorm(q)
-            q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+            if need_all_gather:
+                q = self.q_a_proj(hidden_states)[0]
+                latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
+                latent_cache = get_attention_tp_group().all_gather(latent_cache, dim=0)
+
+                q = self.q_a_layernorm(q)
+                if self.quant_symbol:
+                    q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
+                    # Quantizing before all_gather can reduce communication overhead.
+                    q_quant = get_attention_tp_group().all_gather(q_quant, dim=0)
+                    q_scale = get_attention_tp_group().all_gather(q_scale, dim=0)
+                    q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
+                else:
+                    q = get_attention_tp_group().all_gather(q, dim=0)
+                q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+            else:
+                q = self.q_a_proj(hidden_states)[0]
+                latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
+                q = self.q_a_layernorm(q)
+                q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
             q = self.q_proj(hidden_states)[0].view(
                 -1, self.num_local_heads, self.qk_head_dim
@@ -414,6 +422,17 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
+        if (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
+            self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
+        ):
+            hidden_states, local_hidden_states = (
+                forward_batch.gathered_buffer[: forward_batch.input_ids.shape[0]],
+                hidden_states,
+            )
+            attn_tp_all_gather_into_tensor(
+                hidden_states,
+                local_hidden_states,
+            )
         if hidden_states.shape[0] == 0:
             assert (
                 not self.o_proj.reduce_results
