@@ -620,22 +620,24 @@ static ngx_int_t ngx_http_prefill_subrequest_done(ngx_http_request_t *r, void *d
 
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "prefill done: %p status:%i", r, r->headers_out.status);
 
+    ctx->done = 1;
+    ctx->status = r->headers_out.status;
+
     if (rc != NGX_OK) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: subrequest failed with code %i", rc);
-        ctx->done = 1;
         ctx->status = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        
-        // Increment failure count if metrics are enabled
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: subrequest failed with code %i", rc);
+    }
+
+    if (ctx->status != NGX_HTTP_OK) {
         if (ulcf->metrics) {
             ngx_atomic_fetch_add(&ulcf->metrics->failure_count, 1);
         }
-        
-        ngx_http_finalize_request(r->main, NGX_HTTP_INTERNAL_SERVER_ERROR);
+
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "prefill subrequest failed, status:%i", ctx->status);
+        ngx_http_finalize_request(r->main, ctx->status);
         return rc;
     }
-
-    ctx->done = 1;
-    ctx->status = r->headers_out.status;
 
     // Traverse the out_bufs chain to process the entire response body
     for (cl = r->out; cl; cl = cl->next) {
