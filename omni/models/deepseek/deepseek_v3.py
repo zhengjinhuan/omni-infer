@@ -249,8 +249,9 @@ class DeepseekDecoderLayer(nn.Module):
         else:
             # Adapt: adapt for w8a8 dynamic, do quant
             # Combines residual add and rmsnorm
+            quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and model_extra_config.operator_opt_config.enable_fgsa)
             hidden_states, residual = self.input_layernorm(
-                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
+                hidden_states, residual, quant_symbol=quant_symbol)
             # Adapt end.
         hidden_states = self.self_attn(
             positions=positions,

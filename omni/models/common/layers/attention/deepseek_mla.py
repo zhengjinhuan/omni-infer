@@ -97,19 +97,19 @@ class Indexer(nn.Module):
         self.wq_b = ReplicatedLinear(self.q_lora_rank,
                                         self.n_heads * self.head_dim,
                                         bias=False,
-                                        quant_config=quant_config,
+                                        quant_config=None,
                                         prefix=f"{prefix}.wq_b")  # [1536,64*128]
         self.wk = ReplicatedLinear(self.dim,
                                     self.head_dim,
                                     bias=False,
                                     params_dtype=torch.get_default_dtype(),
-                                    quant_config=quant_config,
+                                    quant_config=None,
                                     prefix=f"{prefix}.wk") # [7168,128]
         self.weights_proj = ReplicatedLinear(self.dim,
                                             self.n_heads,
                                             bias=False,
                                             params_dtype=torch.get_default_dtype(),
-                                            quant_config=quant_config,
+                                            quant_config=None,
                                             prefix=f"{prefix}.weights_proj")  # [7168,64]
 
         self.k_norm = LayerNorm(self.head_dim)
@@ -620,7 +620,7 @@ class DeepseekMLA(nn.Module):
                     latent_cache_list = torch.split(latent_cache, attn_metadata.prefill.sp_reverse_split_list, dim=0)
                     latent_cache = torch.cat([latent_cache_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
             qr = self.q_a_layernorm(q)
-            if self.quant_symbol:
+            if self.quant_symbol and not model_extra_config.operator_opt_config.enable_fgsa:
                 q_quant, q_scale = torch_npu.npu_dynamic_quant(qr)
                 # Quantizing before all_gather can reduce communication overhead.
                 if model_extra_config.parall_config.attn_sp_size == 1:
@@ -1010,6 +1010,10 @@ class DeepseekMLA(nn.Module):
                 q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
                 q_pe = q_pe.view(bsz, self.num_local_heads, -1)
             else:
+                hidden_states_origin = hidden_states
+                if self.quant_symbol and not model_extra_config.operator_opt_config.enable_fgsa:
+                    hidden_states, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
+                    hidden_states = {"x_int8":hidden_states, "pertoken_scale":pertoken_scale}
                 if self.q_lora_rank is not None:
                     q_lowrank = self.q_a_proj(hidden_states)[0]
                 else:
@@ -1090,7 +1094,7 @@ class DeepseekMLA(nn.Module):
                 if model_extra_config.operator_opt_config.moe_multi_stream_tune:
                     tng.scope.npu_wait_tensor(qr, k_rope)
                 # todo indexer only support bsnd
-                topk_indices, _ = self.indexer(hidden_states, qr, attn_metadata,
+                topk_indices, _ = self.indexer(hidden_states_origin, qr, attn_metadata,
                                             kv_cache=kv_cache, is_prefill=False)
                 attn_output = torch.ops.custom.npu_sparse_flash_attention(
                     query=q_nope,
