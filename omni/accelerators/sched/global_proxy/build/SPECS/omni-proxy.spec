@@ -20,7 +20,7 @@ tar -zxf %{SOURCE1} -C .
 
 %build
 cd nginx-1.28.0
-CFLAGS="-O2" ./configure --sbin-path=/usr/sbin/nginx \
+CFLAGS="-O2" ./configure --sbin-path=/usr/sbin \
     --add-dynamic-module=../global_proxy/modules/ngx_http_prefill_module \
     --add-dynamic-module=../global_proxy/modules/ngx_http_prefill_refactor_module \
     --add-dynamic-module=../global_proxy/modules/ngx_http_set_request_id_module \
