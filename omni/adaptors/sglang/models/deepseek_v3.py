@@ -159,17 +159,7 @@ class DeepseekDecoderLayer(nn.Module):
         self.speculative_algorithm = global_server_args_dict["speculative_algorithm"]
         self.layer_id = layer_id
         self.is_nextn = is_nextn
-
-        self.is_layer_sparse = self._is_layer_sparse(layer_id, is_nextn=is_nextn)
-        is_previous_layer_sparse = self._is_layer_sparse(layer_id - 1, is_nextn=False)
-
-        self.layer_scatter_modes = LayerScatterModes.init_new(
-            layer_id=layer_id,
-            num_layers=1 if is_nextn else config.num_hidden_layers,
-            is_layer_sparse=self.is_layer_sparse,
-            is_previous_layer_sparse=is_previous_layer_sparse,
-        )
-
+        
         self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
@@ -189,6 +179,23 @@ class DeepseekDecoderLayer(nn.Module):
             reduce_results=False,
             prefix=add_prefix("self_attn", prefix),
             layer_scatter_modes=self.layer_scatter_modes,
+        )
+
+        self.is_layer_sparse = is_nextn or (
+                self.config.n_routed_experts is not None
+                and layer_id >= self.config.first_k_dense_replace
+                and layer_id % self.config.moe_layer_freq == 0
+            )
+
+        is_previous_layer_sparse = (self.config.n_routed_experts is not None
+                                    and layer_id - 1 >= self.config.first_k_dense_replace
+                                    and (layer_id - 1) % self.config.moe_layer_freq == 0)
+        
+        self.layer_scatter_modes = LayerScatterModes.init_new(
+            layer_id=layer_id,
+            num_layers=1 if is_nextn else config.num_hidden_layers,
+            is_layer_sparse=self.is_layer_sparse,
+            is_previous_layer_sparse=is_previous_layer_sparse,
         )
 
         if self.is_layer_sparse:
@@ -234,12 +241,6 @@ class DeepseekDecoderLayer(nn.Module):
             allow_reduce_scatter=True,
         )
 
-    def _is_layer_sparse(self, layer_id: int, is_nextn: bool) -> bool:
-        return is_nextn or (
-            self.config.n_routed_experts is not None
-            and layer_id >= self.config.first_k_dense_replace
-            and layer_id % self.config.moe_layer_freq == 0
-        )
 
     def forward(
         self,
