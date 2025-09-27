@@ -1069,3 +1069,6 @@
       when: "'C' in group_names"
       tags: 
         - run_proxy
+  - name: Notify: Running proxy server.
+    debug:
+    msg: "Running proxy for {{ inventory_hostname }} as

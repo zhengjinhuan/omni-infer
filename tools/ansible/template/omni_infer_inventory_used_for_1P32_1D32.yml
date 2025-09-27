@@ -57,7 +57,7 @@ all:
           ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
         p3:
-          ansible_host: "127.0.0.3"
+          ansible_host: "127.0.0.4"
           node_rank: 3
           kv_rank: 0
           node_port: "{{ global_port_base + port_offset.P + kv_rank }}"

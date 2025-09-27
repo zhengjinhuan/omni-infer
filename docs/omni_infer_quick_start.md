@@ -1,10 +1,10 @@
 # PD分离快速部署
 
-本文档介绍如何快速拉起PD分离部署推理，支持3机1P1D、4机2P1D、8机4P1D、16机8P1D和EP144 36机18P1D。
+本文档介绍如何快速拉起PD分离部署推理，支持8机1P1D。
 
 ## 硬件要求
 
-**硬件：** CloudMatrix384推理卡
+**硬件：** Atlas 800IA3
 
 **操作系统：** Linux
 
@@ -12,10 +12,12 @@
 
 [**驱动检查**](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#ascend-npu%E5%9B%BA%E4%BB%B6%E5%92%8C%E9%A9%B1%E5%8A%A8%E6%A3%80%E6%9F%A5): `npu-smi info` 检查Ascend NPU固件和驱动是否正确安装。
 
-**驱动版本：** Ascend HDK 25.2.1
+**驱动版本：** Ascend HDK 25.2.1 
 https://support.huawei.com/enterprise/zh/ascend-computing/ascend-hdk-pid-252764743/software/266220744?idAbsPath=fixnode01|23710424|251366513|254884019|261408772|252764743
 
-**网络联通：** 使用[ssh命令](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E7%BD%91%E7%BB%9C%E8%BF%9E%E9%80%9A%E6%80%A7%E6%A3%80%E6%9F%A5)确认机器互连。
+**网络联通：** 
+1、使用[ssh命令](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E7%BD%91%E7%BB%9C%E8%BF%9E%E9%80%9A%E6%80%A7%E6%A3%80%E6%9F%A5)确认机器互连。
+2、服务机器ROCE面联通
 
 ## 模型准备
 
@@ -115,7 +117,7 @@ yum install libselinux-python3
         LOG_PATH: "/data/log_path"  # 服务日志路径
         MODEL_PATH: "/data/models/origin/bf16"  # 模型文件路径
         LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
-        CODE_PATH: "/data/local_code_path"  # omniinfer本地代码路径
+        CODE_PATH: "/data/local_code_path"  # [可选配置]omniinfer本地代码路径
         HTTP_PROXY: ""  # 下载nginx的HTTP代理地址，如果不需要代理可以留空
 
         # Configuration for containers
