@@ -16,9 +16,6 @@ from sglang.srt.layers.quantization.compressed_tensors.schemes import (
 )
 from torch.nn import Parameter
 
-BEFORE_INIT = 0
-AFTER_INIT = 1
-
 
 class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
     _kernel_backends_being_used: set[str] = set()
@@ -100,8 +97,6 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
         layer.register_parameter("weight_scale", weight_scale)
         layer.register_parameter("weight_offset", weight_offset)
 
-        setattr(layer, "init_state", BEFORE_INIT)
-
         self.empty_out = torch.empty(1, dtype=params_dtype)
 
     # Checkpoints are serialized in compressed-tensors format, which is
@@ -112,8 +107,7 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
         if getattr(layer, "throw_dequant", False):
             weight_scale = weight_scale.to(torch.float32)
         weight_offset = layer.weight_offset
-        weight = torch_npu.npu_format_cast(weight.t().contiguous(), 29)
-        layer.weight = Parameter(weight, requires_grad=False)
+        layer.weight = Parameter(weight.t().contiguous(), requires_grad=False)
 
         layer.weight_scale = Parameter(weight_scale.view(-1), requires_grad=False)
         layer.weight_offset = Parameter(
@@ -125,8 +119,6 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
         self, layer: torch.nn.Module, x: torch.Tensor, bias: Optional[torch.Tensor]
     ) -> Union[torch.Tensor, Dict[str, Any]]:
 
-        if layer.init_state == BEFORE_INIT:
-            layer.init_state = AFTER_INIT
 
         # activation per-token dynamic quant
         if isinstance(x, Dict):
