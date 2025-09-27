@@ -133,9 +133,6 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next):
         if request.method == "POST" and request.url.path in ("/v1/completions", "/v1/chat/completions"):
-            if not VALIDATORS:
-                return await call_next(request)
-            
             body = await request.body()
             if not body:
                 return await call_next(request)
@@ -145,7 +142,18 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             except json.JSONDecodeError:
                 return await call_next(request)
             
+            if json_load.get("kv_transfer_params"):
+                max_tokens = json_load.get("max_tokens", -1)
+                if max_tokens < 0:
+                    json_load["max_tokens"] = int(os.getenv("DEFAULT_MAX_TOKENS", 8192))
+                    request._body = json.dumps(json_load).encode("utf-8")
+                return await call_next(request)
+            
+            if not VALIDATORS:
+                return await call_next(request)
+            
             status_code = HTTPStatus.BAD_REQUEST
+
             for param_name, value in json_load.items():
                 validator = VALIDATORS.get(param_name)
                 if not validator:
