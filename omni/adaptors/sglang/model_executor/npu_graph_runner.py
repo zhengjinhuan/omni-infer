@@ -59,6 +59,9 @@ from sglang.srt.utils import (
     rank0_log,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
@@ -327,12 +330,25 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                 else self.model_runner.model.compile_forward
             )
             with torch.no_grad():
-                return compile_forward(
+                if self.model_runner.profile_save_dir != "":
+                    if not self.model_runner.profile_already_start and forward_batch.max_tokens >= self.model_runner.profiler_bs_threshold:
+                        logger.info(f"******* start graph profiling . . .")
+                        self.model_runner.profiler.start()
+                        self.model_runner.profile_already_start = True
+                        self.model_runner.profile_step = 0
+                ret = compile_forward(
                     forward_batch.input_ids,
                     forward_batch.positions,
                     forward_batch,
                     **kwargs,
                 )
+                if self.model_runner.profile_save_dir != "":
+                    if self.model_runner.profile_already_start and not self.model_runner.profile_finished:
+                        self.model_runner.profile_step += 1
+                    if not self.model_runner.profile_finished and self.model_runner.profile_step > self.model_runner.profiler_stop_step:
+                        self.model_runner.profiler.stop()
+                        self.model_runner.profile_finished = True
+                return ret
 
         if not skip_attn_backend_init:
             forward_batch.attn_backend.init_forward_metadata(forward_batch)
