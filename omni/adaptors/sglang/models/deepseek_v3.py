@@ -57,7 +57,6 @@ from omni.adaptors.sglang.layers.activation import SiluAndMul
 from omni.adaptors.sglang.layers.moe.deepseek_moe import DeepseekMoE
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import FusedMoE
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
-from omni.adaptors.sglang.layers.vocab_parallel_embedding import ParallelLMHead
 from omni.adaptors.sglang.distributed import (
     get_mlp_tp_group_parallel_world_size,
     get_mlp_tp_group_parallel_rank,
