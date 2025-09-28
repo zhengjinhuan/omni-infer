@@ -176,7 +176,7 @@
       #!/bin/bash
       
       . ~/.bashrc
-      HCCL_BUFFSIZE=200
+      HCCL_BUFFSIZE=50
       export HCCL_CONNECT_TIMEOUT=600
       export HCCL_EXEC_TIMEOUT=600
       export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
@@ -185,11 +185,11 @@
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 66560 --enforce-eager --no-enable-prefix-caching --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
+      EXTRA_ARGS='--max-num-batched-tokens 49152 --enforce-eager --no-enable-prefix-caching --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --long-prefill-token-threshold 49152'
       if [ ${USE_OMNI_PROXY} = "1" ]; then
-        EXTRA_ARGS="--max-num-batched-tokens 66560 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --kv-events-config ${KV_EVENTS_CONFIG}"
+        EXTRA_ARGS="--max-num-batched-tokens 49152 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --long-prefill-token-threshold 49152 --kv-events-config ${KV_EVENTS_CONFIG}"
       fi
-      GPU_UTIL=0.93
+      GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
 
@@ -213,7 +213,6 @@
         LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       fi
       export ASCEND_GLOBAL_LOG_LEVEL=3
-      export ASCEND_LAUNCH_BLOCKING=1
 
       cd /workspace/omniinfer/tools/scripts
       bash /workspace/omniinfer/tools/scripts/pd_run.sh \
@@ -267,11 +266,10 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
-      export ASCEND_LAUNCH_BLOCKING=1
+      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode_bf16.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 4 --no-enable-prefix-caching'
       GPU_UTIL=0.95
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false}}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       unset https_proxy
