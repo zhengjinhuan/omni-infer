@@ -37,10 +37,8 @@ from sglang.srt.layers.quantization.fp8_utils import (
     requant_weight_ue8m0_inplace,
 )
 from sglang.srt.layers.quantization.int8_utils import block_dequant as int8_block_dequant
-from sglang.srt.layers.vocab_parallel_embedding import (
-    VocabParallelEmbedding,
-    ParallelLMHead,
-)
+from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding, ParallelLMHead
+
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -69,7 +67,7 @@ from omni.adaptors.sglang.layers.linear import (
 logger = logging.getLogger(__name__)
 
 
-# TODO: not same as vLLM's yet
+# TODO: not aligned with vLLM's yet
 class ParallelDeepseekMLP(nn.Module):
 
     def __init__(
@@ -96,6 +94,8 @@ class ParallelDeepseekMLP(nn.Module):
             tp_rank=tp_rank,
             tp_size=tp_size,
         )
+
+        # TODO: temporarily disable DequantSwigluQuant
         self.gate_up_proj.throw_dequant = True
 
         self.down_proj = RowParallelLinear(
@@ -129,8 +129,8 @@ class ParallelDeepseekMLP(nn.Module):
         use_reduce_scatter: bool = False,
         **kwargs):
         x = hidden_states
-        if (self.tp_size == 1) and x.shape[0] == 0:
-            return x
+
+        assert isinstance(x, torch.Tensor)
 
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up, self.quant_symbol)
@@ -151,9 +151,6 @@ class DeepseekDecoderLayer(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.config = config
-        rope_theta = getattr(config, "rope_theta", 10000)
-        rope_scaling = getattr(config, "rope_scaling", None)
-        max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
         self.enable_dp_attention = global_server_args_dict["enable_dp_attention"]
         self.speculative_algorithm = global_server_args_dict["speculative_algorithm"]
         self.layer_id = layer_id
@@ -175,7 +172,7 @@ class DeepseekDecoderLayer(nn.Module):
             is_layer_sparse=self.is_layer_sparse,
             is_previous_layer_sparse=is_previous_layer_sparse,
         )
-    
+
         self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
@@ -187,9 +184,9 @@ class DeepseekDecoderLayer(nn.Module):
                 config.q_lora_rank if hasattr(config, "q_lora_rank") else None
             ),
             kv_lora_rank=config.kv_lora_rank,
-            rope_theta=rope_theta,
-            rope_scaling=rope_scaling,
-            max_position_embeddings=max_position_embeddings,
+            rope_theta=getattr(config, "rope_theta", 10000),
+            rope_scaling=getattr(config, "rope_scaling", None),
+            max_position_embeddings=getattr(config, "max_position_embeddings", 8192),
             quant_config=quant_config,
             layer_id=layer_id,
             reduce_results=False,
@@ -206,27 +203,19 @@ class DeepseekDecoderLayer(nn.Module):
                 is_nextn=is_nextn,
             )
         else:
-            if enable_moe_dense_fully_dp():
-                mlp_tp_rank, mlp_tp_size = 0, 1
-                self.mlp = ParallelDeepseekMLP(
-                    hidden_size=config.hidden_size,
-                    intermediate_size=config.intermediate_size,
-                    hidden_act=config.hidden_act,
-                    quant_config=quant_config,
-                    prefix=add_prefix("mlp", prefix),
-                    tp_rank=mlp_tp_rank,
-                    tp_size=mlp_tp_size,
-                )
-            else:
-                self.mlp = ParallelDeepseekMLP(
-                    hidden_size=config.hidden_size,
-                    intermediate_size=config.intermediate_size,
-                    hidden_act=config.hidden_act,
-                    quant_config=quant_config,
-                    prefix=add_prefix("mlp", prefix),
-                    tp_rank=get_mlp_tp_group_parallel_rank(),
-                    tp_size=get_mlp_tp_group_parallel_world_size(),
-                )
+            mlp_tp_rank, mlp_tp_size = 0, 1
+            if not enable_moe_dense_fully_dp():
+                mlp_tp_rank = get_mlp_tp_group_parallel_rank()
+                mlp_tp_size = get_mlp_tp_group_parallel_world_size()
+
+            self.mlp = ParallelDeepseekMLP(
+                hidden_size=config.hidden_size,
+                intermediate_size=config.intermediate_size,
+                hidden_act=config.hidden_act,
+                quant_config=quant_config,
+                prefix=add_prefix("mlp", prefix),
+                tp_rank=mlp_tp_rank,
+                tp_size=mlp_tp_size)
 
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
@@ -239,7 +228,6 @@ class DeepseekDecoderLayer(nn.Module):
             post_attention_layernorm=self.post_attention_layernorm,
             allow_reduce_scatter=True,
         )
-
 
     def forward(
         self,
@@ -254,15 +242,11 @@ class DeepseekDecoderLayer(nn.Module):
         if hidden_states.shape[0] == 0:
             residual = hidden_states
         else:
-            if (
-                residual is not None
+            if (residual is not None
                 and hasattr(hidden_states, "_sglang_needs_allreduce_fusion")
-                and hidden_states._sglang_needs_allreduce_fusion
-            ):
-                hidden_states, residual = (
-                    self.input_layernorm.forward_with_allreduce_fusion(
-                        hidden_states, residual
-                    )
+                and hidden_states._sglang_needs_allreduce_fusion):
+                hidden_states, residual = self.input_layernorm.forward_with_allreduce_fusion(
+                    hidden_states, residual
                 )
             else:
                 if residual is None:
@@ -362,24 +346,22 @@ class DeepseekV3Model(nn.Module):
         for i in range(total_num_layers):
             with get_global_expert_distribution_recorder(True).with_current_layer(i):
                 layer = self.layers[i]
-                if i < total_num_layers - 1 and i >= self.first_k_dense_replace:
-                    next_layer = self.layers[i + 1]
-                    kwargs = {
-                        "next_attn_weights": {
-                            "q_b_proj": next_layer.self_attn.q_b_proj.weight,
-                            "w_kc": next_layer.self_attn.w_kc,
-                        }
+                prefetch_list = None
+                if i + 1 < total_num_layers:
+                    next_attn = self.layers[i + 1].self_attn
+                    prefetch_list = {
+                        "fused_qkv_a_proj_with_mqa": next_attn.fused_qkv_a_proj_with_mqa.weight,
+                        "q_b_proj": next_attn.q_b_proj.weight,
+                        "w_kc": next_attn.w_kc,
                     }
-                else:
-                    kwargs = {}
+
                 hidden_states, residual = layer(
                     positions,
                     hidden_states,
                     forward_batch,
                     residual,
                     zero_allocator,
-                    **kwargs,
-                )
+                    prefetch_list=prefetch_list)
 
         if not forward_batch.is_prefill_idle:
             if residual is None:
@@ -403,10 +385,9 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         # for quark model load
         # Fuse q_a_proj and kv_a_proj_with_mqa along output dimension when q_lora_rank is not None
-        # self.fuse_qkv_a_proj = (
-        #     hasattr(config, "q_lora_rank") and config.q_lora_rank is not None
-        # )
-        self.fuse_qkv_a_proj = False
+        self.fuse_qkv_a_proj = (
+            hasattr(config, "q_lora_rank") and config.q_lora_rank is not None
+        )
         if self.fuse_qkv_a_proj:
             self.packed_modules_mapping["fused_qkv_a_proj_with_mqa"] = [
                 "q_a_proj",
@@ -621,8 +602,7 @@ class DeepseekV3ForCausalLM(nn.Module):
                 layer = self.model.layers[layer_id]
 
             for module in [
-                layer.self_attn.q_a_proj,
-                layer.self_attn.kv_a_proj_with_mqa,
+                layer.self_attn.fused_qkv_a_proj_with_mqa,
                 layer.self_attn.q_b_proj,
                 layer.self_attn.kv_b_proj,
                 layer.self_attn.o_proj,
@@ -641,8 +621,6 @@ class DeepseekV3ForCausalLM(nn.Module):
                         requant_weight_ue8m0_inplace(
                             module.weight, module.weight_scale_inv, weight_block_size
                         )
-
-                experts = layer.mlp.experts
             else:
                 mlp = layer.mlp
                 assert isinstance(mlp, ParallelDeepseekMLP)
@@ -689,10 +667,9 @@ class DeepseekV3ForCausalLM(nn.Module):
             )
 
         # Fuse q_a_proj and kv_a_proj_with_mqa along output dimension when q_lora_rank is not None
-        # fuse_qkv_a_proj = hasattr(self.config, "q_lora_rank") and (
-        #     self.config.q_lora_rank is not None
-        # )
-        fuse_qkv_a_proj = False
+        fuse_qkv_a_proj = hasattr(self.config, "q_lora_rank") and (
+            self.config.q_lora_rank is not None
+        )
         cached_a_proj = {} if fuse_qkv_a_proj else None
 
         if is_nextn:
