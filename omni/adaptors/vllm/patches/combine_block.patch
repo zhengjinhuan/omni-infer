@@ -99,7 +99,7 @@ index 0223c9cee..48008deb1 100644
          use_eagle: bool,
          num_kv_cache_groups: int,
          caching_hash_fn: Callable,
-+        combine_block_num: int,
++        combine_block_num: int = 1,
      ) -> None:
          """
          Initializes the SpecializedManager.
