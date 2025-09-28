@@ -14,6 +14,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-name", type=str, default="deepseek-ai/DeepSeek-R1", help="Huggingface repo name")
 
     parser.add_argument("--pangu-mode", default=False, action="store_true", help="pangu mode")
+    parser.add_argument("--next", default=False, action="store_true", help="next version")
     parser.add_argument("--w4", default=False, action="store_true", help="int4 quantization flag")
     parser.add_argument("--qtype", type=str, default="sszs50g0a0b4sym1", help="quantization config. only support sszs50g0a0b4sym1 now")
     parser.add_argument("--c8-calib-path", type=str, default=None, help="mla c8 calibration data path")
@@ -37,6 +38,11 @@ if __name__ == "__main__":
     for i in range(62):
         ignore = f"model.layers.{i}.self_attn.kv_b_proj"
         ignores.append(ignore)
+    if args.next:
+        for i in range(62):
+            ignore = f"model.layers.{i}.self_attn.indexer"
+            ignores.append(ignore)
+    ignores.append("lm_head")
 
     quant_config = {"config_groups": {"group_0": {}}, "format": "int-quantized",
                     "global_compression_ratio": 1.5943962512751309, "ignore": ignores, "kv_cache_scheme": None,
