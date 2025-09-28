@@ -654,20 +654,22 @@ class DeepseekMLA(nn.Module):
                         actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
                         )
 
-            # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-            attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+            if model_extra_config.operator_opt_config.use_super_kernel:
+                with tng.scope.super_kernel("sk", 'stream-fusion=1'):
+                    # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
+                    attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
 
-            attn_output = (
-                torch.matmul(attn_output, self.W_UV)
-                .transpose(1, 0)
-                .reshape(bsz, q_len, -1)
-            )
-            attn_output = attn_output.view(
-                -1, self.num_local_heads * self.v_head_dim)
-            if model_extra_config.parall_config.o_proj_tp_size > 1:
-                output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_local_heads, self.v_head_dim)
-            else:
-                output, _ = self.o_proj.forward(attn_output)
+                    attn_output = (
+                        torch.matmul(attn_output, self.W_UV)
+                        .transpose(1, 0)
+                        .reshape(bsz, q_len, -1)
+                    )
+                    attn_output = attn_output.view(
+                        -1, self.num_local_heads * self.v_head_dim)
+                    if model_extra_config.parall_config.o_proj_tp_size > 1:
+                        output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_local_heads, self.v_head_dim)
+                    else:
+                        output, _ = self.o_proj.forward(attn_output)
         else:
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
             key_cache, value_cache = kv_cache

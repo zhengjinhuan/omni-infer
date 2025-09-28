@@ -305,11 +305,7 @@ class DeepseekMoE(nn.Module):
             if attn_metadata is None or attn_metadata.prefill is not None:
                 return self.forward_separate_expert_prefill(hidden_states, residual, attn_metadata)
             else:
-                if model_extra_config.operator_opt_config.use_super_kernel:
-                    with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
-                        return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)
-                else:
-                    return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)
+                return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)                 
         else:
             if not self.is_init_gate:
                 self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
