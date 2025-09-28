@@ -8,6 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from http import HTTPStatus
 from vllm.entrypoints.openai.protocol import ErrorResponse
 
+
 TYPE_MAPPING = {
     "int": int,
     "float": float,
@@ -16,6 +17,7 @@ TYPE_MAPPING = {
     "list": list,
     "dict": dict
 }
+
 
 class BaseValidator(ABC):
     def __init__(self,
@@ -36,14 +38,14 @@ class SupportedValidator(BaseValidator):
             param_name: str,
             error_msg: Optional[str] = None,
             subfield: list = [],
-            skip_subfield_check: list = []
+            need_check_subfield: list = []
     ):
         super().__init__(param_name, error_msg)
         self.subfield = subfield
-        self.skip_subfield_check = skip_subfield_check
+        self.need_check_subfield = need_check_subfield
 
     def check_field(self, value: Any, curr_field: str = ""):
-        if not curr_field in self.skip_subfield_check:
+        if curr_field in self.need_check_subfield:
             if isinstance(value, dict):
                 return self.check_subfield_dict(value, curr_field)
             if isinstance(value, list):
@@ -63,12 +65,14 @@ class SupportedValidator(BaseValidator):
     def check_subfield_list(self, value: Any, curr_field: str):
         for val in value:
             if isinstance(val, dict):
-                return self.check_subfield_dict(val, curr_field)
+                if check_result := self.check_subfield_dict(val, curr_field):
+                    return check_result
         return None
 
     def validate(self, value: Any) -> Optional[str]:
         # The value must be included within the subfield.
         return self.check_field(value, self.param_name)
+
 
 class RangeValidator(BaseValidator):
     def __init__(self,
@@ -93,6 +97,7 @@ class RangeValidator(BaseValidator):
                     f"but got {value}.")
         return None
 
+
 class ValueValidator(SupportedValidator):
     def __init__(
             self,
@@ -112,6 +117,7 @@ class ValueValidator(SupportedValidator):
             return self.error_msg
         return None
 
+
 def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseValidator]:
     validator_type = config.get("validator_type")
     
@@ -120,7 +126,7 @@ def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseVa
             param_name=config.get("param_name", param_name),
             error_msg=config.get("error_msg"),
             subfield=config.get("subfield", []),
-            skip_subfield_check=config.get("skip_subfield_check", [])
+            need_check_subfield=config.get("need_check_subfield", [])
         )
     
     elif validator_type == "value":
@@ -128,7 +134,7 @@ def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseVa
             param_name=config.get("param_name", param_name),
             error_msg=config.get("error_msg"),
             subfield=config.get("subfield", []),
-            target_value=config.get("value", [])
+            target_value=config.get("target_value", [])
         )
     
     elif validator_type == "range":
@@ -140,11 +146,12 @@ def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseVa
             param_name=config.get("param_name", param_name),
             min_val=config.get("min_val"),
             max_val=config.get("max_val"),
-            type_=list(map(TYPE_MAPPING.get, type_str))
+            type_=tuple(map(TYPE_MAPPING.get, type_str))
         )
     
     else:
         raise ValueError(f"Unknown validator type: {validator_type}")
+
 
 def load_validators_from_json(config_path: str) -> tuple[dict[str, BaseValidator], dict[str, BaseValidator]]:
     if not os.path.exists(config_path):
@@ -170,7 +177,9 @@ def load_validators_from_json(config_path: str) -> tuple[dict[str, BaseValidator
     
     return validators, custom_validators
 
+
 VALIDATORS, CUSTOM_VALIDATORS = load_validators_from_json(os.getenv("VALIDATORS_CONFIG_PATH", ""))
+
 
 class ValidateSamplingParams(BaseHTTPMiddleware):
     def create_error_response(self, status_code, error):
