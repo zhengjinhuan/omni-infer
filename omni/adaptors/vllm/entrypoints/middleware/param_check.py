@@ -1,4 +1,5 @@
 import json
+import os
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Type, Union
 from fastapi import Request
@@ -7,6 +8,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from http import HTTPStatus
 from vllm.entrypoints.openai.protocol import ErrorResponse
 
+TYPE_MAPPING = {
+    "int": int,
+    "float": float,
+    "str": str,
+    "bool": bool,
+    "list": list,
+    "dict": dict
+}
 
 class BaseValidator(ABC):
     def __init__(self,
@@ -14,7 +23,7 @@ class BaseValidator(ABC):
                  error_msg: Optional[str] = None
                  ):
         self.param_name = param_name
-        self.error_msg = error_msg or f"{param_name} is not supported."
+        self.error_msg = error_msg
 
     @abstractmethod
     def validate(self, value: Any) -> Optional[str]:
@@ -26,24 +35,27 @@ class SupportedValidator(BaseValidator):
             self,
             param_name: str,
             error_msg: Optional[str] = None,
-            subfield: Union[list, None] = None
+            subfield: list = [],
+            skip_subfield_check: list = []
     ):
-        super.__init__(param_name, error_msg)
+        super().__init__(param_name, error_msg)
         self.subfield = subfield
+        self.skip_subfield_check = skip_subfield_check
 
-    def check_field(self, value: Any, curr_field: str = None):
-        if isinstance(value, dict):
-            return self.check_subfield_dict(value, curr_field)
-        if isinstance(value, list):
-            return self.check_subfield_list(value, curr_field)
+    def check_field(self, value: Any, curr_field: str = ""):
+        if not curr_field in self.skip_subfield_check:
+            if isinstance(value, dict):
+                return self.check_subfield_dict(value, curr_field)
+            if isinstance(value, list):
+                return self.check_subfield_list(value, curr_field)
         return None
 
     def check_subfield_dict(self, value: Any, curr_field: str):
         for param_name, val in value.items():
             curr_subfield = f"{curr_field}.{param_name}"
             if curr_subfield not in self.subfield:
-                return f"{curr_subfield} is not supported."
-            if isinstance(val, dict) or isinstance(val, list):
+                return self.error_msg or f"`{curr_subfield}` is not supported."
+            if isinstance(val, (dict, list)):
                 if check_result := self.check_field(val, curr_subfield):
                     return check_result
         return None
@@ -57,12 +69,6 @@ class SupportedValidator(BaseValidator):
     def validate(self, value: Any) -> Optional[str]:
         # The value must be included within the subfield.
         return self.check_field(value, self.param_name)
-    
-
-class UnsupportedValidator(BaseValidator):
-    def validate(self, value: Any) -> Optional[str]:
-        return self.error_msg
-
 
 class RangeValidator(BaseValidator):
     def __init__(self,
@@ -70,18 +76,21 @@ class RangeValidator(BaseValidator):
                  error_msg: Optional[str] = None,
                  min_val: Union[float, int, None] = None,
                  max_val: Union[float, int, None] = None,
-                 type_: Optional[Type] = None
+                 type_: Union[tuple[Type, ...], None] = None
                  ):
-        super.__init__(param_name, error_msg)
+        super().__init__(param_name, error_msg)
         self.min_val = min_val
         self.max_val = max_val
         self.type_ = type_
         
     def validate(self, value: Any) -> Optional[str]:
-        if not isinstance(value, self.type_):
-            return f"{self.param_name} must be of type {self.type_.__name__}"
+        if self.type_ and not isinstance(value, self.type_):
+            return (self.error_msg or 
+                    f"The type of `{self.param_name}` must belong to {[i.__name__ for i in self.type_]}, "
+                    f"but got {type(value).__name__!r}")
         if not (self.min_val <= value <= self.max_val):
-            return f"{self.param_name} must between {self.min_val} and {self.max_val}, got {value}."
+            return (self.error_msg or f"`{self.param_name}` must between {self.min_val} and {self.max_val}, "
+                    f"but got {value}.")
         return None
 
 class ValueValidator(SupportedValidator):
@@ -89,70 +98,79 @@ class ValueValidator(SupportedValidator):
             self,
             param_name: str,
             error_msg: Optional[str] = None,
-            subfield: Union[list, None] = None,
-            target_value: Any = None
+            subfield: list = [],
+            target_value: list = []
     ):
-        super.__init__(param_name, error_msg, subfield)
+        super().__init__(param_name, error_msg, subfield)
         self.target_value = target_value
+        self.error_msg = self.error_msg or f"`{self.param_name}` only support the value in {self.target_value}"
 
     def validate(self, value):
         if error := super().validate(value):
             return error
         if value not in self.target_value:
-            return self.error_msg or f"{self.param_name} only support the value in {self.target_value}."
+            return self.error_msg
         return None
+
+def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseValidator]:
+    validator_type = config.get("validator_type")
     
+    if validator_type == "supported":
+        return SupportedValidator(
+            param_name=config.get("param_name", param_name),
+            error_msg=config.get("error_msg"),
+            subfield=config.get("subfield", []),
+            skip_subfield_check=config.get("skip_subfield_check", [])
+        )
+    
+    elif validator_type == "value":
+        return ValueValidator(
+            param_name=config.get("param_name", param_name),
+            error_msg=config.get("error_msg"),
+            subfield=config.get("subfield", []),
+            target_value=config.get("value", [])
+        )
+    
+    elif validator_type == "range":
+        type_str = config.get("type_", [])
+        if type_str and any(type_ not in TYPE_MAPPING for type_ in type_str):
+            raise ValueError(f"Only supported type: {TYPE_MAPPING.keys()}")
 
-VALIDATORS: dict[str, BaseValidator] = {
-    "model": SupportedValidator("model"),
-    "messages": SupportedValidator("messages", subfield=["name", "role", "tool_call_id", "content", "prefix",
-                                                         "refusal", "partial", "tool_calls", "tool_calls.type",
-                                                         "tool_calls.id", "tool_calls.function", 
-                                                         "tool_calls.function.arguments",
-                                                         "tool_calls.function.name"
-                                                        ]),
-    "stream": SupportedValidator("stream"),
-    "stream_options": SupportedValidator("stream_options", subfield=["include_usage", "chunk_include_usage"]),
-    "tool_choice": ValueValidator("tool_choice", target_value=["auto"]),
-    "tools": SupportedValidator("tools", subfield=["type", "function", "function.description", "function.name",
-                                                   "function.parameters", "function.strict"]),
-    "chat_template": SupportedValidator("chat_template"),
-    "chat_template_kwargs": SupportedValidator("chat_template_kwargs"),
-    "top_p": SupportedValidator("top_p"),
-    "frequency_penalty": SupportedValidator("frequency_penalty"),
-    "presence_penalty": SupportedValidator("presence_penalty"),
-    "temperature": SupportedValidator("temperature"),
-    "seed": SupportedValidator("seed"),
-    "stop": SupportedValidator("stop"),
-    "logit_bias": SupportedValidator("logit_bias"),
-    "max_tokens": SupportedValidator("max_tokens"),
-    "add_generation_prompt": SupportedValidator("add_generation_prompt"),
-    "add_special_tokens": SupportedValidator("add_special_tokens"),
-    "allowed_token_ids": SupportedValidator("allowed_token_ids"),
-    "bad_words": SupportedValidator("bad_words"),
-    "continue_final_message": SupportedValidator("continue_final_message"),
-    "detokenize": SupportedValidator("detokenize"),
-    "echo": SupportedValidator("echo"),
-    "ignore_eos": SupportedValidator("ignore_eos"),
-    "include_stop_str_in_output": SupportedValidator("include_stop_str_in_output"),
-    "length_penalty": SupportedValidator("length_penalty"),
-    "max_completion_tokens": SupportedValidator("max_completion_tokens"),
-    "min_p": SupportedValidator("min_p"),
-    "min_tokens": SupportedValidator("min_tokens"),
-    "prompt": SupportedValidator("prompt"),
-    "repetition_penalty": SupportedValidator("repetition_penalty"),
-    "request_id": SupportedValidator("request_id"),
-    "skip_special_tokens": SupportedValidator("skip_special_tokens"),
-    "spaces_between_special_tokens": SupportedValidator("spaces_between_special_tokens"),
-    "stop_token_ids": SupportedValidator("stop_token_ids"),
-    "enable_thinking": SupportedValidator("enable_thinking")
-}
+        return RangeValidator(
+            param_name=config.get("param_name", param_name),
+            min_val=config.get("min_val"),
+            max_val=config.get("max_val"),
+            type_=list(map(TYPE_MAPPING.get, type_str))
+        )
+    
+    else:
+        raise ValueError(f"Unknown validator type: {validator_type}")
 
-CUSTOM_VALIDATORS: dict[str, BaseValidator] = {
-    "continue_final_message": ValueValidator("add_generation_prompt", target_value=[False],
-                                             error_msg="continue_final_message can only be passed when " \
-                                                       "add_generation_prompt is False."),
-}
+def load_validators_from_json(config_path: str) -> tuple[dict[str, BaseValidator], dict[str, BaseValidator]]:
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    
+    validators = {}
+    custom_validators = {}
+    
+    # load validators
+    for param_name, validator_config in config.get("validators", {}).items():
+        validator = create_validator(param_name, validator_config)
+        if validator:
+            validators[param_name] = validator
+    
+    # load custom_validators
+    for param_name, validator_config in config.get("custom_validators", {}).items():
+        validator = create_validator(param_name, validator_config)
+        if validator:
+            custom_validators[param_name] = validator
+    
+    return validators, custom_validators
+
+VALIDATORS, CUSTOM_VALIDATORS = load_validators_from_json(os.getenv("VALIDATORS_CONFIG_PATH", ""))
 
 class ValidateSamplingParams(BaseHTTPMiddleware):
     def create_error_response(self, status_code, error):
@@ -184,7 +202,9 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                 if error := validator.validate(value):
                     return self.create_error_response(status_code, error)
                 if validator := CUSTOM_VALIDATORS.get(param_name):
-                    if error := validator.validate(json_load[validator.param_name]):
+                    if validator.param_name not in json_load.keys():
+                        return self.create_error_response(status_code, validator.error_msg)
+                    elif error := validator.validate(json_load[validator.param_name]):
                         return self.create_error_response(status_code, error)
                 
         return await call_next(request)

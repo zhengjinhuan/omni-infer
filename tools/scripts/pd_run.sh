@@ -378,7 +378,7 @@ echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
 echo "=================="
 
-if [ "$ROLE" == "prefill"]; then
+if [[ "$ROLE" == "prefill" && -n "$VALIDATORS_CONFIG_PATH" ]]; then
     EXTRA_ARGS="$EXTRA_ARGS --middleware omni.adaptors.vllm.entrypoints.middleware.param_check.ValidateSamplingParams"
 else
     EXTRA_ARGS="$EXTRA_ARGS"
