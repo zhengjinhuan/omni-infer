@@ -17,8 +17,8 @@ all:
   vars:
     ansible_user: root
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
-    ansible_ssh_private_key_file: /data/longwen/ansible/key.pem  # Private key path on the executor
-    # ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+    ansible_ssh_private_key_file: /path/to/key.pem  # Private key path on the executor
+    # ansible_ssh_pass: pwd 
     global_port_base: 8000
     base_api_port: 9000
     proxy_port: 7000
@@ -57,7 +57,7 @@ all:
           ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
         p3:
-          ansible_host: "127.0.0.3"
+          ansible_host: "127.0.0.4"
           node_rank: 3
           kv_rank: 0
           node_port: "{{ global_port_base + port_offset.P + kv_rank }}"
