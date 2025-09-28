@@ -22,7 +22,7 @@ from transformers import PretrainedConfig
 
 from sglang.srt.distributed import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
-from sglang.srt.layers.layernorm import RMSNorm
+from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
@@ -95,6 +95,10 @@ class DeepseekModelNextN(nn.Module):
         else:
             hidden_states = input_embeds
 
+        cos, sin = self.decoder.self_attn.rotary_emb.get_cos_sin(positions)
+        forward_batch.attn_backend.forward_metadata.cos = cos
+        forward_batch.attn_backend.forward_metadata.sin = sin
+
         tp_size = get_tensor_model_parallel_world_size()
         rank_in_group = get_tensor_model_parallel_rank()
         if forward_batch.is_extend_in_batch :
@@ -115,16 +119,16 @@ class DeepseekModelNextN(nn.Module):
             )
 
         residual = None
-        with get_global_expert_distribution_recorder().disable_this_region():
-            hidden_states, residual = self.decoder(
-                positions, hidden_states, forward_batch, residual, zero_allocator
-            )
+        # with get_global_expert_distribution_recorder().disable_this_region():
+        hidden_states, residual = self.decoder(
+            positions, hidden_states, forward_batch, residual, zero_allocator
+        )
 
-        if not forward_batch.forward_mode.is_idle():
-            if residual is not None:
-                hidden_states, _ = self.shared_head.norm(hidden_states, residual)
-            else:
-                hidden_states = self.shared_head.norm(hidden_states)
+        # if not forward_batch.forward_mode.is_idle():
+        if residual is not None:
+            hidden_states, _ = self.shared_head.norm(hidden_states, residual)
+        else:
+            hidden_states = self.shared_head.norm(hidden_states)
 
         return hidden_states
 
