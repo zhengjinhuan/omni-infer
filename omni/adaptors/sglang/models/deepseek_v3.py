@@ -581,19 +581,6 @@ class DeepseekV3ForCausalLM(nn.Module):
                 self_attn.w_vc = bind_or_assign(self_attn.w_vc, w_vc.contiguous())
                 self_attn.use_deep_gemm_bmm = True
 
-            mlp = (
-                self.model.layers[layer_id].mlp
-                if not is_nextn
-                else self.model.decoder.mlp
-            )
-            if hasattr(mlp, "experts") and isinstance(mlp.experts, FusedMoE):
-                experts = mlp.experts
-                for w in [
-                    experts.w13_weight,
-                    experts.w2_weight,
-                ]:
-                    w.data = w.data.transpose(-2, -1).contiguous()
-
         if (
             deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
             and deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0
