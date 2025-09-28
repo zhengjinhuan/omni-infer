@@ -57,3 +57,7 @@ bash omni_proxy.sh \
   --decode-endpoints 127.0.0.1:9001,127.0.0.1:9002 \
   --omni-proxy-pd-policy sequential \
   --omni-proxy-model-path /path/to/DeepSeek
+```
+Note: if you want to turn on the APC-aware scheduling, 
+* Set `ENABLE_APC_EVENT=1` in `omniinfer/tools/scripts/pd_run.sh` and also set `USE_OMNI_PROXY=1` in ansible template file
+* Provide the model path `--omni-proxy-model-path /path/to/DeepSeek` to `omni_proxy.sh`.
