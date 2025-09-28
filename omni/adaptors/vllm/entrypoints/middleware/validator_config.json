@@ -128,13 +128,13 @@
             "validator_type": "value",
             "param_name": "add_generation_prompt", 
             "target_value": [false],
-            "error_msg": "`add_generation_prompt` must equal False to use `continue_final_message`"
+            "error_msg": "`add_generation_prompt` must equal false to use `continue_final_message`"
         },
         "stream_options": {
             "validator_type": "value",
             "param_name": "stream", 
             "target_value": [true],
-            "error_msg": "`stream` must equal False to use `stream_options`"
+            "error_msg": "`stream` must equal true to use `stream_options`"
         }
     }
 }
