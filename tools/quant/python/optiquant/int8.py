@@ -40,6 +40,9 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
         disable_names.append(f"model.layers.{i}.self_attn.q_a_layernorm.weight")
         disable_names.append(f"model.layers.{i}.self_attn.kv_a_layernorm.weight")
 
+        disable_names.append(f"model.layers.{i}.self_attn.indexer.wq_b.weight")
+        disable_names.append(f"model.layers.{i}.self_attn.indexer.wk.weight")
+
     disable_names.append("lm_head")
     disable_names.append("model.norm.weight")
     disable_names.append("model.embed_tokens.weight")
