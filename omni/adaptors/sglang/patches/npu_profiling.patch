@@ -11,10 +11,18 @@ index f1cc2c38..1be39d99 100644
          for i in range(sync_group_size):
              # make sure that the padded length is divisible by attn_tp_size because we may need reduce-scatter across attn_tp dim.
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 5038dbf1..555158f0 100644
+index 5038dbf1..21464636 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
-@@ -151,6 +151,38 @@ class RankZeroFilter(logging.Filter):
+@@ -24,6 +24,7 @@ from dataclasses import dataclass
+ from typing import List, Optional, Tuple, Union
+ 
+ import torch
++import torch_npu
+ import torch.distributed as dist
+ 
+ from sglang.srt.configs.device_config import DeviceConfig
+@@ -151,6 +152,38 @@ class RankZeroFilter(logging.Filter):
  
  class ModelRunner:
      """ModelRunner runs the forward passes of the models."""
@@ -53,7 +61,7 @@ index 5038dbf1..555158f0 100644
  
      def __init__(
          self,
-@@ -372,6 +404,9 @@ class ModelRunner:
+@@ -372,6 +405,9 @@ class ModelRunner:
                  eagle_aux_hidden_state_layer_ids = None
  
              self.model.set_eagle3_layers_to_capture(eagle_aux_hidden_state_layer_ids)
@@ -63,7 +71,7 @@ index 5038dbf1..555158f0 100644
  
      def model_specific_adjustment(self):
          server_args = self.server_args
-@@ -1604,12 +1639,25 @@ class ModelRunner:
+@@ -1604,12 +1640,25 @@ class ModelRunner:
          kwargs = {}
          if self.support_pp:
              kwargs["pp_proxy_tensors"] = pp_proxy_tensors
@@ -90,7 +98,7 @@ index 5038dbf1..555158f0 100644
  
      def forward_extend(
          self,
-@@ -1627,12 +1675,25 @@ class ModelRunner:
+@@ -1627,12 +1676,25 @@ class ModelRunner:
              kwargs["input_embeds"] = forward_batch.input_embeds.bfloat16()
          if not self.is_generation:
              kwargs["get_embedding"] = True
