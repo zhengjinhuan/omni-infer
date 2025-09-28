@@ -781,7 +781,7 @@ static ngx_int_t ngx_http_omni_process_header(ngx_http_request_t *r)
         if (rc == NGX_HTTP_PARSE_HEADER_DONE)
         {
             // Mark as processed to avoid forward to filter below
-            u->buffer.last = u->buffer.pos;
+            // u->buffer.last = u->buffer.pos;
 
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                           "omni_process_header: finished parsing header");
