@@ -53,6 +53,8 @@ class ModelOperatorOptConfig:
     experts_pruning: bool = False
     use_tnd_pa: bool = False  # 稠密模型使用新CANN包FIA算子，以TND+PA格式计算attention
     
+    enable_topktoppsample_op: bool = False # 使用topktoppsample算子
+    
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
         if self.use_omni_placement and not self.omni_placement_config_path:
