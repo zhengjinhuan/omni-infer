@@ -343,6 +343,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         if self.enable_dynamic and not self.is_redundant_share_expert_rank():
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
+            self.placement_manager.init_recv_buf()
     
     def is_redundant_share_expert_rank(self):
         return self.rank>=self.world_size
