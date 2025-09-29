@@ -333,6 +333,33 @@ def main():
 
         for data in progress_bar:
             batch_index += 1
+            if args.profile:
+                if batch_index == args.profile_start_step:
+                    print("Start profile")
+                    experimental_config = torch_npu.profiler._ExperimentalConfig(
+                        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                        aic_metrics=torch_npu.profiler.AiCmetrics.PipeUtilization,
+                    )
+                    torch_profiler = torch.profiler.profile(
+                        activities=[
+                            # torch_npu.profiler.ProfilerActivity.CPU,
+                            torch.profiler.ProfilerActivity.NPU,
+                        ],
+                        with_stack=False,
+                        record_shapes=args.profile_record_shapes,
+                        profile_memory=True,
+                        experimental_config=experimental_config,
+                        # on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(prof_save_path),
+                    )
+                    torch_profiler.start()
+                if batch_index == args.profile_start_step + args.profile_num_steps:
+                    output_path = os.path.join(
+                        os.environ.get("SGLANG_TORCH_PROFILER_DIR", "/data/d00646319/trace"),
+                        f"debug_rank{torch.distributed.get_rank()}_{time.time()}.trace.json.gz",
+                    )
+                    print(f"End profile {output_path=}")
+                    torch_profiler.stop()
+                    torch_profiler.export_chrome_trace(output_path)
 
             plosses, acces = eagle_model(
                 input_ids=data["input_ids"].npu(),  # [B, S]
