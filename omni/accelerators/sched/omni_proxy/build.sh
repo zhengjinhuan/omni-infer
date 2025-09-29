@@ -22,6 +22,9 @@ echo "NGINX_SBIN_PATH is $NGINX_SBIN_PATH"
 
 yum install -y pcre gcc gcc-c++ make zlib zlib-devel pcre pcre-devel openssl-devel zeromq zeromq-devel boost-devel
 
+[ -d "msgpack-c-${MSGPACK_VERSION}" ] && rm -rf "msgpack-c-${MSGPACK_VERSION}"
+[ -d "Python-${PYTHON_VERSION}" ] && rm -rf "Python-${PYTHON_VERSION}"
+
 [ ! -f nginx-${NGINX_VERSION}.tar.gz ] && wget --no-check-certificate https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
 if [ ! -d nginx-${NGINX_VERSION} ]; then
 	tar -zxf nginx-${NGINX_VERSION}.tar.gz
