@@ -265,7 +265,7 @@ class DeepseekMLA(nn.Module):
         self.q_lora_rank = q_lora_rank
         self.kv_lora_rank = kv_lora_rank
         self.num_heads = num_heads
-        self.tp_size = get_tensor_model_parallel_world_size() if not model_extra_config.operator_opt_config.enable_fgsa else 1
+        self.tp_size = get_tensor_model_parallel_world_size() if not model_extra_config.operator_opt_config.enable_dsa else 1
         if num_heads % self.tp_size != 0:
             raise RuntimeError("num_heads % tp_size != 0")
         self.num_local_heads = num_heads // self.tp_size
@@ -300,7 +300,7 @@ class DeepseekMLA(nn.Module):
             self.q_a_layernorm = RMSNorm(self.q_lora_rank,
                                          eps=config.rms_norm_eps)
 
-            if model_extra_config.operator_opt_config.enable_fgsa:
+            if model_extra_config.operator_opt_config.enable_dsa:
                 self.q_b_proj = ReplicatedLinear(q_lora_rank,
                                                  self.num_heads *
                                                  self.qk_head_dim,
@@ -330,7 +330,7 @@ class DeepseekMLA(nn.Module):
 
         self.kv_a_layernorm = RMSNorm(self.kv_lora_rank,
                                       eps=config.rms_norm_eps)
-        if model_extra_config.operator_opt_config.enable_fgsa:
+        if model_extra_config.operator_opt_config.enable_dsa:
             self.kv_b_proj = ReplicatedLinear(
                 self.kv_lora_rank,
                 self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
@@ -423,7 +423,7 @@ class DeepseekMLA(nn.Module):
             kv_lora_rank_cache_size = kv_lora_rank_cache_size // 2
             self.kv_scale = torch.nn.Parameter(torch.empty(1, dtype=torch.float32), requires_grad=False)
         
-        if model_extra_config.operator_opt_config.enable_fgsa:
+        if model_extra_config.operator_opt_config.enable_dsa:
             self.indexer = Indexer(config, self.rotary_emb, quant_config=quant_config, prefix=f"{prefix}.indexer")
             head_size = kv_lora_rank_cache_size + self.qk_rope_head_dim + 128 + 1
         else:
@@ -444,7 +444,7 @@ class DeepseekMLA(nn.Module):
         self.W_UK = None
         self.W_UV = None
         # decode use mla absorb
-        if model_extra_config.parall_config.dp_size > 1 or model_extra_config.operator_opt_config.enable_fgsa:
+        if model_extra_config.parall_config.dp_size > 1 or model_extra_config.operator_opt_config.enable_dsa:
             kv_b_proj_weight = self.kv_b_proj.weight.T
 
             expected_shape = (
@@ -496,7 +496,7 @@ class DeepseekMLA(nn.Module):
         else:
             output = self.o_proj.forward(attn_output, comm_group=comm_group)[0]
 
-        if model_extra_config.operator_opt_config.enable_fgsa and model_extra_config.parall_config.attn_sp_size == 1:
+        if model_extra_config.operator_opt_config.enable_dsa and model_extra_config.parall_config.attn_sp_size == 1:
             sp_rank = get_tensor_model_parallel_rank()
             sp_size = get_tensor_model_parallel_world_size()
             stride = output.size(0) // sp_size
@@ -577,7 +577,7 @@ class DeepseekMLA(nn.Module):
             if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and model_extra_config.operator_opt_config.pd_seperate_prefill:
                 output = self._forward_prefill_a2(positions, hidden_states, kv_cache, attn_metadata)
             else:
-                if model_extra_config.operator_opt_config.enable_fgsa:
+                if model_extra_config.operator_opt_config.enable_dsa:
                     output = self._forward_prefill_absorb(positions, hidden_states, kv_cache, attn_metadata, comm_group=comm_group)
                 else:
                     output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata, comm_group=comm_group)
@@ -620,7 +620,7 @@ class DeepseekMLA(nn.Module):
                     latent_cache_list = torch.split(latent_cache, attn_metadata.prefill.sp_reverse_split_list, dim=0)
                     latent_cache = torch.cat([latent_cache_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
             qr = self.q_a_layernorm(q)
-            if self.quant_symbol and not model_extra_config.operator_opt_config.enable_fgsa:
+            if self.quant_symbol and not model_extra_config.operator_opt_config.enable_dsa:
                 q_quant, q_scale = torch_npu.npu_dynamic_quant(qr)
                 # Quantizing before all_gather can reduce communication overhead.
                 if model_extra_config.parall_config.attn_sp_size == 1:
@@ -964,7 +964,7 @@ class DeepseekMLA(nn.Module):
     ) -> torch.Tensor:
         if use_rmsnorm_rope_cache:
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
-            if model_extra_config.operator_opt_config.enable_fgsa:
+            if model_extra_config.operator_opt_config.enable_dsa:
                 key_cache, value_cache, _, _ = kv_cache
             else:
                 key_cache, value_cache = kv_cache
@@ -982,7 +982,7 @@ class DeepseekMLA(nn.Module):
                 cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
                 cache_index = attn_metadata.slot_mapping.view(bsz, -1)
 
-                cache_mode = "PA_BSND" if model_extra_config.operator_opt_config.enable_fgsa else "PA_NZ"
+                cache_mode = "PA_BSND" if model_extra_config.operator_opt_config.enable_dsa else "PA_NZ"
                 q_nope, q_pe, dequant_scale_q_nope, qr, dequant_scale_q_norm = torch.ops.npu.npu_mla_prolog_v3(
                     token_x = hidden_states_mla_prolog.view(bsz, 1, -1),
                     weight_dq=self.q_a_proj.weight, weight_uq_qr=self.q_b_proj.weight,
@@ -1011,7 +1011,7 @@ class DeepseekMLA(nn.Module):
                 q_pe = q_pe.view(bsz, self.num_local_heads, -1)
             else:
                 hidden_states_origin = hidden_states
-                if self.quant_symbol and not model_extra_config.operator_opt_config.enable_fgsa:
+                if self.quant_symbol and not model_extra_config.operator_opt_config.enable_dsa:
                     hidden_states, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
                     hidden_states = {"x_int8": hidden_states, "pertoken_scale": pertoken_scale}
                 if self.q_lora_rank is not None:
@@ -1042,7 +1042,7 @@ class DeepseekMLA(nn.Module):
                     .transpose(1, 0)
                     .view(bsz, q_len, self.num_local_heads, -1)
                 )
-                cache_mode = "PA" if model_extra_config.operator_opt_config.enable_fgsa else "PA_NZ"
+                cache_mode = "PA" if model_extra_config.operator_opt_config.enable_dsa else "PA_NZ"
                 with stream_context("11"):
                     kv = kv.unsqueeze(1).unsqueeze(1)
                     cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
@@ -1056,7 +1056,7 @@ class DeepseekMLA(nn.Module):
                         c_kv_scale=self.kv_scale_reci_tile,
                         epsilon=self.kv_a_layernorm.variance_epsilon, cache_mode=cache_mode) # adapter NZ
 
-                    if not model_extra_config.operator_opt_config.enable_fgsa:
+                    if not model_extra_config.operator_opt_config.enable_dsa:
                         # adapter nz
                         k_nope = k_nope.view(block_num, 1, self.kv_lora_rank // nz_block_size, block_size, nz_block_size)
                         k_rope = k_rope.view(block_num, 1, self.qk_rope_head_dim // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM)
@@ -1090,7 +1090,7 @@ class DeepseekMLA(nn.Module):
                     actual_seq_qlen=self.actual_seq_lengths[bsz],
                     actual_seq_kvlen=attn_metadata.decode.seq_lens
                 )
-            elif model_extra_config.operator_opt_config.enable_fgsa:
+            elif model_extra_config.operator_opt_config.enable_dsa:
                 if model_extra_config.operator_opt_config.moe_multi_stream_tune:
                     tng.scope.npu_wait_tensor(qr, k_rope)
                 # todo indexer only support bsnd
@@ -1126,7 +1126,7 @@ class DeepseekMLA(nn.Module):
                 )
 
             # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-            if model_extra_config.operator_opt_config.enable_fgsa:
+            if model_extra_config.operator_opt_config.enable_dsa:
                 attn_output = attn_output.squeeze(1).transpose(0, 1)
             else:
                 attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD

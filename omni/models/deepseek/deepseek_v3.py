@@ -249,7 +249,7 @@ class DeepseekDecoderLayer(nn.Module):
         else:
             # Adapt: adapt for w8a8 dynamic, do quant
             # Combines residual add and rmsnorm
-            quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and not model_extra_config.operator_opt_config.enable_fgsa)
+            quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and not model_extra_config.operator_opt_config.enable_dsa)
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual, quant_symbol=quant_symbol)
             # Adapt end.
@@ -421,7 +421,7 @@ class DeepseekV3Model(nn.Module):
             self.stream1_moe_group = get_stream1_moe_group()
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.embed_tokens(input_ids, reduce=1)
+        return self.embed_tokens(input_ids, reduce=0 if model_extra_config.parall_config.attn_sp_size > 1 else 1)
 
     def should_split_hidden_states(self, input_ids: torch.Tensor, ratio_threshold: float, count_threshold: int) -> bool:
         is_split_hidden_states = False
@@ -499,7 +499,6 @@ class DeepseekV3Model(nn.Module):
         attn_metadata = self.get_layer_attn_metadata(attn_metadata, 0)
         if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
             # split input for sp attention
-            hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
             hidden_states = generate_sp_inputs(hidden_states, attn_metadata)
 
         for i in range(self.start_layer, self.end_layer):

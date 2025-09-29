@@ -85,7 +85,7 @@ class AscendMLABackend(AttentionBackend):
     @staticmethod
     def get_kv_cache_shape(num_blocks: int, block_size: int, num_kv_heads: int,
                            head_size: int) -> tuple[int, ...]:
-        head_size = 512 + 64 + 128 + 1 if model_extra_config.operator_opt_config.enable_fgsa else 512 + 64
+        head_size = 512 + 64 + 128 + 1 if model_extra_config.operator_opt_config.enable_dsa else 512 + 64
         return (num_blocks, block_size, 1, head_size)
 
     @staticmethod
@@ -117,7 +117,7 @@ class AscendMLABackend(AttentionBackend):
             layer_kv_cache_nope = torch_npu.npu_format_cast(layer_kv_cache_nope, 2)
             layer_kv_cache_pe = torch_npu.npu_format_cast(layer_kv_cache_pe, 2)
         
-        if model_extra_config.operator_opt_config.enable_fgsa:
+        if model_extra_config.operator_opt_config.enable_dsa:
             layer_indexer_k_nope = torch.zeros(
                             kv_cache_shape[:-2] +
                             (1, 128, ),
@@ -536,7 +536,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             positions = input_positions[tokens_start:]
 
             # adapter attn sp
-            if not model_extra_config.operator_opt_config.enable_fgsa:
+            if not model_extra_config.operator_opt_config.enable_dsa:
                 query_lens = query_lens_list[reqs_start:]
                 seq_lens = seq_lens_list
                 query_lens = list(itertools.accumulate(query_lens))
