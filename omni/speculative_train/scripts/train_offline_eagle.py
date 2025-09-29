@@ -343,7 +343,7 @@ def main():
                     torch_profiler = torch.profiler.profile(
                         activities=[
                             # torch_npu.profiler.ProfilerActivity.CPU,
-                            torch.profiler.ProfilerActivity.NPU,
+                            torch_npu.profiler.ProfilerActivity.NPU,
                         ],
                         with_stack=False,
                         record_shapes=args.profile_record_shapes,
