@@ -1,0 +1,23 @@
+{
+    "base_model_path": "<BASE MODEL PATH>",
+    "lora_adapters_path": "<ROOT PATH OF THE ADAPTERS>",
+    "lora_adapters_config_path": "<JSON FILE OF THE ADAPTERS' WORKLOAD>",
+    "no_lora_prompts_path": "<PROMPTS FOR NO-LORA SCENARIO>",
+    "workload_type": "distinct",
+    "report_dir": "<REPORT PATH>",
+    "dtype": "auto",
+    "num_tokens": 2048,
+    "max_num_seqs": 32,
+    "max_model_len": 8192,
+    "max_loras": 32,
+    "max_lora_rank": 16,
+    "max_cpu_loras": 32,
+    "enforce_eager": true,
+    "enable_lora": true,
+    "gpu_memory_utilization": 0.9,
+    "identical_lora_id": 0,
+    "tensor_parallel_size": 1,
+    "warmup_num_tokens": 128,
+    "disable_async_output_proc": false,
+    "random_seed": 42
+}

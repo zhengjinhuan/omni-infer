@@ -1,0 +1,12 @@
+[
+    {
+        "rank": 16,
+        "num_adapters": 1,
+        "adapters": [
+            {
+                "name": "<ADAPTER'S NAME>",
+                "prompt": "PROMPT WITH 128 TOKENS"
+            }
+        ]
+    }
+]
