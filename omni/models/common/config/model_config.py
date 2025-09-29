@@ -52,7 +52,7 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall: bool = False
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
-    enable_fgsa: bool = False # 使能mla = Indexer + select FA
+    enable_dsa: bool = False # 使能mla = Indexer + select FA
     use_omni_cache: bool = False
     
     max_split_token_ratio_threshold: float = 0.8 # Split hidden_states in prefill if token duplication ratio exceeds threshold, to avoid GMM OOM.

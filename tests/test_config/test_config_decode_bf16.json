@@ -24,6 +24,6 @@
         "expert_gate_up_prefetch": 50,
         "expert_down_prefetch": 0,
         "attn_prefetch": 96,
-        "enable_fgsa": true
+        "enable_dsa": true
     }
 }
