@@ -79,14 +79,25 @@ epochs= xxx
 **需要修改的参数**
 |参数|说明|
 |---|---|
-|dataset |指定数据集路径 |
+|dataset|指定数据集路径 |
 |output_dir|测试结果输出路径|
 |providers_path|providers.yaml路径|
-|epochs	|测试执行的轮数|
-|parallel-num |指定并发数|
-|prompt-tokens|	输入的 token 数量|
-|output-tokens|	输出的 token 数量|
+|epochs|测试执行的轮数|
+|growth_rate|爬坡速率|
+|parallel-num|指定并发数|
+|prompt-tokens|输入的 token 数量|
+|output-tokens|输出的 token 数量|
 |||
+
+**一般growth_rate建议大于等于单die并发数；**
+
+**parallel-num = 期望单die并发 * D侧总die数；**
+
+以8台A3机器组1P1D环境，进行BF16权重的性能测试为例，
+测试用例为16K+1K的定长数据集，期望单die并发为4，A3机器单机共有8卡16die，D侧共有4机64die
+
+主要参数可以设置为
+growth-rate = 12、parallel-num = 4 * 64 = 256、prompt-tokens = 65536、output-tokens = 1024
 
 # **四、执行测试命令**
 ```
