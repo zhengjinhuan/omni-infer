@@ -102,7 +102,7 @@
         --mem-fraction-static 0.90 \
         --disaggregation-transfer-backend mooncake \
         --disable-radix-cache \
-        --max-prefill-tokens 32000 \
+        --max-prefill-tokens 30000 \
         --max-total-tokens 30000 \
         --chunked-prefill-size -128 \
         --max-running-requests 32 > ${LOG_PATH}/run_prefill_sglang.log 2>&1 &
@@ -145,7 +145,7 @@
         --disable-radix-cache \
         --dist-init-addr $HOST_IP:16732 \
         --skip-server-warmup \
-        --max-prefill-tokens 32000 \
+        --max-prefill-tokens 30000 \
         --max-total-tokens 204800 \
         --enable-torch-compile \
         --cuda-graph-bs 32 \
