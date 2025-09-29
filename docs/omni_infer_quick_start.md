@@ -1,10 +1,11 @@
-# PD分离快速部署
+# DeepSeek-V3.2 PD分离快速部署
 
-本文档介绍如何快速拉起PD分离部署推理，支持8机1P1D。
+本文档介绍基于8机Atlas 800IA3如何快速拉起DeepSeek-V3.2 PD分离部署推理。
+本次提供的镜像和权重下载路径：https://gitee.com/omniai/omniinfer/releases/tag/v0.4.2
 
 ## 硬件要求
 
-**硬件：** Atlas 800IA3
+**硬件：** Atlas 800I A3
 
 **操作系统：** Linux
 
@@ -21,7 +22,7 @@ https://support.huawei.com/enterprise/zh/ascend-computing/ascend-hdk-pid-2527647
 
 ## 模型准备
 
-待补充 --- Deepseek BF16
+权重路径需要与下文中 omni_infer_server_template_a3_ds.yml模型文件路径保持一致。
 
 ## 部署
 
@@ -34,6 +35,8 @@ git clone https://gitee.com/omniai/omniinfer.git
 
 
 ### 环境准备
+目标机：8台 Atlas 800I A3
+执行机：1台linux服务器
 
 用户执行机需要安装ansible
 ```bash
@@ -41,21 +44,20 @@ yum install ansible
 yum install openssh-server
 ```
 
-目标机安装libselinux-python3 （可选）
+目标机安装libselinux-python3
 ```bash
 yum install libselinux-python3
 ```
 
 
-更多ansible部署指导详见[ansible部署文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/README.md)
-
 ### 修改配置文件
 
-需要修改`omni_infer_inventory_used_for_xx.yml`和 `omni_infer_server_template_xx.yml` 两处配置文件，位于`omniinfer/tools/ansible/templete/`路径下。以1P1D为例(4机组P,4机组D):
+需要修改`omniinfer/tools/ansible/templete/`路径下得2个配置文件。`omni_infer_inventory_used_for_1P32_1D32.yml`和 `omni_infer_server_template_a3_ds.yml` 。
+以1P1D(4机组P,4机组D)部署DeepSeek-V3.2 BF16为例:
 
 1. **tools/ansible/template/omni_infer_inventory_used_for_1P32_1D32.yml**
 
-   将`p/d/c`下面的`ansible_host` 与 `host_ip` 值改为对应的IP。<span style="color:red; font-weight:bold">对于多机组 D 的场景，所有 D 节点的 `host_ip` 为主节点 d0 的 IP。</span>
+   将`p/d/c`下面的`ansible_host` 与 `host_ip` 值改为对应的IP。<span style="color:red; font-weight:bold">对于多机组 P/D 的场景，所有 P/D 节点的 `host_ip` 为主节点 d0 的 IP。</span>
 
 
    ```YAML
@@ -98,7 +100,17 @@ yum install libselinux-python3
 
    ```
 
-   生成私钥文件，参考[文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/README.md#%E5%AF%86%E9%92%A5%E6%96%87%E4%BB%B6%E7%9A%84%E5%87%86%E5%A4%87)。将`ansible_ssh_private_key_file:`修改为私钥文件路径：
+生成私钥文件。将`ansible_ssh_private_key_file:`修改为私钥文件路径：
+```bash
+# 首先在执行机生成密钥对:
+ssh-keygen -t ed25519 -C "Your SSH key comment" -f ~/.ssh/my_key  # -t 指定密钥类型（推荐ed25519）， -f 指定文件名
+# 密钥文件默认存放位置为: 私钥：~/.ssh/id_ed25519 公钥：~/.ssh/id_ed25519.pub. 设置密钥文件权限:
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/my_key   # 私钥必须设为 600
+chmod 644 ~/.ssh/my_key.pub
+# 部署公钥到远程目标机:以下例子是通过密码去传输密钥文件到远程目标机
+ssh-copy-id -i ~/.ssh/my_key.pub user@remote-host
+```
 
    ```YAML
     all:
@@ -127,7 +139,6 @@ yum install libselinux-python3
         DOCKER_NAME_C: "you_name_omni_infer_proxy"   # Proxy 容器名称
     ```
 
-配置文件详细解释说明请参考[文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/template/README.md#%E7%9B%B8%E5%85%B3%E6%96%87%E4%BB%B6%E8%A7%A3%E9%87%8A%E8%AF%B4%E6%98%8E)。
 
 ### 执行命令
 
@@ -135,9 +146,12 @@ yum install libselinux-python3
 cd omniinfer/tools/ansible/template
 ansible-playbook -i omni_infer_inventory_1p32_1d32.yml omni_infer_server_template_a3_ds.yml
 ```
-
+提示：建议起服务前清理一下全部节点的环境，例如：
+```bash
+ps aux | grep "python" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+```
 ### 服务拉起成功
-查看服务启动日志
+查看服务启动日志, 配置文件设置的LOG_PATH
 
 ### curl 测试
 
@@ -158,3 +172,6 @@ curl -X POST http://127.0.0.1:7000/v1/completions \
     }
   }'
 ```
+
+更多ansible部署指导详见[ansible部署文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/README.md)
+配置文件详细解释说明请参考[文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/template/README.md#%E7%9B%B8%E5%85%B3%E6%96%87%E4%BB%B6%E8%A7%A3%E9%87%8A%E8%AF%B4%E6%98%8E)
