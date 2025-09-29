@@ -261,14 +261,13 @@ class NPUWorker(WorkerBase):
                 f" {free_npu_memory}. This happens when the NPU memory was "
                 "not properly cleaned up before initializing the vLLM instance."
             )
-
         usable_memory_size = total_npu_memory * self.cache_config.gpu_memory_utilization - peak_memory
         npu_kv_cache_bytes = max(usable_memory_size, 0)
         logger.info(
             f"Available memory: {usable_memory_size}, total memory: {total_npu_memory}"
         )
         return int(npu_kv_cache_bytes)
-    
+
     def load_kv_cache(self, info_load_reqs) -> List[int]:
         result = self.model_runner.load_kv_cache(info_load_reqs)
         return result
@@ -327,7 +326,10 @@ class NPUWorker(WorkerBase):
             from contextlib import nullcontext
             context = nullcontext()
         with context:
-            self.model_runner.initialize_kv_cache(kv_cache_config)
+            if model_extra_config.operator_opt_config.use_omni_cache:
+                self.model_runner.initialize_omni_kv_cache(kv_cache_config)
+            else:
+                self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def initialize_cache(self, kv_cache_configs: List[KVCacheConfig]) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
@@ -385,11 +387,17 @@ class NPUWorker(WorkerBase):
                         torch_profiler_trace_dir)
 
             experimental_config = torch_npu.profiler._ExperimentalConfig(
-                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-                profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                export_type=torch_npu.profiler.ExportType.Text,
+                profiler_level=torch_npu.profiler.ProfilerLevel.Level0,
+                msprof_tx=False,
+                aic_metrics=torch_npu.profiler.AiCMetrics.AiCoreNone,
+                l2_cache=False,
+                op_attr=False,
+                data_simplification=False,
+                record_op_args=False,
+                gc_detect_threshold=None,
             )
-            self.profile_already_start = False
-            self.profile_finished = False
+
             return torch_npu.profiler.profile(
                 activities=[
                     torch_npu.profiler.ProfilerActivity.CPU,

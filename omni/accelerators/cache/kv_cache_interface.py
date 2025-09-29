@@ -29,7 +29,6 @@ RECENT = 3
 BETA = 0.2
 PATTERN = [1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0]
 
-
 @dataclass
 class OmniKVCacheConfig(KVCacheConfig):
     """
@@ -80,7 +79,7 @@ class OmniMultiGroupBlockTable(MultiGroupBlockTable):
         self.block_tables = [
             BlockTable(max_num_reqs, cdiv(max_model_len, block_size),
                        max_num_batched_tokens, pin_memory, device),
-            BlockTable(max_num_reqs, SINK + RECENT,
+            BlockTable(max_num_reqs, cdiv(max_model_len, block_size),
                        max_num_batched_tokens, pin_memory, device)
         ]
 

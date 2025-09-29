@@ -142,6 +142,40 @@ def enable_overwrite_request_id():
     logging.info("Applied patch: overwrite_request_id")
 
 
+def apply_constant_list_patch():
+      import vllm.v1.utils as vllm_utils
+      cls = vllm_utils.ConstantList
+      def __hash__(self):
+            return hash(self._x)
+      def __eq__(self, other):
+            return isinstance(other, cls) and self._x == other._x
+      cls.__hash__ = __hash__
+      cls.__eq__ = __eq__
+      cls._is_patched = True
+
+
+def apply_kv_cache_patch():
+    import vllm.v1.core.kv_cache_utils as kv_cache_utils
+    from vllm.v1.core.kv_cache_utils import BlockHashType
+    logger.info("apply_kv_cache_hash_patch")
+    NONE_HASH = kv_cache_utils.NONE_HASH               
+    def patched(hash_function,
+                    parent_block_hash,
+                    curr_block_token_ids,
+                    extra_keys):
+        if not parent_block_hash:
+                parent_block_hash = NONE_HASH             
+        curr_block_token_ids_tuple = tuple(curr_block_token_ids)
+        h = hash_function((parent_block_hash, curr_block_token_ids_tuple, 0))
+        return BlockHashType(
+                h,                                                      
+                curr_block_token_ids_tuple,
+                extra_keys
+        )
+    kv_cache_utils.hash_block_tokens = patched
+    patched.is_patched = True
+
+    
 def register() -> str:
     """Register the NPU platform for vLLM.
 
@@ -304,6 +338,9 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
+        if os.getenv("ENABLE_APC_EVENT", "0") == "1":
+            apply_kv_cache_patch()
+            apply_constant_list_patch()
         if os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1":
             enable_overwrite_request_id()
         import omni.quantization  # noqa: F401

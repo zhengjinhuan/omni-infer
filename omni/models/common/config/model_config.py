@@ -6,12 +6,14 @@ import json
 import threading
 from vllm.logger import logger
 import omni.adaptors.vllm.envs as envs
+import os
 
 @dataclass
 class ModelParallelConfig:
     dense_mlp_tp_size: int = 1
     dp_size: int = 1
     o_proj_tp_size: int = 1
+    attn_sp_size: int = 1
     
     redundancy_shared_expert_num: int = 0
 
@@ -50,6 +52,8 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall: bool = False
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
+    enable_dsa: bool = False # 使能mla = Indexer + select FA
+    use_omni_cache: bool = False
     
     max_split_token_ratio_threshold: float = 0.8 # Split hidden_states in prefill if token duplication ratio exceeds threshold, to avoid GMM OOM.
     max_split_token_count_threshold: int = 32768 # Split hidden_states in prefill if token duplication count exceeds threshold, to avoid GMM OOM.
@@ -60,6 +64,10 @@ class ModelOperatorOptConfig:
             raise ValueError(
                 "When use_omni_placement=True, omni_placement_config_path must be provided!"
             )
+        
+        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
+            self.use_omni_cache = True
+
         # Check the dependencies of use_prefetch and prefetch_Mb
         if not self.use_prefetch:
             self.expert_gate_up_prefetch = 0

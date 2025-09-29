@@ -39,6 +39,13 @@
       ],
       "level": "DEBUG",
       "propagate": false
+    },
+    "": {
+      "handlers": [
+        "vllm",
+        "console"
+      ],
+      "level": "WARNING"
     }
   },
   "version": 1,

@@ -17,7 +17,8 @@
 #     rather, experts may be replicated across multiple devices to enable parallelism or redundancy.
 
 #     Defaults to None.
-pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20250626_221356_58_rearrange_layers_58_layers_16_ranks_prefill_step0to100000.npy"
+# pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20250626_221356_58_rearrange_layers_58_layers_16_ranks_prefill_step0to100000.npy"
+pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20250715_105711_58_redundant_layers_58_layers_64_ranks_epmaxdeploy_200_prefill.npy"
 
 #define max_layer_num as a constant 58 (for deepseek moe layer num 58)
 max_moe_layer_num: 58

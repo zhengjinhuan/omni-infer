@@ -41,6 +41,7 @@ from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.models.common.layers.attention.backend.attention_mask import AttentionMaskBuilder
 from omni.models.common.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 
+from vllm.logger import logger
 
 class AscendAttentionState(Enum):
     PrefillNoCache = 0
@@ -429,6 +430,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
         Returns:
             shape = [batch_size * seq_len, num_heads, head_size]
         """
+        # logger.warning(f"<<<key: {key}, key's shape:{key.shape}")
+        # logger.warning(f"<<<value: {value}, value's shape:{value.shape}")
         num_tokens = query.shape[0]
         if output is None:
             output = torch.empty(num_tokens,
@@ -464,13 +467,31 @@ class AscendAttentionBackendImpl(AttentionImpl):
             cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
 
             if attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
-                torch_npu._npu_reshape_and_cache(
-                    key,
-                    value,
-                    self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
-                    self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
-                    attn_metadata.slot_mapping.int()
-                )
+                ## npu logic
+                if self.key_cache.device.type == "npu":
+                    torch_npu._npu_reshape_and_cache(
+                        key,
+                        value,
+                        self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                        self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                        attn_metadata.slot_mapping.int()
+                    )
+                elif self.key_cache.device.type == "cpu": 
+                    # if k/v cache is on host RAM
+                    slot_mapping = attn_metadata.slot_mapping.int()
+                    key_cache_view = self.key_cache.view(
+                        self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size
+                    )
+                    value_cache_view = self.value_cache.view(
+                        self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size
+                    )
+                    key_expanded = key.to("cpu").unsqueeze(1)
+                    value_expanded = value.to("cpu").unsqueeze(1)
+
+                    key_cache_view[slot_mapping, :1, :, :] = key_expanded
+                    value_cache_view[slot_mapping, :1, :, :] = value_expanded
+                else:
+                    raise RuntimeError("Device invalid.")
             else:
                 torch_npu.scatter_update_(self.key_cache, attn_metadata.slot_indices, cast_key, -2)
                 torch_npu.scatter_update_(self.value_cache, attn_metadata.slot_indices, cast_value, -2)
@@ -560,9 +581,16 @@ class AscendAttentionBackendImpl(AttentionImpl):
         else:
             # use chunked prefill for head size 192 scenario, like deepseek
             # paged_attention_splitfuse maybe crash at such scenario
-
-            all_key = self.key_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index].contiguous()
-            all_value = self.value_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index].contiguous()
+            #logger.warning(f"<<<kv_index's devices: {attn_metadata.kv_index.device}")
+            #logger.warning(f"<<<key_cache's devices: {self.key_cache.device}")
+            if self.key_cache.device.type == "npu":
+                all_key = self.key_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index].contiguous()
+                all_value = self.value_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index].contiguous()
+            elif self.key_cache.device.type == "cpu":
+                all_key = self.key_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index.cpu()].contiguous().npu()
+                all_value = self.value_cache.view(-1, self.num_kv_heads, self.head_size)[attn_metadata.kv_index.cpu()].contiguous().npu()
+            else: 
+                raise RuntimeError(f"Invalid Device {self.key_cache.device}, {type(self.key_cache.device)}")
             actual_seq_qlen = np.array(attn_metadata.query_lens).cumsum().tolist()
             actual_seq_kvlen = np.array(attn_metadata.seq_lens).cumsum().tolist()
             attn_output = torch_npu.npu_fusion_attention(
