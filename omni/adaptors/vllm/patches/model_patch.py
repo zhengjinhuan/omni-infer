@@ -2,7 +2,6 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 from omni.adaptors.vllm.patches.pangu_patch import patch_pangu
-ENABLE_LOW_LATENCY_SCHEDULER = os.getenv("ENABLE_LOW_LATENCY_SCHEDULER", "0") == "1"
 
 def patch_vllm_distributed():
     from vllm import distributed
@@ -50,13 +49,6 @@ def patch_linear():
     from vllm.model_executor.layers import linear
     from omni.layers.linear import AscendUnquantizedLinearMethod
     linear.UnquantizedLinearMethod = AscendUnquantizedLinearMethod
-
-def patch_scheduler():
-    from omni.adaptors.vllm.sched.sorted_scheduler import schedule, __init__
-    from vllm.v1.core.sched.scheduler import Scheduler
-    Scheduler.__init__ = __init__
-    Scheduler.schedule = schedule
-    print("++++++++++++++++++++++patch_scheduler++++++++++++++++++++++++++++")
 
 _patch_done = False
 
