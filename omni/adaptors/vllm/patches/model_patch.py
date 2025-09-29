@@ -71,8 +71,6 @@ def patch_all():
     patch_compilation()
     patch_pangu()
     patch_linear()
-    if ENABLE_LOW_LATENCY_SCHEDULER:
-        patch_scheduler()
     _patch_done = True
 
 patch_all() 

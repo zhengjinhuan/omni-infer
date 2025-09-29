@@ -209,6 +209,7 @@ class ConfigUpdater:
         cls._update_cache_config(vllm_config)
         cls._enable_custom_ops(vllm_config)
         cls._may_enable_omni_attn(vllm_config)
+        cls._update_scheduler_config(vllm_config)
 
     @staticmethod
     def _handle_graph_mode(vllm_config: 'VllmConfig') -> None:
@@ -263,6 +264,22 @@ class ConfigUpdater:
         omni_attn_config = vllm_config.additional_config.get("omni_attn_config", None)
         apply_omni_attn_patch(enable=enable_omni_attn, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
 
+    @staticmethod
+    def _update_scheduler_config(vllm_config: 'VllmConfig') -> None:
+        scheduler_config = vllm_config.scheduler_config
+        additional_config = vllm_config.additional_config
+        if additional_config:
+            if additional_config.get("enable_hybrid_graph_mode", False) and additional_config.get("enable_length_sorted_schedule", False):
+                raise RuntimeError("Cannot enable both hybrid graph mode and length sorted schedule.")
+            if additional_config.get("enable_hybrid_graph_mode", False):
+                from omni.adaptors.vllm.worker.npu_schedule import HybridSchedulerConfig
+                ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
+                    vllm_config.scheduler_config)
+                vllm_config.scheduler_config = ascend_scheduler_config
+                logger.info("--------enbale hybrid graph mode----------------")
+            elif additional_config.get("enable_length_sorted_schedule", False):
+                scheduler_config.scheduler_cls = "omni.adaptors.vllm.worker.length_sorted_schedule.LengthSortedScheduler"
+                logger.info("--------enable length sorted schedule----------------")
 
 class NPUPlatform(Platform):
     """Platform implementation for NPU devices in vLLM."""
@@ -392,15 +409,7 @@ class NPUPlatform(Platform):
 
         Args:
             vllm_config: The vLLM configuration to update.
-        """
-        additional_config = vllm_config.additional_config
-        if additional_config and vllm_config.additional_config.get("enable_hybrid_graph_mode", False):
-            from omni.adaptors.vllm.worker.npu_schedule import HybridSchedulerConfig
-            ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
-                vllm_config.scheduler_config)
-            vllm_config.scheduler_config = ascend_scheduler_config
-            logger.info("--------enbale hybrid graph mode----------------")
-            
+        """            
         ConfigUpdater.update_vllm_config(vllm_config)
 
     @classmethod
