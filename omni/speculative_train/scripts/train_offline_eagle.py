@@ -355,7 +355,7 @@ def main():
                 if batch_index == args.profile_start_step + args.profile_num_steps:
                     output_path = os.path.join(
                         os.environ.get("SGLANG_TORCH_PROFILER_DIR", "/data/d00646319/trace"),
-                        f"debug_rank{torch.distributed.get_rank()}_{time.time()}.trace.json.gz",
+                        f"debug_rank{torch.distributed.get_rank()}_{time.time()}.trace.json",
                     )
                     print(f"End profile {output_path=}")
                     torch_profiler.stop()
