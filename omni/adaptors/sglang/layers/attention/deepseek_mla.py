@@ -4,6 +4,9 @@ from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
+import torchair
+import contextlib import nullcontext
+
 from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
 from sglang.srt.layers.dp_attention import (
     attn_tp_all_gather_into_tensor,
@@ -55,6 +58,7 @@ from omni.adaptors.sglang.layers.linear import (
 
 PAGE_SIZE = 128
 KVCACHE_NZ_DIM = 16
+
 class AttnForwardMethod(IntEnum):
     # Use multi-head attention
     MHA = auto()
@@ -407,6 +411,11 @@ class DeepseekMLA(nn.Module):
                 not self.o_proj.reduce_results
             ), "short-circuiting allreduce will lead to hangs"
             return hidden_states
+        if forward_batch.can_run_graph:
+            stream_context = torchair.scope.npu_stream_switch("mla_decode")
+        else:
+            stream_context = nullcontext()
+
         if self.q_lora_rank is not None:
             fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
             q, latent_cache = torch.split(fused_qkv_a_proj_out,
@@ -439,50 +448,72 @@ class DeepseekMLA(nn.Module):
             q_nope = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
         q_nope = q_nope.transpose(0, 1)
 
-        k_nope, k_pe = torch.split(latent_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-        k_nope = self.kv_a_layernorm(k_nope).view(-1, 1, self.kv_lora_rank)
-        k_pe = k_pe.unsqueeze(1)
+        with stream_context:
+            k_nope, k_pe = torch.split(latent_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+            k_nope = self.kv_a_layernorm(k_nope).view(-1, 1, self.kv_lora_rank)
+            k_pe = k_pe.unsqueeze(1)
 
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
-        forward_batch.token_to_kv_pool.set_mla_kv_buffer(
-            self.attn_mqa,
-            forward_batch.out_cache_loc,
-            k_nope,
-            k_pe,
-        )
+            q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+            forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+                self.attn_mqa,
+                forward_batch.out_cache_loc,
+                k_nope,
+                k_pe,
+            )
 
-        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id)
-        k_cache= k_cache.view(-1, 1, PAGE_SIZE, k_cache.shape[-1])
+            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id)
+            k_cache= k_cache.view(-1, 1, PAGE_SIZE, k_cache.shape[-1])
 
-        k_nope, k_rope = torch.split(k_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-        k_nope = k_nope.view(k_cache.shape[0], 1, PAGE_SIZE, self.kv_lora_rank // KVCACHE_NZ_DIM, 
-                             KVCACHE_NZ_DIM).transpose(2, 3)
-        k_rope = k_rope.view(k_cache.shape[0], 1, PAGE_SIZE, self.qk_rope_head_dim // KVCACHE_NZ_DIM, 
-                             KVCACHE_NZ_DIM).transpose(2, 3)
+            k_nope, k_rope = torch.split(k_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+            k_nope = k_nope.view(k_cache.shape[0], 1, PAGE_SIZE, self.kv_lora_rank // KVCACHE_NZ_DIM, 
+                                KVCACHE_NZ_DIM).transpose(2, 3)
+            k_rope = k_rope.view(k_cache.shape[0], 1, PAGE_SIZE, self.qk_rope_head_dim // KVCACHE_NZ_DIM, 
+                                KVCACHE_NZ_DIM).transpose(2, 3)
 
         padding_bs = forward_batch.input_ids.size(0)
-        q_nope = q_nope.view(padding_bs, -1, self.num_local_heads, self.kv_lora_rank)
-        q_pe = q_pe.view(padding_bs, -1, self.num_local_heads, self.qk_rope_head_dim)
-
         metadata = forward_batch.attn_backend.forward_metadata
-        attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
-            q_nope,
-            k_nope,
-            k_nope,
-            query_rope=q_pe,
-            key_rope=k_rope,
-            num_heads=self.num_local_heads,
-            num_key_value_heads=1,
-            input_layout="BSND",
-            atten_mask=None,
-            sparse_mode=0,
-            scale=self.scaling,
-            antiquant_mode=0,
-            antiquant_scale=None,
-            block_table=metadata.block_kv_indices,
-            block_size=PAGE_SIZE,
-            actual_seq_lengths_kv=metadata.seq_lens_list,
-        )
+
+        if forward_batch.can_run_graph:
+            q_nope = q_nope.view(padding_bs, self.num_local_heads, self.kv_lora_rank)
+            q_pe = q_pe.view(padding_bs, self.num_local_heads, self.qk_rope_head_dim)
+            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                q_nope,
+                k_nope,
+                k_nope,
+                query_rope=q_pe,
+                key_rope=k_rope,
+                num_heads=self.num_local_heads,
+                num_key_value_heads=1,
+                input_layout="TND",
+                scale=self.scaling,
+                antiquant_mode=0,
+                antiquant_scale=None,
+                block_table=metadata.block_kv_indices,
+                block_size=PAGE_SIZE,
+                actual_seq_lengths=list(range(1, padding_bs + 1)),
+                actual_seq_lengths_kv=metadata.seq_lens_list,
+            )
+        else:
+            q_nope = q_nope.view(padding_bs, -1, self.num_local_heads, self.kv_lora_rank)
+            q_pe = q_pe.view(padding_bs, -1, self.num_local_heads, self.qk_rope_head_dim)
+            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                q_nope,
+                k_nope,
+                k_nope,
+                query_rope=q_pe,
+                key_rope=k_rope,
+                num_heads=self.num_local_heads,
+                num_key_value_heads=1,
+                input_layout="BSND",
+                atten_mask=None,
+                sparse_mode=0,
+                scale=self.scaling,
+                antiquant_mode=0,
+                antiquant_scale=None,
+                block_table=metadata.block_kv_indices,
+                block_size=PAGE_SIZE,
+                actual_seq_lengths_kv=metadata.seq_lens_list,
+            )
         attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
 
         attn_bmm_output = torch.empty(
