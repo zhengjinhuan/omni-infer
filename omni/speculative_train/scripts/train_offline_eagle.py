@@ -338,7 +338,7 @@ def main():
                     print("Start profile")
                     experimental_config = torch_npu.profiler._ExperimentalConfig(
                         profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-                        aic_metrics=torch_npu.profiler.AiCmetrics.PipeUtilization,
+                        aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
                     )
                     torch_profiler = torch.profiler.profile(
                         activities=[
