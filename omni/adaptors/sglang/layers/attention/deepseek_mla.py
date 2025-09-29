@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
 import torchair
-import contextlib import nullcontext
+from contextlib import nullcontext
 
 from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
 from sglang.srt.layers.dp_attention import (
@@ -56,7 +56,7 @@ from omni.adaptors.sglang.layers.linear import (
     RowParallelLinear,
 )
 
-PAGE_SIZE = 128
+BLOCK_SIZE = 128
 KVCACHE_NZ_DIM = 16
 
 class AttnForwardMethod(IntEnum):
@@ -251,7 +251,6 @@ class DeepseekMLA(nn.Module):
 
         self.w_scale_k = None
         self.w_scale_v = None
-        self.use_deep_gemm_bmm = False
 
         self.disable_chunked_prefix_cache = global_server_args_dict[
             "disable_chunked_prefix_cache"
@@ -419,7 +418,7 @@ class DeepseekMLA(nn.Module):
         if self.q_lora_rank is not None:
             fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
             q, latent_cache = torch.split(fused_qkv_a_proj_out,
-                [self.q_lora_rank, self.q_lora_rank + self.qk_rope_head_dim], dim=-1)
+                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1)
             q = self.q_a_layernorm(q)
             q = self.q_b_proj(q)[0]
         else:
@@ -428,25 +427,7 @@ class DeepseekMLA(nn.Module):
 
         q = q.view(-1, self.num_local_heads, self.qk_head_dim)
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-
-        if self.use_deep_gemm_bmm:
-            q_nope_val, q_nope_scale, masked_m, expected_m, aligned_m = (
-                per_token_group_quant_mla_deep_gemm_masked_fp8(q_nope.transpose(0, 1))
-            )
-            q_nope = q_nope.new_empty(
-                (self.num_local_heads, aligned_m, self.kv_lora_rank)
-            )
-            deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_masked(
-                (q_nope_val, q_nope_scale),
-                (self.w_kc, self.w_scale_k),
-                q_nope,
-                masked_m,
-                expected_m,
-            )
-            q_nope = q_nope[:, :expected_m, :]
-        else:
-            q_nope = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
-        q_nope = q_nope.transpose(0, 1)
+        q_nope = torch.matmul(q_nope.transpose(0, 1), self.w_kc).transpose(0, 1)
 
         with stream_context:
             k_nope, k_pe = torch.split(latent_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
@@ -462,12 +443,12 @@ class DeepseekMLA(nn.Module):
             )
 
             k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id)
-            k_cache= k_cache.view(-1, 1, PAGE_SIZE, k_cache.shape[-1])
+            k_cache= k_cache.view(-1, 1, BLOCK_SIZE, k_cache.shape[-1])
 
             k_nope, k_rope = torch.split(k_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-            k_nope = k_nope.view(k_cache.shape[0], 1, PAGE_SIZE, self.kv_lora_rank // KVCACHE_NZ_DIM, 
+            k_nope = k_nope.view(k_cache.shape[0], 1, BLOCK_SIZE, self.kv_lora_rank // KVCACHE_NZ_DIM, 
                                 KVCACHE_NZ_DIM).transpose(2, 3)
-            k_rope = k_rope.view(k_cache.shape[0], 1, PAGE_SIZE, self.qk_rope_head_dim // KVCACHE_NZ_DIM, 
+            k_rope = k_rope.view(k_cache.shape[0], 1, BLOCK_SIZE, self.qk_rope_head_dim // KVCACHE_NZ_DIM, 
                                 KVCACHE_NZ_DIM).transpose(2, 3)
 
         padding_bs = forward_batch.input_ids.size(0)
@@ -489,7 +470,7 @@ class DeepseekMLA(nn.Module):
                 antiquant_mode=0,
                 antiquant_scale=None,
                 block_table=metadata.block_kv_indices,
-                block_size=PAGE_SIZE,
+                block_size=BLOCK_SIZE,
                 actual_seq_lengths=list(range(1, padding_bs + 1)),
                 actual_seq_lengths_kv=metadata.seq_lens_list,
             )
@@ -511,26 +492,16 @@ class DeepseekMLA(nn.Module):
                 antiquant_mode=0,
                 antiquant_scale=None,
                 block_table=metadata.block_kv_indices,
-                block_size=PAGE_SIZE,
+                block_size=BLOCK_SIZE,
                 actual_seq_lengths_kv=metadata.seq_lens_list,
             )
-        attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
-
-        attn_bmm_output = torch.empty(
-            (self.num_local_heads, attn_output.shape[0], self.v_head_dim),
-            dtype=attn_output.dtype,
-            device=attn_output.device,
+        attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank).transpose(0, 1)
+        attn_output = (
+            torch.matmul(attn_output, self.w_vc)
+            .transpose(0, 1)
+            .reshape(-1, self.num_local_heads * self.v_head_dim)
         )
-        torch.bmm(
-            attn_output.transpose(0, 1),
-            self.w_vc,
-            out=attn_bmm_output,
-        )
-        attn_bmm_output = attn_bmm_output.transpose(0, 1).reshape(
-            -1, self.num_local_heads * self.v_head_dim
-        )
-
-        output, _ = self.o_proj(attn_bmm_output)
+        output, _ = self.o_proj(attn_output)
 
         return output
 
