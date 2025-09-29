@@ -417,7 +417,7 @@ class DeepseekMoE(nn.Module):
 
             if self.experts.weight_num_bits == 8:
                 weight_scale1_3 = self.experts.w13_weight_scale.squeeze(-1) # adapt shape
-                weight_scale2 = self.experts.w2_weight_scale.squeeze(-1).to(torch.bfloat16) # adapt shape and dtype
+                weight_scale2 = self.experts.w2_weight_scale.squeeze(-1) # adapt shape and dtype
             elif self.experts.weight_num_bits == 4:
                 weight_scale1_3 = self.experts.w13_weight_int4_scale
                 weight_scale2 = self.experts.w2_weight_int4_scale

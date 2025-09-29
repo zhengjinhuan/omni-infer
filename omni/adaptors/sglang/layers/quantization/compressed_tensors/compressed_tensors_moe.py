@@ -64,13 +64,15 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         w13_scale = torch.nn.Parameter(
             torch.empty(
-                num_experts, 2 * intermediate_size_per_partition, 1, dtype=torch.float32
+                num_experts, 2 * intermediate_size_per_partition, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
             ),
             requires_grad=False,
         )
         w13_offset = torch.nn.Parameter(
             torch.zeros(
-                num_experts, 2 * intermediate_size_per_partition, 1, dtype=torch.float32
+                num_experts, 2 * intermediate_size_per_partition, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
             ),
             requires_grad=False,
         )
@@ -80,11 +82,17 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         set_weight_attrs(w13_offset, extra_weight_attrs)
 
         w2_scale = torch.nn.Parameter(
-            torch.ones(num_experts, hidden_size, 1, dtype=torch.float32),
+            torch.ones(
+                num_experts, hidden_size, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
+            ),
             requires_grad=False,
         )
         w2_offset = torch.nn.Parameter(
-            torch.zeros(num_experts, hidden_size, 1, dtype=torch.float32),
+            torch.zeros(
+                num_experts, hidden_size, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
+            ),
             requires_grad=False,
         )
         layer.register_parameter("w2_weight_scale", w2_scale)
@@ -102,7 +110,7 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         layer.w2_weight_scale = torch.nn.Parameter(
             layer.w2_weight_scale.data, requires_grad=False
         )
-
+        layer.w13_weight_scale = torch.nn.Parameter(layer.w13_weight_scale.to(torch.float32), requires_grad=False)
         self.n_routed_experts = len(layer.w13_weight)
 
         self.local_expert_indices_offset = (
