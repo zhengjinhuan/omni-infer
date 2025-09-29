@@ -42,6 +42,8 @@ class BF16Optimizer:
                 mp.grad = (
                     p.grad.detach().to(torch.float32) if p.grad is not None else None
                 )
+                p.grad = None
+
         torch.nn.utils.clip_grad_norm_(self.fp32_params, self.max_grad_norm)
         self.optimizer.step()
         self.optimizer.zero_grad()
@@ -49,7 +51,6 @@ class BF16Optimizer:
         with torch.no_grad():
             for p, mp in zip(self.model_params, self.fp32_params):
                 p.data.copy_(mp.data.to(p.dtype))
-                p.grad = None
 
     def load_state_dict(self, state_dict):
         self.optimizer.load_state_dict(state_dict["optimizer_state_dict"])

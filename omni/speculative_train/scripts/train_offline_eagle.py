@@ -336,6 +336,10 @@ def main():
             if args.profile:
                 if batch_index == args.profile_start_step:
                     print("Start profile")
+                    output_dir = os.path.join(
+                        os.environ.get("SGLANG_TORCH_PROFILER_DIR", "/data/d00646319/trace"),
+                        f"debug_rank{torch.distributed.get_rank()}_{time.time()}/",
+                    )
                     experimental_config = torch_npu.profiler._ExperimentalConfig(
                         profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
                         aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
@@ -349,7 +353,7 @@ def main():
                         record_shapes=args.profile_record_shapes,
                         profile_memory=True,
                         experimental_config=experimental_config,
-                        # on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(prof_save_path),
+                        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(output_dir),
                     )
                     torch_profiler.start()
                 if batch_index == args.profile_start_step + args.profile_num_steps:
