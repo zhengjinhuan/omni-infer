@@ -26,12 +26,15 @@ if __name__ == "__main__":
         faquant.main(args, args.output_path, args.c8_calib_path, args.kvs_safetensor_name)
 
     if args.w4:
-        qint4.main(args, args.input_bf16_hf_path, args.output_path, args.pangu_mode, args.model_name)
+        qint4.main(args, args.input_bf16_hf_path, args.output_path, args.next, args.pangu_mode, args.model_name)
         num_bits = {"self_attn.kv_a_proj_with_mqa": 8, "self_attn.q_a_proj": 8, "self_attn.q_b_proj": 8,
                     "self_attn.o_proj": 8, "mlp.down_proj": 8, "mlp.gate_up_proj": 8, "mlp.shared_experts": 8,
                     "mlp.experts": 4}
+        if args.next:
+            num_bits = {"self_attn": 16, "mlp.down_proj": 16, "mlp.gate_up_proj": 16, "mlp.shared_experts": 16,
+                    "mlp.experts": 4}
     else:
-        qint8.main(args, args.input_bf16_hf_path, args.output_path, args.pangu_mode, args.model_name)
+        qint8.main(args, args.input_bf16_hf_path, args.output_path, args.next, args.pangu_mode, args.model_name)
         num_bits = 8
 
     ignores = []
@@ -39,9 +42,15 @@ if __name__ == "__main__":
         ignore = f"model.layers.{i}.self_attn.kv_b_proj"
         ignores.append(ignore)
     if args.next:
-        for i in range(62):
-            ignore = f"model.layers.{i}.self_attn.indexer"
+        for i in range(3):
+            ignore = f"model.layers.{i}.mlp"
             ignores.append(ignore)
+        for i in range(62):
+            ignore = f"model.layers.{i}.self_attn"
+            ignores.append(ignore)
+            ignore = f"model.layers.{i}.mlp.shared_experts"
+            ignores.append(ignore)
+        
     ignores.append("lm_head")
 
     quant_config = {"config_groups": {"group_0": {}}, "format": "int-quantized",
