@@ -156,6 +156,8 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
         if (best_match > 0 && best_idx != UINT32_MAX)
         {
             selected = best_idx;
+            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Prefill-%d] Prefix cache hit on: %d with match_depth %d",
+                    req->slot_index, selected, req->match_depths[selected]);
         }
         else
         {
@@ -175,6 +177,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
                     }
                 }
             }
+            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Prefill-%d] No Prefix cache hit, choose least workload Prefill %d with load %d", req->slot_index, selected, least_load);
         }
 
         req->prefill_upstream_endpoint_idx = selected;
