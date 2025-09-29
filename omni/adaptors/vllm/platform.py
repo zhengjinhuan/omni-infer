@@ -278,7 +278,7 @@ class ConfigUpdater:
                 vllm_config.scheduler_config = ascend_scheduler_config
                 logger.info("--------enbale hybrid graph mode----------------")
             elif additional_config.get("enable_length_sorted_schedule", False):
-                scheduler_config.scheduler_cls = "omni.adaptors.vllm.worker.length_sorted_schedule.LengthSortedScheduler"
+                scheduler_config.scheduler_cls = "omni.adaptors.vllm.sched.length_sorted_schedule.LengthSortedScheduler"
                 logger.info("--------enable length sorted schedule----------------")
 
 class NPUPlatform(Platform):
