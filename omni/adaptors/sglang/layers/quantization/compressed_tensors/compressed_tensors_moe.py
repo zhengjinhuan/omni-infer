@@ -104,9 +104,6 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         layer.w13_weight = torch.nn.Parameter(layer.w13_weight, requires_grad=False)
         layer.w2_weight = torch.nn.Parameter(layer.w2_weight, requires_grad=False)
-        layer.w13_weight_scale = torch.nn.Parameter(
-            layer.w13_weight_scale.data, requires_grad=False
-        )
         layer.w2_weight_scale = torch.nn.Parameter(
             layer.w2_weight_scale.data, requires_grad=False
         )
