@@ -1387,28 +1387,26 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
                 ngx_str_t shm_name;
 
                 u_char *buffer = ngx_pcalloc(cf->pool, 64);
-                u_char *end = ngx_snprintf(buffer, sizeof(buffer), "omni_proxy_%d",
-                                           count);
+                u_char *end = ngx_snprintf(buffer, 64, "omni_proxy_%d", count);
                 *end = 0;
 
                 shm_name.data = buffer;
                 shm_name.len = end - buffer;
 
-                shm_zone = ngx_shared_memory_add(cf, &server->name, 20 * 1024 * 1024,
-                                                 &ngx_http_omni_proxy_module);
+                shm_zone = ngx_shared_memory_add(cf, &shm_name, 20 * 1024 * 1024, &ngx_http_omni_proxy_module);
                 if (shm_zone == NULL)
                 {
                     ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
-                                       "Failed to create shared memory for server %V",
-                                       &servers[j].addrs->name);
+                                    "Failed to create shared memory for server %V",
+                                    &servers[j].addrs->name);
                     continue;
                 }
 
                 shm_zone->init = omni_proxy_apc_shm_initialized;
 
                 ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
-                                   "    Created 20MB shared memory zone: %V",
-                                   &shm_name);
+                                "    Created 20MB shared memory zone: %V",
+                                &shm_name);
             }
         }
     }
