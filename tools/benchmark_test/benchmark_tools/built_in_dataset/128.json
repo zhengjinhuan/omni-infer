@@ -1,0 +1,402 @@
+[
+  {
+    "id": 0,
+    "input": "ArrayList seats = new ArrayList();\n\nSeatExtended extends the class of Seat which is:\n\npublic class Seat {\n\n @XmlElement(name = \"Row\", required = true, nillable = true)\n protected String row;\n @XmlElement(name = \"Column\", required = true, nillable = true)\n protected String column;ArrayList seats = new ArrayList();\n\nSeatExtended extends the class of Seat which is:\n\npublic class Seat {\n protected String row;\n protected String column;\n}\n\nAnd SeatExtended is:\n\npublic class SeatExtended extends Seat {\n\n public SeatStatus availablity;\n}\n\nProvide a function to return the index of element inside SeatExtended which takes Seat as an argument"
+  },
+  {
+    "id": 1,
+    "input": "for (SeatExtended currentSeat : seats) {\n if(currentSeat.getRow().equals(seat.getRow()) && currentSeat.getColumn().equals(seat.getColumn())) {\n currentSeat.availablity = SeatStatus.LOCKED;\n int currentIndex = seats.indexOf(currentSeat);\n for (int i = 0; i < count; i++) {\n seats.get(currentIndex+1).availablity = SeatStatus.LOCKED;\n currentIndex = currentIndex + 1;\n }\n }\n }\n\nDecrease repetition of \"currentSeat.availablity = SeatStatus.LOCKED;\" to one"
+  },
+  {
+    "id": 2,
+    "input": "How would you ask these questions: Tell everyone a little about you, where you from, what you like doing?\nWhat goals are you pursuing right now?\nWho has made the most influence in your life?\nWho is the one person that you admire the most (alive or dead)?\nWhat is the hardest challenge you’re had to overcome in your life?\nWhen have you grown the most in your life and what caused that growth?\nWhere is your favorite place to relax and renew?\nWhat books have changed your life the most?\nWhat Is the biggest thing that you want the audience to take away today?\nHow can people get a hold of you to talk about your business?"
+  },
+  {
+    "id": 3,
+    "input": "for the Hero section: Please provide me with the following (make sure to use Day Sculpting as the product name): \n\npre headline\nHeadline\nSubheadline \n\ntext to put above the CTA button\ntext to put in the CTA button\n\nA background image to use with opacity\nan image to use next to the copy. And should copy go on the left to right of the image.\nAn image to use. And should the copy be left or right of the imageYou gave me this: \"Headline: Sculpt Your Ideal Life One Day at a Time with Day Sculpting\"\n\nGive me 10 more headlines I can split test"
+  },
+  {
+    "id": 4,
+    "input": "Please expand on this so that I can give your exact instructions to my webiste dsigner. \n\nPlease give me all the copy, layout, and image/icon (if any) suggestions \n\n[ Call-to-action section: A section that encourages visitors to take a specific action, such as signing up for a newsletter, downloading a free resource, or making a purchase. ]: (that you mentioned for the home page)\n\nThe CTA should be to buy my course (not sign up. I don't want to use any forms I just want to use a button that takes the user to my checkout page\"Give me 10 FAQ I can use on my home page and FAQ page"
+  },
+  {
+    "id": 5,
+    "input": "I love this thank you. Now write me one more. But this time use the \n\n\"Meet Bob, meet sally \" Framework- This framework is where bob is unhappy in life because he does not have the Day Sculpting program. But sally does have it and she has a great life because she uses the program.\n\nThis time I don't want a screenplay. I want to use illustration animations so please tell me what each slide animation should be\n\nI first want just the script that I can use to record my voice. \n\nThen give me the instructions I can give to the animator that goes with my voice over.Continue with that script but write the CTA"
+  },
+  {
+    "id": 6,
+    "input": "Captain Smith, who set out on a daring expedition with his fleet of ships consisting of the Discovery, the Endeavour, the Adventure, the Challenger, and the Explorer. Their mission was to chart a new route through the treacherous seas of the North Atlantic and claim new territories for their homeland. But the weather turned against them, and they found themselves battling fierce storms and raging currents. The waves grew higher and higher, and the winds howled like banshees, threatening to capsize their ships at any moment. Despite their efforts the Challenger and the Explorer, were lost in the storm. \n\nHow many ships did the captain leave with and how many returned?"
+  },
+  {
+    "id": 7,
+    "input": "add \"!f\" as a protocol command after which you will receive knowledge on the business process that is required to correctly execute the !c commands.!f user can order new tariffs with one or multiple sim cards. the can optionally add smartphones to each booked sim card. he can be an existing client or a new client. if the is an existing client he has to identify. if he wants to upgrade he has to be an existing client and his contract must eligible for an upgrade which is the case after the existing contracts period has been exceeded. !c state if the user made a statement that is handled by the business process. !u I want to buy a horse with white hair"
+  },
+  {
+    "id": 8,
+    "input": "can I send you an image to treat ?[Adjectives images](https://www.google.com/url?sa=i&url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DQ5l0pvV2Gq4&psig=AOvVaw2Du\\_k7X27rG6dErvrSfFQt&ust=1673786815052000&source=images&cd=vfe&ved=0CA8QjRxqFwoTCIilvvWLx\\_wCFQAAAAAdAAAAABAE)\n\nFind the opposites of adjectives in the above image"
+  },
+  {
+    "id": 9,
+    "input": "[Adjectives images](https://www.google.com/url?sa=i&url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DQ5l0pvV2Gq4&psig=AOvVaw2Du\\_k7X27rG6dErvrSfFQt&ust=1673786815052000&source=images&cd=vfe&ved=0CA8QjRxqFwoTCIilvvWLx\\_wCFQAAAAAdAAAAABAE)\n\nFind the opposites of adjectives in the above imageDo you know that 2+2 = 4 ?"
+  },
+  {
+    "id": 10,
+    "input": "How do I make a software like Obsidian with Python#ifndef DATA\\_HPP\n#define DATA\\_HPP\n\n#include \n#include \n#include \n\n#define HIGH 100\n#define LOW 0\n\nclass Data : public QObject\n{\n Q\\_OBJECT\n Q\\_PROPERTY(QPointF GetValue READ GetValue NOTIFY sgnl\\_ValueChanged)\n\npublic:\n Data(QObject\\* parent = Q\\_NULLPTR);\n QPointF GetValue() const { return m\\_Value; }\n\nprivate:\n QTimer\\* m\\_Timer;\n QPointF m\\_Value;\n\nsignals:\n void sgnl\\_ValueChanged();\n\nprivate slots:\n void slt\\_Timeout();\n};"
+  },
+  {
+    "id": 11,
+    "input": "#ifndef DATA\\_HPP\n#define DATA\\_HPP\n\n#include \n#include \n#include \n\n#define HIGH 100\n#define LOW 0\n\nclass Data : public QObject\n{\n Q\\_OBJECT\n Q\\_PROPERTY(QPointF GetValue READ GetValue NOTIFY sgnl\\_ValueChanged)\n\npublic:\n Data(QObject\\* parent = Q\\_NULLPTR);\n QPointF GetValue() const { return m\\_Value; }\n\nprivate:\n QTimer\\* m\\_Timer;\n QPointF m\\_Value;\n\nsignals:\n void sgnl\\_ValueChanged();\n\nprivate slots:\n void slt\\_Timeout();\n};"
+  },
+  {
+    "id": 12,
+    "input": "Now use them to write STAR stories based on my professional experience, one story per leadership principle using text formating so its better readable, and add a title per story.\n\nPlease write in English language.I don't think you understood what I did threw my previous practices. Focus more on my mission and write STAR stories without inventing : \n• Visual Management Trainee (5 months) at Enedis, where I helped overhaul management and reporting tools and created a visual management system for the GI2R division\n• Process Engineer Trainee (3 months) at Nystar, where I collected and analyzed data to optimize process energy efficiency\nPlease write in English language."
+  },
+  {
+    "id": 13,
+    "input": "I really like it ! format it so its way more readable, by underlining title, making bullet point and only display the letter and not the full entilted (Situation becomes S, etc...)Continue writing the STAR stories organized in bullet points with titles and abbreviated leadership principles. You still need to write STAR stories related to the following Leadership principles, the other already has been done :\n11. Earn Trust\n12. Dive Deep\n13. Have Backbone; Disagree and Commit\n14. Deliver Results\nNew Additions to Amazon leadership principles\n15. Strive to be Earth’s Best Employer\n16. Success and Scale Bring Broad Responsibility"
+  },
+  {
+    "id": 14,
+    "input": "Can we add the following instructions to the describe literature review and use originial language. Summarize and synthesize: Give an overview of the main points of each source and combine them into a coherent whole\nAnalyze and interpret: Don’t just paraphrase other researchers – add your own interpretations where possible, discussing the significance of findings in relation to the literature as a whole\nCritically Evaluate: Mention the strengths and weaknesses of your sources\nWrite in well-structured paragraphs: Use transition words and topic sentence to draw connections, comparisons, and contrasts.\nConclusion:\n\nSummarize the key findings you have taken from the literature and emphasize their significance\nConnect it back to your primary research question"
+  },
+  {
+    "id": 15,
+    "input": "rewrite this with less cliches \"The Cola Island: This secluded paradise is located in the Yasawas and offers visitors beautiful beaches, crystal clear waters and excellent snorkeling and diving opportunities. It's an ideal place to relax, unwind and soak up the tropical ambiance of Fiji. The island's seclusion and serenity make it a perfect spot for those looking to escape the crowds and enjoy some peace and quiet. With its crystal clear waters, the Cola Island is ideal for swimming, sunbathing, and snorkeling, making it the perfect place to take in the natural beauty of Fiji.\"what is the usage of cascade=CascadeType.All?"
+  },
+  {
+    "id": 16,
+    "input": "Imagine that we want to examine the effects of producing energy from different sources into our model in regards to Healthcare cost impacts. Let's consider that our economy only has a private Healthcare system, so individuals have to use money they would otherwise spend on consumption in Healthcare. Let's say that the demand for Healthcare is exogenous, but is scaled depending on what percentage of the energy production in this economy is done via fossil fuel. If all the energy production in this economy is done via fossil fuels, the demand for Healthcare should be twice as large as if all the energy produced in this economy was done via the use of green energy sources.Update and print all the equations in our model"
+  },
+  {
+    "id": 17,
+    "input": "What changes should we bring to this model to account for the fact that the maximum energy production can only grow as a result of investments in a previous period? Although a firm may produce less energy than their maximum possible output, in order to reduce costs. We should also consider that this maximum production of energy is always depreciating, and some of the money invested in energy production is used to negate this depreciationHave we properly accounted for depreciation in our model? Just as investment allow us to grow our economic output, they should also be counterbalanced with depreciation. The depreciation rate for fossil energy, green energy and the rest of the economy should be different"
+  },
+  {
+    "id": 18,
+    "input": "Write me an outline of the Block-Section by Block-Section for the page \"Get Fit at Home page\" that you stated these Benefits: This section should explain the benefits of using Fitclass for attendees, such as the ability to workout from the comfort of their own home, access a variety of fitness classes, and follow their favorite trainers. This section should also provide information on how to book classes, manage class schedules and reservations and how to use the tip system.you state over and over \"A call-to-action to join Fitclass\" write me a call to action for above the button and also what text should I put in the CTA button."
+  },
+  {
+    "id": 19,
+    "input": "In this section, you are taking 2 inputs (from user and DNC), but only talk back to user. the inputs will be formated in this way: '[user: Hi please help me find a good movie that I can watch tonight.] [DNC: movie: gener - 1. drama 2. comedy 3. thrill | tonight: Feb, 18th. Spare time: 2h30m, related people: Jane.] And your output should consider what user asked and what the DNC gives. Try generate a response now.[user: I want to kill some time tonight] [DNC: hobbies: football, TV series, social-network.]"
+  },
+  {
+    "id": 20,
+    "input": "Audiovisual Portions: $1050\nIncludes: 30 minute video where there is custom audio and video\nIncludes: 3 meetings and revisions ( note that revisions are discussed during meetings)\nOther formats (e.g. VR, 360 video, etc.): Additional services and additional meetings will incur additional costs.\n\nAs discuss there is artistic freedom within the following parameters:\n- minimalistic nature that includes geometric shapes ( triangles, squares, etc)\n-colors mainly to be used are red and gray\n- sound details hasn't been materialized or mentioned yet and examples should be given before the meetings or revision costs would be charged\n\nPayments would be done in Late March and April"
+  },
+  {
+    "id": 21,
+    "input": "I want you to act as an online course instructor, you have 20 years teaching Python, teaching Python programming and coding. The course must be engaging. This course will cover topics such as [Python, Pandas, xlwings, working with files, reading batch data and creating reports, \n code Python to interact with data in Excel, SQL and SAS, usng SQLAlchemy to interact with SQL databases, basic visualization ,create charts, integrate with Excel.\n\nLet's start by you providing me with a course syllabus formatted in a Markdown table.Now let's work on the section about \"Working with Files\".\n\nCan you break this down into a few sub points?"
+  },
+  {
+    "id": 22,
+    "input": "Let us reference back to the initial syllabus you provided.\n\nIn there was \"Working with file paths and directories\".\n\nI asked you earlier to as an example, dive into \"Working with file paths and directories\".\n\nI also asked you to break it down into:\n - Introduction paragraph \n - Relevance, when needed\n - Practical application, listing all xlsx files in a folder\n - Augment each with some Python code examples.\n\nCan you propose some more or alternatives or improvements on how we can possibly break down every section?Can you give me some ideas on how we can break down every one of the topics to structure content for this intermediate course? Just an outline?"
+  },
+  {
+    "id": 23,
+    "input": "This is a MySQL 7 database - please adjust your answers accordinglyI will present a bug report on a app. After reading the report, please explain why the author of this report considers the app's behavior to be a bug. Then, determine if this bug is related to common sense and whether it can be identified by users who don't possess any specialized knowledge of the app. The bug report is as follows: \"Announcement Reactions limited to 8. There can only be 8 different reactions to 1 Announcement in Mastodon. We should hide the + button if that limit is reached like they do. Currently we show the button, but nothing happens after selecting an emoji.\""
+  },
+  {
+    "id": 24,
+    "input": "I will present a bug report on a app. After reading the report, please explain why the author of this report considers the app's behavior to be a bug. Then, determine if this bug is related to common sense and whether it can be identified by users who don't possess any specialized knowledge of the app. The bug report is as follows: \"Announcement Reactions limited to 8. There can only be 8 different reactions to 1 Announcement in Mastodon. We should hide the + button if that limit is reached like they do. Currently we show the button, but nothing happens after selecting an emoji.\"Moroccan security law"
+  },
+  {
+    "id": 25,
+    "input": "describe game idea number 2 in detail, explain all rules, game mechanics and the way the board game looks like, don't leave any detail uncovered, i ll use what you provide to build the game and test it\"Stock Exchange\": Players take on the role of stock traders, competing to see who can make the most profit by buying and selling stocks. The game is won by the player who has the most money at the end of the game. describe game idea in detail, explain all rules, game mechanics and the way the board game looks like, don't leave any detail uncovered, i ll use what you provide to build the game and test it"
+  },
+  {
+    "id": 26,
+    "input": "\"Financial Crisis\": A co-operative game in which players take on the roles of government officials and central bankers, working together to prevent a global financial crisis. The game is won if the players are able to prevent the crisis, and is lost if the crisis occurs. describe this game idea in detail, explain all rules, game mechanics and the way the board game looks like, don't leave any detail uncovered, i ll use what you provide to build the game and test itwrite me a visual description of how \"Banking Empire,\" the game looks like, , write it as a prompt for text to image Ai, use only nouns and adjectives"
+  },
+  {
+    "id": 27,
+    "input": "Can you write approximately 800 words in an engaging instructional style forDriving compliance and continuous improvement\nCommunication throughout the supply chain\nCollaborate with logistics engineers for analysis, solutions design and development\nAccess each origin/destination control tower for the expertise\nIT System IntegrationCan you write approximately 800 words in an engaging instructional style for Start with various cost saving initiative with the suppliers to reduce the overall logistics cost such as factory load supervision program.\nCoordination of all freight and supply chain services within the company group and raise out any potential opportunities to the other business unit\nDriving compliance and continuous improvement by holding regular conference call, vendor workshop or vendor visit."
+  },
+  {
+    "id": 28,
+    "input": "Act as a python data analyst.\n\nGiven a text data set which is a list of chat interactions of IT support desk. create a synthetic data of the text data. With one column which is category and the other column is the text data.Do the following in the given order:\n\n1. Give descriptive stats\n2.give word count of text data column. Also give word length, character count and length.\n3. Do POS tags and give counts\n4. Give 20 most common words and give plot of it\n5. Give rare words distribution and give the plot\n6. Give word count and char count for each category\n6. Plot word cloud distribution for each category"
+  },
+  {
+    "id": 29,
+    "input": "help me to choose a scientific question\n\nThe chosen question would serve as the basis for all your work – so make sure to choose something relevant and interesting!\n\nThe question should be on the broad scope of anti-microbial peptides and proteins but otherwise you are free to take it to any direction you find interesting\n\nExamples for possible directions: Structural characteristics of antimicrobial proteins, ecological impact of anti-microbial peptides, bioinformatical signature of anti-microbial peptides, biotechnological applications of anti-microbial proteins, what drives the evolution of anti-microbial peptides, anti-microbial peptides as conventional antibiotic replacers etc. \n\nGive me 5 choices and I will choose the most interesting one"
+  },
+  {
+    "id": 30,
+    "input": "I work in the affiliate team at a company called Cafe24 in South Korea.\n\nFor the 'plan' (expanding shopping mall transactions through Cafe24 payment infrastructure), please create a roadmap for the first half of 2023 in table format.\n\n.\n- Example table Strategic direction|Execution items|January|February|\n- All strategic directions and action items to be created must be created separately.\n- For the table, please enter the period until June by month.\n- Please indicate the estimated duration with a checkmark in each month of the table.지금 번역하기CopyCopy HTMLRead Aloud⏹️ Stop7 chars | 2 words"
+  },
+  {
+    "id": 31,
+    "input": "You are a prompt engineering consultant. Analyze each part of the prompt given below and provide suggestions for making it more effective.\n\n--\n\nTHE PROMPT:\n\nYou are life coach and I’m trying to set up detailed routine that helps me reach goals for next month. \n\n1. 10kg Weight loss : maximum 1.5 hour can be spent every day\n 1. You should provide daily workout plan based on this objective\n 2. You should provide daily diet plan based on this objective\n2. learn linear algebra : maximum 1 hour can be spent every day\n 1. You should provide daily study plan\n 2. You should provide detailed homework for each day"
+  },
+  {
+    "id": 32,
+    "input": "In the xy-plane, the point (p ,r ) lies on the line with\nequation y=x+b , where b is a constant. The point\nwith coordinates(2p,5r)lies on the line with\nequation y=2x+b . If r ≠ 0, what is the\nvalue of p/r?\nA) 2/5r\nB) 3/4\nC) 4/3\nD) 5/2I will be grinding mixing stuffing and smoking some venison sausage with some friends tomorrow. What are some movies or songs we could watch and listen to while we're doing this?"
+  },
+  {
+    "id": 33,
+    "input": "let me give you problem statement and based on my problem statement you can create workflow for me. As a new home buyer or rent home/office visit, I search from everywhere like internet and local in my area as well. So many real estate agent are calling me even WhatsApp me home/ office photos. After checking those photos I select 2-3 property to check out in-person. So there are lots property I watched already and I became confuse which property is from which area, from which Brocker, what is its asking price and they are negiatable or not?, what it Brocker number?, from which Brocker I visit?, Is that property from web or Brocker."
+  },
+  {
+    "id": 34,
+    "input": "I'd like to ask Rum to demonstrate how the snare works. While she's demonstrating it, I'd like to try to trap her in the snare so that I can release her prisoners. I'll be sneaky about it. \n\nGoblin King, how difficult do you think it should be for me to trap Rum in the snare on the following scale that uses a 6-sided die? The player must roll above this number in order to succeed. A roll of 1 is a guaranteed failure, and something unexpectedly bad happens to the player.\n\nI think that this should require a 5 or 6. What do you think?"
+  },
+  {
+    "id": 35,
+    "input": "Write down some points of script structure, list points,\nAbout videography for businessesPlease answer the following questions:\n\nQuestion title:\n\n\"if\" statement syntax differences between C and C++\n\nQuestion body:\n\nif (1) int a = 2;\nThis line of code is valid C++ code (it compiles at the very least) yet invalid C code (doesn't compile). I know there are differences between the languages but this one was unexpected.\nI always thought the grammar was\nif (expr) statement\nbut this would make it valid in both.\nMy questions are:\n1. Why doesn't this compile in C?\n2. Why does this difference exist?"
+  },
+  {
+    "id": 36,
+    "input": "try again but reduce the complexity. solidify my thought process and make it clear to the reader.\nhelp me continue the paragraph by rewriting the following text \"Imagine we only had not temporally ordered images, it might be perplexing as to why we were getting certain misclassification. With the high temporal resolution of these sequential frames we can see that very subtle differences make a major difference for final model predictions. While this is dependent on many factors (data type, training parameters, model complexity etc.), looking at temporal consistency temporally blind models could act as a proxy for evaluating adversarial like phenomenon.\"help me make a better term than \"temporally-blind models\" list 5"
+  },
+  {
+    "id": 37,
+    "input": "Can you check the following paragraph, which is enclosed by a double quote for grammar mistakes, and provide a revised paragraph — \"In education, feedback provides the validation of a student’s work and guidance in the development of their learning in courses (Winstone & Carless, 2021). Feedback is a fundamental factor within the learning process to assist students in producing high-quality work that is satisfactory to the learning outcomes of courses through the commentary on their assessments (Paterson et al., 2020). It informs students of how well a task is completed and helps students to improve their performance (Limniou & Smith, 2014).\""
+  },
+  {
+    "id": 38,
+    "input": "This is Clause 35 (Dispute Resolution) of the NSW HIA Lump Sum contract. Please acknowledge this.\n\nClause 35. Dispute Resolution\n\n35.1 If a dispute arises then a party must give written notice to the other party setting out the matter in dispute. \n\n35.2 The builder and the owner must meet within 10 working days of the giving of the notice to attempt to resolve the dispute or to agree on methods of so doing. \n\n35.3 If the dispute is resolved the parties must write down the resolution and sign it. \n\n35.4 The parties agree that anything done or said in the negotiation cannot be revealed in any other proceeding"
+  },
+  {
+    "id": 39,
+    "input": "Write me the \"VII. Conclusion\". Remember to include Information About Myself \"\nI am a solicitor and construction lawyer with more than 10 years experience specialising in construction law. I regularly advise homeowners and builders regarding their contractual and legal rights. I represent homeowners and builders in NSW, Australia as well as all courts of competent jurisdiction. I have advised homeowners, builders, and contractors regarding progress payments and progress claims. I have advised them on their contract rights, risks and obligations. I have negotiated and amended contracts to reflect their intentions.\nEnsure there is a call to action that appeals to the Target Audience. The article should close out with a total of 1,300 words."
+  },
+  {
+    "id": 40,
+    "input": "do you think any other attractions for kids (ages 6 to 13 ) is needed to be added to the itinerary Share Promptgreat thanks, now please take a loot at this one day trip itinerary and please add the rank in google for each place: • pickup from hotel 9:00 am\n• trip doi inthanong) Doi Inthanon(\n• wat sheratang waterfall ) Wachirathan(\n• trekking visit waterfall and Karen village some view point\n- (Coffee plants, rice fields terrace)\n• lunch time local Karen restaurant\n• visit king and Queen pagoda\n• visit Heli tribe market\n• back to chang mai 6:00 pm\nShare Prompt"
+  },
+  {
+    "id": 41,
+    "input": "I need to answer for an question, before asking that i need to get few more information from the question to get more info about that question what kind of questions should I ask here is the question””””Customer: Hi was just wondering how to reduce a felony to a misdemeanor over a broken wooden fence\n\nJA: The Criminal Lawyer can help you determine if that's a felony or misdemeanor. Where are you located? Criminal law varies by state.\n\nCustomer: Victorville California\n\nJA: Is there anything else the Lawyer should know before I connect you? Rest assured that they'll be able to help you.\n\nCustomer: got out under probation I have court on Monday\nA"
+  },
+  {
+    "id": 42,
+    "input": "Setting: a mountain, similar to Flower-Fruit Mountain, though not quite the same. Sun Wukong is king of the mountain and is raising his son, MK, to be the next king someday. He, MK, and the royal guard and servant monkeys all have golden fur - most of the others on the mountain have dark fur, including MK's two best friends, Mei and Tang. MK leads a happy life, if somewhat isolated, as he doesn't really interact with \"commoners\" beyond Mei and Tang. He's noticed they seem afraid of his father Sun Wukong but just assumes that's because he's the king and is immensely powerful."
+  },
+  {
+    "id": 43,
+    "input": "So, please don't do scenes unprompted for now. I'll give you summaries.So, in the first scene of the story, a very young MK (maybe 5 years old) wakes up to hearing the whole mountain groaning as though it's moving, though it isn't. He gets scared and calls for his father. A few minutes later, the sounds stop and Sun Wukong comes to check on him, asking what's wrong. MK tells him about the scary noises. Wukong has a moment of realization and horror that's quickly replaced by fatherly instinct, reassuring MK that everything's fine and he's sure the scary noises won't come back."
+  },
+  {
+    "id": 44,
+    "input": "Wukong sits MK down and tells him there's a powerful demon sealed under the mountain, and it keeps trying to break out. When this happens, Wukong has to go beat it back and keep it trapped. Their fights are what cause the mountain to groan. Wukong adds that the demon has immense psychic powers and has brainwashed most of the monkeys on the mountain into believing it's their real king and needs to be released.The next day: MK is outside playing with his friends Mei and Tang when two royal guards march by, dragging a dark-haired monkey between them. The monkey is shouting that Wukong has no right to hold \"him\" captive under the mountain."
+  },
+  {
+    "id": 45,
+    "input": "The next day: MK is outside playing with his friends Mei and Tang when two royal guards march by, dragging a dark-haired monkey between them. The monkey is shouting that Wukong has no right to hold \"him\" captive under the mountain.As the guards march the monkey away, MK notices his friends suddenly go very quiet. (Note: Wukong is lying about the demon under the mountain, but MK doesn't know that yet.) He asks them why that monkey was so determined to free a demon. Mei and Tang look at each other and Tang asks him if that's what his father told him - implying it's a lie."
+  },
+  {
+    "id": 46,
+    "input": "As MK reaches the open area in the cave, he sees something attached to the wall near the ground. He kneels down to investigate and discovers it's a set of chains - and they're broken. Before he can process this information he hears a noise behind him. Let's write that scene.As MK reaches the open area in the cave, he sees something attached to the wall near the ground. He kneels down to investigate and discovers it's a set of chains - and they're broken. Before he can process this information he hears a noise behind him. Let's write that scene and only that scene please. Please don't write what happens next yet."
+  },
+  {
+    "id": 47,
+    "input": "Mac maintains his position; suggests that maybe Wukong should just stop wasting his time with him\nWukong hisses that he is the monkey king and no one, nowhere, has the right to disrespect him; throws Mac into the wall again, stands over him ominously\nMac waits for a blow that never comes; instead Wukong is standing still, looking off into space, as though listening to something Mac can’t hear; abruptly he summons his cloud and leaves without another word; he hasn’t returned in over a decade, until just a few days prior. Let's write that whole scene with details and dialogue."
+  },
+  {
+    "id": 48,
+    "input": "MK suddenly realizes Mac heard Wukong saying the barrier spell - at least part of it. He asks Mac if he heard what Father - he stops and says Wukong instead - said, if he remembers any of the spell. Let's write that scene.MK and Mac talk as MK tries to piece together the spell and Mac tries to remember anything else he can, besides the words \"golden aura\" and \"eternal imprisonment\". Mac mentions he remembers what the chant sounded like, and he hesitantly hums a few notes, admitting he doesn't know what words went along with the notes. Let's write that scene."
+  },
+  {
+    "id": 49,
+    "input": "Before MK can leave, he hears a sound from the barrier. He and Mac exchange a horrified glance as they realize who it is. Mac quickly gestures for MK to hide in a narrow crevice and MK just barely manages to hide his supplies behind some other rubble. Just as he hides, Wukong marches around the curve and confronts Mac. Let's write that scene.Before MK can leave, he hears a sound from the barrier. He and Mac exchange a horrified glance as they realize who it is. Mac quickly gestures for MK to hide in a narrow crevice and MK just barely manages to hide his supplies behind some other rubble. Let's write that scene."
+  },
+  {
+    "id": 50,
+    "input": "MK doesn't manage to break the barrier, but he can see it flickering and becoming a bit more transparent. He decides to take the chance, reaches through the barrier and grabs Macaque's hands, straining to pull him out. Macaque cries out in pain as they try to break him through the barrier. Let's write that whole scene from the beginning.The barrier stays up after Macaque is pulled out. MK quickly tries to drag him into the woods, out of sight, but Macaque is staring up at the sky and saying he never thought he'd see the light of day again. He looks like he might cry. Let's write that scene."
+  },
+  {
+    "id": 51,
+    "input": "In the woods: Mac is bathing in a river, his \"first bath in three hundred and fifty years\" as he puts it; MK suddenly realizes he has no idea what to do now, or where to hide Mac without Wukong finding him. Let's write that scene.As Macaque gets dressed after bathing, they hear someone approaching the cave. Both scramble for cover and see Wukong walking through the barrier. MK's stomach drops - he had hoped Wukong wouldn't come back for a while. Worse, he realizes Wukong will find the cave empty. Mac seems to have the same thought. Let's write that scene."
+  },
+  {
+    "id": 52,
+    "input": "As Macaque gets dressed after bathing, they hear someone approaching the cave. Both scramble for cover and see Wukong walking through the barrier. MK's stomach drops - he had hoped Wukong wouldn't come back for a while. Worse, he realizes Wukong will find the cave empty. Mac seems to have the same thought. Let's write that scene.From their hiding place, Macaque and MK watch as Wukong walks into the cave. Less than a minute passes before Wukong storms out of the cave, looking equal parts furious and terrifying. He throws back his head and screams MK's name before leaving. Let's write that whole scene."
+  },
+  {
+    "id": 53,
+    "input": "From their hiding place, Macaque and MK watch as Wukong walks into the cave. Less than a minute passes before Wukong storms out of the cave, looking equal parts furious and terrifying. He throws back his head and screams MK's name before leaving. Let's write that whole scene.MK finds a secluded spot in the forest where Macaque can stay for now - he needs to rest in a safe place so his powers can come back. MK returns to the palace expecting his father Wukong to be angry, but instead, Wukong just gives him a worried look as he comes home. Let's write that scene."
+  },
+  {
+    "id": 54,
+    "input": "MK finds a secluded spot in the forest where Macaque can stay for now - he needs to rest in a safe place so his powers can come back. MK returns to the palace expecting his father Wukong to be angry, but instead, Wukong just gives him a worried look as he comes home. Let's write that scene.Wukong sits MK down, looking worried, and asks his son if there's anything he wants to tell him. MK decides to confess to part of the truth and tells Wukong that he had to go see the demon cave for himself. But he lies and says he couldn't get past the barrier. Let's write that scene."
+  },
+  {
+    "id": 55,
+    "input": "Wukong vanishes for a while that night. Very early the next morning, he wakes MK up and sits him down, looking very serious, angry, and even scared. He asks MK if he did anything strange at the demon cave, if he's sure he never went through the barrier. MK continues to deny everything. Wukong clearly suspects he's lying. Let's write that scene.MK sneaks back to Macaque's hideout in the woods with some clean clothes for him. He finds Macaque looking much better, practicing his fighting form with his staff. His regal bearing and posture has returned, and he looks very happy. Let's write that scene."
+  },
+  {
+    "id": 56,
+    "input": "As MK and Macaque share a meal together in the woods, Macaque asks MK how his people, the dark-haired monkeys, are faring now - he wants to see for himself, but he'd be recognized if he returned to the mountain. Let's write that scene.MK pours his heart out to Macaque about feeling like he's lost his father - the cruel monkey he saw beating Macaque in the cave couldn't be the same monkey that comforted him when he heard the scary noises...noises, he thinks, that were caused by beatings like that one. MK breaks down in tears as Macaque tries to comfort him. Let's write that scene."
+  },
+  {
+    "id": 57,
+    "input": "At the palace: Wukong tells MK that he's finally ready to meet the demon trapped under the mountain. MK, knowing the cave is empty and Wukong might find the escaped Macaque hiding in the forest, tries to convince him otherwise, but Wukong is insistent. MK wonders if his father knows what he's done. Let's write that scene.Wukong and MK walk down the mountain together. Wukong acts like MK's normal father, telling jokes, guiding him, and just having fun with him. MK finds himself relaxing and begins to wonder if he imagined Wukong's violence and cruelty toward Macaque. Let's write that scene."
+  },
+  {
+    "id": 58,
+    "input": "MK runs from his father into the woods, knowing he couldn't take Wukong in a fight. Wukong chases him, furious. But just as he's about to catch MK, a dark blur darts out of the trees and begins trying to hold Wukong back - it's Macaque. Let's write that whole scene.Wukong quickly begins to win the fight - Mac is still very weakened from his time imprisoned. As Mac sees that he's losing, he shouts at MK to run. MK runs and Wukong tries to follow him, but Mac does his best to continue the fight and hold him back. Let's write that scene."
+  },
+  {
+    "id": 59,
+    "input": "Wukong quickly begins to win the fight - Mac is still very weakened from his time imprisoned. As Mac sees that he's losing, he shouts at MK to run. MK runs and Wukong tries to follow him, but Mac does his best to continue the fight and hold him back. Let's write that scene.Mac tries to keep Wukong's attention focused on him so MK can get away - it's not easy. He finally manages to make Wukong feel insulted enough that he focuses all his energy on beating him, causing Mac a lot of pain as he can only pray that MK escaped. Let's write that scene and their exchange."
+  },
+  {
+    "id": 60,
+    "input": "Mac tries to keep Wukong's attention focused on him so MK can get away - it's not easy. He finally manages to make Wukong feel insulted enough that he focuses all his energy on beating him, causing Mac a lot of pain as he can only pray that MK escaped. Let's write that scene and their exchange.Mac lies on the ground battered and defeated as Wukong stands over him. He drags Macaque by the tail to a group of waiting royal guards, who chain him up and begin to take him away. Mac can only watch as Wukong summons his cloud and takes to the sky to find MK. Let's write that scene."
+  },
+  {
+    "id": 61,
+    "input": "MK goes back to the village, feeling defeated. He tries to talk to his dark-haired monkey friends Mei and Tang but they're both even more scared of Wukong than before and barely acknowledge MK's presence. Let's write that scene.Back in the palace: Wukong comes to talk to MK. Wukong talks about how worried he was when MK ran, how he hadn't even wanted to tell MK about the demon in the cave but had to because he was stupid and made too much noise trying to seal it in. MK speaks up and tells Wukong that Macaque isn't a demon. Let's write that scene."
+  },
+  {
+    "id": 62,
+    "input": "Wukong takes MK to see Macaque - he's in another cave near the palace, kneeling with his arms chained over his head. Mac tries to say something to MK but the guards beat him. Let's write that whole scene.Wukong chants the spell to summon a new golden aura to trap Macaque again, and this time, he's learned from his mistake and posts royal guards around the aura to keep MK out. Macaque looks sadly at MK as this is happening. He tries to say something else to MK, but his chains begin to glow and he screams as though in pain, trying and failing to free himself. Let's write that whole scene."
+  },
+  {
+    "id": 63,
+    "input": "Wukong suddenly gets ominous and reminds MK that he is the monkey king and no one, anywhere, has the right to disrespect him - even his own son. MK freezes, knowing that if his powerful father turned on him, he would have no chance of surviving. Let's write that scene.MK sneaks to Macaque's new prison and used some of the magic he learned to put the guards to sleep. He sneaks through the barrier to see Mac, who's still chained up, and helps him take a drink of water. He fills Mac in on what Wukong said to him. Let's write that scene."
+  },
+  {
+    "id": 64,
+    "input": "MK, Mei and Tang sneak around the village, trying to quietly spread the word that Macaque is nearby and MK knows where he's being imprisoned, and trying to encourage the dark-haired monkeys to help them fight Wukong. They're all afraid of MK because they know he's the tyrant king's son. MK has to try to earn their trust. Let's write that whole scene.First stage of MK's plan is to go back to the palace, apologize to his father, and try to get back into his good graces over days or if necessary, weeks, so Wukong lets his guard down. Let's write that whole scene."
+  },
+  {
+    "id": 65,
+    "input": "MK hurries over to try to comfort him and free him, but Mac's chains begin to glow and he screams in pain as MK gets closer. MK pulls back and the chains stop glowing. Both monkeys realize the chains are enchanted to activate and torture Macaque whenever MK gets close to him. Let's write that whole scene.MK hurries over to try to comfort him and free him, but Mac's chains begin to glow and Mac screams in pain as MK gets closer. MK pulls back and the chains stop glowing. Both monkeys realize the chains are enchanted to activate and torture Macaque whenever MK gets close to him. Let's write that whole scene."
+  },
+  {
+    "id": 66,
+    "input": "The three of them exit the cave into the sunlight, supporting Macaque, and realize the golden-haired monkey army is waiting for them. Wukong stands at the front, his armor gleaming in the sun, staring at MK. Without looking away, he gives the order for his army to attack. Let's write that scene.The three of them exit the cave into the sunlight, supporting Macaque, and realize the golden-haired monkey army is waiting for them. His father Wukong stands at the front, his armor gleaming in the sun, staring at MK. Without looking away, he gives the order for his army to attack. Let's write that scene."
+  },
+  {
+    "id": 67,
+    "input": "MK fights the army, just barely managing to hold his own. (His father is Sun Wukong so MK learned from the best, after all.) Eventually the soldiers manage to corner him. Let's write that scene.MK fights the army, just barely managing to hold his own. (His father is Sun Wukong so MK learned from the best, after all.) Eventually the soldiers manage to corner him. As they're about to capture him, MK pulls out a trick his father taught him - he shrinks, plucks out a hair that he turns into a duplicate of himself, and leaves the duplicate as a decoy while he escapes. Let's write that scene."
+  },
+  {
+    "id": 68,
+    "input": "A dark-haired monkey stumbles upon them in the jungle and is awestruck by the sight of Macaque. The newcomer tells them how Wukong is scouring the mountain for them and is killing and torturing dark-haired monkeys, demanding they tell him where \"the demon that calls itself king\" and \"my imbecile son\" are hiding. Let's write that whole scene.Wukong scours the mountain for them, killing and torturing dark-haired monkeys, demanding they tell him where \"the demon that calls itself king\" and \"my imbecile son\" are hiding. Let's write that whole scene with details and dialogue, from Wukong's POV."
+  },
+  {
+    "id": 69,
+    "input": "Wukong scours the mountain for them, killing and torturing dark-haired monkeys, demanding they tell him where \"the demon that calls itself king\" and \"my imbecile son\" are hiding. Let's write that whole scene with details and dialogue, from Wukong's POV.MK is in the jungle, collecting some fruit he can bring back. He hears shouting and investigates, realizing he's stumbled upon Wukong and a group of royal monkey guards interrogating a group of dark-haired monkeys about where \"the demon that calls itself king\" and \"my imbecile son\" are hiding. Let's write that whole scene with details and dialogue."
+  },
+  {
+    "id": 70,
+    "input": "They spend several days trying to fortify the village, arm the villagers, help them train to fight, and hide as many of their resources as they can. MK finds himself almost too busy to be scared. He continues to watch Macaque work to help keep the village safe, and his admiration for Macaque continues to grow. Let's write a scene based on all that.It's the middle of the night and MK is on lookout duty. He hears voices and clanking armor, and sees approaching torches. He realizes Wukong and his army are coming and he hurries to raise the alarm. Let's write that whole scene with details and dialogue."
+  },
+  {
+    "id": 71,
+    "input": "Macaque steps protectively in front of MK and tells Wukong that they're ready for him and he should leave if he doesn't want a fight. Wukong laughs and says \"But I love a good fight\". Let's write that scene with details and dialogue.As the monkey army attacks the village, Wukong charges straight at MK with his staff raised. Macaque rushes in to block the blow and MK hurries to attack Wukong from behind. Wukong mockingly complains that two against one doesn't seem fair, but it doesn't matter - they'll still fail. Let's write that scene with details and dialogue."
+  },
+  {
+    "id": 72,
+    "input": "As Macaque clutches his chest in agony and MK tries to defend him, Wukong knocks MK to the ground and pins him down with a foot on his chest. But before Wukong can say anything, he seems to hear something and looks ahead into the village at his army. A look of shock crosses his face as he leaves MK behind, rushing into the fight. MK and Macaque look and realize that the dark-haired monkeys Wukong kidnapped and forced into his army - nearly a third of his total soldiers - have turned on the golden-haired soldiers and are fighting alongside the village defenders. Lets write that scene with details and dialogue."
+  },
+  {
+    "id": 73,
+    "input": "The mood in the village is somber as the monkeys bury their dead, tend to the wounded, and try to repair what little they can. MK and Macaque help where they can. MK notices the villagers looking at them with uncertainty or even anger, and overhears snatches of frightened conversation where the villagers speculate if Macaque can actually help them. Let's write that scene with details and dialogue.At Wukong's huge, extravagant military camp: the newly \"recruited\" monkeys are forced to kneel to him and swear allegiance to him, before being inducted into his army. Let's write that scene with details and dialogue."
+  },
+  {
+    "id": 74,
+    "input": "Write an alternative version with more details, especially about the monkeys forced to kneel to Wukong, and the dark-haired soldiers who rebelled during the attack on the village.Back at the village: Macaque, sitting down humbly, apologizes to the villagers for not being able to stop Wukong from raiding them. He says he understands that they can't forgive him yet, and he won't ask them to. He just wants to ask them to not lose hope - one day, Wukong will be defeated and they won't live in fear anymore. MK watches the villagers' reaction to Macaque's words. Let's write that whole scene with details and dialogue."
+  },
+  {
+    "id": 75,
+    "input": "MK walks beside the defected soldier and asks what happened to him. The monkey says his name is Han and he's from a village near the palace, high up the mountain - the first village Wukong raided on his way to hunt down Macaque and MK. He and many others were kidnapped from the village by the golden-haired soldiers and forced to swear allegiance to Wukong, but he never gave up hope. He knew the true king was out there. Let's write that scene with details and dialogue.Let's write a flashback of Han's story: him being kidnapped from his village and forced, along with his captured friends, to swear allegiance to Wukong."
+  },
+  {
+    "id": 76,
+    "input": "Back at Wukong's camp: the soldiers return without any \"recruits\" or girls. Wukong demands to know why they came back empty-handed. They very nervously explain that Macaque and MK brought their own army and chased them off. Wukong asks if they fought and the soldiers nervously say no - they knew they were no match for Macaque without Wukong there. The dark-haired monkeys forced into Wukong's army seem happy to hear this. Wukong is furious and threatens every single one of his soldiers with horrible punishment if this happens again. Let's write that whole scene with details and dialogue."
+  },
+  {
+    "id": 77,
+    "input": "MK strikes at Wukong with his staff. Startled but unhurt, Wukong lets go of MK and stares at him. Wukong's face turns angry as he summons his own staff and warns MK that if he wants to side with Macaque and betray his own father, so be it - but MK should know that Wukong will win if MK fights him. MK, knowing he has to keep his father busy, strikes at Wukong with his staff. Wukong blocks the attack and responds with one of his own, and the two begin to fight in the palace hallway. Let's write that whole scene with details and dialogue."
+  },
+  {
+    "id": 78,
+    "input": "Great - now iterate through every skill mentioned and convert some of the wording, framing or context into a version that emphasizes the underlying qualities of scrum masters & project managers that underly the crux of the experience.\n\nWhere appropriate, add skills relevant to the overall career and experiences that would be relevant to both the experiences of the candidate as well as the elements of scrum masters & project managers.This is good - now re-add these updated skills to the original resume and edit the existing bullets for the job experiences to make their resume experiences sound geared towards scrum mastery, project management, and leadership in general, without losing context of the intricacies of the position"
+  },
+  {
+    "id": 79,
+    "input": "/Users/jxr/Desktop/GPTBlackHole/GPTBlackHole/BlackHole.swift:46:30 Value of type 'any SCNBufferStream' has no member 'enqueueBuffer'I think you put an extra parenthesis at the end. I removed it. \"geometry.firstMaterial?.handleBinding(ofBufferNamed: \"LensingUniforms\") { (rawBufferStream, shadable, node, renderer) in\" Also, now this is giving the error: \"/Users/jxr/Desktop/GPTBlackHole/GPTBlackHole/BlackHole.swift:35:81 Extra trailing closure passed in call\""
+  },
+  {
+    "id": 80,
+    "input": "So this is producing a black hole with a ring around it, but the ring is mostly yellow. I'd like for it to be more white, and I would also like for it to be spinning, and more flattened. And I would like for the initial view of the black hole to be angled slightly so we can see the rings spinning. And I would like for the overall background to be black so it looks more like space. I am not seeing any lensing effect, in that there should appear to be many rings both parallel and perpendicular to the view (since lensing causes the light from behind the black hole to appear above and below it)"
+  },
+  {
+    "id": 81,
+    "input": "This is definitely closer to what I want, but we want the rings to increase in radius as they go, that is what I mean by creating more space between themMuch better. Now, I want to use a similar approach with the edge rings and the edge ring function. But the thing is, I want the edge rings to always have the same orientation towards the camera, no matter the rotation of the black hole and its regular rings. This way the rings will always appear as a circle facing the camera. I don't know if you will need to employ some trick to keep them always rotating towards the camera (if you continue to use Toruses), but I hope you understand what I am saying"
+  },
+  {
+    "id": 82,
+    "input": "The black hole is centered again. And the edge rings are spaced from each other correctly, but they are behaving exactly like the regular accretion disks. We want the edge rings to ring the black hole as if the black hole were a 2D circle facing us at all times. This means that we need the edge rings to basically be oriented such that the camera angle and rings make a 90 degree angle when they meet (the edge rings should basically be the top down view of a torus at all times, you might need to dynamically change their orientation with respect to the black hole so their orientation with respect to the camera remains the same at all times)."
+  },
+  {
+    "id": 83,
+    "input": "Okay, so those changes are giving this error: [SceneKit] Error: FATAL ERROR : failed compiling shader:\nError Domain=MTLLibraryErrorDomain Code=3 \"program\\_source:3817:27: error: use of undeclared identifier '\\_geometry'\nfloat randomColorFactor = \\_geometry.colorFactor;\n ^\n\" UserInfo={NSLocalizedDescription=program\\_source:3817:27: error: use of undeclared identifier '\\_geometry'\nfloat randomColorFactor = \\_geometry.colorFactor;\n ^\n}\n\nALSO: The edge rings are still constrained to x-plane as opposed to the y-plane, it seems from running the program"
+  },
+  {
+    "id": 84,
+    "input": "Write a python3 script that will read a CSV file containing the columns \"id\", \"description\", and \"depends\\_on\". ID is a four-digit unique task identifier. Description is a human-readable string describing the task. \"depends\\_on\" is either a single task ID that corresponds to one of the existing task IDs, or a comma-separated list of task IDs. It could also be empty, in which case the task has no dependencies. The script should generate output suitable for using with graphviz to create a task dependency graph. The output should be in the \"dot\" format.Rewrite the code to include the human-readable task descriptions in the output graph"
+  },
+  {
+    "id": 85,
+    "input": "Now for the same ego vehicle, create another scenario config with a point follower vehicle in adjacent lane (to the east, lane width is 4m), cut in in front of ego vehicle. We want to check if ego vehicle has slowed down in time to avoid collision. Fuzz the speed of the cut in vehicle from 5 to 10 m/s with 1m/s increment.Write a response statement to the NSF review board that explains how, since the one team member who was not a heterosexual Caucasian cis-man has left the project, there is now an opportunity to increase the diversity of the project. Keep in mind that all remaining team members are heterosexual Caucasian cis-men."
+  },
+  {
+    "id": 86,
+    "input": "I am a product manager of an EdTech firm in India. We are a renowned experimental learning platform, strives towards enabling educational institutions to create an ecosystem to fster learning, creativity, and innovation in Artificial Intelligence, Machine Learning, STEM and Robotics. We empower kids aged 6 and above to understand complex industry-standard AI and Robotics concepts in an easy and playful manner through the exiting real world application-based DIY projects. \nI am already monetizing the service we provide and now want to branch off other area like physical health product for k8 market. Now How do I leverage the current platform and my skills that can give me a quick profit for new product. please give answer in table format."
+  },
+  {
+    "id": 87,
+    "input": "So Now our product will be delivered in a classroom environment using session by session on online portal. that includes some activity workouts, fundamentals about the physical excerise kids will do and some home activity they need to do at home. Plus to understand more about the excersice we will have a avatar that is programmable using google's blockly to understand more about muscles and body parts for the same excersise they will do as physical activity. \nNow as a product manager for above product, give a product strategy using Biddle's DHM (D stands for delight, H stands for hard to copy and M - Margin enhancing) product strategy frmaework."
+  },
+  {
+    "id": 88,
+    "input": "Rephrase this with 100% no plagiarism and uniquely simple words Stokes revealed in an interview with Us Weekly in February 2021 that both he and Cline were anxious about the show’s reception, and didn’t want to do anything that might jeopardize their success. “It was just always work-oriented — really until the day we wrapped,” he said. “It wasn’t until after that, until we started to kind of get into the [coronavirus] lockdown where we were like, ‘Is there something here or am I crazy?’ That’s sort of where it bloomed from there. I think we were just so invested in the work.”"
+  },
+  {
+    "id": 89,
+    "input": "Rephrase this with 100% no plagiarism and uniquely simple words Despite their breakup, the former couple has been able to maintain a good working relationship on set, which has been praised by their “Outer Banks” showrunner Jonas Pate. “Honestly, and this isn’t just me: they’re pros,” he said in an interview with Entertainment Weekly in February 2023. “They handled themselves unbelievably on set, and you would never know that they had an off-camera relationship. They were great. It’s a credit to Chase and to Maddie, they just put their heads down and did the work, so good for them.”"
+  },
+  {
+    "id": 90,
+    "input": "Please write a believable urban legend in a factual writing style. It should involve a supernatural encounter on an Indian reservation about 100 years ago, and touch on themes such as mysticism and the law of attraction. Length of at least 750 words.You're a college student writing a persuasive essay for an academic audience, in no less than 750 words. The essay should include at least one piece of researched evidence. It should have at least two points and at least one counter argument. The introduction should be a single paragraph. The entire essay should rely on logos, pathos, and ethos to persuade an academic audience. Use the outline below to help create the essay."
+  },
+  {
+    "id": 91,
+    "input": "What logic equation would you implement to determine if a number is a multiple of 3? Provide the simplest form using AND, OR, NOR, NOT, XOR or XNOR gates.Develop an appealing and inventive screenplay for a film that can fascinate its audience. Get going by devising compelling characters, the setting of the plot, and dialogues between the characters. Once you\\'re done building your characters - devise a thrilling narrative full of unforeseen events to keep audiences entranced until the very finish. The starting premise of the screenplay should be: A hapless englishman escapes earth with his friend, seconds before it is blown up by aliens."
+  },
+  {
+    "id": 92,
+    "input": "write me a essay that is about travel to taiwan. detail description is below\n\nTopic : The Benefits of Traveling\nSub Topic : Exposure to New Cultures\nContent 1 : Trying New Foods - I tryed to eat Fried stinky tofu. smell was wierd but tasty was not bad.\nContent 2. : Exploring Historical Things - I saw Meat-shaped-stone in taipei museum. the stone was really like stone! it was surprising!\nLength : around 2000 wordsThanks. write me again considering what i ordered above.\n\nAssume that audience is collage student major in history. you can add historical events or news about what i experienced"
+  },
+  {
+    "id": 93,
+    "input": "Can you tell me the best optimal way of creating a learning online system for kids where they can learn through synchronous and asynchronous learning. Through cohort based, project based learning, incentive based (kids win Creators Coins, badges and micro-certifications by giving value and learning), its also interest driven (kids can choose they own path of learning), they have a strong community. They have live community classes in the Metaverse in Spatial, and also they can have a asynchronous conversations with their mentors through video, audio and text through computer or an app. The company is called Future Filmmakers and it gives filmmaking and content creation workshops for kids and for teens."
+  },
+  {
+    "id": 94,
+    "input": "I want you to act as a UX/UI developer. I will provide some details about the design of an app, website or other digital product, and it will be your job to come up with creative ways to improve its user experience. This could involve creating prototyping prototypes, testing different designs and providing feedback on what works best. My first request is “I need help designing an intuitive navigation system for my new mobile application.”I would like to test your intelligence. for this purpose I would like you to play zork. you can interact with the game by typing in commands. I will forward these commands to the game and type in any response. are you ready?"
+  },
+  {
+    "id": 95,
+    "input": "I want you to act as an educational content creator. You will need to create engaging and informative content for learning materials for an online course. My first suggestion request is “A 10 Hour Course that contains the following subject matter for a Cosmetologist, Nail Specialist, Facial Specialist, and a Full Specialist licensed in Florida: 1 hour of HIV/AIDs, 2 hours of State & Federal Laws & Rules, .5 hour of OSHA, .5 hour. Workers Comp,\n1 hour of Chemical Makeup, 1 hour of Envirmental Issues, 3 hours of Santitation and Sterilization,\n1 hour of COVID-19\""
+  },
+  {
+    "id": 96,
+    "input": "ple revised response only this part \"According to the Ellen MacArthur Foundation, a leading circular economy advocacy group, a circular economy can help reduce global carbon emissions by 9.3 billion tons by 2050, equivalent to eliminating current emissions from all forms of transport globally. Additionally, a report by the World Economic Forum estimates that the circular economy could generate $4.5 trillion in economic benefits by 2030, while reducing greenhouse gas emissions by 39%.\" in citationCan you combine these two thesis titles \"The Impact of Carbon Emissions Trading on Green Investment and Carbon Leakage Prevention \" and \" Volvo's Low Carbon Emission Strategy and circular economic\" into one thesis title?"
+  },
+  {
+    "id": 97,
+    "input": "How can I capture myself at a short distance with the 18-35mm Sigma and still have it look flattering. Is there any lens correction available in Da Vinci Resolve while shooting BRAW that can help?Traduire ceci en anglais: Q-NAVISTAR 19- Est-il possibilité d’avoir l’information des CORE CHARGE sur une ligne séparer du coût de la pièce lors d’une session PUNCHOUT et lors du passage d’une commande vers le system de NAVISTAR (nécessité selon la réponse de Q-CONTRANS 2)."
+  },
+  {
+    "id": 98,
+    "input": "Traduire ceci en anglais: Q-NAVISTAR 19- Est-il possibilité d’avoir l’information des CORE CHARGE sur une ligne séparer du coût de la pièce lors d’une session PUNCHOUT et lors du passage d’une commande vers le system de NAVISTAR (nécessité selon la réponse de Q-CONTRANS 2).reformulate this to be accurate: \n- Yes, the currency is already specified in the file, for this client all the currency will be in CAD. (validation in the file by Patrick Nadeau and confirmation from Brandon LaBarre)."
+  },
+  {
+    "id": 99,
+    "input": "Simplify \"In the 1970s, International Business Machines Corporation (IBM) released an OS called VM that allowed mainframe systems to have multiple virtual systems, or VMs on a single physical node. The VM OS materialized shared access of mainframe systems to the next level by allowing multiple distinct computing environments to live in the same physical environment. Most of the basic functions of current virtualization software are inherited from this early VM OS. virtualization software is now represented with the term hypervisor. Hardware virtualization is used to share the resources of the cloud providers effectively with the customers by generating an illusion of dedicated computing, storage, and networking on a computing infrastructure\""
+  }
+]
