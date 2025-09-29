@@ -3,6 +3,7 @@
 中文 | [View English](./README_en.md)
 
 *社区新闻(更多活动可参考[社区活动日历](https://gitee.com/omniai/community/blob/master/calender.md))* 🔥
+- [2025/09/29] Omni Infer [v0.4.2 0Day 支持DeepSeek v3.2 EXP with DSA](https://gitee.com/omniai/omniinfer/releases/tag/v0.4.2)
 - [2025/08] Omni社区与LFAI&Data基金会亚太区域用户组，启动线上技术交流活动**Omni-Talk**，可参考社区活动的[详细安排](https://gitee.com/omniai/community/tree/master/events#%E7%A4%BE%E5%8C%BAwebinar)
 - [2025/08] 社区正在筹划与LFAI&Data基金会亚太区域用户组，以及腾讯公司团队一起，于8月30日下午在深圳举办**vLLM Shenzhen Meetup**，可移步访问[活动详情](https://gitee.com/omniai/community/tree/master/events#%E7%A4%BE%E5%8C%BA%E7%AC%AC%E4%BA%8C%E6%AC%A1meetupvllm-shenzhen-meetup)
 - [2025/09] 社区将积极参与[GOSIM中国峰会](https://gitee.com/omniai/community/tree/master/events#%E4%B8%9A%E7%95%8C%E4%BC%9A%E8%AE%AE%E5%8F%82%E4%B8%8E)
@@ -23,11 +24,11 @@ Omni-Infer是一套专为昇腾硬件平台定制的强大推理加速工具集�
 
 ## 核心特性
 
-- **企业级低延迟P/D调度**：支持xPyD调度及大规模分布式PD部署的横向扩展，确保最低延迟。详情请参考[Global Proxy设计](omni/accelerators/sched/global_proxy/README.md)。
+- **企业级低延迟P/D调度**：支持xPyD调度及大规模分布式PD部署的横向扩展，确保最低延迟。详情请参考[Omni Proxy设计](https://gitee.com/omniai/omniinfer/blob/release_v0.4.2/omni/accelerators/sched/omni_proxy/README_CN.md)。
 - **请求级负载均衡**：针对所有序列长度优化预填充（prefill）和解码（decode）阶段，实现最大吞吐量与低延迟。
 - **优化的MoE专家部署**：支持EP144/EP288配置的大规模混合专家（Mixture of Experts, MoE）模型。
-- **MoE专家负载均衡**：具备分层非均匀冗余和近实时动态专家放置功能，提升资源利用效率。详情请参考[OmniPlacement设计](omni/accelerators/placement/README.md)。
-- **高级注意力机制优化**：专为LLM、MLLM和MoE模型定制，增强性能与可扩展性。
+- **MoE专家负载均衡**：具备分层非均匀冗余和近实时动态专家放置功能，提升资源利用效率。详情请参考[Omni Placement设计](omni/accelerators/placement/README.md)。
+- **高级注意力机制优化**：专为LLM、MLLM和MoE模型定制，增强性能与可扩展性。详情请参考[Omni Attention设计](https://gitee.com/omniai/omniinfer/blob/release_v0.4.2/omni/accelerators/cache/README.md)。
 
 ## 开源社区
 
