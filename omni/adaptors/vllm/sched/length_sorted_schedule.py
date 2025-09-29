@@ -83,6 +83,10 @@ class LengthSortedScheduler(Scheduler):
         super().__init__(vllm_config, kv_cache_config,
                          structured_output_manager, mm_registry,
                          include_finished_set, log_stats)
+        additional_config = vllm_config.additional_config
+        if additional_config is None:
+            additional_config = {}
+        self.enable_mix_schedule = additional_config.get("mix_schedule", False)
 
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
