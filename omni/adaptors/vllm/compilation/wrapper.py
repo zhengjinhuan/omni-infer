@@ -34,7 +34,7 @@ class TorchNpuCompilerWrapperWithCustomDispatcher:
                 f"[not use cache npu graph], VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE = {envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE}")
             self.compiled_model = torch.compile(
                 self.forward,
-                dynamic=True,
+                dynamic=False,
                 fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,
                 backend=backend)
 
@@ -52,7 +52,7 @@ class TorchNpuCompilerWrapperWithCustomDispatcher:
                 self.cached_compiled_models[gear_size] = torchair.inference.cache_compile(
                     self.__dict__[new_forward_proxy_name],
                     config=get_torchair_config(),
-                    dynamic=True,
+                    dynamic=False,
                     ge_cache=True,
                     fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,
                 )

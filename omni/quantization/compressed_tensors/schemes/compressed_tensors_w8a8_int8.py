@@ -62,8 +62,6 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
         layer.register_parameter("weight_scale", weight_scale)
         layer.register_parameter("weight_offset", weight_offset)
 
-        setattr(layer, "init_state", BEFORE_INIT)
-
         self.empty_out = torch.empty(1, dtype=params_dtype)
 
     # Checkpoints are serialized in compressed-tensors format, which is
@@ -85,9 +83,6 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
                     x: torch.Tensor,
                     bias: Optional[torch.Tensor]
                     ) -> Union[torch.Tensor, Dict[str, Any]]:
-
-        if layer.init_state == BEFORE_INIT:
-            layer.init_state = AFTER_INIT
 
         # activation per-token dynamic quant
         if isinstance(x, Dict):

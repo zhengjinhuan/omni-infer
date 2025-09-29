@@ -199,7 +199,7 @@ def pack_4bit(x):
     return y.T.contiguous()
 
 
-def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepSeek-R1"):
+def main(args, bf16_path, output_path, next, pangu_mode, model_name="deepseek-ai/DeepSeek-R1"):
     quant_prefix = "quant_model_weight_w4a8_dynamic"
     disable_names = []
     for i in range(62):
@@ -207,16 +207,7 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
         disable_names.append(f"model.layers.{i}.mlp.gate.weight")
         disable_names.append(f"model.layers.{i}.mlp.gate.e_score_correction_bias")
 
-        disable_names.append(f"model.layers.{i}.input_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.post_attention_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.pre_mlp_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.post_mlp_layernorm.weight")
-
-        disable_names.append(f"model.layers.{i}.self_attn.q_a_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.self_attn.kv_a_layernorm.weight")
-
     disable_names.append("lm_head")
-    disable_names.append("model.norm.weight")
     disable_names.append("model.embed_tokens.weight")
 
     w4_type = QType(args.qtype)
@@ -265,11 +256,17 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
         state_dict = load_file(safetensor_file, device=args.device)
         new_state_dict = {}
         for weight_name, weight in state_dict.items():
-            if weight_name in disable_names:
+            if weight_name in disable_names or "norm" in weight_name or "indexer" in weight_name:
                 print(weight_name, "bf16")
                 new_state_dict[weight_name] = weight
                 new_weight_map[weight_name] = file_name
                 continue
+            if next:
+                if "shared" in weight_name or "self_attn" in weight_name or "mlp.gate_proj" in weight_name or "mlp.up_proj" in weight_name or "mlp.down_proj" in weight_name:
+                    print(weight_name, "bf16")
+                    new_state_dict[weight_name] = weight
+                    new_weight_map[weight_name] = file_name
+                    continue
             scale_inv_name = f"{weight_name}_scale_inv"
             if scale_inv_name in weight_map or pangu_mode:
                 assert weight.element_size() == 2

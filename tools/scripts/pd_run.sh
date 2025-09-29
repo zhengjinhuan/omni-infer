@@ -330,8 +330,17 @@ export TNG_HOST_COPY=1
 export AUTO_USE_UC_MEMORY=1
 export TASK_QUEUE_ENABLE=2
 
+export CPU_AFFINITY_CONF=2
+
+export OMNI_REUSE_PREFILLED_TOKENS=1
+export OMNI_SKIP_DECODE_TOKENIZE=1
+export TOKENIZER_PROC_POOL=0
+
 # enable to overwrite request IDs
 export ENABLE_OVERWRITE_REQ_IDS=0
+
+# enable apc event
+export ENABLE_APC_EVENT=0
 
 # Print current configuration
 echo "==== Current Configuration ===="
@@ -378,7 +387,8 @@ echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
 echo "=================="
 
-EXTRA_ARGS="$EXTRA_ARGS"
+EXTRA_ARGS="$EXTRA_ARGS --middleware omni.adaptors.vllm.entrypoints.middleware.param_check.ValidateSamplingParams"
+
 # Execute Python script
 
 common_operations() {
