@@ -38,7 +38,6 @@
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "pd_score_balance"
     DECODE_LB_SDK: "pd_score_balance"
-    USE_OMNI_PROXY: "0"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -51,7 +50,6 @@
         -e CODE_PATH=$CODE_PATH \
         -e RANKTABLE_SAVE_PATH={{ ranktable_save_path }} \
         -e LOG_PATH=$LOG_PATH \
-        -e PYTHONHASHSEED=123 \
         --net=host \
         --privileged=true \
         -u root \
@@ -176,20 +174,15 @@
       #!/bin/bash
       
       . ~/.bashrc
-      HCCL_BUFFSIZE=50
+      HCCL_BUFFSIZE=200
       export HCCL_CONNECT_TIMEOUT=600
       export HCCL_EXEC_TIMEOUT=600
       export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
-      export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
-      KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 49152 --enforce-eager --no-enable-prefix-caching --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --long-prefill-token-threshold 49152'
-      if [ ${USE_OMNI_PROXY} = "1" ]; then
-        EXTRA_ARGS="--max-num-batched-tokens 49152 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --long-prefill-token-threshold 49152 --kv-events-config ${KV_EVENTS_CONFIG}"
-      fi
-      GPU_UTIL=0.92
+      EXTRA_ARGS='--max-num-batched-tokens 66560 --enforce-eager --no-enable-prefix-caching --enable-expert-parallel --disable-log-requests --max-num-seqs 16'
+      GPU_UTIL=0.93
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
 
@@ -213,6 +206,7 @@
         LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       fi
       export ASCEND_GLOBAL_LOG_LEVEL=3
+      export ASCEND_LAUNCH_BLOCKING=1
 
       cd /workspace/omniinfer/tools/scripts
       bash /workspace/omniinfer/tools/scripts/pd_run.sh \
@@ -266,10 +260,11 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode_bf16.json"
+      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
+      export ASCEND_LAUNCH_BLOCKING=1
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 4 --no-enable-prefix-caching'
       GPU_UTIL=0.95
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false}}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       unset https_proxy
@@ -309,9 +304,6 @@
 
     run_proxy_cmd: |
       #!/bin/bash
-      . ~/.bashrc
-
-      export PYTHONHASHSEED=123
 
       prefill_result="{{ PREFILL_API_SERVER_LIST }}"
       prefill_result=`echo "$prefill_result" | awk '$1=$1'`
@@ -335,36 +327,17 @@
         done
       done
 
-      if [ ${USE_OMNI_PROXY} = "1" ]; then
-        cd /workspace/omniinfer/omni/accelerators/sched/omni_proxy
-        bash build.sh
-
-        cd /workspace/omniinfer/tools/scripts
-        bash omni_proxy.sh \
-          --listen-port "$PROXY_NODE_PORT" \
-          --prefill-endpoints "$prefill_result" \
-          --decode-endpoints "$decode_result" \
-          --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
-          --log-level info \
-          --core-num 4 \
-          --start-core-index 16 \
-          --omni-proxy-pd-policy sequential \
-          --omni-proxy-model-path $MODEL_PATH
-      else
-        cd /workspace/omniinfer/tools/scripts
-        bash global_proxy.sh \
-          --listen-port "$PROXY_NODE_PORT" \
-          --prefill-servers-list "$prefill_result" \
-          --decode-servers-list "$decode_result" \
-          --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
-          --log-level notice \
-          --core-num 4 \
-          --start-core-index 16 \
-          --prefill-lb-sdk ${PREFILL_LB_SDK} \
-          --decode-lb-sdk ${DECODE_LB_SDK} \
-          --prefill-max-num-seqs 16 \
-          --decode-max-num-seqs 32
-      fi
+      cd /workspace/omniinfer/tools/scripts
+      bash global_proxy.sh \
+        --listen-port "$PROXY_NODE_PORT" \
+        --prefill-servers-list "$prefill_result" \
+        --decode-servers-list "$decode_result" \
+        --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
+        --log-level notice \
+        --core-num 4 \
+        --start-core-index 16 \
+        --prefill-lb-sdk ${PREFILL_LB_SDK} \
+        --decode-lb-sdk ${DECODE_LB_SDK}
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -431,7 +404,6 @@
       -e NNODES=$NNODES
       -e NODE_RANK=$NODE_RANK
       -e NODE_IP_LIST=$NODE_IP_LIST
-      -e USE_OMNI_PROXY=$USE_OMNI_PROXY
       -d $DOCKER_NAME_P 
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
@@ -458,15 +430,11 @@
       {{ docker_exec_cmd }}
       -e PREFILL_LB_SDK=$PREFILL_LB_SDK
       -e DECODE_LB_SDK=$DECODE_LB_SDK
-      -e USE_OMNI_PROXY=$USE_OMNI_PROXY
-      -e MODEL_PATH=$MODEL_PATH
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
     docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
     docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_cp_proxy_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_C:/workspace/"
-    
     docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
     docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && pip uninstall omniinfer -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --no-deps && cd ../../ && pip install -e . --no-deps && pip uninstall numpy -y && pip install numpy==1.26 --no-deps > ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
 
@@ -609,13 +577,6 @@
     #     DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
     #   when: "'D' in group_names"
     #   tags: sync_code
-
-    - name: Copy the code from the host machine into the container (proxy).
-      command: bash -c "{{ docker_cp_proxy_code_cmd }}"
-      environment: 
-        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-      when: "'C' in group_names"
-      tags: sync_code
 
     # - name: docker_update_prefill_code_cmd.
     #   command: bash -c "{{ docker_update_prefill_code_cmd }}"
