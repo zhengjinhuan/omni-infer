@@ -36,6 +36,7 @@ class ModelOperatorOptConfig:
     opt_w2_scale_cast: bool = False
     decode_gear_list: list[int] = field(default_factory=lambda: [1])
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
+    mla_multistream_limit_core: str = '' # 空字符串代表不开启多流分核，形如'20|36'代表主流分配的AIC和AIV核数分别为20和36
 
     use_prefetch: bool = True # 是否开启预取
     expert_gate_up_prefetch: int = 50 # 默认预取大小为 50Mb；如果是权重是BF16型，设置为 30Mb

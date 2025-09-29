@@ -50,6 +50,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_local_group_from_list
 )
 from omni.models.common.config.model_config import model_extra_config
+from omni.layers.utils import ConditionalTNGScope
 KVCACHE_NZ_DIM = 16
 
 
@@ -562,40 +563,41 @@ class DeepseekMLA(nn.Module):
                 q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
                 q_pe = q_pe.view(bsz, self.num_local_heads, -1)
             else:
-                if self.q_lora_rank is not None:
-                    q_lowrank = self.q_a_proj(hidden_states)[0]
-                else:
-                    q_lowrank = self.q_proj(hidden_states)[0]
+                with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune,
+                                                core_num=model_extra_config.operator_opt_config.mla_multistream_limit_core):
+                    if self.q_lora_rank is not None:
+                        q_lowrank = self.q_a_proj(hidden_states)[0]
+                    else:
+                        q_lowrank = self.q_proj(hidden_states)[0]
 
-                if model_extra_config.operator_opt_config.moe_multi_stream_tune:
-                    with tng.scope.npu_stream_switch('11'):
-                        kv = self.kv_a_proj_with_mqa(hidden_states)[0]
-
-                    tng.scope.npu_wait_tensor(q_lowrank, q_lowrank)
-                else:
+                with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune,
+                                                stream_id='11', 
+                                                core_num=model_extra_config.operator_opt_config.mla_multistream_limit_core):
                     kv = self.kv_a_proj_with_mqa(hidden_states)[0]
-
-                if self.q_lora_rank is not None:
-                    q, _ = self.q_a_layernorm(q_lowrank, self.norm_res[q_lowrank.shape[0]])
-                    q = self.q_b_proj(q)[0]
-                else:
-                    q = q_lowrank
-                bsz, _ = q.shape
-                q = q.view(bsz, self.num_local_heads, 1, self.qk_head_dim)
-                q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1) # b,n,s,d
-
-                q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim).transpose(0, 1) # n, bs, d
-                q_nope = (
-                    torch.matmul(q_nope, self.W_UK)
-                    .transpose(1, 0)
-                    .view(bsz, q_len, self.num_local_heads, -1)
-                )
-
                 if model_extra_config.operator_opt_config.moe_multi_stream_tune:
-                    stream_context = tng.scope.npu_stream_switch('11')
-                else:
-                    stream_context = nullcontext()
-                with stream_context:
+                    tng.scope.npu_wait_tensor(q_lowrank, q_lowrank)
+
+                with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune, 
+                                                core_num=model_extra_config.operator_opt_config.mla_multistream_limit_core):
+                    if self.q_lora_rank is not None:
+                        q, _ = self.q_a_layernorm(q_lowrank, self.norm_res[q_lowrank.shape[0]])
+                        q = self.q_b_proj(q)[0]
+                    else:
+                        q = q_lowrank
+                    bsz, _ = q.shape
+                    q = q.view(bsz, self.num_local_heads, 1, self.qk_head_dim)
+                    q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1) # b,n,s,d
+
+                    q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim).transpose(0, 1) # n, bs, d
+                    q_nope = (
+                        torch.matmul(q_nope, self.W_UK)
+                        .transpose(1, 0)
+                        .view(bsz, q_len, self.num_local_heads, -1)
+                    )
+
+                with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune,
+                                                stream_id='11', 
+                                                core_num=model_extra_config.operator_opt_config.mla_multistream_limit_core):
                     kv = kv.unsqueeze(1).unsqueeze(1)
                     cos, sin = attn_metadata.decode.cos, attn_metadata.decode.sin
                     # cos, sin = self.rotary_emb.get_cos_sin(positions)
@@ -654,20 +656,22 @@ class DeepseekMLA(nn.Module):
                         actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
                         )
 
-            # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-            attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+            with ConditionalTNGScope(super_kernel=model_extra_config.operator_opt_config.use_super_kernel,
+                                            scope='sk'):
+                # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
+                attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
 
-            attn_output = (
-                torch.matmul(attn_output, self.W_UV)
-                .transpose(1, 0)
-                .reshape(bsz, q_len, -1)
-            )
-            attn_output = attn_output.view(
-                -1, self.num_local_heads * self.v_head_dim)
-            if model_extra_config.parall_config.o_proj_tp_size > 1:
-                output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_local_heads, self.v_head_dim)
-            else:
-                output, _ = self.o_proj.forward(attn_output)
+                attn_output = (
+                    torch.matmul(attn_output, self.W_UV)
+                    .transpose(1, 0)
+                    .reshape(bsz, q_len, -1)
+                )
+                attn_output = attn_output.view(
+                    -1, self.num_local_heads * self.v_head_dim)
+                if model_extra_config.parall_config.o_proj_tp_size > 1:
+                    output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_local_heads, self.v_head_dim)
+                else:
+                    output, _ = self.o_proj.forward(attn_output)
         else:
             hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
             key_cache, value_cache = kv_cache
