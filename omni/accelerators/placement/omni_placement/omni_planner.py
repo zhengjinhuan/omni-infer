@@ -72,7 +72,9 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         self.first_k_dense_replace = first_k_dense_replace
         
         try:
-            self.max_moe_layer_num = self.config.getattr("max_moe_layer_num", num_layers - self.first_k_dense_replace)
+            self.max_moe_layer_num = self.config.getattr("max_moe_layer_num", None)
+            if self.max_moe_layer_num is None:
+                self.max_moe_layer_num = num_layers - self.first_k_dense_replace
         except:
             print(f"[Placement-Error]-max_moe_layer_num is not defined in config.yaml and num_layers or first_k_dense_replace are not defined in the init func params, which is {num_layers} & {self.first_k_dense_replace}")
             exit(1)
