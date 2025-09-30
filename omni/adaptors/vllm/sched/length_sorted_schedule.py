@@ -132,7 +132,7 @@ class LengthSortedScheduler(Scheduler):
 
         # Whether we can continue scheduling.
         pre_scheduled: dict[str, int] = {}
-        if role == "prefill":
+        if is_prefill:
             if self.enable_mix_schedule:
                 mix_requests = [MixRequest(req, True) for req in self.running] + [MixRequest(req, False) for req in self.waiting]
             else:
@@ -183,12 +183,12 @@ class LengthSortedScheduler(Scheduler):
             logger.info(f"Final pre-scheduled requests: {[req_id for req_id, is_pre_sched in pre_scheduled.items() if is_pre_sched]}")
 
         # First, schedule the RUNNING requests.
-        if role == "prefill":
+        if is_prefill:
             self.running = [mix_req.request for mix_req in mix_requests if mix_req.is_running]
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
-            if (role == "prefill" and
+            if (is_prefill and
                 self.enable_mix_schedule
                 and not pre_scheduled[request.request_id]):
                 break
@@ -199,7 +199,7 @@ class LengthSortedScheduler(Scheduler):
             if self.async_schedule and num_new_tokens < 0:
                 num_new_tokens = 0
 
-            if role == "prefill":
+            if is_prefill:
                 if (self.scheduler_config.long_prefill_token_threshold > 0 and
                     num_new_tokens > self.scheduler_config.long_prefill_token_threshold + 2048):
                             num_new_tokens = (
@@ -337,7 +337,7 @@ class LengthSortedScheduler(Scheduler):
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
-            if role == "prefill":
+            if is_prefill:
                 self.waiting = deque([mix_req.request for mix_req in mix_requests if not mix_req.is_running])
 
             while self.waiting and token_budget > 0:
@@ -345,7 +345,7 @@ class LengthSortedScheduler(Scheduler):
                     break
 
                 request = self.waiting[0]
-                if role == "prefill" and not pre_scheduled[request.request_id]:
+                if is_prefill and not pre_scheduled[request.request_id]:
                     break
                 # KVTransfer: skip request if still waiting for remote kvs.
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -421,7 +421,7 @@ class LengthSortedScheduler(Scheduler):
                     # `request.num_prompt_tokens` to consider the resumed
                     # requests, which have output tokens.
                     num_new_tokens = request.num_tokens_with_spec - num_computed_tokens
-                    if role == "prefill":
+                    if is_prefill:
                         if (self.scheduler_config.long_prefill_token_threshold > 0 and
                             num_new_tokens > self.scheduler_config.long_prefill_token_threshold + 2048):
                             num_new_tokens = (
