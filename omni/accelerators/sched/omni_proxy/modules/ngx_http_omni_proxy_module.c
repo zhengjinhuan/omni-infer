@@ -697,12 +697,12 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     if (delta > 10)
     {
         // An new batch comes back
-        if (us->his.count < NUM_DECODE_BATCH_METRICS_HIS - 1)
+        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS - 1)
         {
             us->his.count++;
         }
 
-        us->his.head = (us->his.head + 1) % NUM_DECODE_BATCH_METRICS_HIS;
+        us->his.head = (us->his.head + 1) % NUM_PREFILL_BATCH_METRICS_HIS;
 
         batch = &us->his.his[us->his.head];
         ngx_memzero(batch, sizeof(omni_batch_metrics_t));
@@ -996,7 +996,7 @@ static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
     ngx_http_upstream_t *u = r->upstream;
 
     u->conf = olcf->upstream->srv_conf[ngx_http_upstream_module.ctx_index];
-    u->conf->buffer_size = 8192;
+    u->conf->buffer_size = 1024;
     u->conf->send_lowat = 0;
 
     u->create_request = ngx_http_omni_create_request;
