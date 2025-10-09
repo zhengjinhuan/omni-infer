@@ -377,7 +377,6 @@
           --omni-proxy-max-batch-num-token 30000 \
           --omni-proxy-prefill-max-num-seqs 16 \
           --omni-proxy-decode-max-num-seqs 32
-
       else
         cd /workspace/omniinfer/tools/scripts
         bash global_proxy.sh \

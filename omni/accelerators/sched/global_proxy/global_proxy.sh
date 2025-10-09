@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 #!/bin/bash
-NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
+NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/sbin}"
 export PATH=${NGINX_SBIN_PATH}:${PATH}
 
 if grep -qaE 'docker|kubepods|containerd' /proc/1/cgroup || [ -f /.dockerenv ]; then

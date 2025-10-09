@@ -72,5 +72,5 @@ CFLAGS="-O0 -g" ./configure --sbin-path=${NGINX_SBIN_PATH} \
 make -j16
 make install
 
-ln -s "$WORKDIR"/omni_proxy/modules/omni_tokenizer.py /usr/local/lib/python3.11/site-packages/
+ln -sf "$WORKDIR"/omni_proxy/modules/omni_tokenizer.py /usr/local/lib/python3.11/site-packages/
 export PYTHONHASHSEED=123

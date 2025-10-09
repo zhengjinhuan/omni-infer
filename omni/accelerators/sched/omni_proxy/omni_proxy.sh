@@ -237,15 +237,12 @@ events {
     use epoll;
     accept_mutex off;
     multi_accept on;
-    worker_connections 4096;
+    worker_connections 102400;
 }
 
 http {
     proxy_http_version 1.1;
     tcp_nodelay on;
-    keepalive 2048;
-    keepalive_requests 20000;
-    keepalive_timeout 110s;
     client_max_body_size 10M;
     client_body_buffer_size 1M;
 
