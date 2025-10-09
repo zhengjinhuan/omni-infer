@@ -22,8 +22,8 @@ typedef struct
     ngx_int_t kv_block_size;
     ngx_http_upstream_srv_conf_t *upstream;
     ngx_uint_t max_batch_num_token;
-    ngx_uint_t prefill_max_num_req;
-    ngx_uint_t decode_max_num_req;
+    ngx_uint_t prefill_max_num_seqs;
+    ngx_uint_t decode_max_num_seqs;
     ngx_uint_t prefill_starvation_timeout;  
 } ngx_http_omni_loc_conf_t;
 

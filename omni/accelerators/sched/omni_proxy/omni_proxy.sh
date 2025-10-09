@@ -15,8 +15,8 @@ log_level="notice"
 omni_proxy_pd_policy="sequential"
 omni_proxy_model_path=""
 omni_proxy_max_batch_num_token="32000"
-omni_proxy_prefill_max_num_req="32"
-omni_proxy_decode_max_num_req="32"
+omni_proxy_prefill_max_num_seqs="32"
+omni_proxy_decode_max_num_seqs="32"
 omni_proxy_prefill_starvation_timeout="400"
 
 dry_run=false
@@ -39,8 +39,8 @@ print_help() {
     echo "  --omni-proxy-pd-policy <policy> sequential or parallel (default: sequential)"
     echo "  --omni-proxy-model-path <path>  Path to model directory (default: unset)"
     echo "  --omni-proxy-max-batch-num-token <N>      max_batch_num_token (default: 32000)"
-    echo "  --omni-proxy-prefill-max-num-req <N>      prefill_max_num_req (default: 32)"
-    echo "  --omni-proxy-decode-max-num-req <N>       decode_max_num_req (default: 32)"
+    echo "  --omni-proxy-prefill-max-num-seqs <N>      prefill_max_num_seqs (default: 32)"
+    echo "  --omni-proxy-decode-max-num-seqs <N>       decode_max_num_seqs (default: 32)"
     echo "  --omni-proxy-prefill-starvation-timeout <N> prefill_starvation_timeout (default: 400)"
     echo "  --dry-run                       Only generate nginx config, do not start nginx"
     echo "  --stop                          Stop nginx"
@@ -110,12 +110,12 @@ while [[ $# -gt 0 ]]; do
             omni_proxy_max_batch_num_token="$2"
             shift 2
             ;;
-        --omni-proxy-prefill-max-num-req)
-            omni_proxy_prefill_max_num_req="$2"
+        --omni-proxy-prefill-max-num-seqs)
+            omni_proxy_prefill_max_num_seqs="$2"
             shift 2
             ;;
-        --omni-proxy-decode-max-num-req)
-            omni_proxy_decode_max_num_req="$2"
+        --omni-proxy-decode-max-num-seqs)
+            omni_proxy_decode_max_num_seqs="$2"
             shift 2
             ;;
         --omni-proxy-prefill-starvation-timeout)
@@ -266,8 +266,8 @@ $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
             omni_proxy decode_endpoints;
             omni_proxy_pd_policy $omni_proxy_pd_policy;
             omni_proxy_max_batch_num_token $omni_proxy_max_batch_num_token;
-            omni_proxy_prefill_max_num_req $omni_proxy_prefill_max_num_req;
-            omni_proxy_decode_max_num_req $omni_proxy_decode_max_num_req;
+            omni_proxy_prefill_max_num_seqs $omni_proxy_prefill_max_num_seqs;
+            omni_proxy_decode_max_num_seqs $omni_proxy_decode_max_num_seqs;
             omni_proxy_prefill_starvation_timeout $omni_proxy_prefill_starvation_timeout;
 EOF
 

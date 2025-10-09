@@ -139,7 +139,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
 
             uint32_t load_tokens = gs->prefill_states[j].num_tokens;
             uint32_t running = gs->prefill_states[j].num_running;
-            if (load_tokens > olcf->max_batch_num_token || running > olcf->prefill_max_num_req) //overload
+            if (load_tokens > olcf->max_batch_num_token || running > olcf->prefill_max_num_seqs) //overload
                 continue;
             if (m > best_match ||
                 (m == best_match && load_tokens < best_load_tokens) ||

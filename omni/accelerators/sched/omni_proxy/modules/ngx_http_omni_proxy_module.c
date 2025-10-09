@@ -1178,8 +1178,8 @@ static void *ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
 
     conf->vllm_kv_port_offset = NGX_CONF_UNSET;
     conf->max_batch_num_token = NGX_CONF_UNSET_UINT;
-    conf->prefill_max_num_req = NGX_CONF_UNSET_UINT;
-    conf->decode_max_num_req = NGX_CONF_UNSET_UINT;
+    conf->prefill_max_num_seqs = NGX_CONF_UNSET_UINT;
+    conf->decode_max_num_seqs = NGX_CONF_UNSET_UINT;
     conf->prefill_starvation_timeout = NGX_CONF_UNSET_UINT;
 
     return conf;
@@ -1205,8 +1205,8 @@ static char *ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *ch
     }
 
     ngx_conf_merge_uint_value(conf->max_batch_num_token, prev->max_batch_num_token, 32000);
-    ngx_conf_merge_uint_value(conf->prefill_max_num_req, prev->prefill_max_num_req, 32);
-    ngx_conf_merge_uint_value(conf->decode_max_num_req, prev->decode_max_num_req, 32);
+    ngx_conf_merge_uint_value(conf->prefill_max_num_seqs, prev->prefill_max_num_seqs, 32);
+    ngx_conf_merge_uint_value(conf->decode_max_num_seqs, prev->decode_max_num_seqs, 32);
     ngx_conf_merge_uint_value(conf->prefill_starvation_timeout, prev->prefill_starvation_timeout, 400);
 
     if (conf->metrics_enabled == NGX_CONF_UNSET)
@@ -1740,12 +1740,12 @@ static ngx_int_t omni_proxy_init_process(ngx_cycle_t *cycle)
 
     if (local_state.loc_conf) {
         ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
-                      "[OMNI SCHED] Worker %P Initialized: max_batch_num_token=%ui, prefill_max_num_req=%ui, prefill_starvation_timeout=%ui, decode_max_num_req=%ui.",
+                      "[OMNI SCHED] Worker %P Initialized: max_batch_num_token=%ui, prefill_max_num_seqs=%ui, prefill_starvation_timeout=%ui, decode_max_num_seqs=%ui.",
                       ngx_pid,
                       local_state.loc_conf->max_batch_num_token,
-                      local_state.loc_conf->prefill_max_num_req,
+                      local_state.loc_conf->prefill_max_num_seqs,
                       local_state.loc_conf->prefill_starvation_timeout,
-                      local_state.loc_conf->decode_max_num_req);
+                      local_state.loc_conf->decode_max_num_seqs);
     }
 
     local_state.omni_proxy_timer_event.handler = omni_proxy_timer_handler;
@@ -1926,18 +1926,18 @@ static ngx_command_t omni_proxy_commands[] = {
      offsetof(ngx_http_omni_loc_conf_t, max_batch_num_token),
      NULL},
 
-    {ngx_string("omni_proxy_prefill_max_num_req"),
+    {ngx_string("omni_proxy_prefill_max_num_seqs"),
      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_num_slot,
      NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(ngx_http_omni_loc_conf_t, prefill_max_num_req),
+     offsetof(ngx_http_omni_loc_conf_t, prefill_max_num_seqs),
      NULL},
     
-    {ngx_string("omni_proxy_decode_max_num_req"),
+    {ngx_string("omni_proxy_decode_max_num_seqs"),
      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_num_slot,
      NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(ngx_http_omni_loc_conf_t, decode_max_num_req),
+     offsetof(ngx_http_omni_loc_conf_t, decode_max_num_seqs),
      NULL},
 
     {ngx_string("omni_proxy_prefill_starvation_timeout"),
