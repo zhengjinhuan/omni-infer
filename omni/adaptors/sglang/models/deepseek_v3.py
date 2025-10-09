@@ -343,6 +343,10 @@ class DeepseekV3Model(nn.Module):
 
         residual = None
 
+        cos, sin = self.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
+        forward_batch.attn_backend.forward_metadata.cos = cos
+        forward_batch.attn_backend.forward_metadata.sin = sin
+
         for i in range(total_num_layers):
             with get_global_expert_distribution_recorder(True).with_current_layer(i):
                 layer = self.layers[i]
