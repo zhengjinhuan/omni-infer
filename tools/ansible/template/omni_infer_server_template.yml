@@ -369,7 +369,7 @@
           --prefill-endpoints "$prefill_result" \
           --decode-endpoints "$decode_result" \
           --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
-          --log-level info \
+          --log-level notice \
           --core-num 4 \
           --start-core-index 16 \
           --omni-proxy-pd-policy sequential \
