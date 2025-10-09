@@ -39,6 +39,7 @@
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "pd_score_balance"
     DECODE_LB_SDK: "pd_score_balance"
+    USE_OMNI_PROXY: "0"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
@@ -50,6 +51,7 @@
       docker run -it --shm-size=500g \
         -e RANKTABLE_SAVE_PATH={{ ranktable_save_path }} \
         -e LOG_PATH=$LOG_PATH \
+        -e PYTHONHASHSEED=123 \
         --net=host \
         --privileged=true \
         -u root \
@@ -177,8 +179,14 @@
       export ASCEND_GLOBAL_LOG_LEVEL=3
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
+      export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
+      KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching'
+      if [ ${USE_OMNI_PROXY} = "1" ]; then
+        EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --kv-events-config ${KV_EVENTS_CONFIG}"
+      else
+        EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching'
+      fi
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -328,6 +336,9 @@
 
     run_proxy_cmd: |
       #!/bin/bash
+      . ~/.bashrc
+
+      export PYTHONHASHSEED=123
 
       prefill_result="{{ PREFILL_API_SERVER_LIST }}"
       prefill_result=`echo "$prefill_result" | awk '$1=$1'`
@@ -351,19 +362,33 @@
         done
       done
 
-      cd /workspace/omniinfer/tools/scripts
-      bash global_proxy.sh \
-        --listen-port "$PROXY_NODE_PORT" \
-        --prefill-servers-list "$prefill_result" \
-        --decode-servers-list "$decode_result" \
-        --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
-        --log-level notice \
-        --core-num 4 \
-        --start-core-index 16 \
-        --prefill-lb-sdk ${PREFILL_LB_SDK} \
-        --decode-lb-sdk ${DECODE_LB_SDK} \
-        --prefill-max-num-seqs 16 \
-        --decode-max-num-seqs 32
+      if [ ${USE_OMNI_PROXY} = "1" ]; then
+        cd /workspace/omniinfer/tools/scripts
+        bash omni_proxy.sh \
+          --listen-port "$PROXY_NODE_PORT" \
+          --prefill-endpoints "$prefill_result" \
+          --decode-endpoints "$decode_result" \
+          --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
+          --log-level info \
+          --core-num 4 \
+          --start-core-index 16 \
+          --omni-proxy-pd-policy sequential \
+          --omni-proxy-model-path $MODEL_PATH
+      else
+        cd /workspace/omniinfer/tools/scripts
+        bash global_proxy.sh \
+          --listen-port "$PROXY_NODE_PORT" \
+          --prefill-servers-list "$prefill_result" \
+          --decode-servers-list "$decode_result" \
+          --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
+          --log-level notice \
+          --core-num 4 \
+          --start-core-index 16 \
+          --prefill-lb-sdk ${PREFILL_LB_SDK} \
+          --decode-lb-sdk ${DECODE_LB_SDK} \
+          --prefill-max-num-seqs 16 \
+          --decode-max-num-seqs 32
+      fi
 
     generate_mooncake_config_json: |
       {
@@ -459,6 +484,7 @@
       -e KV_CONNECTOR=$KV_CONNECTOR
       -e MOONCAKE_CONFIG_PATH=$MOONCAKE_CONFIG_PATH
       -e LMCACHE_MOONCAKE_CONFIG_PATH=$LMCACHE_MOONCAKE_CONFIG_PATH
+      -e USE_OMNI_PROXY=$USE_OMNI_PROXY
       -d $DOCKER_NAME_P
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
@@ -488,6 +514,8 @@
       {{ docker_exec_cmd }}
       -e PREFILL_LB_SDK=$PREFILL_LB_SDK
       -e DECODE_LB_SDK=$DECODE_LB_SDK
+      -e USE_OMNI_PROXY=$USE_OMNI_PROXY
+      -e MODEL_PATH=$MODEL_PATH
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
