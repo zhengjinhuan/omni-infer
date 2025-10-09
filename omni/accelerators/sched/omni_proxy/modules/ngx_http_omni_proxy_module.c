@@ -15,6 +15,7 @@ ngx_module_t ngx_http_omni_proxy_module;
 #define DECODE_ENDPOINTS "decode_endpoints"
 
 #define TIMER_INTERVAL 1
+#define UUID_STR_LEN 37
 
 static const char *PREFILL_URI = "/prefill_sub";
 static const size_t PREFILL_URI_LEN = sizeof("/prefill_sub") - 1;
@@ -53,6 +54,26 @@ static omni_req_t *omni_req_init(ngx_http_request_t *r)
 
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "Allocate Req:%d",
                   req->slot_index);
+    
+    ngx_list_part_t *part = &r->headers_in.headers.part;
+    ngx_table_elt_t *header = part->elts;
+    ngx_uint_t i;
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) break;
+            part = part->next;
+            header = part->elts;
+            i = 0;
+        }
+        if (header[i].key.len == sizeof("X-Request-Id") - 1 &&
+            ngx_strncasecmp(header[i].key.data, (u_char*)"X-Request-Id", sizeof("X-Request-Id") - 1) == 0) {
+            size_t len = header[i].value.len;
+            if (len >= UUID_STR_LEN) len = UUID_STR_LEN - 1;
+            ngx_memcpy(req->request_id, header[i].value.data, len);
+            req->request_id[len] = '\0';
+            break;
+        }
+    }
 
     return req;
 }
@@ -147,6 +168,13 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
     omni_phase_transition_all(req, 0, PHASE_PREFILL_WAITING_SCHEDULE);
     req->metrics.time_enter_wait_prefill = ngx_current_msec;
 
+    ngx_http_request_t *r = omni_get_http_request(req);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Enter state P waiting; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
+
+
     if (g_state->pd_policy == PD_PARALLEL)
     {
         omni_add_req_to_group(req->slot_index, &local_state.groups[PHASE_DECODE_WAITING_SCHEDULE]);
@@ -160,6 +188,11 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
     omni_req_context_t *ctx = omni_get_req_ctx(r);
     req->metrics.time_contents_received = ngx_current_msec;
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Prefill-%d]: request body received", req->slot_index);
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Enter state tokenization; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
 
     omni_proxy_save_origin_body(r, ctx);
 
@@ -195,6 +228,12 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
 }
 static inline void omni_proxy_cleanup_req(omni_req_t *req)
 {
+    ngx_http_request_t *r = omni_get_http_request(req);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                "<<<Action: Received all tokens; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
+
     omni_proxy_request_phase_t phases[PHASE_MAX];
     size_t count = 0;
     omni_req_get_phases(req, phases, &count);
@@ -306,6 +345,11 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
 
     req->metrics.time_received = ngx_current_msec;
 
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Time received; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
+
     ngx_http_cleanup_t *cleanup = ngx_http_cleanup_add(r, 0);
     cleanup->handler = omni_proxy_main_req_cleanup;
     cleanup->data = req;
@@ -332,6 +376,11 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     ngx_http_request_t *r = omni_get_http_request(req);
     omni_req_context_t *ctx = omni_get_req_ctx(subr);
     req->metrics.time_prefilled = ngx_current_msec;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Finish P running; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
 
     ngx_connection_t *c = r->connection;
 
@@ -446,6 +495,10 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     {
         omni_phase_transition_all(req, PHASE_PREFILLING, PHASE_DECODE_WAITING_SCHEDULE);
         req->metrics.time_enter_wait_decode = ngx_current_msec;
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Enter state D waiting; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
     }
 
     return NGX_DONE;
@@ -508,6 +561,11 @@ static ngx_int_t ngx_http_prefill_wakeup(omni_req_t *req)
     omni_phase_transition_all(req, PHASE_PREFILL_SCHEDULED, PHASE_PREFILLING);
 
     req->metrics.time_to_prefill = ngx_current_msec;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Enter state P running; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
 
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Prefill-%d] Submit to:%d",
                   req->slot_index, req->prefill_upstream_endpoint_idx);
@@ -585,6 +643,22 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
                 ((req->metrics.tpot * (req->metrics.decoded_tokens - 1)) +
                  ngx_current_msec - req->metrics.time_last_reponse) /
                 req->metrics.decoded_tokens;
+        }
+        if (req->metrics.decoded_tokens == 2){
+            struct timeval tv;
+            gettimeofday(&tv, NULL);
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                        "<<<Action: Proxy got first token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
+        }else if (req->metrics.decoded_tokens == 3){
+            struct timeval tv;
+            gettimeofday(&tv, NULL);
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                        "<<<Action: Proxy got second token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
+        }else if (req->metrics.decoded_tokens == 4){
+            struct timeval tv;
+            gettimeofday(&tv, NULL);
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                        "<<<Action: Proxy got third token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
         }
         ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
                       "[Decode Update Stats]  req %d prompt_tokens= %ui decoded_tokens= %ui; decode upstream %d num_tokens=%ui",
@@ -979,6 +1053,11 @@ static ngx_int_t ngx_http_decode_wakeup(omni_req_t *req)
 
     omni_phase_transition_all(req, PHASE_DECODE_SCHEDULED, PHASE_DECODING);
     req->metrics.time_to_decode = ngx_current_msec;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                "<<<Action: Enter state D running; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
 
     if (rc == NGX_OK)
     {
@@ -1517,6 +1596,12 @@ static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
                   "[Tokenize-%d] get prompt_tokens %d",
                   slot_id,
                   req->tokenizer_req.input_ids_len);
+
+            ngx_http_request_t *r = omni_get_http_request(req);
+            struct timeval tv;
+            gettimeofday(&tv, NULL);
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                        "<<<Action: Enter state APC matching; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
 
             omni_proxy_post_tokenized(req);
         }

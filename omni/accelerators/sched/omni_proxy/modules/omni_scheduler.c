@@ -200,6 +200,11 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
 
         req->metrics.time_prefill_scheduled = ngx_current_msec;
 
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                            "<<<Action: Enter state P scheduled; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
+
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Prefill-%d] Schedule to: %d",
                       req->slot_index, req->prefill_upstream_endpoint_idx);
     }
@@ -252,6 +257,11 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
         omni_req_enter_phase(req, PHASE_DECODE_SCHEDULED);
 
         req->metrics.time_decode_scheduled = ngx_current_msec;
+
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
+                            "<<<Action: Enter state D scheduled; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
 
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                       "[Decode-%d] Schedule to: %d (load=%ui)",
