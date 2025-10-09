@@ -661,7 +661,7 @@ class DeepseekMLA(nn.Module):
                         )
 
             with ConditionalTNGScope(super_kernel=model_extra_config.operator_opt_config.use_super_kernel,
-                                            scope='sk'):
+                                            scope=self.prefix):
                 # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
                 attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
 
