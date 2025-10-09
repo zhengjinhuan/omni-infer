@@ -110,7 +110,7 @@ static void update_decode_weights(omni_req_group_t *group)
     }
 }
 
-void omni_proxy_schedule_prefill(omni_global_state_t *gs)
+void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf_t *olcf)
 {
     omni_req_group_t *group = &gs->groups[PHASE_PREFILL_WAITING_SCHEDULE];
 
@@ -140,7 +140,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs)
 
             uint32_t load_tokens = gs->prefill_states[j].num_tokens;
             uint32_t running = gs->prefill_states[j].num_running;
-            if (load_tokens > 30000 || running > 32)//overload
+            if (load_tokens > olcf->max_batch_num_token || running > olcf->prefill_max_num_req) //overload
                 continue;
             if (m > best_match ||
                 (m == best_match && load_tokens < best_load_tokens) ||

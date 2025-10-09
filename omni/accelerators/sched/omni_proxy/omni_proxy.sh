@@ -14,6 +14,10 @@ log_file="/tmp/nginx_error.log"
 log_level="notice"
 omni_proxy_pd_policy="sequential"
 omni_proxy_model_path=""
+omni_proxy_max_batch_num_token="32000"
+omni_proxy_prefill_max_num_req="32"
+omni_proxy_decode_max_num_req="32"
+omni_proxy_prefill_starvation_timeout="400"
 
 dry_run=false
 stop=false
@@ -34,6 +38,10 @@ print_help() {
     echo "  --log-level <LEVEL>             Log level (default: notice)"
     echo "  --omni-proxy-pd-policy <policy> sequential or parallel (default: sequential)"
     echo "  --omni-proxy-model-path <path>  Path to model directory (default: unset)"
+    echo "  --omni-proxy-max-batch-num-token <N>      max_batch_num_token (default: 32000)"
+    echo "  --omni-proxy-prefill-max-num-req <N>      prefill_max_num_req (default: 32)"
+    echo "  --omni-proxy-decode-max-num-req <N>       decode_max_num_req (default: 32)"
+    echo "  --omni-proxy-prefill-starvation-timeout <N> prefill_starvation_timeout (default: 400)"
     echo "  --dry-run                       Only generate nginx config, do not start nginx"
     echo "  --stop                          Stop nginx"
     echo "  --rollback                      Rollback nginx config if backup exists (must be used with --stop)"
@@ -95,6 +103,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         --omni-proxy-model-path)
             omni_proxy_model_path="$2"
+            shift 2
+            ;;
+        --omni-proxy-max-batch-num-token)
+            omni_proxy_max_batch_num_token="$2"
+            shift 2
+            ;;
+        --omni-proxy-prefill-max-num-req)
+            omni_proxy_prefill_max_num_req="$2"
+            shift 2
+            ;;
+        --omni-proxy-decode-max-num-req)
+            omni_proxy_decode_max_num_req="$2"
+            shift 2
+            ;;
+        --omni-proxy-prefill-starvation-timeout)
+            omni_proxy_prefill_starvation_timeout="$2"
             shift 2
             ;;
         --dry-run)
@@ -237,6 +261,10 @@ $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
             set_request_id on;
             omni_proxy decode_endpoints;
             omni_proxy_pd_policy $omni_proxy_pd_policy;
+            omni_proxy_max_batch_num_token $omni_proxy_max_batch_num_token;
+            omni_proxy_prefill_max_num_req $omni_proxy_prefill_max_num_req;
+            omni_proxy_decode_max_num_req $omni_proxy_decode_max_num_req;
+            omni_proxy_prefill_starvation_timeout $omni_proxy_prefill_starvation_timeout;
 EOF
 
     if [[ -n "$omni_proxy_model_path" ]]; then
