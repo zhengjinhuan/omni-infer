@@ -232,7 +232,7 @@ class PanguUltraMoEDecoderLayer(nn.Module):
         )
 
         if enable_superkernel:
-            with tng.scope.super_kernel("sk", 'stream-fusion=1'):
+            with tng.scope.super_kernel(self.self_attn.prefix, 'stream-fusion=1'):
                 hidden_states = self.post_attention_layernorm(hidden_states)
                 hidden_states, residual = self.pre_mlp_layernorm(hidden_states, residual)
 
