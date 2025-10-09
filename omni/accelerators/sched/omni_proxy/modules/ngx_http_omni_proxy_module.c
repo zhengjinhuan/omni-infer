@@ -118,7 +118,8 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
         ngx_log_error(NGX_LOG_INFO,
                       omni_get_http_request(req)->connection->log,
                       0,
-                      "[Tokenization] prefill[%ui] match_depth=%ui",
+                      "[APC_MATCHING-%d] prefill[%ui] match_depth=%ui",
+                      req->slot_index,
                       i,
                       local_match_depths[i]);
 
@@ -129,7 +130,8 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
     ngx_log_error(NGX_LOG_INFO,
                   omni_get_http_request(req)->connection->log,
                   0,
-                  "[Tokenization] computed num_prefill=%ui, max_match_depth=%ui",
+                  "[APC_MATCHING-%d] computed num_prefill=%ui, max_match_depth=%ui",
+                  req->slot_index,
                   num_prefill,
                   computed_max);
     
@@ -580,7 +582,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
         if (req->metrics.decoded_tokens != 0)
         {
             req->metrics.tpot =
-                ((req->metrics.tpot * req->metrics.decoded_tokens - 1) +
+                ((req->metrics.tpot * (req->metrics.decoded_tokens - 1)) +
                  ngx_current_msec - req->metrics.time_last_reponse) /
                 req->metrics.decoded_tokens;
         }
@@ -621,16 +623,12 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     if (delta > 10)
     {
         // An new batch comes back
-        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS - 1)
+        if (us->his.count < NUM_DECODE_BATCH_METRICS_HIS - 1)
         {
             us->his.count++;
         }
 
-        us->his.head++;
-        if (us->his.head == NUM_PREFILL_BATCH_METRICS_HIS)
-        {
-            us->his.head = 0;
-        }
+        us->his.head = (us->his.head + 1) % NUM_DECODE_BATCH_METRICS_HIS;
 
         batch = &us->his.his[us->his.head];
         ngx_memzero(batch, sizeof(omni_batch_metrics_t));
@@ -1512,6 +1510,13 @@ static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
             req->metrics.time_tokenized = ngx_current_msec;
             printf("Tokenize %ld, time taken:%lu\n", req->tokenizer_req.input_len, ngx_current_msec - req->metrics.time_contents_received);
             print_tokenize_result(&req->tokenizer_req);
+            req->metrics.prompt_num_tokens = req->tokenizer_req.input_ids_len;
+            ngx_log_error(NGX_LOG_INFO,
+                  ev->log,
+                  0,
+                  "[Tokenize-%d] get prompt_tokens %d",
+                  slot_id,
+                  req->tokenizer_req.input_ids_len);
 
             omni_proxy_post_tokenized(req);
         }

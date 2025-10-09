@@ -50,8 +50,9 @@ print_help() {
     echo "EXAMPLE:"
     echo "  bash $0 \\"
     echo "      --nginx-conf-file /usr/local/nginx/conf/nginx.conf \\"
-    echo "      --listen-port 7000 \\"
     echo "      --core-num 4 \\"
+    echo "      --start-core-index 0 \\"
+    echo "      --listen-port 7000 \\"
     echo "      --prefill-endpoints 127.0.0.1:9000,127.0.0.2:9001 \\"
     echo "      --decode-endpoints 127.0.0.3:9100,127.0.0.3:9101 \\"
     echo "      --omni-proxy-pd-policy  sequential \\"
@@ -175,20 +176,20 @@ function rollback_nginx_conf() {
 }
 
 function gen_affinity_masks() {
-    local count=$1
+    local start_core_index=$1
+    local core_num=$2
     local masks=()
-    for ((i=0; i<count; i++)); do
+    for ((i=0; i<core_num; i++)); do
         local mask=""
-        for ((j=0; j<count; j++)); do
-            if ((j == i)); then
-                mask="${mask}1"
+        local total_bits=$((start_core_index + core_num))
+        for ((j=0; j<total_bits; j++)); do
+            if (( j == start_core_index + i )); then
+                mask="1$mask"
             else
-                mask="${mask}0"
+                mask="0$mask"
             fi
         done
-        while ((${#mask} < 16)); do
-            mask="0${mask}"
-        done
+        mask=$(echo "$mask" | sed 's/^0*//')
         masks+=("$mask")
     done
     echo "${masks[@]}"
@@ -198,6 +199,9 @@ function gen_upstream_block() {
     local name="$1"
     local endpoints="$2"
     local block="    upstream $name {\n"
+    block+="        keepalive 2048;\n"
+    block+="        keepalive_timeout 110s;\n"
+    block+="        keepalive_requests 20000;\n"
     IFS=',' read -ra list <<< "$endpoints"
     for addr in "${list[@]}"; do
         block+="        server $addr max_fails=3 fail_timeout=10s;\n"
@@ -207,7 +211,7 @@ function gen_upstream_block() {
 }
 
 function generate_nginx_conf() {
-    affinity_masks=$(gen_affinity_masks "$core_num")
+    affinity_masks=$(gen_affinity_masks "$start_core_index" "$core_num")
     # backup config if exists
     if [[ -f "$nginx_conf_file" ]]; then
         \cp -n "$nginx_conf_file" "${nginx_conf_file}_bak"

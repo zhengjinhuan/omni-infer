@@ -125,8 +125,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
 
         assert(omni_req_is_in_phase(req, PHASE_PREFILL_WAITING_SCHEDULE));
 
-        // uint32_t least_load = UINT32_MAX;
-        uint32_t selected = UINT32_MAX;
+        uint32_t selected = rand() % gs->num_decode_endpoints;
         uint32_t best_match = 0;
         uint32_t best_load_tokens = UINT32_MAX;
         uint32_t best_running = UINT32_MAX;
@@ -228,7 +227,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
         assert(omni_req_is_in_phase(req, PHASE_DECODE_WAITING_SCHEDULE));
 
         uint32_t least_load = UINT32_MAX;
-        uint32_t selected = UINT32_MAX;
+        uint32_t selected = rand() % gs->num_decode_endpoints;
         for (int m = gs->last_selected_decode; m < gs->num_decode_endpoints + gs->last_selected_decode; m++)
         {
             int j = m % gs->num_decode_endpoints;
