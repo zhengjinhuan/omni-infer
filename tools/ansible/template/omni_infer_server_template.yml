@@ -374,8 +374,8 @@
           --start-core-index 16 \
           --omni-proxy-pd-policy sequential \
           --omni-proxy-model-path $MODEL_PATH \
-          --omni-proxy-max-batch-num-token 30000 \
-          --omni-proxy-prefill-max-num-seqs 16 \
+          --omni-proxy-max-batch-num-token 100000 \
+          --omni-proxy-prefill-max-num-seqs 32 \
           --omni-proxy-decode-max-num-seqs 32
       else
         cd /workspace/omniinfer/tools/scripts

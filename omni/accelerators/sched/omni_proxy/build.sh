@@ -2,6 +2,34 @@
 
 set -e
 
+usage() {
+  cat <<EOF
+Usage: $0 [--skip-extras] [-h|--help]
+
+  --skip-extras   Skip downloading and building msgpack-c and Python
+  -h, --help      Show this help message and exit
+EOF
+  exit 1
+}
+
+SKIP_EXTRAS=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-extras)
+      SKIP_EXTRAS=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo "Unknown option: $1"
+      usage
+      ;;
+  esac
+done
+
 cd ../
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,38 +58,44 @@ if [ ! -d nginx-${NGINX_VERSION} ]; then
 	tar -zxf nginx-${NGINX_VERSION}.tar.gz
 fi
 
-[ ! -f msgpack-c-${MSGPACK_VERSION}.tar.gz ] && wget --no-check-certificate https://github.com/msgpack/msgpack-c/releases/download/c-${MSGPACK_VERSION}/msgpack-c-${MSGPACK_VERSION}.tar.gz
-if [ ! -d msgpack-c-${MSGPACK_VERSION} ]; then
-	tar -zxf msgpack-c-${MSGPACK_VERSION}.tar.gz
-    cd msgpack-c-${MSGPACK_VERSION}
-    mkdir build && cd build
-    cmake .. \
-        -DMSGPACK_BUILD_EXAMPLES=OFF \
-        -DMSGPACK_BUILD_TESTS=OFF \
-        -DMSGPACK_USE_BOOST=OFF \
-        -DCMAKE_INSTALL_PREFIX=/usr
-    make -j$(nproc)
-    make install
-    cd ../../
-fi
+if [ "$SKIP_EXTRAS" = false ]; then
+  echo ">>> Building msgpack-c and Python (default)"
 
-[ ! -f Python-${PYTHON_VERSION}.tgz ] && wget --no-check-certificate https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz
-if [ ! -d Python-${PYTHON_VERSION} ]; then
-    tar -zxf Python-${PYTHON_VERSION}.tgz
-    cd Python-${PYTHON_VERSION}
+    [ ! -f msgpack-c-${MSGPACK_VERSION}.tar.gz ] && wget --no-check-certificate https://github.com/msgpack/msgpack-c/releases/download/c-${MSGPACK_VERSION}/msgpack-c-${MSGPACK_VERSION}.tar.gz
+    if [ ! -d msgpack-c-${MSGPACK_VERSION} ]; then
+        tar -zxf msgpack-c-${MSGPACK_VERSION}.tar.gz
+        cd msgpack-c-${MSGPACK_VERSION}
+        mkdir build && cd build
+        cmake .. \
+            -DMSGPACK_BUILD_EXAMPLES=OFF \
+            -DMSGPACK_BUILD_TESTS=OFF \
+            -DMSGPACK_USE_BOOST=OFF \
+            -DCMAKE_INSTALL_PREFIX=/usr
+        make -j$(nproc)
+        make install
+        cd ../../
+    fi
 
-    ./configure \
-        --enable-optimizations \
-        --enable-shared \
-        --prefix=/usr/local
+    [ ! -f Python-${PYTHON_VERSION}.tgz ] && wget --no-check-certificate https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz
+    if [ ! -d Python-${PYTHON_VERSION} ]; then
+        tar -zxf Python-${PYTHON_VERSION}.tgz
+        cd Python-${PYTHON_VERSION}
 
-    make -j$(nproc)
-    make install
+        ./configure \
+            --enable-optimizations \
+            --enable-shared \
+            --prefix=/usr/local
 
-    echo "/usr/local/lib" > /etc/ld.so.conf.d/python3.11.conf
-    ldconfig
-    
-    cd ..
+        make -j$(nproc)
+        make install
+
+        echo "/usr/local/lib" > /etc/ld.so.conf.d/python3.11.conf
+        ldconfig
+        
+        cd ..
+    fi
+else
+  echo ">>> Skipping msgpack-c and Python download/build (--skip-extras)"
 fi
 
 cd nginx-${NGINX_VERSION}
