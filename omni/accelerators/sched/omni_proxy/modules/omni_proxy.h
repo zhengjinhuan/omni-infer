@@ -21,6 +21,10 @@ typedef struct
     ngx_int_t metrics_enabled;
     ngx_int_t kv_block_size;
     ngx_http_upstream_srv_conf_t *upstream;
+    ngx_uint_t max_batch_num_token;
+    ngx_uint_t prefill_max_num_req;
+    ngx_uint_t decode_max_num_req;
+    ngx_uint_t prefill_starvation_timeout;  
 } ngx_http_omni_loc_conf_t;
 
 typedef struct omni_req_context_s
@@ -51,3 +55,6 @@ typedef struct omni_worker_local_state_s
     omni_req_group_t groups[PHASE_MAX];
     ngx_http_omni_loc_conf_t *loc_conf;
 } omni_worker_local_state_t;
+
+omni_global_state_t *omni_get_global_state();
+omni_worker_local_state_t *omni_get_local_state();
