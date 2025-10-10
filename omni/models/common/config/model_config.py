@@ -12,9 +12,8 @@ class ModelParallelConfig:
     dense_mlp_tp_size: int = 1
     dp_size: int = 1
     o_proj_tp_size: int = 1
-    
-    redundancy_shared_expert_num: int = 0
 
+    redundancy_shared_expert_num: int = 0
  
 @dataclass
 class ModelOperatorOptConfig:
@@ -86,7 +85,10 @@ def init_model_extra_config() -> ModelExtraConfig:
             config_data = json.load(f)
         # Recursively create nested objects
         parall_config = ModelParallelConfig(**config_data['model_parallel_config'])
-        operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimizition_config']))
+        try:
+            operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimization_config']))
+        except KeyError:
+            operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimizition_config']))
         model_config = ModelExtraConfig(
                 parall_config=parall_config,
                 operator_opt_config=operator_opt_config,
