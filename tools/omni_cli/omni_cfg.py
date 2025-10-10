@@ -111,7 +111,8 @@ def update_container_name(node_type, node_name, container_name_prefix, yml_file_
 def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_path):
     """Resolve the remaining parameters."""
     if is_set:
-        sections = {'env': {}, 'args': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', 'container_name': ''}
+        sections = {'env': {}, 'args': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', 'container_name': '',
+                    'ansible_ssh_private_key_file': '', 'ansible_host': ''}
     else:
         sections = {'env': [], 'args': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
             'container_name': '', 'extra-args': [], 'additional-config': [], 'kv-transfer-config': []}
@@ -127,7 +128,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
             seen_sections.add(remaining_args[i])
             if i + 1 >= len(remaining_args) or not remaining_args[i+1].startswith('--'):
                 raise ValueError(f"Missing value for key: '{remaining_args[i]}'")
-            elif remaining_args[i+1][2:] not in list(sections.keys())[2:5]:
+            elif remaining_args[i+1][2:] not in list(sections.keys())[2:]:
                 if is_set:
                     parse_remaining_args_for_set(arg, remaining_args, sections, i)
                     i += 3
@@ -136,7 +137,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                     i += 2
             else:
                 raise ValueError(f"Unexpected argument '{remaining_args[i+1]}' after (env/arg)")
-        elif remaining_args[i][2:] in list(sections.keys())[2:5]:
+        elif remaining_args[i][2:] in list(sections.keys())[2:]:
             arg = remaining_args[i]
             if arg in seen_sections:
                 raise ValueError(f"Duplicate section keyword '{arg}'")
