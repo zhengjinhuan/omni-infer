@@ -90,11 +90,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             exit(1)
         
         self.max_redundant_per_rank = self.config.getattr('max_redundant_per_rank', max_redundant_per_rank) if self.enable_dynamic else None
-        max_redundant_per_expert = self.config.getattr('max_redundant_per_expert', max_redundant_per_expert) if self.enable_dynamic else None
+        self.max_redundant_per_expert = self.config.getattr('max_redundant_per_expert', max_redundant_per_expert) if self.enable_dynamic else None
 
         # Load and validate placement pattern
-        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts, self.enable_rank_round_robin, max_redundant_per_expert,
-                                            max_redundant_per_rank, self.max_moe_layer_num)
+        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts, self.enable_rank_round_robin, self.max_redundant_per_expert,
+                                            self.max_redundant_per_rank, self.max_moe_layer_num)
         if (self.expert_mapping.get_world_size() != self.world_size):
             print(f"[Placement-Error]-Pattern world_size is {self.expert_mapping.get_world_size()} should be {self.world_size}.")
             exit(1)
