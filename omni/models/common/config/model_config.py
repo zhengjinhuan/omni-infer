@@ -12,9 +12,8 @@ class ModelParallelConfig:
     dense_mlp_tp_size: int = 1
     dp_size: int = 1
     o_proj_tp_size: int = 1
-    
-    redundancy_shared_expert_num: int = 0
 
+    redundancy_shared_expert_num: int = 0
  
 @dataclass
 class ModelOperatorOptConfig:
@@ -37,6 +36,7 @@ class ModelOperatorOptConfig:
     decode_gear_list: list[int] = field(default_factory=lambda: [1])
     control_accept_rate: float = -1 # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
     mla_multistream_limit_core: str = '' # 空字符串代表不开启多流分核，形如'20|36'代表主流分配的AIC和AIV核数分别为20和36
+    shared_experts_to_gmm: bool = False # 当redundancy_shared_expert_num > 0时，共享专家使用GMM代替BMM进行计算（限定收益场景：EP288 + 单die bs >= 48，仅针对Decode阶段）
 
     use_prefetch: bool = True # 是否开启预取
     expert_gate_up_prefetch: int = 50 # 默认预取大小为 50Mb；如果是权重是BF16型，设置为 30Mb
@@ -53,6 +53,8 @@ class ModelOperatorOptConfig:
     c8_calib_path: str = None # 计算faquant的scale采集的kv_cache的calib地址，在test_config_prefill.json赋值
     experts_pruning: bool = False
     use_tnd_pa: bool = False  # 稠密模型使用新CANN包FIA算子，以TND+PA格式计算attention
+    
+    enable_topktoppsample_op: bool = False # 使用topktoppsample算子
     
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
@@ -87,7 +89,10 @@ def init_model_extra_config() -> ModelExtraConfig:
             config_data = json.load(f)
         # Recursively create nested objects
         parall_config = ModelParallelConfig(**config_data['model_parallel_config'])
-        operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimizition_config']))
+        try:
+            operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimization_config']))
+        except KeyError:
+            operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimizition_config']))
         model_config = ModelExtraConfig(
                 parall_config=parall_config,
                 operator_opt_config=operator_opt_config,

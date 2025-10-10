@@ -800,6 +800,27 @@ def moe_infer_fusion(
                                group=group)
     return hidden_states, gathered_tokens, topk_weight, expanded_row_idx
 
+def shared_expert_quant_forward(layer, sorted_tokens, expert_tokens, act_dtype, dynamic_scale=None):
+    pertoken_scale = dynamic_scale
+    gate_up_proj = torch_npu.npu_grouped_matmul([sorted_tokens], [layer.gate_up_proj.weight], bias=None, group_list=expert_tokens,
+                                    split_item=3, output_dtype=torch.int32, group_type=0, group_list_type=1)[0]
+    
+    gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
+        gate_up_proj, weight_scale=layer.gate_up_proj.weight_scale.unsqueeze(0), activation_scale=pertoken_scale, bias=None,
+        quant_scale=None, quant_offset=None,
+        group_index=None, activate_left=True, quant_mode=1)
+
+    if not model_extra_config.operator_opt_config.opt_w2_scale_cast:
+        w2_scale = layer.down_proj.weight_scale.unsqueeze(0).to(torch.bfloat16)
+    else:
+        w2_scale = layer.down_proj.weight_scale.unsqueeze(0)
+
+    out = torch_npu.npu_grouped_matmul([gate_up_proj], [layer.down_proj.weight], scale=[w2_scale],
+                                        per_token_scale=[pertoken_scale], bias=None,
+                                        group_list=expert_tokens, split_item=3, output_dtype=act_dtype,
+                                        group_type=0,
+                                        group_list_type=1)[0]
+    return out
 
 def moe_expert_quant_forward(layer, sorted_tokens, expert_tokens, act_dtype, dynamic_scale=None):
     if layer.quant_mode:
@@ -918,8 +939,11 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
                                                 not is_prefill))
 
         if shared_expert_rank_num > 0 and global_rank // experts_tp_size < shared_expert_rank_num:
-            x = {"x_int8": expand_x, "pertoken_scale": dynamic_scale}
-            hidden_states_experts = layer(x)
+            if model_extra_config.operator_opt_config.shared_experts_to_gmm:
+                hidden_states_experts = shared_expert_quant_forward(layer, expand_x, group_list, act_dtype, dynamic_scale)
+            else:
+                x = {"x_int8": expand_x, "pertoken_scale": dynamic_scale}
+                hidden_states_experts = layer(x)
         else:
             # cal experts
             group_list = group_list[

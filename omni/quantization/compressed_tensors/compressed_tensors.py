@@ -128,7 +128,8 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
                 return AscendCompressedTensorsW8A8Int8LinearMethod(
                 strategy=weight_quant.strategy,
                 is_static_input_scheme=False,
-                input_symmetric=input_quant.symmetric)
+                input_symmetric=input_quant.symmetric,
+                layer_name=layer_name)
     
             if self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
                 return AscendCompressedTensorsW4A8Int8LinearMethod(
