@@ -42,7 +42,7 @@ class OfflineEagleDataset(torch.utils.data.Dataset):
         hidden_states = data["hidden_states"][:self.max_len]
 
         input_ids = data["input_ids"][1 : self.max_len + 1]
-        loss_mask = data["loss_mask"][1 : self.max_len + 1]
+        loss_mask = data["loss_mask"][1 : self.max_len + 1] if "loss_mask" in data else torch.ones_like(input_ids)
         loss_mask[-1] = 0
 
         pad_size = self.max_len - input_ids.numel()
