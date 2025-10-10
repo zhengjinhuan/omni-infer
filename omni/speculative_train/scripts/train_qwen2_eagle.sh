@@ -17,5 +17,6 @@ torchrun \
     --ttt-length 3 \
     --checkpoint /data/model/qwq-32b-eagle \
     --resume \
-    --profile --profile-record-shapes \
     | tee $LOGFILE
+
+# --profile --profile-record-shapes \

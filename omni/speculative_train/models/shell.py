@@ -6,9 +6,6 @@ from typing import Optional, Tuple, List
 
 def _compute_target_p(target, loss_mask, pad_length):
     target_head = target
-    target_max_token = target_head.argmax(-1)
-    target_mask = target_max_token.int()
-    position_mask = target_mask[..., None] * loss_mask
     target_head = target_head.float()
     target_p = nn.Softmax(dim=2)(target_head)
 
@@ -20,22 +17,15 @@ def _compute_target_p(target, loss_mask, pad_length):
         value=1 / target_p.shape[-1],
     )
 
-    position_mask_padded = F.pad(
-        position_mask,
+    loss_mask_padded = F.pad(
+        loss_mask,
         pad=(0, 0, 0, pad_length),
         mode="constant",
         value=0,
     )
 
     target_p_padded = target_p_padded.detach()
-    return target_p_padded, position_mask_padded
-
-def _compute_loss(logits, target_p, position_mask):
-    logits = logits.float()
-    out_logp = nn.LogSoftmax(dim=2)(logits)
-    plogp = target_p * out_logp
-    loss = -torch.sum(position_mask * plogp, 2).mean()
-    return loss
+    return target_p_padded, loss_mask_padded
 
 class OfflineEagleModel(nn.Module):
     """
@@ -73,7 +63,7 @@ class OfflineEagleModel(nn.Module):
         target = self.target_head(hidden_states.roll(-1, -2))
         # Step 0: handle vocab size
         with torch.no_grad():
-            target_p_padded, position_mask_padded = _compute_target_p(
+            target_p_padded, loss_mask_padded = _compute_target_p(
                 target=target,
                 loss_mask=loss_mask,
                 pad_length=self.length - 1,
@@ -100,7 +90,7 @@ class OfflineEagleModel(nn.Module):
         cache_hidden = ([], [])
         for i in range(self.length):
             target_p = target_p_padded[:, i : seq_length + i]
-            position_mask = position_mask_padded[:, i : seq_length + i]
+            loss_mask = loss_mask_padded[:, i : seq_length + i]
             # Step 5.1: embed the input ids
             inputs_embeds = self.draft_model.embed_input_ids(input_ids.roll(-i, -1))
 
@@ -119,9 +109,9 @@ class OfflineEagleModel(nn.Module):
             logits = logits.float()
             out_logp = nn.LogSoftmax(dim=2)(logits)
             plogp = target_p * out_logp
-            loss = -torch.sum(position_mask * plogp, 2).mean()
+            loss = -torch.sum(loss_mask * plogp, 2).mean()
             with torch.no_grad():
-                acc = ((logits.argmax(-1) == target_p.argmax(-1)) * position_mask.squeeze(-1)).sum() / loss_mask.sum().clamp_min(1e-6)
+                acc = ((logits.argmax(-1) == target_p.argmax(-1)) * loss_mask.squeeze(-1)).sum() / loss_mask.sum().clamp_min(1e-6)
 
             plosses.append(loss)
             acces.append(acc)
