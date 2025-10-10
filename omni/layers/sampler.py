@@ -5,6 +5,7 @@
 from typing import Dict, List, Optional
 import torch_npu
 import torch
+import os
 
 from vllm.platforms import current_platform
 from vllm.model_executor.layers.sampler import (
@@ -730,6 +731,22 @@ def random_sample(
         return res
     else:
         return torch.gather(idx, 1, res.unsqueeze(1)).view(-1)
+
+def generate_random_sequence(
+        logits: torch.Tensor,
+        generators: dict[int, torch.Generator],
+        stream
+) -> torch.Tensor:
+    with torch_npu.npu.stream(stream):
+        q = torch.empty_like(logits, dtype=torch.float32)
+        if len(generators) != logits.shape[0]:
+            q.exponential_()
+        if generators:
+            for i, generator in generators.items():
+                q[i].exponential_(generator=generator)
+    torch.npu.default_stream().wait_stream(stream)
+    return q
+
 class AscendTopKTopPSamplerV1(TopKTopPSampler):
     """
     Module that performs optional top-k and top-p filtering followed by
@@ -753,9 +770,18 @@ class AscendTopKTopPSamplerV1(TopKTopPSampler):
 
         The logits tensor may be updated in-place.
         """
-        logits, idx = apply_top_k_top_p(logits, k, p)
-        probs = logits.softmax(dim=-1, dtype=torch.float32)
-        return random_sample(probs, idx, generators, self.dsa_stream)
+        use_npu_top_k_top_p_sample = model_extra_config.operator_opt_config.enable_topktoppsample_op
+        if use_npu_top_k_top_p_sample == False or p is None or k is None:
+            logits, idx = apply_top_k_top_p(logits, k, p)
+            probs = logits.softmax(dim=-1, dtype=torch.float32)
+            return random_sample(probs, idx, generators, self.dsa_stream)
+        else:
+            logits = logits.type(torch.bfloat16)
+            p = p.type(torch.bfloat16)
+            k = k.type(torch.int32)
+            q = generate_random_sequence(logits, generators, self.dsa_stream)
+            res = torch_npu.npu_top_k_top_p_sample(logits, k, p, q)
+            return res[0]
 
 def _apply_penalties_v1(logits: torch.Tensor, prompt_mask: torch.Tensor,
                     output_mask: torch.Tensor,
