@@ -236,7 +236,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs)
         for (int m = gs->last_selected_decode; m < gs->num_decode_endpoints + gs->last_selected_decode; m++)
         {
             int j = m % gs->num_decode_endpoints;
-            if (gs->decode_states[j].num_tokens < least_load)
+            if (gs->decode_states[j].num_tokens < least_load && gs->decode_states[j].num_running < olcf->decode_max_num_seqs)
             {
                 least_load = gs->decode_states[j].num_tokens;
                 selected = j;
