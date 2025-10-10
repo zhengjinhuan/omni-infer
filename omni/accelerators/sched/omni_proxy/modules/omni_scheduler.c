@@ -212,7 +212,7 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
     // TODO: estimated expected next schedule time
 }
 
-void omni_proxy_schedule_decode(omni_global_state_t *gs)
+void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_t *olcf)
 {
     omni_req_group_t *group = &gs->groups[PHASE_DECODE_WAITING_SCHEDULE];
     // TODO: Check should schedule or wait based on upstream expected come back time
