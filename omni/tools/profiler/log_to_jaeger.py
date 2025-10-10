@@ -132,7 +132,7 @@ def build_spans(reqid, action_times, roles):
         else:
             action_first_ts.append(None)
             action_role_ip.append((None, None))
-        print(f"{i}: {action}, action_first_ts: {action_first_ts[i]}")
+        # print(f"{i}: {action}, action_first_ts: {action_first_ts[i]}")
 
 
     # 1. generate all small_spans（(i,i+1), i in [6,15],[19,28-1]）
