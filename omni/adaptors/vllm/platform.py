@@ -272,7 +272,7 @@ class ConfigUpdater:
             if additional_config.get("enable_hybrid_graph_mode", False) and additional_config.get("enable_length_sorted_schedule", False):
                 raise RuntimeError("Cannot enable both hybrid graph mode and length sorted schedule.")
             if additional_config.get("enable_hybrid_graph_mode", False):
-                from omni.adaptors.vllm.worker.npu_schedule import HybridSchedulerConfig
+                from omni.adaptors.vllm.sched.npu_schedule import HybridSchedulerConfig
                 ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
                     vllm_config.scheduler_config)
                 vllm_config.scheduler_config = ascend_scheduler_config
