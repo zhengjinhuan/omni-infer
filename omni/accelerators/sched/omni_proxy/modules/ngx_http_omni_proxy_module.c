@@ -1153,7 +1153,9 @@ static void omni_proxy_schedule(omni_global_state_t *gs)
         if (local_state.loc_conf) {
             omni_proxy_schedule_prefill(gs, local_state.loc_conf);
         }
-        omni_proxy_schedule_decode(gs);
+        if (local_state.loc_conf) {
+            omni_proxy_schedule_decode(gs, local_state.loc_conf);
+        }
         ngx_shmtx_unlock(&gs->shmtx);
     }
 }
