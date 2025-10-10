@@ -28,7 +28,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from vllm.config import CompilationLevel, VllmConfig
-from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group, get_tensor_model_parallel_rank
 from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
 from vllm.sequence import IntermediateTensors, VLLM_INVALID_TOKEN_ID
@@ -198,6 +198,19 @@ class NPUModelRunner(GPUModelRunner):
         if EmsEnv.enable_vllm_ems:
             from omni.adaptors.vllm.ems.ems_adapter import EmsAdapter
             self.ems_adapter = EmsAdapter(vllm_config=vllm_config)
+
+        rank = get_tensor_model_parallel_rank()
+        self.training_data_save_path = os.environ.get('TRAINING_DATA_SAVE_PATH', "")
+        self.token_threshold = int(os.environ.get("TRAINING_DATA_TOKEN_THRESHOLD", 1024))
+        prepare_for_training = self.training_data_save_path != "" and rank == 0
+        self.save_hidden_states = False
+        self.save_token_ids = False
+        if prepare_for_training:
+            if self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
+                self.save_token_ids = True
+            else:
+                self.save_hidden_states = True
+
 
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
@@ -571,6 +584,30 @@ class NPUModelRunner(GPUModelRunner):
         cost_setup_connector = start_f - start_setup_connector
         cost_fc_exit = start_ret - start_fc_exit
         logger.debug(f" ***** before fc {cost_before_fc:.6f}, fc {cost_fc:.6f}={cost_setup_connector:.6f}+{cost_fc_exit:.6f}")
+
+        if self.save_hidden_states and attn_state == AscendAttentionState.PrefillNoCache:
+            num_scheduled_tokens = np.array([
+                scheduler_output.num_scheduled_tokens[req_id]
+                for req_id in self.input_batch.req_ids
+            ], dtype=np.int32)
+
+            req_slice = np.zeros(num_scheduled_tokens.size + 1, dtype=num_scheduled_tokens.dtype)
+            np.cumsum(num_scheduled_tokens, out=req_slice[1:])
+
+            input_ids_cpu = input_ids.cpu()
+            hidden_states_cpu = raw_hidden_states.cpu()
+            for i, req_id in enumerate(self.input_batch.req_ids):
+                req = self.requests.get(req_id, None)
+                if len(req.prompt_token_ids) < self.token_threshold:
+                    continue
+                data = {
+                    'req_id': req_id,
+                    'input_ids': input_ids_cpu[req_slice[i]:req_slice[i + 1]].clone(),
+                    'hidden_states': hidden_states_cpu[req_slice[i]:req_slice[i + 1]].clone(),
+                }
+                filename = os.path.join(self.training_data_save_path, f"hidden-states-{time.time_ns()}.pt")
+                torch.save(data, filename)
+
         return hidden_states, raw_hidden_states, input_ids, finished_sending, finished_recving
 
     def kv_connector_no_forward(
@@ -613,6 +650,23 @@ class NPUModelRunner(GPUModelRunner):
                                               dtype=torch.int64)
             self.cache_engine.swap_out(blocks_to_swap_out)
 
+    def save_tokens(
+        self,
+        scheduler_output: "SchedulerOutput",
+    ) -> None:
+        for req_id in scheduler_output.finished_req_ids:
+            req = self.requests.get(req_id, None)
+            if req is None or len(req.output_token_ids) < self.token_threshold:
+                continue
+            to_save = {
+                'req_id' : req_id,
+                'prompt_token_ids' : req.prompt_token_ids,
+                'output_token_ids' : req.output_token_ids,
+            }
+            filename = os.path.join(self.training_data_save_path, f"token-ids-{time.time_ns()}.pt")
+            torch.save(to_save, filename)
+            
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -623,6 +677,9 @@ class NPUModelRunner(GPUModelRunner):
 
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.sync_save_event()
+
+        if self.save_token_ids:
+            self.save_tokens(scheduler_output)
 
         # Update KVConnector with the KVConnector metadata forward().
         self._update_states(scheduler_output)
