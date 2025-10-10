@@ -13,38 +13,38 @@ ACTION_LIST = [
     "Enter state APC matching",
     "Enter state P waiting",
     "Enter state P scheduled",
-    "Enter state P running",                       #-->6
+    "Enter state P running",                       #6
 
-    "Start process request in prefill engine",    #6
-    "Prefill add waiting queue",                  #7
-    "try to schedule in waiting queue",           #8
-    "Prefill get new_blocks",                     #9
-    "success add to seq groups",                  #10
-    "Prefill start execute_model",                #11-->12
-    "Prefill done execute_model",                 #12
-    "Start to send output in prefill stage",      #13
-    "Finish prefill pickle and start response",   #14--->15
+    "Start process request in prefill engine",
+    "Prefill add waiting queue",
+    "try to schedule in waiting queue",
+    "Prefill get new_blocks",
+    "success add to seq groups",
+    "Prefill start execute_model",                #12
+    "Prefill done execute_model",
+    "Start to send output in prefill stage",
+    "Finish prefill pickle and start response",   #15
 
-    "Finish P running",                            #-->16
+    "Finish P running",                            #16
     "Enter state D waiting",
     "Enter state D scheduled",
     "Enter state D running",
-    "Start to dispatch decode request",           #19 -->20
-    "Add need pulling sequence",                  #20
-    "Start pull kv",                              #21
-    "Finish pull kv",                             #22 -->23
-    "Start append running sequece for decode",    #23
-    "Start to send output",                       #24
-    "First decode output token",                  #25
-    "Second decode output token",                 #26
-    "Third decode output token",                  #27
-    "Finish decode pickle and start response",    #28-->29
+    "Start to dispatch decode request",           #20
+    "Add need pulling sequence",          
+    "Start pull kv",
+    "Finish pull kv",                             #23
+    "Start append running sequece for decode",    
+    "Start to send output",
+    "First decode output token",
+    "Second decode output token",
+    "Third decode output token",
+    "Finish decode pickle and start response",    #29
 
-    "Proxy got first token",                      #29-->30
-    "Prefill free kv blocks",                     #30
-    "Proxy got second token",                     #31
-    "Proxy got third token",                      #32
-    "Received all tokens",                        #33-->34
+    "Proxy got first token",                      #30
+    "Prefill free kv blocks",
+    "Proxy got second token",
+    "Proxy got third token",
+    "Received all tokens",                        #34
 ]
 
 EXTRA_SPANS = [
@@ -82,7 +82,7 @@ def normalize_reqid(reqid):
 
 def parse_log(log_dir):
     pattern = re.compile(
-        r'<<<Action: (.*?); Timestamp:([\d.]+); RequestID:([a-z0-9-]+)[;, ]'
+        r'<<<Action: (.*?); Timestamp:([\d.]+); RequestID:([a-z0-9-]+)(?:[;, ]|$)'
     )
     pattern_with_role = re.compile(
         r'<<<Action: (.*?); Timestamp:([\d.]+); RequestID:([a-z0-9-]+); Role:([a-zA-Z0-9]+)_(\d+\.\d+\.\d+\.\d+)'
