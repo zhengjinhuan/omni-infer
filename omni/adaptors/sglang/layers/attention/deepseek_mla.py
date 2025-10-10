@@ -4,6 +4,10 @@ from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
+from torch import nn
+import torch_npu
+from transformers import PretrainedConfig
+
 from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
 from sglang.srt.layers.dp_attention import (
     attn_tp_all_gather_into_tensor,
@@ -24,7 +28,6 @@ from sglang.srt.layers.quantization.fp8_kernel import (
     per_token_group_quant_mla_deep_gemm_masked_fp8,
 )
 from sglang.srt.layers.radix_attention import RadixAttention
-from sglang.srt.layers.rotary_embedding import get_rope, get_rope_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import (
     ForwardBatch,
@@ -44,9 +47,8 @@ from sglang.srt.utils import (
     log_info_on_rank0,
     use_intel_amx_backend,
 )
-from torch import nn
-from transformers import PretrainedConfig
 
+from omni.adaptors.sglang.layers.rotary_embedding import get_rope
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.linear import (
     MergedColumnParallelLinear,
@@ -198,14 +200,13 @@ class DeepseekMLA(nn.Module):
         if rope_scaling:
             rope_scaling["rope_type"] = "deepseek_yarn"
 
-        self.rotary_emb = get_rope_wrapper(
+        self.rotary_emb = get_rope(
             qk_rope_head_dim,
             rotary_dim=qk_rope_head_dim,
             max_position=max_position_embeddings,
             base=rope_theta,
             rope_scaling=rope_scaling,
             is_neox_style=False,
-            device=global_server_args_dict["device"],
         )
 
         if rope_scaling:
@@ -348,7 +349,19 @@ class DeepseekMLA(nn.Module):
         k_nope = kv[..., : self.qk_nope_head_dim]
         v = kv[..., self.qk_nope_head_dim :]
         k_pe = latent_cache[:, :, self.kv_lora_rank :]
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+        
+        metadata = forward_batch.attn_backend.forward_metadata
+        if metadata.cos is None or metadata.sin is None:
+            cos, sin = self.rotary_emb.get_cos_sin(positions)
+        else:
+            cos, sin = metadata.cos, metadata.sin
+        q_pe = q_pe.unsqueeze(2)
+        q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin)
+        q_pe = q_pe.squeeze(2)
+        k_pe = k_pe.unsqueeze(2)
+        k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
+        k_pe = k_pe.squeeze(2)
+
         q[..., self.qk_nope_head_dim :] = q_pe
         k = torch.empty_like(q)
         k[..., : self.qk_nope_head_dim] = k_nope
@@ -373,7 +386,7 @@ class DeepseekMLA(nn.Module):
             bs_qlen, q_heads, q_dim = q.size()
             q_nope, q_rope = q.split([self.v_head_dim, self.qk_rope_head_dim], dim=-1)
             k_nope, k_rope = k.split([self.v_head_dim, self.qk_rope_head_dim], dim=-1)
-            metadata = forward_batch.attn_backend.forward_metadata
+
             attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                 q_nope,
                 k_nope,
@@ -449,7 +462,19 @@ class DeepseekMLA(nn.Module):
             q_nope_out = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
 
         q_nope_out = q_nope_out.transpose(0, 1)
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+
+        metadata = forward_batch.attn_backend.forward_metadata
+        if metadata.cos is None or metadata.sin is None:
+            cos, sin = self.rotary_emb.get_cos_sin(positions)
+        else:
+            cos, sin = metadata.cos, metadata.sin
+        q_pe = q_pe.unsqueeze(2)
+        q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin)
+        q_pe = q_pe.squeeze(2)
+        k_pe = k_pe.unsqueeze(2)
+        k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
+        k_pe = k_pe.squeeze(2)
+
         k_nope = k_nope.view(-1, 1, self.kv_lora_rank)
         forward_batch.token_to_kv_pool.set_mla_kv_buffer(
             self.attn_mqa,
@@ -479,7 +504,6 @@ class DeepseekMLA(nn.Module):
         k_nope = k_cache[..., :q_nope_dim]
         k_rope = k_cache[..., q_nope_dim:]
 
-        metadata = forward_batch.attn_backend.forward_metadata
         attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
             q_nope,
             k_nope,
