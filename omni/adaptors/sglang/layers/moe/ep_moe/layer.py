@@ -731,7 +731,7 @@ def moe_infer_fusion(
         group_list=expert_tokens,
         split_item=3,
         group_type=0,
-        scale=[layer.w2_weight_scale.squeeze(-1).to(torch.bfloat16)],
+        scale=[layer.w2_weight_scale.squeeze(-1)],
         per_token_scale=[dynamic_scale],
         output_dtype=torch.bfloat16,
         tuning_config=[0],

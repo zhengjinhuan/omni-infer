@@ -5,7 +5,11 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
 import torchair
+from torch import nn
 from contextlib import nullcontext
+
+import torch_npu
+from transformers import PretrainedConfig
 
 from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
 from sglang.srt.layers.dp_attention import (
@@ -27,7 +31,6 @@ from sglang.srt.layers.quantization.fp8_kernel import (
     per_token_group_quant_mla_deep_gemm_masked_fp8,
 )
 from sglang.srt.layers.radix_attention import RadixAttention
-from sglang.srt.layers.rotary_embedding import get_rope, get_rope_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import (
     ForwardBatch,
@@ -47,16 +50,13 @@ from sglang.srt.utils import (
     log_info_on_rank0,
     use_intel_amx_backend,
 )
-from torch import nn
-from transformers import PretrainedConfig
 
+from omni.adaptors.sglang.layers.rotary_embedding import get_rope
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.linear import (
     MergedColumnParallelLinear,
     RowParallelLinear,
 )
-
-BLOCK_SIZE = 128
 KVCACHE_NZ_DIM = 16
 
 class AttnForwardMethod(IntEnum):
@@ -203,14 +203,13 @@ class DeepseekMLA(nn.Module):
         if rope_scaling:
             rope_scaling["rope_type"] = "deepseek_yarn"
 
-        self.rotary_emb = get_rope_wrapper(
+        self.rotary_emb = get_rope(
             qk_rope_head_dim,
             rotary_dim=qk_rope_head_dim,
             max_position=max_position_embeddings,
             base=rope_theta,
             rope_scaling=rope_scaling,
             is_neox_style=False,
-            device=global_server_args_dict["device"],
         )
 
         if rope_scaling:
@@ -352,7 +351,19 @@ class DeepseekMLA(nn.Module):
         k_nope = kv[..., : self.qk_nope_head_dim]
         v = kv[..., self.qk_nope_head_dim :]
         k_pe = latent_cache[:, :, self.kv_lora_rank :]
-        q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
+        
+        metadata = forward_batch.attn_backend.forward_metadata
+        if metadata.cos is None or metadata.sin is None:
+            cos, sin = self.rotary_emb.get_cos_sin(positions)
+        else:
+            cos, sin = metadata.cos, metadata.sin
+        q_pe = q_pe.unsqueeze(2)
+        q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin)
+        q_pe = q_pe.squeeze(2)
+        k_pe = k_pe.unsqueeze(2)
+        k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
+        k_pe = k_pe.squeeze(2)
+
         q[..., self.qk_nope_head_dim :] = q_pe
         k = torch.empty_like(q)
         k[..., : self.qk_nope_head_dim] = k_nope
@@ -377,7 +388,7 @@ class DeepseekMLA(nn.Module):
             bs_qlen, q_heads, q_dim = q.size()
             q_nope, q_rope = q.split([self.v_head_dim, self.qk_rope_head_dim], dim=-1)
             k_nope, k_rope = k.split([self.v_head_dim, self.qk_rope_head_dim], dim=-1)
-            metadata = forward_batch.attn_backend.forward_metadata
+
             attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                 q_nope,
                 k_nope,
@@ -410,15 +421,12 @@ class DeepseekMLA(nn.Module):
                 not self.o_proj.reduce_results
             ), "short-circuiting allreduce will lead to hangs"
             return hidden_states
-        if forward_batch.can_run_graph:
-            stream_context = torchair.scope.npu_stream_switch("mla_decode")
-        else:
-            stream_context = nullcontext()
-
         if self.q_lora_rank is not None:
             fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
-            q, latent_cache = torch.split(fused_qkv_a_proj_out,
-                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1)
+            q, latent_cache = fused_qkv_a_proj_out.split(
+                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
+            )
+            # overlap qk norm
             q = self.q_a_layernorm(q)
             q = self.q_b_proj(q)[0]
         else:
@@ -428,51 +436,53 @@ class DeepseekMLA(nn.Module):
         q = q.view(-1, self.num_local_heads, self.qk_head_dim)
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
         q_nope = torch.matmul(q_nope.transpose(0, 1), self.w_kc).transpose(0, 1)
+        
+        k_nope, k_pe = torch.split(latent_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        k_nope = self.kv_a_layernorm(k_nope).view(-1, 1, self.kv_lora_rank)
+        k_pe = k_pe.unsqueeze(1)
 
-        with stream_context:
-            k_nope, k_pe = torch.split(latent_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-            k_nope = self.kv_a_layernorm(k_nope).view(-1, 1, self.kv_lora_rank)
-            k_pe = k_pe.unsqueeze(1)
-
-            q_pe, k_pe = self.rotary_emb(positions, q_pe, k_pe)
-            forward_batch.token_to_kv_pool.set_mla_kv_buffer(
-                self.attn_mqa,
-                forward_batch.out_cache_loc,
-                k_nope,
-                k_pe,
-            )
-
-            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id)
-            k_cache= k_cache.view(-1, 1, BLOCK_SIZE, k_cache.shape[-1])
-
-            k_nope, k_rope = torch.split(k_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-            k_nope = k_nope.view(k_cache.shape[0], 1, BLOCK_SIZE, self.kv_lora_rank // KVCACHE_NZ_DIM, 
-                                KVCACHE_NZ_DIM).transpose(2, 3)
-            k_rope = k_rope.view(k_cache.shape[0], 1, BLOCK_SIZE, self.qk_rope_head_dim // KVCACHE_NZ_DIM, 
-                                KVCACHE_NZ_DIM).transpose(2, 3)
-
-        padding_bs = forward_batch.input_ids.size(0)
         metadata = forward_batch.attn_backend.forward_metadata
+        padding_bs = forward_batch.input_ids.size(0)
+        if metadata.cos is None or metadata.sin is None:
+            cos, sin = self.rotary_emb.get_cos_sin(positions)
+        else:
+            cos, sin = metadata.cos, metadata.sin
+        q_pe = q_pe.unsqueeze(2)
+        q_pe = torch_npu.npu_interleave_rope(q_pe, cos, sin)
+        q_pe = q_pe.squeeze(2)
+        k_pe = k_pe.unsqueeze(2)
+        k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
+        k_pe = k_pe.squeeze(2)
+
+        forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+            self.attn_mqa,
+            forward_batch.out_cache_loc,
+            k_nope,
+            k_pe,
+        )
+        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id)
+        k_cache= k_cache.view(-1, metadata.page_size, k_cache.shape[-1])
+        k_nope, k_rope = torch.split(k_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1) 
 
         if forward_batch.can_run_graph:
             q_nope = q_nope.view(padding_bs, self.num_local_heads, self.kv_lora_rank)
             q_pe = q_pe.view(padding_bs, self.num_local_heads, self.qk_rope_head_dim)
             attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
-                q_nope,
-                k_nope,
-                k_nope,
-                query_rope=q_pe,
+                q_nope, 
+                k_nope, 
+                k_nope, 
+                query_rope=q_pe, 
                 key_rope=k_rope,
                 num_heads=self.num_local_heads,
-                num_key_value_heads=1,
-                input_layout="TND",
+                num_key_value_heads=1, 
+                input_layout='TND',
                 scale=self.scaling,
-                antiquant_mode=0,
+                antiquant_mode=0, 
                 antiquant_scale=None,
                 block_table=metadata.block_kv_indices,
-                block_size=BLOCK_SIZE,
+                block_size=metadata.page_size,
                 actual_seq_lengths=list(range(1, padding_bs + 1)),
-                actual_seq_lengths_kv=metadata.seq_lens_list,
+                actual_seq_lengths_kv=metadata.seq_lens_list
             )
         else:
             q_nope = q_nope.view(padding_bs, -1, self.num_local_heads, self.kv_lora_rank)
@@ -492,9 +502,10 @@ class DeepseekMLA(nn.Module):
                 antiquant_mode=0,
                 antiquant_scale=None,
                 block_table=metadata.block_kv_indices,
-                block_size=BLOCK_SIZE,
-                actual_seq_lengths_kv=metadata.seq_lens_list,
+                block_size=metadata.page_size,
+                actual_seq_lengths_kv=metadata.seq_lens_list, 
             )
+
         attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank).transpose(0, 1)
         attn_output = (
             torch.matmul(attn_output, self.w_vc)

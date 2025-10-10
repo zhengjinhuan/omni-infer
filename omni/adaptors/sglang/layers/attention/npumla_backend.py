@@ -37,6 +37,8 @@ MAX_SEQ_LEN = 4096
 class NpuMLADecodeMetadata:
     npumla_metadata: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
     block_kv_indices: Optional[torch.Tensor] = None
+    cos: Optional[torch.Tensor] = None
+    sin: Optional[torch.Tensor] = None
 
     def __init__(
         self,

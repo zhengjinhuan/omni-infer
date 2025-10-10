@@ -5,6 +5,7 @@ import os
 from typing import Optional
 
 import torch
+import torch_npu
 from torch.distributed import ProcessGroup
 from sglang.srt.distributed import get_moe_ep_group
 from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors_moe import (
@@ -64,13 +65,15 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
 
         w13_scale = torch.nn.Parameter(
             torch.empty(
-                num_experts, 2 * intermediate_size_per_partition, 1, dtype=torch.float32
+                num_experts, 2 * intermediate_size_per_partition, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
             ),
             requires_grad=False,
         )
         w13_offset = torch.nn.Parameter(
             torch.zeros(
-                num_experts, 2 * intermediate_size_per_partition, 1, dtype=torch.float32
+                num_experts, 2 * intermediate_size_per_partition, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
             ),
             requires_grad=False,
         )
@@ -80,11 +83,17 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         set_weight_attrs(w13_offset, extra_weight_attrs)
 
         w2_scale = torch.nn.Parameter(
-            torch.ones(num_experts, hidden_size, 1, dtype=torch.float32),
+            torch.ones(
+                num_experts, hidden_size, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
+            ),
             requires_grad=False,
         )
         w2_offset = torch.nn.Parameter(
-            torch.zeros(num_experts, hidden_size, 1, dtype=torch.float32),
+            torch.zeros(
+                num_experts, hidden_size, 1,
+                dtype=torch.float32 if params_dtype == torch.float16 else torch.bfloat16
+            ),
             requires_grad=False,
         )
         layer.register_parameter("w2_weight_scale", w2_scale)
@@ -93,16 +102,15 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         set_weight_attrs(w2_offset, extra_weight_attrs)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-
-        layer.w13_weight = torch.nn.Parameter(layer.w13_weight, requires_grad=False)
-        layer.w2_weight = torch.nn.Parameter(layer.w2_weight, requires_grad=False)
-        layer.w13_weight_scale = torch.nn.Parameter(
-            layer.w13_weight_scale.data, requires_grad=False
-        )
+        layer.w13_weight.data = layer.w13_weight.data.transpose(1, 2).contiguous()
+        layer.w2_weight.data = layer.w2_weight.data.transpose(1, 2).contiguous()
+        #enable weight_nz default, need control by model config later
+        layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
+        layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
         layer.w2_weight_scale = torch.nn.Parameter(
             layer.w2_weight_scale.data, requires_grad=False
         )
-
+        layer.w13_weight_scale = torch.nn.Parameter(layer.w13_weight_scale.to(torch.float32), requires_grad=False)
         self.n_routed_experts = len(layer.w13_weight)
 
         self.local_expert_indices_offset = (
