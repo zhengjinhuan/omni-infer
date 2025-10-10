@@ -442,7 +442,7 @@ class DeepseekMoE(nn.Module):
             topk_ids = torch.round(topk_ids).to(torch.int32)
             global_pertoken_scale = global_pertoken_scale.squeeze(-1)
 
-        final_hidden_states = self.experts(
+        final_hidden_states_list = self.experts(
             hidden_states=global_hidden_states,
             topk_weights=topk_weights,
             topk_ids=topk_ids,
@@ -450,10 +450,31 @@ class DeepseekMoE(nn.Module):
             attn_metadata=attn_metadata
         )
 
+        if not self.quant_symbol:
+            if len(final_hidden_states_list) != 4:
+                raise RuntimeError("len(final_hidden_states_list) != 4")
+            final_hidden_states = final_hidden_states_list[0]
+            gathered_tokens = final_hidden_states_list[1]
+            expanded_row_idx = final_hidden_states_list[3]
+        else:
+            final_hidden_states = final_hidden_states_list
+
         if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             final_hidden_states = get_world_group().reduce_scatter(final_hidden_states)
 
-        final_hidden_states = final_hidden_states + shared_output
+        if not self.quant_symbol:
+            final_hidden_states = torch_npu.npu_moe_finalize_routing(
+                gathered_tokens,
+                skip1=shared_output,
+                skip2=None,
+                bias=None,
+                scales=topk_weights.to(gathered_tokens.dtype),
+                expanded_src_to_dst_row=expanded_row_idx,
+                export_for_source_row=None,
+                drop_pad_mode=2
+            )
+        else:
+            final_hidden_states = final_hidden_states + shared_output
 
         return final_hidden_states, residual
 
