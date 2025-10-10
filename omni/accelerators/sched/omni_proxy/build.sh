@@ -59,7 +59,7 @@ if [ ! -d nginx-${NGINX_VERSION} ]; then
 fi
 
 if [ "$SKIP_EXTRAS" = false ]; then
-  echo ">>> Building msgpack-c and Python (default)"
+    echo ">>> Building msgpack-c and Python (default)"
 
     [ ! -f msgpack-c-${MSGPACK_VERSION}.tar.gz ] && wget --no-check-certificate https://github.com/msgpack/msgpack-c/releases/download/c-${MSGPACK_VERSION}/msgpack-c-${MSGPACK_VERSION}.tar.gz
     if [ ! -d msgpack-c-${MSGPACK_VERSION} ]; then
