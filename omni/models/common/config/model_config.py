@@ -6,6 +6,7 @@ import json
 import threading
 from vllm.logger import logger
 import omni.adaptors.vllm.envs as envs
+import os
 
 @dataclass
 class ModelParallelConfig:
@@ -50,6 +51,7 @@ class ModelOperatorOptConfig:
     prefill_enable_mla_alltoall: bool = False
     prefill_enable_mla_alltoall_local: bool = False
     fa_quant: bool = False
+    use_omni_cache: bool = False
     c8_calib_path: str = None # 计算faquant的scale采集的kv_cache的calib地址，在test_config_prefill.json赋值
     experts_pruning: bool = False
     use_tnd_pa: bool = False  # 稠密模型使用新CANN包FIA算子，以TND+PA格式计算attention
@@ -62,6 +64,10 @@ class ModelOperatorOptConfig:
             raise ValueError(
                 "When use_omni_placement=True, omni_placement_config_path must be provided!"
             )
+        
+        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
+            self.use_omni_cache = True
+
         # Check the dependencies of use_prefetch and prefetch_Mb
         if not self.use_prefetch:
             self.expert_gate_up_prefetch = 0
