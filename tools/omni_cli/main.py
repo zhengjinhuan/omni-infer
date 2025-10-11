@@ -561,6 +561,10 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
             tf.write(export_block + "\n\n")
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
 
+            tf.write(f'test ! -e /usr/local/Ascend/latest && mkdir -p /usr/local/Ascend/latest '
+                     f'&& ln -sf /usr/local/Ascend/ascend-toolkit/latest/* /usr/local/Ascend/latest '
+                     f'|| echo "Link already exists or target missing"')
+
             if need_start_ray:
                 tf.write(f"{ray_cmd}\n")
                 if is_master:
