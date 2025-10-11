@@ -14,6 +14,7 @@ from transformers import PretrainedConfig
 from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
 from sglang.srt.layers.dp_attention import (
     attn_tp_all_gather_into_tensor,
+    get_attention_tp_group,
     get_attention_tp_rank,
     get_attention_tp_size,
 )
@@ -56,6 +57,7 @@ from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.linear import (
     MergedColumnParallelLinear,
     RowParallelLinear,
+    RowParallelLinearWithReduceScatter,
 )
 KVCACHE_NZ_DIM = 16
 
@@ -131,6 +133,7 @@ class DeepseekMLA(nn.Module):
         self.max_position_embeddings = max_position_embeddings
 
         self.layer_scatter_modes = layer_scatter_modes
+        self.quant_symbol = quant_config is not None
 
         self.mask_length = 2048
         self.attn_mask = ~torch.tril(
@@ -188,12 +191,12 @@ class DeepseekMLA(nn.Module):
             tp_size=attn_tp_size,
         )
         # O projection.
-        self.o_proj = RowParallelLinear(
+        self.o_proj = RowParallelLinearWithReduceScatter(
             self.num_heads * self.v_head_dim,
             self.hidden_size,
             bias=False,
             quant_config=quant_config,
-            reduce_results=reduce_results,
+            reduce_results=True,
             prefix=add_prefix("o_proj", prefix),
             tp_rank=attn_tp_rank,
             tp_size=attn_tp_size,
@@ -295,18 +298,6 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
-            self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
-        ):
-            hidden_states, local_hidden_states = (
-                forward_batch.gathered_buffer[: forward_batch.input_ids.shape[0]],
-                hidden_states,
-            )
-            attn_tp_all_gather_into_tensor(
-                hidden_states,
-                local_hidden_states,
-            )
-
         if (
             forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle
         ) or forward_batch.is_target_verify:
@@ -325,16 +316,28 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if hidden_states.shape[0] == 0:
+        if isinstance(hidden_states, torch.Tensor) and hidden_states.shape[0] == 0:
             assert (
                 not self.o_proj.reduce_results
             ), "short-circuiting allreduce will lead to hangs"
             return hidden_states
+
         if self.q_lora_rank is not None:
             q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
                 [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
             )
+            latent_cache = latent_cache.contiguous()
+            latent_cache = get_attention_tp_group().all_gather(latent_cache, dim=0)
+
             q = self.q_a_layernorm(q)
+            if self.quant_symbol:
+                q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
+                # Quantizing before all_gather can reduce communication overhead.
+                q_quant = get_attention_tp_group().all_gather(q_quant, dim=0)
+                q_scale = get_attention_tp_group().all_gather(q_scale, dim=0)
+                q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
+            else:
+                q = get_attention_tp_group().all_gather(q, dim=0)
             q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
             q = self.q_proj(hidden_states)[0].view(
@@ -404,6 +407,7 @@ class DeepseekMLA(nn.Module):
             attn_output = attn_output[..., : self.v_head_dim]
         attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
         output, _ = self.o_proj(attn_output)
+
         return output
 
     def _forward_decode(

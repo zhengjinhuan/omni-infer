@@ -286,6 +286,7 @@ class DeepseekMoE(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
         prefetch_list: Optional[dict] = None,
         **kwargs,
@@ -295,11 +296,11 @@ class DeepseekMoE(nn.Module):
         self.run_graph = forward_batch.can_run_graph
 
         if forward_batch.is_extend_in_batch:
-            return self._forward_prefill_norm(hidden_states, forward_batch)
+            return self._forward_prefill_norm(hidden_states, residual, forward_batch)
         else:
-            return self._forward_decode_dispatch_combine(hidden_states, forward_batch, prefetch_list)
+            return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
 
-    def _forward_prefill_norm(self, hidden_states, forward_batch) -> torch.Tensor:
+    def _forward_prefill_norm(self, hidden_states, residual, forward_batch) -> torch.Tensor:
 
         shared_output = None
 
@@ -360,9 +361,9 @@ class DeepseekMoE(nn.Module):
             drop_pad_mode=2,
         )
 
-        return hidden_states
+        return hidden_states, residual
 
-    def _forward_decode_dispatch_combine(self, hidden_states, forward_batch, prefetch_list) -> torch.Tensor:
+    def _forward_decode_dispatch_combine(self, hidden_states, residual, forward_batch, prefetch_list) -> torch.Tensor:
 
         # assert hidden_states.shape[0] > 0 and not forward_batch.is_prefill_idle
 
@@ -617,7 +618,7 @@ class DeepseekMoE(nn.Module):
             x_active_mask=None,                                 # TODO: mc2_mask, not aligned with vLLM's
         )
 
-        return hidden_states_route + shared_output
+        return hidden_states_route + shared_output, residual
 
     def get_moe_weights(self):
         return [
