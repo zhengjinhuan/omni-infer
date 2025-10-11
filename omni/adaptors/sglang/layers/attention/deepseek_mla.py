@@ -324,6 +324,7 @@ class DeepseekMLA(nn.Module):
             q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
                 [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
             )
+            latent_cache = latent_cache.contiguous()
             latent_cache = get_attention_tp_group().all_gather(latent_cache, dim=0)
 
             q = self.q_a_layernorm(q)
