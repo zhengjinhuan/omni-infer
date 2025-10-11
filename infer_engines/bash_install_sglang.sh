@@ -18,3 +18,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/add_parallel.patch
 git apply --whitespace=nowarn $PATCH_ROOT/mtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/npu_profiling.patch
 git apply --whitespace=nowarn $PATCH_ROOT/first_token.patch
+git apply --whitespace=nowarn $PATCH_ROOT/rope_nope_cache_split.patch

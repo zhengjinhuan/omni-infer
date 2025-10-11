@@ -369,12 +369,9 @@ class DeepseekMLA(nn.Module):
         k[..., : self.qk_nope_head_dim] = k_nope
         k[..., self.qk_nope_head_dim :] = k_pe
 
-        latent_cache[:, :, : self.kv_lora_rank] = kv_a.unsqueeze(1)
-        latent_cache[:, :, self.kv_lora_rank :] = k_pe
-
         # Save latent cache
         forward_batch.token_to_kv_pool.set_kv_buffer(
-            self.attn_mha, forward_batch.out_cache_loc, latent_cache, None
+            self.attn_mha, forward_batch.out_cache_loc, kv_a.unsqueeze(1), k_pe
         )
         if forward_batch.is_prefill_idle:
             attn_output = q.new_empty(
@@ -460,10 +457,9 @@ class DeepseekMLA(nn.Module):
             k_nope,
             k_pe,
         )
-        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id)
-        k_cache= k_cache.view(-1, metadata.page_size, k_cache.shape[-1])
-        k_nope, k_rope = torch.split(k_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1) 
-
+        k_nope, k_rope = forward_batch.token_to_kv_pool.get_kv_buffer(self.layer_id)
+        k_nope = k_nope.view(-1, metadata.page_size, self.kv_lora_rank)
+        k_rope = k_rope.view(-1, metadata.page_size, self.qk_rope_head_dim)
         if forward_batch.can_run_graph:
             q_nope = q_nope.view(padding_bs, self.num_local_heads, self.kv_lora_rank)
             q_pe = q_pe.view(padding_bs, self.num_local_heads, self.qk_rope_head_dim)
