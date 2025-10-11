@@ -408,6 +408,7 @@ class DeepseekMLA(nn.Module):
             attn_output = attn_output[..., : self.v_head_dim]
         attn_output = attn_output.reshape(-1, self.num_local_heads * self.v_head_dim)
         output, _ = self.o_proj(attn_output)
+
         return output
 
     def _forward_decode(
