@@ -4,7 +4,10 @@ from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
+import torchair
 from torch import nn
+from contextlib import nullcontext
+
 import torch_npu
 from transformers import PretrainedConfig
 
@@ -54,7 +57,7 @@ from omni.adaptors.sglang.layers.linear import (
     MergedColumnParallelLinear,
     RowParallelLinear,
 )
-
+KVCACHE_NZ_DIM = 16
 
 class AttnForwardMethod(IntEnum):
     # Use multi-head attention
@@ -247,7 +250,6 @@ class DeepseekMLA(nn.Module):
 
         self.w_scale_k = None
         self.w_scale_v = None
-        self.use_deep_gemm_bmm = False
 
         self.disable_chunked_prefix_cache = global_server_args_dict[
             "disable_chunked_prefix_cache"
@@ -424,46 +426,23 @@ class DeepseekMLA(nn.Module):
             q, latent_cache = fused_qkv_a_proj_out.split(
                 [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
             )
-            k_nope = latent_cache[..., : self.kv_lora_rank]
-
             # overlap qk norm
             q = self.q_a_layernorm(q)
-            k_nope = self.kv_a_layernorm(k_nope)
-
-            k_nope = k_nope.unsqueeze(1)
-            q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+            q = self.q_b_proj(q)[0]
         else:
-            q = self.q_proj(hidden_states)[0].view(
-                -1, self.num_local_heads, self.qk_head_dim
-            )
+            q = self.q_proj(hidden_states)[0]
             latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-            k_nope = latent_cache[..., : self.kv_lora_rank]
-            k_nope = self.kv_a_layernorm(k_nope).unsqueeze(1)
 
-        q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-        k_pe = latent_cache[..., self.kv_lora_rank :].unsqueeze(1)
-
-        if self.use_deep_gemm_bmm:
-            q_nope_val, q_nope_scale, masked_m, expected_m, aligned_m = (
-                per_token_group_quant_mla_deep_gemm_masked_fp8(q_nope.transpose(0, 1))
-            )
-            q_nope_out = q_nope.new_empty(
-                (self.num_local_heads, aligned_m, self.kv_lora_rank)
-            )
-            deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_masked(
-                (q_nope_val, q_nope_scale),
-                (self.w_kc, self.w_scale_k),
-                q_nope_out,
-                masked_m,
-                expected_m,
-            )
-            q_nope_out = q_nope_out[:, :expected_m, :]
-        else:
-            q_nope_out = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
-
-        q_nope_out = q_nope_out.transpose(0, 1)
+        q = q.view(-1, self.num_local_heads, self.qk_head_dim)
+        q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+        q_nope = torch.matmul(q_nope.transpose(0, 1), self.w_kc).transpose(0, 1)
+        
+        k_nope, k_pe = torch.split(latent_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        k_nope = self.kv_a_layernorm(k_nope).view(-1, 1, self.kv_lora_rank)
+        k_pe = k_pe.unsqueeze(1)
 
         metadata = forward_batch.attn_backend.forward_metadata
+        padding_bs = forward_batch.input_ids.size(0)
         if metadata.cos is None or metadata.sin is None:
             cos, sin = self.rotary_emb.get_cos_sin(positions)
         else:
@@ -475,69 +454,65 @@ class DeepseekMLA(nn.Module):
         k_pe = torch_npu.npu_interleave_rope(k_pe, cos, sin)
         k_pe = k_pe.squeeze(2)
 
-        k_nope = k_nope.view(-1, 1, self.kv_lora_rank)
         forward_batch.token_to_kv_pool.set_mla_kv_buffer(
             self.attn_mqa,
             forward_batch.out_cache_loc,
             k_nope,
             k_pe,
         )
-        padding_bs = forward_batch.input_ids.size(0)
-        q_nope = q_nope_out.view(
-            padding_bs, -1, self.num_local_heads, self.kv_lora_rank
-        )
-        q_pe = q_pe.view(
-            padding_bs,
-            -1,
-            self.num_local_heads,
-            self.kv_lora_rank + self.qk_rope_head_dim - self.kv_lora_rank,
-        )
+        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id)
+        k_cache= k_cache.view(-1, metadata.page_size, k_cache.shape[-1])
+        k_nope, k_rope = torch.split(k_cache, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1) 
 
-        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(self.layer_id).to(
-            q_nope_out.dtype
-        )
-        PAGE_SIZE = 128
-        b, s, n, _ = q_nope.size()
-        q_nope_dim = q_nope.shape[-1]
-        _, k_heads, k_dim = k_cache.size()
-        k_cache = k_cache.view(-1, PAGE_SIZE, k_dim)
-        k_nope = k_cache[..., :q_nope_dim]
-        k_rope = k_cache[..., q_nope_dim:]
+        if forward_batch.can_run_graph:
+            q_nope = q_nope.view(padding_bs, self.num_local_heads, self.kv_lora_rank)
+            q_pe = q_pe.view(padding_bs, self.num_local_heads, self.qk_rope_head_dim)
+            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                q_nope, 
+                k_nope, 
+                k_nope, 
+                query_rope=q_pe, 
+                key_rope=k_rope,
+                num_heads=self.num_local_heads,
+                num_key_value_heads=1, 
+                input_layout='TND',
+                scale=self.scaling,
+                antiquant_mode=0, 
+                antiquant_scale=None,
+                block_table=metadata.block_kv_indices,
+                block_size=metadata.page_size,
+                actual_seq_lengths=list(range(1, padding_bs + 1)),
+                actual_seq_lengths_kv=metadata.seq_lens_list
+            )
+        else:
+            q_nope = q_nope.view(padding_bs, -1, self.num_local_heads, self.kv_lora_rank)
+            q_pe = q_pe.view(padding_bs, -1, self.num_local_heads, self.qk_rope_head_dim)
+            attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+                q_nope,
+                k_nope,
+                k_nope,
+                query_rope=q_pe,
+                key_rope=k_rope,
+                num_heads=self.num_local_heads,
+                num_key_value_heads=1,
+                input_layout="BSND",
+                atten_mask=None,
+                sparse_mode=0,
+                scale=self.scaling,
+                antiquant_mode=0,
+                antiquant_scale=None,
+                block_table=metadata.block_kv_indices,
+                block_size=metadata.page_size,
+                actual_seq_lengths_kv=metadata.seq_lens_list, 
+            )
 
-        attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
-            q_nope,
-            k_nope,
-            k_nope,
-            query_rope=q_pe,
-            key_rope=k_rope,
-            num_heads=n,
-            num_key_value_heads=1,
-            input_layout="BSND",
-            atten_mask=None,
-            sparse_mode=0,
-            scale=self.scaling,
-            antiquant_mode=0,
-            antiquant_scale=None,
-            block_table=metadata.block_kv_indices,
-            block_size=PAGE_SIZE,
-            actual_seq_lengths_kv=metadata.seq_lens_list,
+        attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank).transpose(0, 1)
+        attn_output = (
+            torch.matmul(attn_output, self.w_vc)
+            .transpose(0, 1)
+            .reshape(-1, self.num_local_heads * self.v_head_dim)
         )
-        attn_output = attn_output.view(-1, self.num_local_heads, self.kv_lora_rank)
-
-        attn_bmm_output = torch.empty(
-            (self.num_local_heads, attn_output.shape[0], self.v_head_dim),
-            dtype=attn_output.dtype,
-            device=attn_output.device,
-        )
-        torch.bmm(
-            attn_output.transpose(0, 1),
-            self.w_vc,
-            out=attn_bmm_output,
-        )
-        attn_bmm_output = attn_bmm_output.transpose(0, 1).reshape(
-            -1, self.num_local_heads * self.v_head_dim
-        )
-
-        output, _ = self.o_proj(attn_bmm_output)
+        output, _ = self.o_proj(attn_output)
 
         return output
+

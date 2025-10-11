@@ -47,6 +47,7 @@ class NpuMLADecodeMetadata:
         seq_lens_list=None,
         forward_batch: ForwardBatch = None,
     ):
+        self.page_size = PAGE_SIZE
         self.npumla_metadata = npumla_metadata
         self.block_kv_indices = block_kv_indices
         self.seq_lens_list = seq_lens_list if seq_lens_list is not None else [1]
