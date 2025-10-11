@@ -54,6 +54,7 @@ from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.linear import (
     MergedColumnParallelLinear,
     RowParallelLinear,
+    RowParallelLinearWithReduceScatter,
 )
 
 
@@ -187,12 +188,12 @@ class DeepseekMLA(nn.Module):
             tp_size=attn_tp_size,
         )
         # O projection.
-        self.o_proj = RowParallelLinear(
+        self.o_proj = RowParallelLinearWithReduceScatter(
             self.num_heads * self.v_head_dim,
             self.hidden_size,
             bias=False,
             quant_config=quant_config,
-            reduce_results=reduce_results,
+            reduce_results=True,
             prefix=add_prefix("o_proj", prefix),
             tp_rank=attn_tp_rank,
             tp_size=attn_tp_size,
@@ -318,30 +319,22 @@ class DeepseekMLA(nn.Module):
                 not self.o_proj.reduce_results
             ), "short-circuiting allreduce will lead to hangs"
             return hidden_states
-        need_all_gather = (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
-                            self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
-                        )
-        if self.q_lora_rank is not None:
-            if need_all_gather:
-                q = self.q_a_proj(hidden_states)[0]
-                latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-                latent_cache = get_attention_tp_group().all_gather(latent_cache, dim=0)
 
-                q = self.q_a_layernorm(q)
-                if self.quant_symbol:
-                    q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
-                    # Quantizing before all_gather can reduce communication overhead.
-                    q_quant = get_attention_tp_group().all_gather(q_quant, dim=0)
-                    q_scale = get_attention_tp_group().all_gather(q_scale, dim=0)
-                    q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
-                else:
-                    q = get_attention_tp_group().all_gather(q, dim=0)
-                q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+        if self.q_lora_rank is not None:
+            q = self.q_a_proj(hidden_states)[0]
+            latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
+            latent_cache = get_attention_tp_group().all_gather(latent_cache, dim=0)
+
+            q = self.q_a_layernorm(q)
+            if self.quant_symbol:
+                q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
+                # Quantizing before all_gather can reduce communication overhead.
+                q_quant = get_attention_tp_group().all_gather(q_quant, dim=0)
+                q_scale = get_attention_tp_group().all_gather(q_scale, dim=0)
+                q = {'x_int8':q_quant, 'pertoken_scale':q_scale}
             else:
-                q = self.q_a_proj(hidden_states)[0]
-                latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-                q = self.q_a_layernorm(q)
-                q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
+                q = get_attention_tp_group().all_gather(q, dim=0)
+            q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
         else:
             q = self.q_proj(hidden_states)[0].view(
                 -1, self.num_local_heads, self.qk_head_dim

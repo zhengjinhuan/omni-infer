@@ -23,11 +23,7 @@ from transformers import PretrainedConfig
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
-from sglang.srt.layers.communicator import (
-    LayerCommunicator,
-    LayerScatterModes,
-    enable_moe_dense_fully_dp,
-)
+from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
@@ -37,8 +33,7 @@ from sglang.srt.layers.quantization.fp8_utils import (
     requant_weight_ue8m0_inplace,
 )
 from sglang.srt.layers.quantization.int8_utils import block_dequant as int8_block_dequant
-from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding, ParallelLMHead
-
+from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -58,12 +53,13 @@ from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.distributed import (
     get_mlp_tp_group_parallel_world_size,
     get_mlp_tp_group_parallel_rank,
+    get_mlp_tp_group,
 )
 from omni.adaptors.sglang.layers.linear import (
     MergedColumnParallelLinear,
     RowParallelLinear,
 )
-
+from omni.adaptors.sglang.layers.vocab_parallel_embedding import VocabParallelEmbedding
 logger = logging.getLogger(__name__)
 
 
@@ -103,7 +99,7 @@ class ParallelDeepseekMLP(nn.Module):
             hidden_size,
             bias=False,
             quant_config=quant_config,
-            reduce_results=reduce_results,
+            reduce_results=False,
             prefix=add_prefix("down_proj", prefix),
             tp_rank=tp_rank,
             tp_size=tp_size,
@@ -126,16 +122,18 @@ class ParallelDeepseekMLP(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor,
         use_reduce_scatter: bool = False,
         **kwargs):
         x = hidden_states
-
-        assert isinstance(x, torch.Tensor)
+        x = get_mlp_tp_group().all_gather(x, dim=0)
 
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up, self.quant_symbol)
-        x, bias = self.down_proj(x, skip_all_reduce=use_reduce_scatter)
-        return x
+        x, _ = self.down_proj(x, skip_all_reduce=use_reduce_scatter)
+
+        x = get_mlp_tp_group().reduce_scatter_(x)
+        return x, residual
 
 
 class DeepseekDecoderLayer(nn.Module):
@@ -163,17 +161,6 @@ class DeepseekDecoderLayer(nn.Module):
                 and layer_id % self.config.moe_layer_freq == 0
             )
 
-        is_previous_layer_sparse = (self.config.n_routed_experts is not None
-                                    and layer_id - 1 >= self.config.first_k_dense_replace
-                                    and (layer_id - 1) % self.config.moe_layer_freq == 0)
-        
-        self.layer_scatter_modes = LayerScatterModes.init_new(
-            layer_id=layer_id,
-            num_layers=1 if is_nextn else config.num_hidden_layers,
-            is_layer_sparse=self.is_layer_sparse,
-            is_previous_layer_sparse=is_previous_layer_sparse,
-        )
-
         self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
@@ -192,7 +179,6 @@ class DeepseekDecoderLayer(nn.Module):
             layer_id=layer_id,
             reduce_results=False,
             prefix=add_prefix("self_attn", prefix),
-            layer_scatter_modes=self.layer_scatter_modes,
         )
 
         if self.is_layer_sparse:
@@ -221,13 +207,6 @@ class DeepseekDecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
-        )
-
-        self.layer_communicator = LayerCommunicator(
-            layer_scatter_modes=self.layer_scatter_modes,
-            input_layernorm=self.input_layernorm,
-            post_attention_layernorm=self.post_attention_layernorm,
-            allow_reduce_scatter=True,
         )
 
     def forward(
@@ -276,24 +255,12 @@ class DeepseekDecoderLayer(nn.Module):
             zero_allocator=zero_allocator,
         )
 
-        hidden_states, residual = self.layer_communicator.prepare_mlp(
-            hidden_states, residual, forward_batch
-        )
-
-        # For DP with padding, reduce scatter can be used instead of all-reduce.
-        use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
-            forward_batch
-        )
-
-        hidden_states = self.mlp(
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states, residual = self.mlp(
             hidden_states=hidden_states,
+            residual=residual,
             forward_batch=forward_batch,
-            use_reduce_scatter=use_reduce_scatter,
             **kwargs)
-
-        hidden_states, residual = self.layer_communicator.postprocess_layer(
-            hidden_states, residual, forward_batch
-        )
 
         return hidden_states, residual
 
