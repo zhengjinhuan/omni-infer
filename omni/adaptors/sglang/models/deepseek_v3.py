@@ -20,7 +20,7 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
-from sglang.srt.distributed import get_tensor_model_parallel_world_size
+from sglang.srt.distributed import get_tensor_model_parallel_world_size, tensor_model_parallel_all_gather
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
 from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
@@ -351,6 +351,9 @@ class DeepseekV3Model(nn.Module):
                 hidden_states = self.norm(hidden_states)
             else:
                 hidden_states, _ = self.norm(hidden_states, residual)
+
+        if forward_batch.is_extend_in_batch :
+            hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
         return hidden_states
 
 

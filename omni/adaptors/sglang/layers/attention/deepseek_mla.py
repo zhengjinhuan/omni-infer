@@ -321,8 +321,9 @@ class DeepseekMLA(nn.Module):
             return hidden_states
 
         if self.q_lora_rank is not None:
-            q = self.q_a_proj(hidden_states)[0]
-            latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
+            q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
+                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
+            )
             latent_cache = get_attention_tp_group().all_gather(latent_cache, dim=0)
 
             q = self.q_a_layernorm(q)
@@ -415,17 +416,6 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if (self.layer_scatter_modes.layer_input_mode == ScatterMode.SCATTERED) and (
-            self.layer_scatter_modes.attn_mode == ScatterMode.TP_ATTN_FULL
-        ):
-            hidden_states, local_hidden_states = (
-                forward_batch.gathered_buffer[: forward_batch.input_ids.shape[0]],
-                hidden_states,
-            )
-            attn_tp_all_gather_into_tensor(
-                hidden_states,
-                local_hidden_states,
-            )
         if hidden_states.shape[0] == 0:
             assert (
                 not self.o_proj.reduce_results

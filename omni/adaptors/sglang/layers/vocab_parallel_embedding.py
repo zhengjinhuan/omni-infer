@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import torch
-from sglang.srt.distributed import divide, get_local_world_group
+from sglang.srt.distributed import divide
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
 )
