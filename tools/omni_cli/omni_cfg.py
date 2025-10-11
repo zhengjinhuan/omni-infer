@@ -177,31 +177,6 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
 
     return sections
 
-def check_model_path(sections, data, node_type, node_name):
-    if node_type == 'C':
-        return True
-
-    model_path_is_none = 'MODEL_PATH' in data['all']['children'][node_type]['hosts'][node_name]['env'] and \
-        (data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == '' or \
-        data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == None)
-    if 'MODEL_PATH' not in data['all']['children'][node_type]['hosts'][node_name]['env'] or model_path_is_none:
-        if 'MODEL_PATH' in sections['env']:
-            if 'deepseek' in sections['env']['MODEL_PATH'].lower() or 'qwen' in sections['env']['MODEL_PATH'].lower():
-                return True
-            else:
-                print("Error: This model is currently not supported.")
-                return False
-        else:
-            print("Error: This model is not configured.")
-            return False
-    else:
-        model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
-        if 'deepseek' in model_path.lower() or 'qwen' in model_path.lower():
-            return True
-        else:
-            print("Error: This model is not configured or This model is currently not supported.")
-            return False
-
 def updata_dict(sections, data):
     for modify_key, modify_values in sections.items():
         if isinstance(modify_values, dict) and modify_key in data:
@@ -339,8 +314,6 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
         return
 
 def modify_by_use_default_file(sections, default_cfg, data, node_type, node_name):
-    if check_model_path(sections, data, node_type, node_name) is False:
-        return False
     if 'MODEL_PATH' in sections['env']:
         if 'deepseek' in sections['env']['MODEL_PATH'].lower():
             sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
