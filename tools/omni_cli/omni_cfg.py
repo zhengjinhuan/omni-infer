@@ -112,7 +112,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
     """Resolve the remaining parameters."""
     if is_set:
         sections = {'env': {}, 'args': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', 'container_name': '',
-                    'ansible_ssh_private_key_file': '', 'ansible_host': ''}
+                    'ansible_ssh_private_key_file': '', 'ansible_host': '', 'host_ip': '', 'master_node': ''}
     else:
         sections = {'env': [], 'args': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
             'container_name': '', 'extra-args': [], 'additional-config': [], 'kv-transfer-config': []}
