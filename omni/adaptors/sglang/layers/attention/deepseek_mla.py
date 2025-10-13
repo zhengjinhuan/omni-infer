@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple
-
+import os
 import torch
 import torchair
 from torch import nn
@@ -143,16 +143,32 @@ class DeepseekMLA(nn.Module):
                 device=global_server_args_dict["device"],
             )
         )
-
+        self.enable_fused_qkv = os.environ.get("USE_FUSE_QKV_A_PROJ", "0") == "1"
         # For tensor parallel attention
         if self.q_lora_rank is not None:
-            self.fused_qkv_a_proj_with_mqa = ReplicatedLinear(
-                self.hidden_size,
-                self.q_lora_rank + self.kv_lora_rank + self.qk_rope_head_dim,
-                bias=False,
-                quant_config=quant_config,
-                prefix=add_prefix("fused_qkv_a_proj_with_mqa", prefix),
-            )
+            if self.enable_fused_qkv:
+                self.fused_qkv_a_proj_with_mqa = ReplicatedLinear(
+                    self.hidden_size,
+                    self.q_lora_rank + self.kv_lora_rank + self.qk_rope_head_dim,
+                    bias=False,
+                    quant_config=quant_config,
+                    prefix=add_prefix("fused_qkv_a_proj_with_mqa", prefix),
+                )
+            else:
+                self.q_a_proj = ReplicatedLinear(
+                    self.hidden_size,
+                    self.q_lora_rank,
+                    bias=False,
+                    quant_config=quant_config,
+                    prefix=add_prefix("q_a_proj", prefix),
+                )
+                self.kv_a_proj_with_mqa = ReplicatedLinear(
+                    self.hidden_size,
+                    self.kv_lora_rank + self.qk_rope_head_dim,
+                    bias=False,
+                    quant_config=quant_config,
+                    prefix=add_prefix("kv_a_proj_with_mqa", prefix),
+                )
             self.q_a_layernorm = RMSNorm(self.q_lora_rank, eps=config.rms_norm_eps)
             self.q_b_proj = ColumnParallelLinear(
                 q_lora_rank,
@@ -323,10 +339,14 @@ class DeepseekMLA(nn.Module):
             return hidden_states
 
         if self.q_lora_rank is not None:
-            q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
-                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
-            )
-            latent_cache = latent_cache.contiguous()
+            if self.enable_fused_qkv:
+                q, latent_cache = self.fused_qkv_a_proj_with_mqa(hidden_states)[0].split(
+                    [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
+                )
+                latent_cache = latent_cache.contiguous()
+            else:
+                q = self.q_a_proj(hidden_states)[0]
+                latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
             latent_cache = get_attention_tp_group().all_gather(latent_cache, dim=0)
 
             q = self.q_a_layernorm(q)
@@ -417,16 +437,15 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
-        if hidden_states.shape[0] == 0:
-            assert (
-                not self.o_proj.reduce_results
-            ), "short-circuiting allreduce will lead to hangs"
-            return hidden_states
         if self.q_lora_rank is not None:
-            fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
-            q, latent_cache = fused_qkv_a_proj_out.split(
-                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
-            )
+            if self.enable_fused_qkv:
+                fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
+                q, latent_cache = fused_qkv_a_proj_out.split(
+                    [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1
+                )
+            else:
+                q = self.q_a_proj(hidden_states)[0]
+                latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
             # overlap qk norm
             q = self.q_a_layernorm(q)
             q = self.q_b_proj(q)[0]
