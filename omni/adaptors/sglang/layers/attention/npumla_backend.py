@@ -139,6 +139,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
         )
         max_total_tokens = model_runner.server_args.max_total_tokens or MAX_SEQ_LEN
         self.max_seqlen_pad = max_total_tokens // model_runner.server_args.page_size
+        self.model_runner = model_runner
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         bs = forward_batch.input_ids.size(0)
@@ -172,6 +173,10 @@ class NpuMLABackend(TorchNativeAttnBackend):
                 forward_batch.extend_seq_lens_cpu,
                 forward_batch,
             )
+        if hasattr(self.model_runner.model.model, "layers"):
+            self.forward_metadata.cos, self.forward_metadata.sin = self.model_runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(forward_batch.positions)
+        else:
+            self.forward_metadata.cos, self.forward_metadata.sin = self.model_runner.model.model.decoder.self_attn.rotary_emb.get_cos_sin(forward_batch.positions)
 
     def init_cuda_graph_state(
         self,

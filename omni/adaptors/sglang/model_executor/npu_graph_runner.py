@@ -199,6 +199,8 @@ class NpuGraphRunner(DeviceRunnerBase):
         mark_tensor_static(forward_batch.out_cache_loc)
         mark_tensor_static(forward_batch.gathered_buffer)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.block_kv_indices)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.cos)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.sin)
         try:
             mark_tensor_static(forward_batch.token_to_kv_pool.k_buffer, is_cache=True)
             mark_tensor_static(forward_batch.token_to_kv_pool.v_buffer, is_cache=True)

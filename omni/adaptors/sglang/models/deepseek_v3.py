@@ -15,7 +15,7 @@
 import concurrent.futures
 import logging
 from typing import Any, Dict, Iterable, Optional, Tuple
-
+import os
 import torch
 from torch import nn
 from transformers import PretrainedConfig
@@ -222,31 +222,13 @@ class DeepseekDecoderLayer(nn.Module):
         if hidden_states.shape[0] == 0:
             residual = hidden_states
         else:
-            if (residual is not None
-                and hasattr(hidden_states, "_sglang_needs_allreduce_fusion")
-                and hidden_states._sglang_needs_allreduce_fusion):
-                hidden_states, residual = self.input_layernorm.forward_with_allreduce_fusion(
-                    hidden_states, residual
-                )
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
             else:
-                if (
-                    forward_batch.is_decode_or_idle and not forward_batch.is_prefill_idle
-                ) or forward_batch.is_target_verify:
-                    if residual is None:
-                        residual = hidden_states
-                        hidden_states = self.input_layernorm.forward_npu(hidden_states)
-                    else:
-                        hidden_states, residual = self.input_layernorm.forward_npu(
-                            hidden_states, residual
-                        )
-                else:
-                    if residual is None:
-                        residual = hidden_states
-                        hidden_states = self.input_layernorm(hidden_states)
-                    else:
-                        hidden_states, residual = self.input_layernorm(
-                            hidden_states, residual, quant_symbol=self.quant_symbol
-                        )
+                hidden_states, residual = self.input_layernorm(
+                    hidden_states, residual, quant_symbol=self.quant_symbol
+                )
 
         hidden_states = self.self_attn(
             positions=positions,
@@ -278,7 +260,7 @@ class DeepseekV3Model(nn.Module):
         self.padding_id = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.first_k_dense_replace = config.first_k_dense_replace
-
+        self.fuse_qkv_a_proj = os.environ.get("USE_FUSE_QKV_A_PROJ", "0") == "1"
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
             config.hidden_size,
@@ -322,21 +304,25 @@ class DeepseekV3Model(nn.Module):
 
         residual = None
 
-        cos, sin = self.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
-        forward_batch.attn_backend.forward_metadata.cos = cos
-        forward_batch.attn_backend.forward_metadata.sin = sin
-
         for i in range(total_num_layers):
             with get_global_expert_distribution_recorder(True).with_current_layer(i):
                 layer = self.layers[i]
                 prefetch_list = None
                 if i + 1 < total_num_layers:
                     next_attn = self.layers[i + 1].self_attn
-                    prefetch_list = {
-                        "fused_qkv_a_proj_with_mqa": next_attn.fused_qkv_a_proj_with_mqa.weight,
-                        "q_b_proj": next_attn.q_b_proj.weight,
-                        "w_kc": next_attn.w_kc,
-                    }
+                    if self.fuse_qkv_a_proj:
+                        prefetch_list = {
+                            "fused_qkv_a_proj_with_mqa": next_attn.fused_qkv_a_proj_with_mqa.weight,
+                            "q_b_proj": next_attn.q_b_proj.weight,
+                            "w_kc": next_attn.w_kc,
+                        }
+                    else:
+                        prefetch_list = {
+                            "q_a_proj": next_attn.q_a_proj.weight,
+                            "kv_a_proj_with_mqa": next_attn.kv_a_proj_with_mqa.weight,
+                            "q_b_proj": next_attn.q_b_proj.weight,
+                            "w_kc": next_attn.w_kc,
+                        }
 
                 hidden_states, residual = layer(
                     positions,
@@ -371,9 +357,7 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         # for quark model load
         # Fuse q_a_proj and kv_a_proj_with_mqa along output dimension when q_lora_rank is not None
-        self.fuse_qkv_a_proj = (
-            hasattr(config, "q_lora_rank") and config.q_lora_rank is not None
-        )
+        self.fuse_qkv_a_proj = os.environ.get("USE_FUSE_QKV_A_PROJ", "0") == "1"
         if self.fuse_qkv_a_proj:
             self.packed_modules_mapping["fused_qkv_a_proj_with_mqa"] = [
                 "q_a_proj",
@@ -640,9 +624,7 @@ class DeepseekV3ForCausalLM(nn.Module):
             )
 
         # Fuse q_a_proj and kv_a_proj_with_mqa along output dimension when q_lora_rank is not None
-        fuse_qkv_a_proj = hasattr(self.config, "q_lora_rank") and (
-            self.config.q_lora_rank is not None
-        )
+        fuse_qkv_a_proj = os.environ.get("USE_FUSE_QKV_A_PROJ", "0") == "1"
         cached_a_proj = {} if fuse_qkv_a_proj else None
 
         if is_nextn:
