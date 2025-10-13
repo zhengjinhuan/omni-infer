@@ -320,8 +320,8 @@ def modify_by_use_default_file(sections, default_cfg, data, node_type, node_name
         elif 'qwen' in sections['env']['MODEL_PATH'].lower():
             sections_bak = default_cfg['profiles']['vllm']['qwen'][node_type]
         else:
-            print("Error: This model is currently not supported.")
-            return False
+            print(f"{WARNING}: This model is currently not supported. Use deepseek default config")
+            sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
         updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
     return True
 
