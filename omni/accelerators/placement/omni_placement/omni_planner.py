@@ -371,13 +371,37 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
     
         if not self.is_moe_layer(layer_idx_moe):
             return tokens, token_expert_ids, token_expert_scores
+        
         mask = (token_expert_ids >= 0) & (token_expert_ids <= self.normal_expert_ids)
+        
         if self.enable_rank_round_robin:
-            token_expert_ids[mask] = torch.nn.functional.embedding(token_expert_ids[mask],expert_mapping).squeeze(-1)
+            new_token_expert_ids = torch.where(
+                mask,
+                torch.nn.functional.embedding(
+                    torch.clamp(token_expert_ids, 0, self.normal_expert_ids), 
+                    expert_mapping
+                ).squeeze(-1),
+                token_expert_ids
+            )
         else:
             batch_size = token_expert_ids.shape[0]
-            token_expert_ids[mask] = expert_mapping[token_expert_ids[mask], self.redundant_bias[:batch_size,] % self.num_redundant_per_expert[layer_idx_moe][token_expert_ids[mask]]]
-        return tokens, token_expert_ids, token_expert_scores
+            new_token_expert_ids = torch.where(
+                mask,
+                expert_mapping[
+                    torch.clamp(token_expert_ids, 0, self.normal_expert_ids),
+                    (
+                        self.redundant_bias[:batch_size, None] % torch.max(
+                            self.num_redundant_per_expert[layer_idx_moe][
+                                torch.clamp(token_expert_ids, 0, self.normal_expert_ids)
+                            ],
+                            torch.tensor(1, device=token_expert_ids.device, dtype=self.num_redundant_per_expert.dtype)
+                        )
+                    )
+                ],
+                token_expert_ids
+            )
+
+        return tokens, new_token_expert_ids, token_expert_scores
 
     def plan(
         self,
