@@ -112,7 +112,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
     """Resolve the remaining parameters."""
     if is_set:
         sections = {'env': {}, 'args': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', 'container_name': '',
-                    'ansible_ssh_private_key_file': '', 'ansible_host': ''}
+                    'ansible_ssh_private_key_file': '', 'ansible_host': '', 'host_ip': '', 'master_node': ''}
     else:
         sections = {'env': [], 'args': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
             'container_name': '', 'extra-args': [], 'additional-config': [], 'kv-transfer-config': []}
@@ -313,18 +313,6 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
         print(f"{ERROR} There is no data in {yml_file_path}.")
         return
 
-def modify_by_use_default_file(sections, default_cfg, data, node_type, node_name):
-    if 'MODEL_PATH' in sections['env']:
-        if 'deepseek' in sections['env']['MODEL_PATH'].lower():
-            sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-        elif 'qwen' in sections['env']['MODEL_PATH'].lower():
-            sections_bak = default_cfg['profiles']['vllm']['qwen'][node_type]
-        else:
-            print("Error: This model is currently not supported.")
-            return False
-        updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
-    return True
-
 def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
         print(f"{ERROR} Invalid node name: '{args.name[0]}'。")
@@ -333,22 +321,8 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         print("  - decode_<number> (for example: d0, d1, d11)")
         return
 
-    default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
-    default_cfg = get_data_from_yaml(default_cfg_path)
     data =  get_data_from_yaml(deploy_path)
     if data:
-        if node_type == 'all':
-            for n_type in default_cfg['profiles']['vllm']['deepseek']:
-                for n_name in data['all']['children'][n_type]['hosts']:
-                    if modify_by_use_default_file(sections, default_cfg, data, n_type, n_name) is False:
-                        return
-        elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
-            for n_name in data['all']['children'][node_type]['hosts']:
-                if modify_by_use_default_file(sections, default_cfg, data, node_type, n_name) is False:
-                    return
-        else:
-            if modify_by_use_default_file(sections, default_cfg, data, node_type, node_name) is False:
-                return
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:
