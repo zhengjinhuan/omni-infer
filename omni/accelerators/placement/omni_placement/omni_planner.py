@@ -390,7 +390,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
                 expert_mapping[
                     torch.clamp(token_expert_ids, 0, self.normal_expert_ids),
                     (
-                        self.redundant_bias[:batch_size, None] % torch.max(
+                        self.redundant_bias[:batch_size,] % torch.max(
                             self.num_redundant_per_expert[layer_idx_moe][
                                 torch.clamp(token_expert_ids, 0, self.normal_expert_ids)
                             ],
