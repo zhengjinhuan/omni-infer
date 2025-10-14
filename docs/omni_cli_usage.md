@@ -2,12 +2,21 @@
 
 ## 安装
 
+requirements：
+
+```
+ansible>=8.0
+pyyaml>=6.0
+chardet
+build
+```
+
+安装cli工具：
 ```bash
-cd omniinfer/tools;
-pip install -r requirements.txt
+cd omniinfer/tools
 python -m build --wheel      # 无wheel包，源码安装
-cd dist/
-pip install omni_cli***.whl --force-reinstall --no-build-isolation --no-deps
+cd dist
+pip install omni_cli-0.4.0-py3-none-any.whl --force-reinstall --no-build-isolation --no-deps
 ```
 
 ## 快速开始

@@ -341,6 +341,9 @@ export TASK_QUEUE_ENABLE=2
 # enable to overwrite request IDs
 export ENABLE_OVERWRITE_REQ_IDS=1
 
+# enable kv event
+export ENABLE_APC_EVENT=0
+
 # Print current configuration
 echo "==== Current Configuration ===="
 echo "GLOBAL_RANK_TABLE_FILE_PATH: $GLOBAL_RANK_TABLE_FILE_PATH"
