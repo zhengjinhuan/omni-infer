@@ -243,9 +243,9 @@ class ConfigUpdater:
         cls._update_cache_config(vllm_config)
         cls._enable_custom_ops(vllm_config)
         if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
-            cls._may_enable_omni_attn(vllm_config)
-        else:
             cls._may_enable_omni_cache(vllm_config)
+        else:
+            cls._may_enable_omni_attn(vllm_config)
 
     @staticmethod
     def _handle_graph_mode(vllm_config: 'VllmConfig') -> None:
