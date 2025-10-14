@@ -59,6 +59,8 @@ class ModelOperatorOptConfig:
     enable_topktoppsample_op: bool = False # 使用topktoppsample算子
     enable_dsa: bool = False # 使能mla = Indexer + select FA
 
+    enable_scale_parallel: bool = False 
+    
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
         if self.use_omni_placement and not self.omni_placement_config_path:

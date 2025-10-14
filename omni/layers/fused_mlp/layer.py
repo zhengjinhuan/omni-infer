@@ -17,7 +17,7 @@ from vllm.distributed import (
 )
 from omni.layers.activation import SiluAndMul
 from omni.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
-
+from omni.models.common.config.model_config import model_extra_config
 class FusedMLPMethodBase(QuantizeMethodBase):
     """Base method for FusedMLP
 
@@ -150,7 +150,7 @@ class W8A8DynamicFusedMLPMethod(FusedMLPMethodBase):
     ) -> torch.Tensor:
         bias = layer.gate_up_proj.bias if not layer.gate_up_proj.skip_bias_add else None
         x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
-        scale_parallel = os.environ.get('SCALE_PARALLEL', '0') == '1'
+        scale_parallel = model_extra_config.operator_opt_config.enable_scale_parallel
         if x_transform is not None:
             if x_transform == 'AG':
                 if is_prefill or (not scale_parallel):
