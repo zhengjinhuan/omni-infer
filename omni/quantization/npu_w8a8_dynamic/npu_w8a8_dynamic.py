@@ -191,7 +191,7 @@ class NpuW8A8DynamicLinearMethod(FlashCommLinearMethodBase):
             if is_prefill or (not scale_parallel):
                 x_scale = get_tp_group().all_gather(x_scale, dim=0)
             else:
-                with torchair.scope.npu_stream_switch('sacle'):  # CANN包多流接口
+                with torchair.scope.npu_stream_switch('scale'):  # CANN包多流接口
                     x_scale = get_scale_parallel_group().all_gather(x_scale, dim=0)
             x = get_tp_group().all_gather(x, dim=0)
         elif x_transform == 'A2A':
@@ -274,6 +274,8 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
             NpuW8A8DynamicFusedMoEMethod.ONES_SCALE = torch.ones(
                 (layer.local_num_experts, layer.intermediate_size_per_partition), dtype=torch.float32, device='npu'
             )
+            # ONES_SCALE为该类内部变量，故在此处mark_static
+            torch._dynamo.mark_static(NpuW8A8DynamicFusedMoEMethod.ONES_SCALE)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
@@ -541,8 +543,7 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
                 group_type=0,
                 group_list_type=1
             )[0]
-            # ONES_SCALE为该类内部变量，故在此处mark_static
-            torch._dynamo.mark_static(NpuW8A8DynamicFusedMoEMethod.ONES_SCALE)
+
             inter_states, inter_states_scale = torch_npu.npu_dequant_swiglu_quant(
                 gate_up_proj,
                 weight_scale=layer.w13_weight_scale,
