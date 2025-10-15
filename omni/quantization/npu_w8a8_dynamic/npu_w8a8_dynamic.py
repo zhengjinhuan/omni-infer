@@ -274,7 +274,6 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
             NpuW8A8DynamicFusedMoEMethod.ONES_SCALE = torch.ones(
                 (layer.local_num_experts, layer.intermediate_size_per_partition), dtype=torch.float32, device='npu'
             )
-            # ONES_SCALE为该类内部变量，故在此处mark_static
             torch._dynamo.mark_static(NpuW8A8DynamicFusedMoEMethod.ONES_SCALE)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
