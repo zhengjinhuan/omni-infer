@@ -251,6 +251,9 @@ class NpuGraphRunner(DeviceRunnerBase):
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.block_kv_indices)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.cos)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.sin)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.seq_lens)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.actual_seq_lengths)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.norm_res)
         try:
             mark_tensor_static(forward_batch.token_to_kv_pool.k_buffer, is_cache=True)
             mark_tensor_static(forward_batch.token_to_kv_pool.v_buffer, is_cache=True)
@@ -271,7 +274,7 @@ class NpuGraphRunner(DeviceRunnerBase):
             self.model_runner.model.compile_forward = torch.compile(
                 torch.no_grad()(self.model_runner.model.forward),
                 fullgraph=True,
-                dynamic=True,
+                dynamic=False,
                 backend=backend,
             )
 
@@ -341,7 +344,8 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                     ).parameters
                 ):
                     kwargs["pp_proxy_tensors"] = forward_batch.pp_proxy_tensors
-                self.mark_static(forward_batch, kwargs.get("pp_proxy_tensors"))
+                # if use dynamic graph, should mark static for inputs
+                # self.mark_static(forward_batch, kwargs.get("pp_proxy_tensors"))
 
                 compile_forward = (
                     getattr(self.model_runner.model, compile_method_name)

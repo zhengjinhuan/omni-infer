@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import IntEnum, auto
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional
 import os
 import torch
 import torchair as tng
@@ -11,52 +11,32 @@ from contextlib import nullcontext
 import torch_npu
 from transformers import PretrainedConfig
 
-from sglang.srt.layers.communicator import LayerScatterModes, ScatterMode
+from sglang.srt.layers.communicator import LayerScatterModes
 from sglang.srt.layers.dp_attention import (
-    attn_tp_all_gather_into_tensor,
     get_attention_tp_group,
     get_attention_tp_rank,
     get_attention_tp_size,
+    get_attention_dp_size
 )
 from sglang.srt.layers.linear import (
     ColumnParallelLinear,
-    MergedColumnParallelLinear,
     ReplicatedLinear,
-    RowParallelLinear,
 )
-from sglang.srt.layers.quantization import deep_gemm_wrapper
+
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.quantization.fp8_kernel import (
-    is_fp8_fnuz,
-    per_tensor_quant_mla_fp8,
-    per_token_group_quant_mla_deep_gemm_masked_fp8,
-)
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.model_executor.forward_batch_info import (
-    ForwardBatch,
-    ForwardMode,
-    PPProxyTensors,
-)
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.utils import (
     BumpAllocator,
-    LazyValue,
     add_prefix,
-    bind_or_assign,
     get_bool_env_var,
-    get_device_sm,
     get_int_env_var,
-    is_flashinfer_available,
-    is_non_idle_and_non_empty,
-    log_info_on_rank0,
-    use_intel_amx_backend,
 )
 
 from omni.adaptors.sglang.layers.rotary_embedding import get_rope
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from omni.adaptors.sglang.layers.linear import (
-    MergedColumnParallelLinear,
-    RowParallelLinear,
     RowParallelLinearWithReduceScatter,
 )
 KVCACHE_NZ_DIM = 16
@@ -443,6 +423,7 @@ class DeepseekMLA(nn.Module):
         forward_batch: ForwardBatch,
         zero_allocator: BumpAllocator,
     ):
+        metadata = forward_batch.attn_backend.forward_metadata
         if self.q_lora_rank is not None:
             if self.enable_fused_qkv:
                 fused_qkv_a_proj_out = self.fused_qkv_a_proj_with_mqa(hidden_states)[0]
@@ -456,7 +437,10 @@ class DeepseekMLA(nn.Module):
                 if self.enable_mla_multi_stream:
                     tng.scope.npu_wait_tensor(q, q)
             # overlap qk norm
-            q = self.q_a_layernorm(q)
+            if metadata.norm_res is not None:
+                q, _ = self.q_a_layernorm(q, metadata.norm_res)
+            else:
+                q = self.q_a_layernorm(q)
             q = self.q_b_proj(q)[0]
         else:
             q = self.q_proj(hidden_states)[0]
@@ -474,7 +458,6 @@ class DeepseekMLA(nn.Module):
         
         with stream_context("mla_multi_stream", self.enable_mla_multi_stream):
             latent_cache = latent_cache.unsqueeze(1).unsqueeze(1)
-            metadata = forward_batch.attn_backend.forward_metadata
             cos, sin = metadata.cos, metadata.sin
             k_nope_cache, k_rope_cache = forward_batch.token_to_kv_pool.get_kv_buffer(self.layer_id)
             k_nope_cache = k_nope_cache.view(-1, metadata.page_size, 1, self.kv_lora_rank)
@@ -501,8 +484,8 @@ class DeepseekMLA(nn.Module):
             q_rope = torch_npu.npu_interleave_rope(q_rope, cos, sin)
             q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
             q_rope = q_rope.view(bsz, self.num_local_heads, -1)
-
-        attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+        attn_ops_scope = tng.ops if forward_batch.can_run_graph else torch.ops.npu
+        attn_output, _ = attn_ops_scope.npu_fused_infer_attention_score(
             q_nope, 
             k_nope, 
             k_nope, 
@@ -516,8 +499,8 @@ class DeepseekMLA(nn.Module):
             antiquant_scale=None,
             block_table=metadata.block_kv_indices,
             block_size=metadata.page_size,
-            actual_seq_lengths=list(range(1, bsz + 1)),
-            actual_seq_lengths_kv=metadata.seq_lens_list
+            actual_seq_lengths=metadata.actual_seq_lengths,
+            actual_seq_lengths_kv=metadata.seq_lens
         )
        
         attn_output = attn_output.view(self.num_local_heads, -1, self.kv_lora_rank)
