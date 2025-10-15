@@ -126,7 +126,19 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 拉起成功后，可以通过curl命令进行测试：
 
 ```bash
-curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/json" -d '{"model": "deepseek","temperature":0,"max_tokens":50,"prompt": "how are you?", "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}'
+curl -X POST http://127.0.0.1:7000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+        "model": "deepseek",
+        "temperature": 0,
+        "max_tokens": 50,
+        "prompt": "how are you?",
+        "stream": true,
+        "stream_options": {
+          "include_usage": true,
+          "continuous_usage_stats": true
+        }
+      }'
 ```
 
 #### 注意事项

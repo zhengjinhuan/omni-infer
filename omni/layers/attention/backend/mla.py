@@ -30,6 +30,7 @@ from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
+from omni.accelerators.cache.omni_cache import BaseOmniCache, PrefixCopyMeta
 from omni.adaptors.vllm.utils import get_attr_by_names
 
 def group_request_list(seq_lens, query_lens, block_tables, threshold):
@@ -142,6 +143,8 @@ class AscendMLAPrefillMetadata:
     cos: Optional[torch.Tensor] = None
     sin: Optional[torch.Tensor] = None
 
+    prefix_meta: Optional[list[PrefixCopyMeta]] = None
+
 @dataclass
 class AscendMLADecodeMetadata:
     # Input positions for rotrary embeddings since for MLA the rotary
@@ -190,6 +193,8 @@ class AscendMLAMetadata:
 
     decode: Optional[AscendMLADecodeMetadata] = None
     prefill: Optional[AscendMLAPrefillMetadata] = None
+
+    omni_cache: Optional[BaseOmniCache] = None
 
     def __post_init__(self):
         pass
@@ -395,6 +400,11 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         input_positions = self.runner.positions_cpu[:num_actual_tokens].to(
             device, non_blocking=True)
 
+        if self.runner.omni_cache is not None:
+            assert isinstance(self.runner.omni_cache, BaseOmniCache), \
+                f"Omni cache type is {type(self.runner.omni_cache)}"
+        omni_cache = self.runner.omni_cache
+
         # pad prefill to avoid error of operator's shape assert
         if graph_pad_size > 0:
             padding = torch.full((graph_pad_size, ),
@@ -415,25 +425,37 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             reqs_start = self._num_decodes  # prefill_start
             tokens_start = self._num_decode_tokens
 
-            # Group request for Chunk-Prefill
-            seq_kvlen_group, seq_qlen_group, block_groups = group_request_list(
-                seq_lens_list,
-                query_lens_list,
-                block_table,
-                self.runner.max_num_tokens)
+            if not model_extra_config.operator_opt_config.use_omni_cache:
+                # Group request for Chunk-Prefill
+                seq_kvlen_group, seq_qlen_group, block_groups = group_request_list(
+                    seq_lens_list,
+                    query_lens_list,
+                    block_table,
+                    self.runner.max_num_tokens)
 
-            # Prepare kv index for prefill get kv_latent from kv_cache
-            kv_index_list = []
-            if block_table is not None and block_table.numel() > 0:
-                for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
-                    kv_index = self.get_kv_index(seq_lens, block_tables)
-                    kv_index_list.append(kv_index)
+                # Prepare kv index for prefill get kv_latent from kv_cache
+                kv_index_list = []
+                if block_table is not None and block_table.numel() > 0:
+                    for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
+                        kv_index = self.get_kv_index(seq_lens, block_tables)
+                        kv_index_list.append(kv_index)
 
-            seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
-            seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
+                seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
+                seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
+                tmp_input_position = input_positions[tokens_start:]
+                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(tmp_input_position)
 
-            tmp_input_position = input_positions[tokens_start:]
-            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(tmp_input_position)
+            else:
+                seq_qlen_group = [list(itertools.accumulate(query_lens_list))]
+                seq_kvlen_group = [list(itertools.accumulate(seq_lens_list))]
+
+                prefix_meta = omni_cache.get_prefill_prefix_copy_meta(
+                    block_size=self.block_size,
+                    kv_lens=self.runner.input_batch.num_computed_tokens_cpu[:num_reqs],
+                    query_lens_list=query_lens_list,
+                    block_tables=self.block_table.get_numpy_array()[:num_reqs],
+                    attn_state=self.runner.attn_state,
+                )
 
             prefill_metadata = AscendMLAPrefillMetadata(
                 attn_mask=self.runner.attn_mask,
@@ -446,7 +468,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 seq_kvlen_group=seq_kvlen_group,
                 kv_index_list=kv_index_list,
                 sin=sin,
-                cos=cos
+                cos=cos,
+                prefix_meta=prefix_meta if model_extra_config.operator_opt_config.use_omni_cache else None,
             )
 
         decode_metadata = None
@@ -497,6 +520,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             attn_state=self.runner.attn_state,
             prefill=prefill_metadata,
             decode=decode_metadata,
+            omni_cache=omni_cache,
         )
 
     def build_omni_attn_metadata(

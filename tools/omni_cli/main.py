@@ -535,6 +535,7 @@ def omni_cli_start(
         start_server_cmd = f"""
 # Exec the command
 cd {_double_quotes(code_path)}/tools/scripts
+if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; else python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; fi 
 echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
 {python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &
 echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
@@ -560,6 +561,10 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
             tf.write("# Export environment variables\n")
             tf.write(export_block + "\n\n")
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
+
+            tf.write(f'test ! -e /usr/local/Ascend/latest && mkdir -p /usr/local/Ascend/latest '
+                     f'&& ln -sf /usr/local/Ascend/ascend-toolkit/latest/* /usr/local/Ascend/latest '
+                     f'|| echo "Link already exists or target missing"')
 
             if need_start_ray:
                 tf.write(f"{ray_cmd}\n")
@@ -1038,8 +1043,8 @@ def print_node_list(inventory_path: str) -> None:
 
     children = inv.get("all", {}).get("children", {})
 
-    print(f"{'Role':<5} | {'Name':<5} | {'IP Address':<15}")
-    print("-" * 30)
+    print(f"{'Role':<5} | {'Name':<5} | {'IP Address':<15} | {'ascend_rt_visible_devices':<30}")
+    print("-" * 60)
 
     for role, role_data in children.items():
         if role not in ["C", "D", "P"]:
@@ -1049,10 +1054,11 @@ def print_node_list(inventory_path: str) -> None:
 
         for host_name, host_data in hosts.items():
             ip_address = host_data.get("ansible_host", "N/A")
+            ascend_rt_visible_devices = host_data.get("ascend_rt_visible_devices", "N/A")
 
-            print(f"{role:<5} | {host_name:<5} | {ip_address:<15}")
+            print(f"{role:<5} | {host_name:<5} | {ip_address:<15} | {ascend_rt_visible_devices:<30}")
 
-    print("-" * 30)
+    print("-" * 60)
 
 def run_docker_containers(
     inventory_path,
@@ -1284,6 +1290,8 @@ def main():
                                 default=None,
                                 help="The default value is set to current node name.")
     addnode_parser.add_argument("--docker_image_id", required=True, help="docker_image_id")
+    addnode_parser.add_argument("--ascend_rt_visible_devices", default="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15", help="ascend devices")
+    addnode_parser.add_argument("--model_name", default="deepseek", help="model name")
     addnode_parser.set_defaults(func=add_node)
 
     # RM_NODE command configuration

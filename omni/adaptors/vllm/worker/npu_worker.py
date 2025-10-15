@@ -319,7 +319,10 @@ class NPUWorker(WorkerBase):
             from contextlib import nullcontext
             context = nullcontext()
         with context:
-            self.model_runner.initialize_kv_cache(kv_cache_config)
+            if model_extra_config.operator_opt_config.use_omni_cache:
+                self.model_runner.initialize_omni_kv_cache(kv_cache_config)
+            else:
+                self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def initialize_cache(self, kv_cache_configs: List[KVCacheConfig]) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""

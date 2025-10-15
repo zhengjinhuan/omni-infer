@@ -458,7 +458,7 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
         "o_proj_tp_size": 1,                    # attention out_proj tp大小，默认为1
         "redundancy_shared_expert_num": 0       # 冗余共享专家数，默认为0
     },
-    "operator_optimizition_config": {
+    "operator_optimization_config": {
         "enable_kv_rmsnorm_rope_cache": true,   # 是否开启rmsnorm和rope融合，默认开启
         "prefill_moe_all_to_all": true,         # P的moe层是否使用all to all，默认开启。设置为false时，使用allgather+scatter
         "moe_multi_stream_tune": false,         # 是否开启多流，只能图模式使用，单算子会报错, 开启提升3ms性能
