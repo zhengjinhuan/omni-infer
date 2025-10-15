@@ -335,10 +335,12 @@ class NPUWorker(WorkerBase):
             self.profiler.start()
         else:
             self.profiler.stop()
+
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
         if model_extra_config.operator_opt_config.use_omni_placement:
             self.model_runner.planner.place_experts()
+
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
 
@@ -350,6 +352,7 @@ class NPUWorker(WorkerBase):
 
     def pin_lora(self, lora_id: int) -> bool:
         return self.model_runner.pin_lora(lora_id)
+
     def _init_worker_distributed_environment(self) -> None:
         """Initialize the distributed environment."""
         additional_config = self.vllm_config.additional_config

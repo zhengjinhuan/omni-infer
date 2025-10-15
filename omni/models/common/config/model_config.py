@@ -13,7 +13,7 @@ class ModelParallelConfig:
     dense_mlp_tp_size: int = 1
     dp_size: int = 1
     o_proj_tp_size: int = 1
-
+    attn_sp_size: int = 1
     redundancy_shared_expert_num: int = 0
  
 @dataclass
@@ -57,7 +57,8 @@ class ModelOperatorOptConfig:
     use_tnd_pa: bool = False  # 稠密模型使用新CANN包FIA算子，以TND+PA格式计算attention
     
     enable_topktoppsample_op: bool = False # 使用topktoppsample算子
-    
+    enable_dsa: bool = False # 使能mla = Indexer + select FA
+
     def __post_init__(self):
         # Check the dependencies of use_omni_placement and omni_placement_config_path
         if self.use_omni_placement and not self.omni_placement_config_path:
