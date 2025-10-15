@@ -305,32 +305,31 @@ class DeepseekV3Model(nn.Module):
         residual = None
 
         for i in range(total_num_layers):
-            with get_global_expert_distribution_recorder(True).with_current_layer(i):
-                layer = self.layers[i]
-                prefetch_list = None
-                if i + 1 < total_num_layers:
-                    next_attn = self.layers[i + 1].self_attn
-                    if self.fuse_qkv_a_proj:
-                        prefetch_list = {
-                            "fused_qkv_a_proj_with_mqa": next_attn.fused_qkv_a_proj_with_mqa.weight,
-                            "q_b_proj": next_attn.q_b_proj.weight,
-                            "w_kc": next_attn.w_kc,
-                        }
-                    else:
-                        prefetch_list = {
-                            "q_a_proj": next_attn.q_a_proj.weight,
-                            "kv_a_proj_with_mqa": next_attn.kv_a_proj_with_mqa.weight,
-                            "q_b_proj": next_attn.q_b_proj.weight,
-                            "w_kc": next_attn.w_kc,
-                        }
+            layer = self.layers[i]
+            prefetch_list = None
+            if i + 1 < total_num_layers:
+                next_attn = self.layers[i + 1].self_attn
+                if self.fuse_qkv_a_proj:
+                    prefetch_list = {
+                        "fused_qkv_a_proj_with_mqa": next_attn.fused_qkv_a_proj_with_mqa.weight,
+                        "q_b_proj": next_attn.q_b_proj.weight,
+                        "w_kc": next_attn.w_kc,
+                    }
+                else:
+                    prefetch_list = {
+                        "q_a_proj": next_attn.q_a_proj.weight,
+                        "kv_a_proj_with_mqa": next_attn.kv_a_proj_with_mqa.weight,
+                        "q_b_proj": next_attn.q_b_proj.weight,
+                        "w_kc": next_attn.w_kc,
+                    }
 
-                hidden_states, residual = layer(
-                    positions,
-                    hidden_states,
-                    forward_batch,
-                    residual,
-                    zero_allocator,
-                    prefetch_list=prefetch_list)
+            hidden_states, residual = layer(
+                positions,
+                hidden_states,
+                forward_batch,
+                residual,
+                zero_allocator,
+                prefetch_list=prefetch_list)
 
         if not forward_batch.is_prefill_idle:
             if residual is None:

@@ -23,6 +23,7 @@ from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.layers.linear import ReplicatedLinear
 from sglang.srt.utils import add_prefix
+from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import FusedMoE
 from omni.adaptors.sglang.layers.activation import SiluAndMul
@@ -192,6 +193,10 @@ class DeepseekMoE(nn.Module):
 
         deepep_mode = global_server_args_dict["deepep_mode"]
         ep_num_redundant_experts = global_server_args_dict["ep_num_redundant_experts"]
+
+        is_nextn = kwargs.get("is_nextn",False)
+        if is_nextn:
+            ep_num_redundant_experts = 0
 
         self.experts = FusedMoE(
             num_experts=config.n_routed_experts + self.num_fused_shared_experts + ep_num_redundant_experts,
@@ -408,6 +413,7 @@ class DeepseekMoE(nn.Module):
             e_score_correction_bias=self.gate.e_score_correction_bias,
             routed_scaling_factor=self.config.routed_scaling_factor)
 
+        topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids)
         # ====================== dispatch ======================
 
         # TODO: apply_expert_load_balance & best_topk not aligned with vLLM's
@@ -440,6 +446,14 @@ class DeepseekMoE(nn.Module):
         )[:6]
 
         group_list = expert_token_nums.to(torch.int64)
+
+        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+            self.layer_id,
+            [],
+            num_tokens_per_rank=None,
+            num_tokens_per_rdma_rank=None,
+            num_tokens_per_expert=group_list,
+        )
 
         # ====================== call experts part 1 ======================
 
