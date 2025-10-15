@@ -51,6 +51,9 @@ from sglang.srt.model_executor.forward_batch_info import (
     PPProxyTensors,
     enable_num_token_non_padded,
 )
+from sglang.srt.speculative.eagle_utils import (
+    EagleDraftInput
+)
 from sglang.srt.utils import (
     get_available_gpu_memory,
     get_compiler_backend,
@@ -83,6 +86,52 @@ class NpuGraphRunner(DeviceRunnerBase):
                 "3. disable torch compile by not using --enable-torch-compile\n"
                 "Open an issue on GitHub https://github.com/sgl-project/sglang/issues/new/choose \n"
             )
+
+    def get_spec_info(self, num_tokens: int):
+        spec_info = None
+        if self.model_runner.spec_algorithm.is_mtp():
+            from sglang.srt.speculative.eagle_utils import EagleVerifyInput, EagleDraftInput
+
+            # Target Model
+            if not self.model_runner.is_draft_worker:
+                spec_info = EagleVerifyInput(
+                    draft_token=None,
+                    custom_mask=self.custom_mask,
+                    positions=None,
+                    retrive_index=None,
+                    retrive_next_token=None,
+                    retrive_next_sibling=None,
+                    retrive_cum_len=None,
+                    spec_steps=self.model_runner.server_args.speculative_num_steps,
+                    topk=self.model_runner.server_args.speculative_eagle_topk,
+                    draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
+                    capture_hidden_mode=CaptureHiddenMode.FULL,
+                    seq_lens_sum=None,
+                    seq_lens_cpu=None,
+                )
+            # Draft Model
+            else:
+                with torch.device(self.model_runner.device):
+                    self.topk = self.model_runner.server_args.speculative_eagle_topk
+                    self.speculative_num_steps = self.model_runner.server_args.speculative_num_steps
+                    self.topk_p = torch.zeros((self.max_bs, self.topk), dtype=torch.float32)
+                    self.topk_index = torch.zeros((self.max_bs, self.topk), dtype=torch.int64)
+                    self.hidden_states = torch.zeros(
+                        (self.max_bs, self.model_runner.model_config.hidden_size),
+                        dtype=self.model_runner.dtype,
+                    )
+                topk_p = self.topk_p[:num_tokens]
+                topk_index = self.topk_index[:num_tokens]
+                hidden_states = self.hidden_states[:num_tokens]
+
+                spec_info = EagleDraftInput(
+                    topk_p=None,
+                    topk_index=None,
+                    hidden_states=hidden_states,
+                    capture_hidden_mode=CaptureHiddenMode.FULL,
+                )
+
+        return spec_info
 
     def prepare_forward_batch(self, bs: int, num_tokens: int) -> ForwardBatch:
         # Graph inputs
@@ -133,6 +182,7 @@ class NpuGraphRunner(DeviceRunnerBase):
             gathered_buffer = None
 
         spec_info = self.get_spec_info(num_tokens)
+
         if self.capture_hidden_mode != CaptureHiddenMode.FULL:
             self.capture_hidden_mode = (
                 spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
