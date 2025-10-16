@@ -344,6 +344,13 @@ export ENABLE_OVERWRITE_REQ_IDS=1
 # enable kv event
 export ENABLE_APC_EVENT=0
 
+# enable middleware
+if [[ "$ROLE" == "prefill" && -n "$VALIDATORS_CONFIG_PATH" ]]; then
+    EXTRA_ARGS="$EXTRA_ARGS --middleware omni.adaptors.vllm.entrypoints.middleware.param_check.ValidateSamplingParams"
+else
+    EXTRA_ARGS="$EXTRA_ARGS"
+fi
+
 # Print current configuration
 echo "==== Current Configuration ===="
 echo "GLOBAL_RANK_TABLE_FILE_PATH: $GLOBAL_RANK_TABLE_FILE_PATH"
@@ -389,7 +396,6 @@ echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
 echo "=================="
 
-EXTRA_ARGS="$EXTRA_ARGS"
 # Execute Python script
 
 common_operations() {
