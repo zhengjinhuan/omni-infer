@@ -15,5 +15,6 @@
         "control_accept_rate": -1,
         "enable_prefill_micro_batch": false,
         "experts_pruning": false
+        "enable_scale_parallel": true
     }
 }

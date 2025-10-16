@@ -9,6 +9,7 @@ from typing import Callable, List, Optional, Tuple
 import os
 import torch
 import torch_npu
+import torch.distributed as dist
 
 from vllm.distributed import get_pp_group, get_world_group
 from vllm.distributed import get_tp_group, get_dp_group, get_ep_group
@@ -206,8 +207,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
             quant_mode=-1,
             row_idx_type=0,
         )
-
-        import torch.distributed as dist
+        
         tokens_per_expert_group = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
         dist.all_to_all_single(tokens_per_expert_group, tokens_per_expert)
 
