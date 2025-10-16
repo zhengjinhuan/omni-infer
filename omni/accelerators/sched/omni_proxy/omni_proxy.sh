@@ -12,6 +12,7 @@ prefill_endpoints=""
 decode_endpoints=""
 log_file="/tmp/nginx_error.log"
 log_level="notice"
+access_log_file="/tmp/nginx_access.log"
 omni_proxy_pd_policy="sequential"
 omni_proxy_model_path=""
 omni_proxy_max_batch_num_token="32000"
@@ -37,6 +38,7 @@ print_help() {
     echo "  --decode-endpoints <list>       Comma-separated backend servers for decode"
     echo "  --log-file <path>               Log file path (default: /tmp/nginx_error.log)"
     echo "  --log-level <LEVEL>             Log level (default: notice)"
+    echo "  --access-log-file <path>        Access log file path (default: /tmp/nginx_access.log)"
     echo "  --omni-proxy-pd-policy <policy> sequential or parallel (default: sequential)"
     echo "  --omni-proxy-model-path <path>  Path to model directory (default: unset)"
     echo "  --omni-proxy-max-batch-num-token <N>      max_batch_num_token (default: 32000)"
@@ -94,6 +96,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --log-level)
             log_level="$2"
+            shift 2
+            ;;
+        --access-log-file)
+            access_log_file="$2"
             shift 2
             ;;
         --omni-proxy-pd-policy)
@@ -235,6 +241,45 @@ function gen_upstream_block() {
     echo -e "$block"
 }
 
+function gen_access_log() {
+    echo "log_format json_combined escape=json
+    '{'
+        'time:\"\$msec\",'
+        'request_id:\"\$http_x_request_id\",'
+        'request_time:\"\$request_time\",'
+        'upstream_addr:\"\$upstream_addr\",'
+        'connection_info:\"\$connection:\$connection_time\",'
+        'time_iso8601:\"\$time_iso8601\",'
+        'status:\"\$status\",'
+        'upstream_connect_time:\"\$upstream_connect_time\",'
+        'upstream_header_time:\"\$upstream_header_time\",'
+        'upstream_response_time:\"\$upstream_response_time\",'
+        'upstream_bytes_received:\"\$upstream_bytes_received\",'
+        'body_bytes_sent:\"\$body_bytes_sent\",'
+        'promt_tks:\"\$promt_tks\",'
+        'decoded_tks:\"\$decoded_tks\",'
+        'max_tks:\"\$max_tks\",'
+        'max_match:\"\$max_match\",'
+        'rcved:\"\$rcved\",'
+        'cont_rcved:\"\$cont_rcved\",'
+        'tknized:\"\$tknized\",'
+        'apc:\"\$apc\",'
+        'wait_p:\"\$wait_p\",'
+        'p_sched:\"\$p_sched\",'
+        'to_p:\"\$to_p\",'
+        'p_ed:\"\$p_ed\",'
+        'wait_d:\"\$wait_d\",'
+        'd_sched:\"\$d_sched\",'
+        'to_d:\"\$to_d\",'
+        '1st_tk:\"\$1st_tk\",'
+        'tpot:\"\$tpot\",'
+        'ttft:\"\$ttft\",'
+        'latency:\"\$latency\"'
+    '}';
+    access_log ${access_log_file} json_combined;
+    "
+}
+
 function generate_nginx_conf() {
     affinity_masks=$(gen_affinity_masks "$start_core_index" "$core_num")
     # backup config if exists
@@ -266,6 +311,7 @@ events {
 }
 
 http {
+    $(gen_access_log)
     proxy_http_version 1.1;
     tcp_nodelay on;
     client_max_body_size 10M;

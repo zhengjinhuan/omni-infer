@@ -15,6 +15,23 @@ typedef enum {
     NGX_PREFILL_STREAM_SET_OPT
 } ngx_prefill_stream_op_e;
 
+enum req_metrics_tokens_var {
+    VAR_COMPLETION_TOKENS,
+    VAR_PROMPT_TOKENS,
+};
+
+enum req_metrics_time_var {
+    VAR_REQUEST_START_TIME,
+    VAR_PREFILL_SEND,
+    VAR_PREFILL_DONE,
+    VAR_DECODE_SEND,
+    VAR_DECODE_DONE,
+    VAR_FIRST_TOKEN_TIME,
+    VAR_TTFT,
+    VAR_TPOT,
+    VAR_E2E_LATENCY,
+};
+
 typedef struct {
     ngx_str_t prefill_location;
     ngx_slab_pool_t *shpool;
@@ -37,6 +54,10 @@ typedef struct {
     
     // Timing information for TTFT and TPOT
     ngx_msec_t request_start_time;    // When the request started processing
+    ngx_msec_t prefill_send;
+    ngx_msec_t prefill_done;
+    ngx_msec_t decode_send;
+    ngx_msec_t decode_done;
     ngx_msec_t first_token_time;      // When the first token was received
     ngx_msec_t ttft;                  // record for ttft
     ngx_msec_t tpot;                  // record for tpot
@@ -48,6 +69,8 @@ typedef struct {
     ngx_uint_t tpot_recorded;         // Flag to ensure TPOT is recorded only once
     ngx_str_t model_name;             // Model name parsed from response
 } ngx_http_prefill_ctx_t;
+
+ngx_module_t ngx_http_prefill_module;
 
 static ngx_int_t ngx_http_prefill_handler(ngx_http_request_t *r);
 static void *ngx_http_prefill_create_loc_conf(ngx_conf_t *cf);
@@ -121,8 +144,146 @@ static char *ngx_conf_set_prefill_stream_ops(ngx_conf_t *cf, ngx_command_t *cmd,
     return NGX_CONF_OK;
 }
 
+static ngx_int_t ngx_http_prefill_req_uint_var_get(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_prefill_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_prefill_module);
+    if (ctx == NULL) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    u_char *p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
+    if (p == NULL) {
+        v->not_found = 1;
+        return NGX_ERROR;
+    }
+    uint32_t value;
+    switch (data) {
+        case VAR_COMPLETION_TOKENS:
+            value = ctx->completion_tokens;
+            break;
+        case VAR_PROMPT_TOKENS:
+            value = ctx->prompt_tokens;
+            break;
+        default :
+            v->not_found = 1;
+            return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(p, "%i", value) - p;
+    v->data = p;
+    v->valid = 1;
+    v->no_cacheable = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+static ngx_int_t ngx_http_prefill_req_time_var_get(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_prefill_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_prefill_module);
+    if (ctx == NULL) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    u_char *p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
+    if (p == NULL) {
+        v->not_found = 1;
+        return NGX_ERROR;
+    }
+
+    ngx_msec_t time;
+    switch (data) {
+        case VAR_REQUEST_START_TIME:
+            time = ctx->request_start_time;
+            break;
+        case VAR_PREFILL_SEND:
+            time = ctx->prefill_send - ctx->request_start_time;
+            break;
+        case VAR_PREFILL_DONE:
+            time = ctx->prefill_done - ctx->request_start_time;
+            break;
+        case VAR_DECODE_SEND:
+            time = ctx->decode_send - ctx->request_start_time;
+            break;
+        case VAR_DECODE_DONE:
+            time = ctx->decode_done - ctx->request_start_time;
+            break;
+        case VAR_FIRST_TOKEN_TIME:
+            time = ctx->first_token_time - ctx->request_start_time;
+            break;
+        case VAR_TTFT:
+            time = ctx->ttft;
+            break;
+        case VAR_TPOT:
+            time = ctx->tpot;
+            break;
+        case VAR_E2E_LATENCY:
+            time = ctx->e2e_latency;
+            break;
+        default :
+            v->not_found = 1;
+            return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(p, "%i", time) - p;
+    v->data = p;
+    v->valid = 1;
+    v->no_cacheable = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+static ngx_http_variable_t ngx_http_prefill_variables[] = {
+    {ngx_string("promt_tks"), NULL, ngx_http_prefill_req_uint_var_get,
+     VAR_PROMPT_TOKENS, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("cmplt_tks"), NULL, ngx_http_prefill_req_uint_var_get,
+     VAR_COMPLETION_TOKENS, NGX_HTTP_VAR_CHANGEABLE, 0},
+
+    {ngx_string("start"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_REQUEST_START_TIME, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("p_send"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_PREFILL_SEND, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("p_done"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_PREFILL_DONE, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("d_send"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_DECODE_SEND, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("d_done"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_DECODE_DONE, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("1st_tk"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_FIRST_TOKEN_TIME, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("ttft"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_TTFT, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("tpot"), NULL, ngx_http_prefill_req_time_var_get,
+    VAR_TPOT, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("e2e"), NULL, ngx_http_prefill_req_time_var_get,
+     VAR_E2E_LATENCY, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_null_string, NULL, NULL, 0, 0, 0}
+};
+
+static ngx_int_t ngx_http_prefill_add_variables(ngx_conf_t *cf)
+{
+    ngx_http_variable_t *var, *v;
+
+    for (v = ngx_http_prefill_variables; v->name.len; v++) {
+        var = ngx_http_add_variable(cf, &v->name, v->flags);
+        if (var == NULL) {
+            return NGX_ERROR;
+        }
+
+        var->get_handler = v->get_handler;
+        var->data = v->data;
+    }
+
+    return NGX_OK;
+}
+
 static ngx_http_module_t ngx_http_prefill_module_ctx = {
-    NULL,                  /* preconfiguration */
+    ngx_http_prefill_add_variables, /* preconfiguration */
     ngx_http_prefill_init, /* postconfiguration */
 
     NULL, /* create main configuration */
@@ -604,7 +765,7 @@ static void ngx_http_gen_decode_request_body(ngx_http_request_t *r, ngx_http_pre
             ngx_sprintf(r->headers_in.content_length->value.data, "%uz", total_len) -
             r->headers_in.content_length->value.data;
     }
-
+    ctx->decode_send = ngx_current_msec;
     return;
 }
 
@@ -634,6 +795,7 @@ static ngx_int_t ngx_http_prefill_subrequest_done(ngx_http_request_t *r, void *d
         return rc;
     }
 
+    ctx->prefill_done = ngx_current_msec;
     ctx->done = 1;
     ctx->status = r->headers_out.status;
 
@@ -879,6 +1041,8 @@ static ngx_int_t ngx_http_gen_prefill_request_body(
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: request body is empty");
         return NGX_ERROR;
     }
+
+    ctx->prefill_send = ngx_current_msec;
 
     // Calculate total body size from the main request
     for (cl = r->request_body->bufs; cl != NULL; cl = cl->next) {
@@ -1312,7 +1476,8 @@ static ngx_int_t ngx_http_prefill_body_filter(ngx_http_request_t *r, ngx_chain_t
             }
         }
     }
-    
+    ctx->decode_done = ngx_current_msec;
+
     return ngx_http_next_body_filter(r, in);
 }
 
