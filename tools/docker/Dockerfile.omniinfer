@@ -41,7 +41,7 @@ RUN export http_proxy=${HTTP_PROXY} && \
     pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
         -r /workspace/requirements/develop.txt && \
     pip cache purge && \
-    yum -y install vim wget iputils zeromq-devel && \
+    yum -y install vim wget iputils zeromq-devel gmock-devel && \
     yum clean all && \
     rm -rf /var/cache/yum
 
@@ -63,7 +63,7 @@ ARG PIP_TRUSTED_HOST
 # Install nessary pip packages for runtime
 RUN export http_proxy=${HTTP_PROXY} && \
     export https_proxy=${HTTP_PROXY} && \
-    yum -y install glibc-devel gcc-c++ && \
+    yum -y install glibc-devel gmock-devel gcc-c++ git && \
     yum install -y /workspace/dist/omni-proxy*.rpm && \
     pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
         decorator==5.2.1 absl-py==2.3.1 ml-dtypes==0.5.1 \

@@ -113,6 +113,6 @@ RUN cd /workspace/copy_data && \
         TOOLKIT_RUNTIME_LIB_PATH="/usr/local/Ascend/ascend-toolkit/latest/runtime/lib64/stub" && \
         echo "export LD_LIBRARY_PATH=$DRIVER_LIB_PATH:\$LD_LIBRARY_PATH:$TOOLKIT_RUNTIME_LIB_PATH/" >> ~/.bashrc; \
     fi && \
-
+    sed -i '/TMOUT=/d' /etc/bashrc && \
     rm -rf /workspace/copy_data
 #################### CANN Pytorch IMAGE ####################
