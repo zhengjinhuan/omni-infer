@@ -37,6 +37,7 @@ DECODE_GEAR_LIST = [16, 32, 48, 64]
 class NpuMLADecodeMetadata:
     npumla_metadata: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
     block_kv_indices: Optional[torch.Tensor] = None
+    mc2_mask: Optional[torch.Tensor] = None
     cos: Optional[torch.Tensor] = None
     sin: Optional[torch.Tensor] = None
 
@@ -45,6 +46,7 @@ class NpuMLADecodeMetadata:
         npumla_metadata: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_kv_indices: Optional[torch.Tensor] = None,
         seq_lens_list=None,
+        mc2_mask: Optional[torch.Tensor] = None,
         forward_batch: ForwardBatch = None,
         actual_seq_lengths: Dict = None,
         norm_res: Dict = None
@@ -125,7 +127,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
                 for batch_size in DECODE_GEAR_LIST:
                     self.norm_res[batch_size] = torch.zeros([batch_size, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
                     self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int64, device="npu")
-
+                self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device="npu")
         self.data_type = model_runner.kv_cache_dtype
         self.q_data_type = model_runner.dtype
 
@@ -156,6 +158,14 @@ class NpuMLABackend(TorchNativeAttnBackend):
         self.max_seqlen_pad = max_total_tokens // model_runner.server_args.page_size
         self.model_runner = model_runner
 
+    def generate_activate_mask(self, actual_seqs_num, batch_size):
+        if len(self.decode_gear_list) > 1:
+            gear = next((g for g in self.decode_gear_list if g >= batch_size), self.decode_gear_list[-1])
+            self.mc2_mask = torch.zeros(gear, dtype=torch.bool, device="npu")
+        else:
+            self.mc2_mask.zero_()
+        self.mc2_mask[:actual_seqs_num].fill_(True)
+        
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         bs = forward_batch.input_ids.size(0)
         if forward_batch.forward_mode.is_decode_or_idle():
@@ -181,10 +191,12 @@ class NpuMLABackend(TorchNativeAttnBackend):
             else:
                 actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device="npu")
                 norm_res = None
+            self.generate_activate_mask(0, DECODE_GEAR_LIST[-1])
             self.forward_metadata = NpuMLADecodeMetadata(
                 None,
                 block_kv_indices,
                 forward_batch.seq_lens_cpu.tolist(),
+                self.mc2_mask,
                 forward_batch,
                 actual_seq_lengths,
                 norm_res

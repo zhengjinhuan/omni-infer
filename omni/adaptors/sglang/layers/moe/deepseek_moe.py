@@ -417,7 +417,7 @@ class DeepseekMoE(nn.Module):
         # ====================== dispatch ======================
 
         # TODO: apply_expert_load_balance & best_topk not aligned with vLLM's
-
+        mc2_mask = forward_batch.attn_backend.forward_metadata.mc2_mask if forward_batch.attn_backend is not None and forward_batch.attn_backend.forward_metadata.mc2_mask is not None else None
         dispatch_quant_mode = 2 # 0: non-quant; 1: static quant(not supported now); 2: dynamic quant
 
         (
@@ -442,7 +442,7 @@ class DeepseekMoE(nn.Module):
             group_tp=self.moe_rs_group_name,                    # self.experts.moe_rs_group_name
             tp_world_size=self.experts_tp_size,                 # disable tp for shared experts when enable deepep moe
             tp_rank_id=0,                                       # disable tp for shared experts when enable deepep moe
-            x_active_mask=None,                                 # TODO: mc2_mask, not aligned with vLLM's
+            x_active_mask=mc2_mask,                                 # TODO: mc2_mask, not aligned with vLLM's
         )[:6]
 
         group_list = expert_token_nums.to(torch.int64)
@@ -629,7 +629,7 @@ class DeepseekMoE(nn.Module):
             group_tp=self.moe_rs_group_name,
             tp_world_size=self.experts_tp_size,                 # disable tp for shared experts when enable deepep moe
             tp_rank_id=0,                                       # disable tp for shared experts when enable deepep moe
-            x_active_mask=None,                                 # TODO: mc2_mask, not aligned with vLLM's
+            x_active_mask=mc2_mask,                                 # TODO: mc2_mask, not aligned with vLLM's
         )
 
         return hidden_states_route + shared_output, residual
