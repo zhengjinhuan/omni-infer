@@ -58,7 +58,6 @@ omni_req_t *omni_allocate_request(omni_request_pool_t *pool, void *data)
             r->in_use = 1;
             r->backend = data;
             r->slot_index = idx;
-
             // head always points to the next slot to try
             pool->head = (idx + 1) % total_slots;
 
@@ -92,4 +91,60 @@ void omni_free_request(omni_request_pool_t *pool, omni_req_t *req)
     pool->num_requests--;
 
     req->in_use = 0;
+}
+
+static inline uint32_t omni_prefill_model_index(uint32_t request_count)
+{
+    if (request_count > OMNI_PREFILL_BATCH_MODEL_MAX)
+    {
+        return OMNI_PREFILL_BATCH_MODEL_MAX;
+    }
+    return request_count;
+}
+
+ngx_msec_t omni_prefill_model_predict(const omni_global_state_t *gs, uint32_t request_count)
+{
+    if (request_count == 0 || gs == NULL)
+    {
+        return 0;
+    }
+
+    uint32_t index = omni_prefill_model_index(request_count);
+    const omni_prefill_batch_model_entry_t *entry = &gs->prefill_batch_model.entries[index];
+
+    if (entry->sample_count == 0 || entry->average_time <= 0)
+    {
+        return OMNI_PREFILL_DEFAULT_BATCH_MS * request_count;
+    }
+
+    return entry->average_time;
+}
+
+void omni_prefill_model_observe(omni_global_state_t *gs, uint32_t request_count, ngx_msec_t duration)
+{
+    if (gs == NULL || request_count == 0)
+    {
+        return;
+    }
+
+    if ((int64_t)duration <= 0)
+    {
+        duration = 1;
+    }
+
+    uint32_t index = omni_prefill_model_index(request_count);
+    omni_prefill_batch_model_entry_t *entry = &gs->prefill_batch_model.entries[index];
+
+    if (entry->sample_count == 0)
+    {
+        entry->average_time = duration;
+        entry->sample_count = 1;
+        return;
+    }
+
+    uint64_t total = (uint64_t)entry->average_time * entry->sample_count + duration;
+    uint32_t new_count = entry->sample_count + 1;
+
+    entry->average_time = (ngx_msec_t)(total / new_count);
+    entry->sample_count = new_count;
 }

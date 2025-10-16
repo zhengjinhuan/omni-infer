@@ -15,6 +15,9 @@
 #define MAX_REQUEST_SLOTS 16384
 #define MAX_WORKERS 320
 
+#define OMNI_PREFILL_BATCH_MODEL_MAX 64
+#define OMNI_PREFILL_DEFAULT_BATCH_MS 50
+
 typedef enum omni_proxy_request_phase
 {
     PHASE_TOKENIZING,
@@ -115,6 +118,32 @@ typedef struct omni_batch_metrics_his_s
     omni_batch_metrics_t his[NUM_PREFILL_BATCH_METRICS_HIS];
 } omni_batch_metrics_his_t;
 
+typedef struct omni_prefill_batch_snapshot_s
+{
+    ngx_msec_t finish_time;
+    uint32_t num_requests;
+} omni_prefill_batch_snapshot_t;
+
+typedef struct omni_prefill_batch_state_s
+{
+    omni_prefill_batch_snapshot_t last;
+    omni_prefill_batch_snapshot_t current;
+    omni_prefill_batch_snapshot_t next;
+    ngx_msec_t current_start_time;
+    ngx_flag_t current_open;
+} omni_prefill_batch_state_t;
+
+typedef struct omni_prefill_batch_model_entry_s
+{
+    ngx_msec_t average_time;
+    uint32_t sample_count;
+} omni_prefill_batch_model_entry_t;
+
+typedef struct omni_prefill_batch_model_s
+{
+    omni_prefill_batch_model_entry_t entries[OMNI_PREFILL_BATCH_MODEL_MAX + 1];
+} omni_prefill_batch_model_t;
+
 #define UPSTREAM_NAME_MAX 64
 #define UPSTREAM_IP_MAX 16
 #define UPSTREAM_ADDR_NAME_MAX 128
@@ -137,7 +166,7 @@ typedef struct omni_upstream_prefill_s
     uint32_t num_tokens;
     ngx_msec_t last_scheduled_time;
     ngx_msec_t expected_next_schedule_time;
-    omni_batch_metrics_his_t his;
+    omni_prefill_batch_state_t batch;
     omni_zmq_handler_t kv_handler;
     ngx_slab_pool_t *radix_pool;
     omni_radix_tree_t *radix_tree;
@@ -185,6 +214,7 @@ typedef struct omni_global_state_s
     int workers[MAX_WORKERS];
     omni_upstream_prefill_t prefill_states[MAX_PREFILL_UPSTREAMS];
     omni_upstream_decode_t decode_states[MAX_DECODE_UPSTREAMS];
+    omni_prefill_batch_model_t prefill_batch_model;
 } omni_global_state_t;
 
 #define GLOBAL_STATE_SIZE sizeof(omni_global_state_t)

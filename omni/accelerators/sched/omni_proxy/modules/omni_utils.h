@@ -6,6 +6,7 @@
 
 #include <omni_shared_state.h>
 #include <omni_proxy.h>
+#include <string.h>
 
 #define BIT(n) (1U << (n))
 
@@ -88,6 +89,34 @@ static inline void omni_sort_compact_group(omni_req_group_t *group)
     // now the first num_requests entries are in_use==1;
     // drop the rest
     group->watermark = group->num_requests;
+}
+
+static inline void omni_compact_group_preserve_order(omni_req_group_t *group)
+{
+    uint32_t write = 0;
+    for (uint32_t read = 0; read < group->watermark; ++read)
+    {
+        if (!group->requests[read].in_use)
+        {
+            continue;
+        }
+
+        if (write != read)
+        {
+            group->requests[write] = group->requests[read];
+        }
+        write++;
+    }
+
+    for (uint32_t idx = write; idx < group->watermark; ++idx)
+    {
+        group->requests[idx].in_use = 0;
+        group->requests[idx].slot_index = 0;
+        group->requests[idx].weight = 0.0;
+    }
+
+    group->watermark = write;
+    group->num_requests = write;
 }
 
 static inline void omni_remove_req_from_group_by_req_index(uint32_t req_index, omni_req_group_t *group)
@@ -177,3 +206,6 @@ static inline void omni_local_phase_change_to(omni_req_t *req, omni_proxy_reques
     // printf("[Phase-%d]: Local from: %d To: %d.\n", req->slot_index, from, to);
     omni_phase_change_to(req, omni_get_local_state()->groups, from, to);
 }
+
+ngx_msec_t omni_prefill_model_predict(const omni_global_state_t *gs, uint32_t request_count);
+void omni_prefill_model_observe(omni_global_state_t *gs, uint32_t request_count, ngx_msec_t duration);

@@ -248,7 +248,10 @@ static inline void omni_proxy_cleanup_req(omni_req_t *req)
             omni_upstream_prefill_t *ps =
                 &g_state->prefill_states[req->prefill_upstream_endpoint_idx];
 
-            ps->num_running--;
+            if (ps->num_running > 0)
+            {
+                ps->num_running--;
+            }
 
             if (ps->num_tokens >= req->metrics.prompt_num_tokens)
             {
@@ -258,6 +261,18 @@ static inline void omni_proxy_cleanup_req(omni_req_t *req)
             {
                 ps->num_tokens = 0;
             }
+
+            ngx_msec_t now = ngx_current_msec;
+            ps->batch.last.finish_time = now;
+            if (ps->batch.current_open && ps->batch.current_start_time > now)
+            {
+                ps->batch.current_start_time = now;
+            }
+            if (!ps->batch.current_open)
+            {
+                ps->expected_next_schedule_time = now;
+            }
+
             ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                           "[Prefill Release Stats] req %d prompt_tokens=%ui, decoded_tokens=%ui; "
                           "prefill idx=%d num_running=%ui, num_tokens(after)=%ui",
@@ -444,51 +459,76 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     ctx->prefill_response_body_size = total;
 
     omni_upstream_prefill_t *us = &g_state->prefill_states[req->prefill_upstream_endpoint_idx];
-    us->num_running--;
-    us->num_tokens -= req->metrics.prompt_num_tokens;
+    ngx_msec_t now = ngx_current_msec;
 
-    omni_batch_metrics_t *current_batch = &us->his.his[us->his.head];
-    ngx_msec_t delta = (current_batch->last_response_receive_time > 0) ? 
-                     (ngx_current_msec - current_batch->last_response_receive_time) : 
-                     (21); // If first，force delta > 20 to get a new batch
-
-    // Need a smarter value from statistics or work out by the number of tokens scheduled
-    if (delta > 20)
+    if (us->num_running > 0)
     {
-        // 1. **calculate last batch**
-        if (current_batch->num_requests > 0) 
-        { // not a empty batch
-            current_batch->time_taken += current_batch->last_response_receive_time - current_batch->first_response_receive_time;
-             ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
-                          "[Prefill-Batch-End] Batch at head %ui finalized. Duration: %ui ms, Tokens: %ui",
-                          us->his.head, current_batch->time_taken, current_batch->num_tokens);
-        }
+        us->num_running--;
+    }
 
-        // 2. **start a new batch**
-        if (us->his.count < NUM_PREFILL_BATCH_METRICS_HIS) { 
-            us->his.count++;
-        }
-        us->his.head = (us->his.head + 1) % NUM_PREFILL_BATCH_METRICS_HIS;
-
-        omni_batch_metrics_t *new_batch = &us->his.his[us->his.head];
-        ngx_memzero(new_batch, sizeof(omni_batch_metrics_t));
-
-        new_batch->first_response_receive_time = ngx_current_msec;
-        new_batch->last_response_receive_time = ngx_current_msec;
-        new_batch->num_requests = 1;
-        new_batch->num_tokens = req->metrics.prompt_num_tokens;
-        new_batch->time_taken = ngx_current_msec - req->metrics.time_to_prefill;
+    if (us->num_tokens >= req->metrics.prompt_num_tokens)
+    {
+        us->num_tokens -= req->metrics.prompt_num_tokens;
     }
     else
     {
-        // **add to current batch**
-        current_batch->last_response_receive_time = ngx_current_msec;
-        current_batch->num_requests++;
-        current_batch->num_tokens += req->metrics.prompt_num_tokens;
-        // average_delta 
-        current_batch->average_delta = current_batch->average_delta * (current_batch->num_requests - 1) +
-                                       delta / (current_batch->num_requests);
+        us->num_tokens = 0;
     }
+
+    omni_prefill_batch_state_t *batch = &us->batch;
+
+    if (batch->current_open)
+    {
+        uint32_t finished_requests = batch->current.num_requests;
+        if (finished_requests > 0)
+        {
+            ngx_msec_t start_time = batch->current_start_time;
+            ngx_msec_t duration = (start_time > 0 && now > start_time) ? (now - start_time)
+                                                                      : (OMNI_PREFILL_DEFAULT_BATCH_MS * finished_requests);
+            omni_prefill_model_observe(g_state, finished_requests, duration);
+        }
+
+        batch->last = batch->current;
+        batch->last.finish_time = now;
+        batch->current.num_requests = 0;
+        batch->current.finish_time = now;
+        batch->current_open = 0;
+    }
+    else
+    {
+        batch->last.finish_time = now;
+        batch->last.num_requests = 0;
+    }
+
+    if (batch->next.num_requests > 0)
+    {
+        batch->current = batch->next;
+        batch->next.num_requests = 0;
+        batch->current_start_time = now;
+
+        if (batch->current.num_requests > 0)
+        {
+            ngx_msec_t duration = omni_prefill_model_predict(g_state, batch->current.num_requests);
+            batch->current.finish_time = now + duration;
+            batch->current_open = 1;
+        }
+        else
+        {
+            batch->current.finish_time = now;
+            batch->current_open = 0;
+        }
+
+        batch->next.finish_time = batch->current.finish_time;
+    }
+    else
+    {
+        batch->current_start_time = now;
+        batch->current.finish_time = now;
+        batch->current_open = 0;
+        batch->next.finish_time = now;
+    }
+
+    us->expected_next_schedule_time = batch->current_open ? batch->current.finish_time : batch->next.finish_time;
 
     // check policy
     if (g_state->pd_policy == PD_SEQUENTIAL)
@@ -559,6 +599,14 @@ static ngx_int_t ngx_http_prefill_wakeup(omni_req_t *req)
     omni_proxy_prepare_prefill_subrequest(r, sr, ctx);
 
     omni_phase_transition_all(req, PHASE_PREFILL_SCHEDULED, PHASE_PREFILLING);
+
+    omni_upstream_prefill_t *prefill_state =
+        &g_state->prefill_states[req->prefill_upstream_endpoint_idx];
+    if (prefill_state->batch.current_open &&
+        prefill_state->batch.current_start_time > ngx_current_msec)
+    {
+        prefill_state->batch.current_start_time = ngx_current_msec;
+    }
 
     req->metrics.time_to_prefill = ngx_current_msec;
 
@@ -1052,6 +1100,7 @@ static ngx_int_t ngx_http_decode_wakeup(omni_req_t *req)
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Decode-%d]: wakeup", req->slot_index);
 
     omni_phase_transition_all(req, PHASE_DECODE_SCHEDULED, PHASE_DECODING);
+
     req->metrics.time_to_decode = ngx_current_msec;
 
     struct timeval tv;
