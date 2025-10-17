@@ -38,7 +38,7 @@ class HybridSchedulerConfig(SchedulerConfig):
     policy: str = "fcfs"
     num_scheduler_steps: int = 1
     scheduler_cls: Union[str, Type[object]] = (
-        "omni.adaptors.vllm.worker.npu_schedule.NpuHybridScheduler")
+        "omni.adaptors.vllm.sched.npu_schedule.NpuHybridScheduler")
 
     @classmethod
     def initialize_from_config(
@@ -55,7 +55,7 @@ class HybridSchedulerConfig(SchedulerConfig):
         scheduler_config["policy"] = "fcfs"
         scheduler_config["num_scheduler_steps"] = 1
         scheduler_config["scheduler_cls"] = (
-            "omni.adaptors.vllm.worker.npu_schedule.NpuHybridScheduler")
+            "omni.adaptors.vllm.sched.npu_schedule.NpuHybridScheduler")
         # Override params in original SchedulerConfig with params in additional_config.ascend_scheduler_config
         if ascend_scheduler_config:
             for k, v in ascend_scheduler_config.items():
