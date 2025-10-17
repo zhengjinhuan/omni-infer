@@ -948,7 +948,7 @@ class FlashCommLinearBase(LinearBase):
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
         self.params_dtype = params_dtype
-        if quant_config is None or prefix in quant_config.ignore:
+        if quant_config is None or (quant_config.ignore is not None and prefix in quant_config.ignore):
             self.quant_method: Optional[
                 QuantizeMethodBase] = UnquantizedFlashCommLinearMethod()
         else:

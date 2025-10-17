@@ -45,7 +45,7 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     maybe_prefix)
 from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.layers.activation import SiluAndMul
-from omni.layers.layernorm import RMSNorm
+from omni.layers.layernorm import RMSNormFlashComm
 from omni.layers.fused_mlp import FusedMLP
 from omni.layers.linear import (
     RowParallelFlashCommLinear,
@@ -162,12 +162,13 @@ class PanguEmbeddedAttention(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
+        x_transform: Optional[str] = None
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
+        qkv, _ = self.qkv_proj(hidden_states, x_transform=x_transform)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k, self.attn.layer_name)
         attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output)
+        output, _ = self.o_proj(attn_output, reduce_type="RS")
         return output
 
     def _init_rotary_emb(self, config: PretrainedConfig,
@@ -248,9 +249,9 @@ class PanguEmbeddedDecoderLayer(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.mlp",
         )
-        self.input_layernorm = RMSNorm(config.hidden_size,
+        self.input_layernorm = RMSNormFlashComm(config.hidden_size,
                                        eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size,
+        self.post_attention_layernorm = RMSNormFlashComm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
         self.layer_name = f"{prefix}.self_attn.attn"
 
@@ -262,18 +263,22 @@ class PanguEmbeddedDecoderLayer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
         if residual is None:
-            residual = hidden_states
+            tp_size = get_tensor_model_parallel_world_size()
+            tp_rank = get_tensor_model_parallel_rank()
+            residual = hidden_states.chunk(tp_size,dim=0)[tp_rank]
             hidden_states = self.input_layernorm(hidden_states)
+            hidden_states = self.self_attn(positions=positions,
+                                hidden_states=hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
-        hidden_states = self.self_attn(positions=positions,
-                                       hidden_states=hidden_states)
+            hidden_states = self.self_attn(positions=positions,
+                                        hidden_states=hidden_states, x_transform="AG")
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, x_transform="AG", reduce_type="RS")
         return hidden_states, residual
 
 
@@ -316,7 +321,7 @@ class PanguEmbeddedModel(nn.Module):
             prefix=f"{prefix}.layers",
         )
         if get_pp_group().is_last_rank:
-            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.norm = RMSNormFlashComm(config.hidden_size, eps=config.rms_norm_eps)
         else:
             self.norm = PPMissingLayer()
 
@@ -361,7 +366,7 @@ class PanguEmbeddedModel(nn.Module):
                 "residual": residual
             })
 
-        hidden_states, _ = self.norm(hidden_states, residual)
+        hidden_states, _ = self.norm(hidden_states, residual, y_transform="AG")
 
         if len(aux_hidden_states) > 0:
             return hidden_states, aux_hidden_states
