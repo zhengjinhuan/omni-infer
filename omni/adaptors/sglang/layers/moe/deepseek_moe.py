@@ -417,7 +417,7 @@ class DeepseekMoE(nn.Module):
         # ====================== dispatch ======================
 
         # TODO: apply_expert_load_balance & best_topk not aligned with vLLM's
-        mc2_mask = forward_batch.attn_backend.forward_metadata.mc2_mask if forward_batch.attn_backend is not None and forward_batch.attn_backend.forward_metadata.mc2_mask is not None else None
+        mc2_mask = forward_batch.attn_backend.forward_metadata.mc2_mask
         dispatch_quant_mode = 2 # 0: non-quant; 1: static quant(not supported now); 2: dynamic quant
 
         (
