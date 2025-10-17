@@ -228,12 +228,6 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
 }
 static inline void omni_proxy_cleanup_req(omni_req_t *req)
 {
-    ngx_http_request_t *r = omni_get_http_request(req);
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                "<<<Action: Received all tokens; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
-
     omni_proxy_request_phase_t phases[PHASE_MAX];
     size_t count = 0;
     omni_req_get_phases(req, phases, &count);
@@ -307,6 +301,11 @@ static void omni_proxy_main_req_cleanup(void *data)
     omni_req_t *req = data;
     omni_proxy_cleanup_req(req);
 
+    ngx_http_request_t *r = omni_get_http_request(req);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                "<<<Action: Received all tokens; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
     ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                   "[Decode-%d]: Done from %d.",
                   req->slot_index, req->decode_upstream_endpoint_idx);
@@ -648,13 +647,8 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
             struct timeval tv;
             gettimeofday(&tv, NULL);
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                        "<<<Action: Proxy got first token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
-        }else if (req->metrics.decoded_tokens == 3){
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                         "<<<Action: Proxy got second token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
-        }else if (req->metrics.decoded_tokens == 4){
+        }else if (req->metrics.decoded_tokens == 3){
             struct timeval tv;
             gettimeofday(&tv, NULL);
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
@@ -670,6 +664,10 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     }
     else
     {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Proxy got first token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
         req->metrics.ttft = ngx_current_msec - req->metrics.time_received;
         req->metrics.time_first_token = req->metrics.tpot = ngx_current_msec - req->metrics.time_to_decode;
         req->metrics.decoded_tokens++;

@@ -223,7 +223,7 @@ ngx_uint_t omni_radix_tree_match_optimistic(omni_radix_tree_t *tree, uint64_t *h
             ngx_rbtree_key_t target = (ngx_rbtree_key_t)current_hash;
             ngx_rbtree_node_t *node = tree->lookup_tree.root;
 
-            while (node != &tree->sentinel)
+            while (node != NULL && node != &tree->sentinel)
             {
                 if (target < node->key)
                 {

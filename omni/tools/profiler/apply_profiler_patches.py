@@ -138,7 +138,7 @@ def monkey_patch_request_status():
         if value == RequestStatus.WAITING_FOR_REMOTE_KVS:
             safe_print(
                 trace_output_directory, 
-                f"<<<Action: Add need pullling sequence;|waiting_pull_len={self.waiting_pull_len} "
+                f"<<<Action: Add need pulling sequence; "
                 f"Timestamp:{time.time()}; "
                 f"RequestID:{self.request_id}; "
                 f"Role:{os.getenv('ROLE')}_{ip_str}"
