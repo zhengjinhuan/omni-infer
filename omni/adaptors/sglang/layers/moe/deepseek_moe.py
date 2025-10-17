@@ -4,7 +4,7 @@
 from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple, Callable
 from contextlib import nullcontext
-
+import os
 import torch
 from torch import nn
 import torch.distributed as dist
@@ -144,6 +144,7 @@ class DeepseekMoE(nn.Module):
     ) -> None:
 
         super().__init__()
+        self.prefix = prefix
         self.config = config
         self.layer_id = layer_id
         self.world_size = get_world_group().world_size
@@ -152,6 +153,8 @@ class DeepseekMoE(nn.Module):
         self.top_k = config.num_experts_per_tok
 
         self.quant_symbol = True if quant_config else False
+
+        self.use_super_kernel = os.environ.get("USE_SUPER_KERNEL", "0") == "1"
 
         self.num_fused_shared_experts = 0
         if not global_server_args_dict["disable_shared_experts_fusion"]:
@@ -303,7 +306,11 @@ class DeepseekMoE(nn.Module):
         if forward_batch.is_extend_in_batch:
             return self._forward_prefill_norm(hidden_states, residual, forward_batch)
         else:
-            return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
+            if self.use_super_kernel:
+                with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
+                    return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
+            else:
+                return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
 
     def _forward_prefill_norm(self, hidden_states, residual, forward_batch) -> torch.Tensor:
 
