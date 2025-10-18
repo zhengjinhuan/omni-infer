@@ -7,17 +7,12 @@ Support attention backend for NpuMLA.
 Enable speculative sampling in NpuMLA
 """
 
+import types
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-import torch_npu
-from sglang.global_config import global_config
-from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
-from sglang.srt.layers.attention.flashinfer_mla_backend import (
-    FlashInferMLAIndicesUpdaterDecode,
-)
 from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
 from sglang.srt.layers.dp_attention import get_attention_tp_size
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
@@ -25,8 +20,8 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMo
 if TYPE_CHECKING:
     from sglang.srt.layers.radix_attention import RadixAttention
     from sglang.srt.model_executor.model_runner import ModelRunner
-    from sglang.srt.speculative.eagle_utils import EagleDraftInput, EagleVerifyInput
     from sglang.srt.speculative.spec_info import SpecInfo
+
 
 PAGE_SIZE = 128
 MAX_SEQ_LEN = 4096
@@ -38,63 +33,95 @@ class NpuMLADecodeMetadata:
     cos: Optional[torch.Tensor] = None
     sin: Optional[torch.Tensor] = None
 
-    def __init__(
-        self,
-        npumla_metadata: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        block_kv_indices: Optional[torch.Tensor] = None,
-        mc2_mask: Optional[torch.Tensor] = None,
-        seq_lens_list=None,
+    def __init__(self,
+        layer,
         forward_batch: ForwardBatch = None,
-        actual_seq_lengths: Dict = None,
-        norm_res: Dict = None,
+        block_kv_indices: Optional[torch.Tensor] = None,
+        actual_seq_lengths = None,
+        norm_res = None,
     ):
         self.page_size = PAGE_SIZE
-        self.npumla_metadata = npumla_metadata
         self.block_kv_indices = block_kv_indices
-        batch_size = forward_batch.input_ids.size(0)
-        self.mc2_mask = mc2_mask
+        bs = forward_batch.input_ids.size(0)
+
         # decode when block_kv_indices is not None
         if block_kv_indices is not None:
-            self.seq_lens = (forward_batch.positions + 1).to(forward_batch.seq_lens.dtype)
-            self.actual_seq_lengths = actual_seq_lengths
             self.norm_res = norm_res
-        else: 
-            self.seq_lens_list = seq_lens_list if seq_lens_list is not None else [1]
-            self.seq_lens_list_cumsum = np.cumsum(self.seq_lens_list).tolist() if seq_lens_list is not None else [1]
+            self.actual_seq_lengths = actual_seq_lengths         # Q:TND
+            self.actual_seq_lengths_kv = (forward_batch.seq_lens # KV:NTD
+                if forward_batch.seq_lens.size(0) == bs
+                else forward_batch.positions.to(torch.int32) + 1)  # seq_lens without padding
+            self.mc2_mask = forward_batch.positions.to(torch.bool) # reuse padding
+        else:
+            self.seq_lens_list = forward_batch.extend_seq_lens_cpu
+            if self.seq_lens_list is not None:
+                self.seq_lens_list_cumsum = np.cumsum(self.seq_lens_list).tolist()
+            else:
+                self.seq_lens_list = [1]
+                self.seq_lens_list_cumsum = [1]
+
             if (
                 forward_batch.is_extend_in_batch
                 or forward_batch.global_num_tokens_cpu is None
             ):
-                self.seq_lens_list_cumsum[-1] = batch_size
+                self.seq_lens_list_cumsum[-1] = bs
+
+        self.cos, self.sin = layer.self_attn.rotary_emb.get_cos_sin(forward_batch.positions)
 
 
-def create_npumla_kv_indices(
-    bs,
-    req_to_token_ptr,  # [max_batch, max_context_len]
-    req_pool_indices_ptr,
-    page_kernel_lens_ptr,
-    kv_start_idx,
-    kv_indices_ptr,
-    req_to_token_ptr_stride,
-    kv_indices_ptr_stride,
-    PAGED_SIZE=128,
-):
-    req_to_tokens = (
-        req_to_token_ptr[req_pool_indices_ptr, : page_kernel_lens_ptr.max()][
-            :, ::PAGED_SIZE
-        ]
-        // PAGED_SIZE
-    )
-    kv_indices_ptr[: req_to_tokens.size(0), : req_to_tokens.size(1)].copy_(
-        req_to_tokens
-    )
+
+class KVBlockTable:
+
+    def __init__(self,
+        req_to_token_pool, # ReqToTokenPool | DecodeReqToTokenPool
+        max_seqlen_pad,
+        device = "npu",
+        page_size = PAGE_SIZE,
+    ):
+        self.device = device
+        self.page_size = page_size
+        self.ceil_div = lambda a, b: (a + (b - 1)) // b
+
+        shape = req_to_token_pool.req_to_token.shape
+        self.block_table = torch.zeros(
+            shape[0],
+            min(4096, max_seqlen_pad, self.ceil_div(shape[1], self.page_size)),
+            dtype=torch.int32,
+            device=device,
+        )
+
+        # monkey patch for write()
+        old_fn = req_to_token_pool.write
+        def new_fn(obj, indices, values):
+            old_fn(indices, values)
+            self._write(indices, values)
+        req_to_token_pool.write = types.MethodType(new_fn, req_to_token_pool)
+
+    def _write(self, indices, values):
+        req_ptr, idx = indices
+        pg = self.page_size # 128
+
+        if type(idx) is torch.Tensor: # indices is (Tensor, Tensor)
+            val = values // pg
+            idx = idx // pg
+        elif type(idx) is slice: # indices is (int, slice)
+            cs, ce = self.ceil_div(idx.start, pg), self.ceil_div(idx.stop, pg)
+            val = values[cs * pg - idx.start : idx.stop - idx.start : pg] // pg
+            idx = torch.arange(cs, ce, device=self.device)
+
+        self.block_table[req_ptr, idx] = val.to(self.device)
+
+    def index(self, bs: int, ptr: torch.Tensor):
+        if bs != ptr.size(0):
+            assert bs > ptr.size(0)
+            ptr = torch.nn.functional.pad(ptr, (0, bs - ptr.size(0)))
+        return self.block_table[ptr, :]
 
 
 class NpuMLABackend(TorchNativeAttnBackend):
     """npumla attention kernels."""
 
-    def __init__(
-        self,
+    def __init__(self,
         model_runner: ModelRunner,
         skip_prefill: bool = False,
     ):
@@ -107,13 +134,11 @@ class NpuMLABackend(TorchNativeAttnBackend):
         self.num_q_heads = (
             model_runner.model_config.num_attention_heads // get_attention_tp_size()
         )
-        self.req_to_token = model_runner.req_to_token_pool.req_to_token
         self.num_local_heads = (
             model_runner.model_config.num_attention_heads // get_attention_tp_size()
         )
-        self.norm_res = {}
-        self.actual_seq_lengths = {}
-        self.mc2_mask = None
+        self.norm_res = None
+        self.actual_seq_lengths = None
         if "deepseek" in model_runner.model_config.hf_config.architectures[0].lower():
             self.kv_lora_rank = model_runner.model_config.kv_lora_rank
             self.q_lora_rank = model_runner.model_config.hf_config.q_lora_rank
@@ -123,10 +148,9 @@ class NpuMLABackend(TorchNativeAttnBackend):
             self.kv_cache_dim = self.kv_lora_rank + self.qk_rope_head_dim
             self.scaling = model_runner.model_config.scaling
             if model_runner.dp_size > 1:
-                max_graph_bs = model_runner.server_args.torch_compile_max_bs
-                self.norm_res = torch.zeros([max_graph_bs, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
-                self.actual_seq_lengths = torch.tensor(list(range(1, max_graph_bs + 1)), dtype=torch.int64, device="npu")
-                self.mc2_mask = torch.zeros(max_graph_bs, dtype=torch.bool, device="npu")
+                bs = model_runner.server_args.torch_compile_max_bs
+                self.norm_res = torch.zeros([bs, self.q_lora_rank], dtype=torch.bfloat16, device=self.device)
+                self.actual_seq_lengths = torch.arange(1, bs + 1, dtype=torch.int64, device=self.device) # cumsum for TND layout
         self.data_type = model_runner.kv_cache_dtype
         self.q_data_type = model_runner.dtype
 
@@ -157,67 +181,40 @@ class NpuMLABackend(TorchNativeAttnBackend):
         self.max_seqlen_pad = max_total_tokens // model_runner.server_args.page_size
         self.model_runner = model_runner
 
-    def generate_activate_mask(self, actual_seqs_num):
-        if self.mc2_mask is not None :
-            self.mc2_mask.zero_()
-            self.mc2_mask[:actual_seqs_num].fill_(True)
+        pool = model_runner.req_to_token_pool
+        if not hasattr(pool, "kv_block_table"):
+            pool.kv_block_table = KVBlockTable(pool, self.max_seqlen_pad)
+        self.kv_block_table = pool.kv_block_table
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
-        bs = forward_batch.input_ids.size(0)
-        if forward_batch.forward_mode.is_decode_or_idle():
-            block_kv_indices = torch.full(
-                (bs, self.max_seqlen_pad),
-                -1,
-                dtype=torch.int32,
-                device=forward_batch.seq_lens.device,
-            )
-            create_npumla_kv_indices(
-                forward_batch.batch_size,
-                self.req_to_token,
-                forward_batch.req_pool_indices,
-                forward_batch.seq_lens,
-                None,
-                block_kv_indices,
-                self.req_to_token.stride(0),
-                self.max_seqlen_pad,
-            )
-            if self.actual_seq_lengths is None :
-                self.actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device="npu")
 
-            if forward_batch.can_run_graph :
-                self.generate_activate_mask(forward_batch.num_token_non_padded)
+        model = self.model_runner.model.model
+        layer = model.layers[0] if hasattr(model, "layers") else model.decoder
+
+        if forward_batch.forward_mode.is_decode_or_idle():
+
+            bs = forward_batch.input_ids.size(0)
 
             self.forward_metadata = NpuMLADecodeMetadata(
-                None,
-                block_kv_indices,
-                self.mc2_mask if forward_batch.can_run_graph else None,
-                forward_batch.seq_lens_cpu.tolist(),
-                forward_batch,
-                self.actual_seq_lengths,
-                self.norm_res,
+                layer=layer,
+                forward_batch=forward_batch,
+                block_kv_indices=self.kv_block_table.index(bs, forward_batch.req_pool_indices),
+                actual_seq_lengths=self.actual_seq_lengths,
+                norm_res=self.norm_res,
             )
         else:
             self.forward_metadata = NpuMLADecodeMetadata(
-                npumla_metadata=None,
-                block_kv_indices=None,
-                mc2_mask=None,
-                seq_lens_list=forward_batch.extend_seq_lens_cpu,
+                layer=layer,
                 forward_batch=forward_batch,
             )
-        if hasattr(self.model_runner.model.model, "layers"):
-            self.forward_metadata.cos, self.forward_metadata.sin = self.model_runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(forward_batch.positions)
-        else:
-            self.forward_metadata.cos, self.forward_metadata.sin = self.model_runner.model.model.decoder.self_attn.rotary_emb.get_cos_sin(forward_batch.positions)
 
-    def init_cuda_graph_state(
-        self,
+    def init_cuda_graph_state(self,
         max_bs: int,
         block_kv_indices: Optional[torch.Tensor] = None,
     ):
         pass
 
-    def init_forward_metadata_capture_cuda_graph(
-        self,
+    def init_forward_metadata_capture_cuda_graph(self,
         bs: int,
         num_tokens: int,
         req_pool_indices: torch.Tensor,
@@ -239,8 +236,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
             forward_batch,
         )
 
-    def init_forward_metadata_replay_cuda_graph(
-        self,
+    def init_forward_metadata_replay_cuda_graph(self,
         bs: int,
         req_pool_indices: torch.Tensor,
         seq_lens: torch.Tensor,
@@ -255,8 +251,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
     def get_cuda_graph_seq_len_fill_value(self):
         return 1
 
-    def forward_decode(
-        self,
+    def forward_decode(self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -310,8 +305,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
         )
         return o.view(-1, layer.tp_q_head_num * layer.v_head_dim)
 
-    def forward_extend(
-        self,
+    def forward_extend(self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
