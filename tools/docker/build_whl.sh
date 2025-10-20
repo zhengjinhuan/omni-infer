@@ -52,10 +52,10 @@ chmod +x infer_engines/bash_install_code.sh
 
 if version_ge "${OMNI_VERSION_NUM}" "0.5.0"; then
     bash -xe build/build.sh --cache 1
-else
-    bash -xe build/build.sh
     cd ${BASE_DIR}/omniinfer/tools/quant/python
     python setup.py bdist_wheel
+else
+    bash -xe build/build.sh
 fi
 
 pip cache purge

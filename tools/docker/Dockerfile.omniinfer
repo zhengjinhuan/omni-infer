@@ -53,7 +53,9 @@ FROM ${BASE_IMAGE} AS user_image
 COPY --from=whl_builder /workspace/omniinfer/build/dist /workspace/dist
 COPY --from=whl_builder /workspace/omniinfer/build/lib /workspace/dist/lib
 COPY --from=whl_builder /workspace/omniinfer/tools/scripts /workspace/omniinfer/tools/scripts/
-COPY --from=whl_builder /workspace/omniinfer/omni/accelerators/sched /workspace/omniinfer/omni/accelerators/sched/
+COPY --from=whl_builder /workspace/omniinfer/omni /workspace/omniinfer/omni/
+COPY --from=whl_builder /workspace/omniinfer/infer_engines /workspace/omniinfer/infer_engines/
+COPY --from=whl_builder /workspace/omniinfer/tests/test_config /workspace/omniinfer/tests/test_config/
 #TODO: Temporarily added source code
 #COPY --from=whl_builder /workspace/omniinfer /workspace/omniinfer/
 ARG HTTP_PROXY
@@ -63,7 +65,7 @@ ARG PIP_TRUSTED_HOST
 # Install nessary pip packages for runtime
 RUN export http_proxy=${HTTP_PROXY} && \
     export https_proxy=${HTTP_PROXY} && \
-    yum -y install glibc-devel gmock-devel gcc-c++ git && \
+    yum -y install glibc-devel gcc-c++ git gmock-devel && \
     yum install -y /workspace/dist/omni-proxy*.rpm && \
     pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
         decorator==5.2.1 absl-py==2.3.1 ml-dtypes==0.5.1 \
