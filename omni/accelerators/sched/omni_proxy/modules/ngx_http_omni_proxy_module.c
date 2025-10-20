@@ -1454,13 +1454,24 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
             continue;
         }
 
+        bool is_prefill = false;
+        const char *type_str = NULL;
+
         if (ngx_strncmp(uscf->host.data, PREFILL_ENDPOINTS, sizeof(PREFILL_ENDPOINTS) - 1) == 0)
         {
+            is_prefill = true;
+            type_str = "prefill";
             local_state.num_prefill_endpoints = uscf->servers->nelts;
         }
         else if (ngx_strncmp(uscf->host.data, DECODE_ENDPOINTS, sizeof(DECODE_ENDPOINTS) - 1) == 0)
         {
+            type_str = "decode";
             local_state.num_decode_endpoints = uscf->servers->nelts;
+        }
+        else
+        {
+            // If it's not a prefill or decode upstream, skip it.
+            continue;
         }
 
         int count = 0;
@@ -1475,7 +1486,7 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
                 ngx_str_t shm_name;
 
                 u_char *buffer = ngx_pcalloc(cf->pool, 64);
-                u_char *end = ngx_snprintf(buffer, 64, "omni_proxy_%d", count);
+                u_char *end = ngx_snprintf(buffer, 64, "omni_proxy_%s_%d", type_str, count);
                 *end = 0;
 
                 shm_name.data = buffer;
@@ -1493,8 +1504,9 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
                 shm_zone->init = omni_proxy_apc_shm_initialized;
 
                 ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
-                                "    Created 20MB shared memory zone: %V",
-                                &shm_name);
+                                "    Created 20MB shared memory zone: %V (zone=%p)",
+                                &shm_name,
+                                shm_zone);
             }
         }
     }
