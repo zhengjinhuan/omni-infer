@@ -51,3 +51,5 @@ const omni_metric_desc_t *omni_metrics_get_registry(omni_global_state_t *global_
 
 // Export metrics in Prometheus format
 ngx_str_t omni_metrics_export(omni_global_state_t *global_state);
+
+ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *pool);
