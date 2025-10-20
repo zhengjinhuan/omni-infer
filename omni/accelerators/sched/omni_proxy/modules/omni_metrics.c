@@ -3,6 +3,9 @@
 
 #include <ngx_core.h>
 #include <omni_metrics.h>
+#include <omni_proxy.h>
+#include <time.h>
+#define DECODE_INSTANCE_GROUP_SIZE 16
 
 // Label definitions
 static const char *LABEL_ENDPOINT[] = {"endpoint"};
@@ -306,4 +309,152 @@ done:
 
         return result;
     }
+}
+
+ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *pool) {
+    
+    ngx_uint_t i;
+
+    size_t required_size = 1024;
+
+    for (i = 0; i < gs->num_prefill_endpoints; i++) {
+        required_size += 300;
+        required_size += gs->prefill_states[i].address.name_str.len;
+    }
+
+    for (i = 0; i < gs->num_decode_endpoints; i++) {
+        required_size += 300;
+        required_size += gs->decode_states[i].address.name_str.len;
+    }
+
+    u_char *buf = ngx_palloc(pool, required_size); 
+    if (buf == NULL) {
+        return (ngx_str_t){0, NULL};
+    }
+    
+    u_char *p = buf;
+    u_char *end = buf + required_size;
+    ngx_uint_t is_first_node = 1;
+
+    time_t now_utc = ngx_time();
+    time_t now_beijing_t = now_utc + 8 * 3600;
+    struct tm *now_tm = gmtime(&now_beijing_t);
+    u_char time_buf[64];
+    strftime((char *)time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", now_tm);
+
+    ngx_uint_t healthy_prefill_count = 0;
+    for (i = 0; i < gs->num_prefill_endpoints; i++) {
+        if (gs->prefill_states[i].healthy) {
+            healthy_prefill_count++;
+        }
+    }
+
+    ngx_uint_t healthy_decode_count = 0;
+    for (i = 0; i < gs->num_decode_endpoints; i++) {
+        if (gs->decode_states[i].healthy) {
+            healthy_decode_count++;
+        }
+    }
+
+    ngx_uint_t x = healthy_prefill_count;
+    ngx_uint_t m = 1;
+    ngx_uint_t y = healthy_decode_count / gs->num_decode_endpoints;
+    ngx_uint_t n = gs->num_decode_endpoints / DECODE_INSTANCE_GROUP_SIZE;
+    
+
+    ngx_uint_t code;
+    ngx_str_t status;
+
+    ngx_uint_t total_upstreams = gs->num_prefill_endpoints + gs->num_decode_endpoints;
+    ngx_uint_t total_healthy = healthy_prefill_count + healthy_decode_count;
+
+    if (x == 0 || y == 0) {
+        code = 503;
+        ngx_str_set(&status, "service failed");
+    } else if (total_healthy == total_upstreams) {
+        code = 200;
+        ngx_str_set(&status, "OK");
+    } else {
+        code = 206;
+        ngx_str_set(&status, "warn, unhealthy servers exist");
+    }
+
+    p = ngx_snprintf(p, end - p, "{\n");
+    p = ngx_snprintf(p, end - p, "    \"code\": %ui,\n", code);
+    p = ngx_snprintf(p, end - p, "    \"status\": \"%V\",\n", &status);
+    p = ngx_snprintf(p, end - p, "    \"timestamp\": \"%s\",\n", time_buf);
+    p = ngx_snprintf(p, end - p, "    \"summary\": \"%uiP%ui-%uiD%ui\",\n", x, m, y, n);
+    p = ngx_snprintf(p, end - p, "    \"total_prefill_servers\": %d,\n", gs->num_prefill_endpoints);
+    p = ngx_snprintf(p, end - p, "    \"health_prefill_servers\": %d,\n", healthy_prefill_count);
+    p = ngx_snprintf(p, end - p, "    \"total_decode_servers\": %d,\n", gs->num_decode_endpoints);
+    p = ngx_snprintf(p, end - p, "    \"health_decode_servers\": %d,\n", healthy_decode_count);
+    p = ngx_snprintf(p, end - p, "    \"prefill\": [\n");
+
+    // 1. for Prefill nodes
+    for (i = 0; i < gs->num_prefill_endpoints; i++) {
+        p = ngx_snprintf(p, end - p, "%s        {\n", is_first_node ? "" : ",\n");
+        if (gs->prefill_states[i].healthy == 1){
+            p = ngx_snprintf(p, end - p, "            \"status\": \"running\",\n"); 
+        } else {
+            p = ngx_snprintf(p, end - p, "            \"status\": \"failed\",\n"); 
+        }
+        p = ngx_snprintf(p, end - p, "            \"pod_name\": \"\",\n");
+        p = ngx_snprintf(p, end - p, "            \"url\": \"%V\",\n", &gs->prefill_states[i].address.name_str);
+        p = ngx_snprintf(p, end - p, "            \"role\": \"prefill\",\n");
+        p = ngx_snprintf(p, end - p, "            \"index\": %d,\n", i);
+        p = ngx_snprintf(p, end - p, "            \"port\": %ui,\n", gs->prefill_states[i].address.port);
+        if (gs->prefill_states[i].healthy == 1){
+            p = ngx_snprintf(p, end - p, "            \"fault_message\": \"healthy\",\n"); 
+        } else {
+            p = ngx_snprintf(p, end - p, "            \"fault_message\": \"unhealthy\",\n"); 
+        }
+        p = ngx_snprintf(p, end - p, "            \"alert\": \"\"\n");
+        p = ngx_snprintf(p, end - p, "        }");
+        is_first_node = 0;
+    }
+    p = ngx_snprintf(p, end - p, "\n    ],\n");
+    p = ngx_snprintf(p, end - p, "    \"decode\": [\n");
+
+    // 2. for Decode nodes
+    for (i = 0; i < gs->num_decode_endpoints; i++) {
+        ngx_uint_t index = i / DECODE_INSTANCE_GROUP_SIZE;
+        if (i != 0){
+            p = ngx_snprintf(p, end - p, "%s        {\n", is_first_node ? "" : ",\n");
+        } else {
+            p = ngx_snprintf(p, end - p, "        {\n");
+        }
+        if (gs->decode_states[i].healthy == 1){
+            p = ngx_snprintf(p, end - p, "            \"status\": \"running\",\n"); 
+        } else {
+            p = ngx_snprintf(p, end - p, "            \"status\": \"failed\",\n"); 
+        }
+        p = ngx_snprintf(p, end - p, "            \"pod_name\": \"\",\n");
+        p = ngx_snprintf(p, end - p, "            \"url\": \"%V\",\n", &gs->decode_states[i].address.name_str);
+        p = ngx_snprintf(p, end - p, "            \"role\": \"decode\",\n");
+        p = ngx_snprintf(p, end - p, "            \"index\": %d,\n", index);
+        p = ngx_snprintf(p, end - p, "            \"port\": %ui,\n", gs->decode_states[i].address.port);
+        if (gs->prefill_states[i].healthy == 1){
+            p = ngx_snprintf(p, end - p, "            \"fault_message\": \"healthy\",\n"); 
+        } else {
+            p = ngx_snprintf(p, end - p, "            \"fault_message\": \"unhealthy\",\n"); 
+        }
+        p = ngx_snprintf(p, end - p, "            \"alert\": \"\"\n");
+        p = ngx_snprintf(p, end - p, "        }");
+        is_first_node = 0;
+    }
+
+    p = ngx_snprintf(p, end - p, "\n    ]\n");
+    p = ngx_snprintf(p, end - p, "}\n");
+    
+    ngx_str_t result;
+    result.data = buf;
+    result.len = p - buf;
+
+    FILE *f = fopen("/tmp/omni_proxy_health.json", "w");
+    if (f) {
+        fwrite(result.data, 1, result.len, f);
+        fclose(f);
+    }
+
+    return result;
 }
