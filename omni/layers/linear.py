@@ -1038,7 +1038,7 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
                                                   x_transform=x_transform)
         if next_layer:
             MAX_PREFETCH_SIZE = 90000000
-            for layer in attn_layer:
+            for layer in next_layer:
                 torch_npu.npu_prefetch(layer.weight, output_parallel, MAX_PREFETCH_SIZE)
         if self.tp_size > 1:
             if reduce_type == "AR":
