@@ -31,7 +31,7 @@ from vllm.config import CompilationLevel, VllmConfig
 from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group, get_tensor_model_parallel_rank
 from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
-from vllm.sequence import IntermediateTensors, VLLM_INVALID_TOKEN_ID
+from vllm.sequence import IntermediateTensors
 from vllm.utils import (DeviceMemoryProfiler, is_pin_memory_available,
                         LayerBlockType, LazyLoader, cdiv)
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
@@ -70,6 +70,8 @@ NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which
 
 def _get_pad_size(num_seqs):
     tp_size = get_tensor_model_parallel_world_size()
+    if model_extra_config.parall_config.attn_sp_size > 1:
+        tp_size = tp_size * 2
     return (tp_size - num_seqs % tp_size) % tp_size
 
 class GraphCompileConfiguration:
@@ -386,6 +388,13 @@ class NPUModelRunner(GPUModelRunner):
             # requests have draft tokens.
             sample_indices = total_num_scheduled_tokens
         else:
+            if model_extra_config.parall_config.attn_sp_size > 1:
+                sp_size = model_extra_config.parall_config.attn_sp_size * 2
+                cu_num_tokens = np.empty_like(num_scheduled_tokens)
+                cu_num_tokens[0] = num_scheduled_tokens[0]
+                for i in range(1, num_scheduled_tokens.size):
+                    prev_aligned = ((cu_num_tokens[i - 1] + sp_size - 1) // sp_size) * sp_size
+                    cu_num_tokens[i] = prev_aligned + num_scheduled_tokens[i]
             sample_indices = cu_num_tokens - 1
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
         if self.lora_config:

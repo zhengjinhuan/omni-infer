@@ -422,12 +422,12 @@ common_operations() {
 if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
   if [ "$IP" = "$HOST_IP" ]; then
     export RAY_USAGE_STATS_ENABLED=0
-    ray start --head --num-gpus=$NUM_SERVERS
+    ray start --head
     sleep 10s
     common_operations
   else
     sleep 5s
-    command="ray start --address='$HOST_IP:6379' --num-gpus=$NUM_SERVERS &> /dev/null"
+    command="ray start --address='$HOST_IP:6379' &> /dev/null"
     echo $command
     cost_time=0
     end_time=300
@@ -443,6 +443,7 @@ if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
         break
       else
         echo "failed to connect to ray head node, wait 5s....."
+        ray stop --force
         sleep 5
         cost_time=$((cost + 5))
       fi
