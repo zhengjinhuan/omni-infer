@@ -59,7 +59,6 @@ class ModelOperatorOptConfig:
     enable_topktoppsample_op: bool = False # 使用topktoppsample算子
     enable_dsa: bool = False # 使能mla = Indexer + select FA
 
-    enable_scale_parallel: bool = False 
     enable_scale_parallel: bool = False #用于qwen235b的scale_parallel优化启用开关，默认关闭
     
     def __post_init__(self):
