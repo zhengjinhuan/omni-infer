@@ -53,6 +53,11 @@ from omni.layers.linear import (
     RowParallelFlashCommLinear,
     QKVParallelFlashCommLinear
 )
+from omni.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
+
+DEFAULT_ROPE_THETA = 1000000
+# if use weight nz, this config must be True
+torch.npu.config.allow_internal_format = True
 
 
 class PanguEmbeddedMLP(FusedMLP):
@@ -164,12 +169,14 @@ class PanguEmbeddedAttention(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
         x_transform: Optional[str] = None,
-        next_layer: List[torch.nn.Module] = None
+        next_layer: List[torch.nn.Module] = None,
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states, x_transform=x_transform)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k, self.attn.layer_name)
+        q, k = self.rotary_emb(positions, q, k, cos, sin)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output, reduce_type="RS", next_layer=next_layer)
         return output
@@ -182,6 +189,9 @@ class PanguEmbeddedAttention(nn.Module):
         if is_gguf and config.model_type == "Pangu":
             is_neox_style = False
 
+        if rope_scaling is None:
+            rope_scaling = {'factor': '0'}
+        rope_scaling["rope_type"] = 'qwen'
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -263,6 +273,8 @@ class PanguEmbeddedDecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
+        cos: torch.Tensor,
+        sin: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         use_prefetch = int(os.environ.get('USE_WEIGHT_PREFETCH',"1"))
         
@@ -290,7 +302,7 @@ class PanguEmbeddedDecoderLayer(nn.Module):
                 torch_npu.npu_prefetch(layer.weight, hidden_states, MAX_PREFETCH_SIZE)
 
         hidden_states = self.self_attn(positions=positions,
-                                    hidden_states=hidden_states, x_transform=x_transform, next_layer=mlp_layer)
+                                    hidden_states=hidden_states, cos=cos, sin=sin, x_transform=x_transform, next_layer=mlp_layer)
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
@@ -347,6 +359,13 @@ class PanguEmbeddedModel(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+        
+        base = getattr(config, "rope_theta", DEFAULT_ROPE_THETA)
+        rotary_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        max_len = config.max_position_embeddings
+        full_cos, full_sin = QwenRotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
+        self.register_buffer("full_cos", full_cos, persistent=False)
+        self.register_buffer("full_sin", full_sin, persistent=False)
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -370,12 +389,15 @@ class PanguEmbeddedModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
+        sin = torch.index_select(self.full_sin, dim=0, index=positions)
+
         aux_hidden_states = []
         for idx, layer in enumerate(
                 self.layers[self.start_layer:self.end_layer]):
             if idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(hidden_states + residual)
-            hidden_states, residual = layer(positions, hidden_states, residual)
+            hidden_states, residual = layer(positions, hidden_states, residual, cos, sin)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
