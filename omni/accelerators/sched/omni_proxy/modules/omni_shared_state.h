@@ -127,6 +127,7 @@ typedef struct omni_upstream_address_s
     int port;
     char text[UPSTREAM_ADDR_NAME_MAX];
     int text_len;
+    ngx_str_t name_str;
 } omni_upstream_address_t;
 
 typedef struct omni_upstream_prefill_s
@@ -141,6 +142,8 @@ typedef struct omni_upstream_prefill_s
     omni_zmq_handler_t kv_handler;
     ngx_slab_pool_t *radix_pool;
     omni_radix_tree_t *radix_tree;
+    ngx_atomic_t          healthy; // 1 for healthy, 0 for unhealthy
+    ngx_msec_t            last_health_check_time;
 } omni_upstream_prefill_t;
 
 typedef struct omni_upstream_decode_s
@@ -156,6 +159,8 @@ typedef struct omni_upstream_decode_s
     omni_zmq_handler_t kv_handler;
     ngx_slab_pool_t *radix_pool;
     omni_radix_tree_t *radix_tree;
+    ngx_atomic_t          healthy; // 1 for healthy, 0 for unhealthy
+    ngx_msec_t            last_health_check_time;
 } omni_upstream_decode_t;
 
 typedef enum omni_proxy_pd_policy_s
