@@ -1023,7 +1023,7 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         if is_weight_transposed:
             param.data = torch_npu.npu_format_cast(param.data.t_(), 29)
 
-    def forward(self, input_, reduce_type="AR", x_transform=None):
+    def forward(self, input_, reduce_type="AR", x_transform=None, next_layer=None):
         input_parallel = input_
 
         # Matrix multiply.
@@ -1036,6 +1036,10 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
                                                   bias=bias_,
                                                   module_name=self.prefix,
                                                   x_transform=x_transform)
+        if next_layer:
+            MAX_PREFETCH_SIZE = 90000000
+            for layer in attn_layer:
+                torch_npu.npu_prefetch(layer.weight, output_parallel, MAX_PREFETCH_SIZE)
         if self.tp_size > 1:
             if reduce_type == "AR":
                 output = tensor_model_parallel_all_reduce(output_parallel)

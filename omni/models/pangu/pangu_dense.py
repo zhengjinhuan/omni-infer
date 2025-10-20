@@ -20,8 +20,10 @@
 from collections.abc import Iterable
 from typing import Any, Optional, Union, List
 
+import os
 import torch
 from torch import nn
+import torch_npu
 from transformers import PretrainedConfig
 
 from vllm.attention import Attention, AttentionType, AttentionMetadata
@@ -162,13 +164,14 @@ class PanguEmbeddedAttention(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
-        x_transform: Optional[str] = None
+        x_transform: Optional[str] = None,
+        next_layer: List[torch.nn.Module] = None
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states, x_transform=x_transform)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k, self.attn.layer_name)
         attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output, reduce_type="RS")
+        output, _ = self.o_proj(attn_output, reduce_type="RS", next_layer=next_layer)
         return output
 
     def _init_rotary_emb(self, config: PretrainedConfig,
@@ -261,19 +264,33 @@ class PanguEmbeddedDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        use_prefetch = int(os.environ.get('USE_WEIGHT_PREFETCH',"1"))
+        
+        if use_prefetch:
+            mlp_layer = [self.mlp.gate_up_proj, self.mlp.down_proj]
+            attn_layer = [self.self_attn.qkv_proj]
+        else:
+            mlp_layer = None
+            attn_layer = None
         # Self Attention
         if residual is None:
             tp_size = get_tensor_model_parallel_world_size()
             tp_rank = get_tensor_model_parallel_rank()
             residual = hidden_states.chunk(tp_size,dim=0)[tp_rank]
             hidden_states = self.input_layernorm(hidden_states)
-            hidden_states = self.self_attn(positions=positions,
-                                hidden_states=hidden_states)
+            x_transform = None
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
-            hidden_states = self.self_attn(positions=positions,
-                                        hidden_states=hidden_states, x_transform="AG")
+            x_transform = "AG"
+        
+        if use_prefetch:
+            MAX_PREFETCH_SIZE = 90000000
+            for layer in attn_layer:
+                torch_npu.npu_prefetch(layer.weight, hidden_states, MAX_PREFETCH_SIZE)
+
+        hidden_states = self.self_attn(positions=positions,
+                                    hidden_states=hidden_states, x_transform=x_transform, next_layer=mlp_layer)
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
