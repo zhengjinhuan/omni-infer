@@ -21,6 +21,7 @@ omni_proxy_prefill_starvation_timeout="400"
 
 dry_run=false
 stop=false
+reload=false
 rollback=false
 
 print_help() {
@@ -44,6 +45,7 @@ print_help() {
     echo "  --omni-proxy-prefill-starvation-timeout <N> prefill_starvation_timeout (default: 400)"
     echo "  --dry-run                       Only generate nginx config, do not start nginx"
     echo "  --stop                          Stop nginx"
+    echo "  --reload                        Reload nginx config without restarting"
     echo "  --rollback                      Rollback nginx config if backup exists (must be used with --stop)"
     echo "  --help                          Show this help message"
     echo ""
@@ -130,6 +132,10 @@ while [[ $# -gt 0 ]]; do
             stop=true
             shift 1
             ;;
+        --reload)
+            reload=true
+            shift 1
+            ;;
         --rollback)
             rollback=true
             shift 1
@@ -162,6 +168,25 @@ function start_nginx() {
     fi
     echo "Starting nginx with config $nginx_conf_file..."
     nginx -c "$nginx_conf_file"
+}
+
+function do_reload() {
+    echo "Generating new nginx config for reload..."
+    generate_nginx_conf
+
+    echo "Testing new nginx config..."
+    if ! nginx -t -c "$nginx_conf_file"; then
+        echo "Error: New nginx config is invalid. Aborting reload."
+        rollback_nginx_conf "$nginx_conf_file"
+        exit 1
+    fi
+
+    echo "Reloading nginx with new config..."
+    if ! nginx -s reload; then
+        echo "Error: Failed to reload nginx. Check nginx error logs."
+        exit 1
+    fi
+    echo "Nginx reloaded successfully."
 }
 
 function rollback_nginx_conf() {
@@ -287,6 +312,11 @@ EOF
             default_type text/plain;
         }
 
+        location = /omni_proxy/health {
+            omni_proxy_health_status on;
+            default_type application/json; 
+        }
+
         location ~ ^/prefill_sub(?<orig>/.*)\$ {
             internal;
             proxy_pass http://prefill_endpoints\$orig\$is_args\$args;
@@ -324,7 +354,9 @@ function do_stop() {
 }
 
 function main() {
-    if [ "$stop" = false ]; then
+    if [ "$reload" = true ]; then
+        do_reload
+    elif [ "$stop" = false ]; then
         do_start
     else
         do_stop
