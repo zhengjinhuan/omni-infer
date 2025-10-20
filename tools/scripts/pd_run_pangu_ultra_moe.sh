@@ -332,6 +332,7 @@ fi
 
 export HCCL_CONNECT_TIMEOUT=1800
 export HCCL_EXEC_TIMEOUT=120
+export HCCL_RDMA_TIMEOUT=20
 # 随路拷贝
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离
