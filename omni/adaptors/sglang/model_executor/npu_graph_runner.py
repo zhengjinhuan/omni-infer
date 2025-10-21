@@ -386,7 +386,7 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                 else self.model_runner.model.compile_forward
             )
             with torch.no_grad():
-                if self.model_runner.profile_save_dir != "":
+                if self.model_runner.profile_save_dir != "" and not self.model_runner.is_draft_worker:
                     if not self.model_runner.profile_already_start and forward_batch.max_tokens >= self.model_runner.profiler_bs_threshold:
                         logger.info(f"******* start graph profiling . . .")
                         self.model_runner.profiler.start()
@@ -398,10 +398,11 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                     forward_batch,
                     **kwargs,
                 )
-                if self.model_runner.profile_save_dir != "":
+                if self.model_runner.profile_save_dir != "" and not self.model_runner.is_draft_worker:
                     if self.model_runner.profile_already_start and not self.model_runner.profile_finished:
                         self.model_runner.profile_step += 1
                     if not self.model_runner.profile_finished and self.model_runner.profile_step > self.model_runner.profiler_stop_step:
+                        logger.info(f"******* stop graph profiling . . .")
                         self.model_runner.profiler.stop()
                         self.model_runner.profile_finished = True
                 return ret
