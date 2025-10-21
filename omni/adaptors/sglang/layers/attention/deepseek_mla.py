@@ -294,6 +294,26 @@ class DeepseekMLA(nn.Module):
         self.weight_block_size = None
         self.enable_mla_multi_stream = False
 
+        if get_attention_dp_size() > 1:
+            kv_b_proj_weight = self.kv_b_proj.weight.T
+
+            expected_shape = (
+                self.kv_lora_rank,
+                self.num_heads * (self.qk_nope_head_dim + self.v_head_dim)
+            )
+            if kv_b_proj_weight.shape != expected_shape:
+                raise RuntimeError(f"{kv_b_proj_weight.shape} != {expected_shape}")
+
+            kv_b_proj_weight = kv_b_proj_weight.view(
+                self.kv_lora_rank,
+                self.num_heads,
+                self.qk_nope_head_dim + self.v_head_dim,
+            )
+            self.w_kc, self.w_vc = kv_b_proj_weight.split(
+                [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+            self.w_kc = self.w_kc.permute(1, 2, 0)
+            self.w_vc = self.w_vc.transpose(0, 1)
+
     def forward(
         self,
         positions: torch.Tensor,
