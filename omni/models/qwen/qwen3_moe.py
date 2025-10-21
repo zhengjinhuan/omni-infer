@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from typing import Any, Optional, Union, List, Tuple
 
 import torch
+import torch_npu
 from torch import nn
 from transformers import PretrainedConfig
 from vllm.attention import Attention, AttentionMetadata
@@ -54,6 +55,7 @@ from omni.layers.linear import (RowParallelFlashCommLinear,
                                               QKVParallelFlashCommLinear)
 from omni.layers.rotary_embedding import get_rope
 from omni.layers.attention.backend.attention import AscendAttentionState
+from omni.models.common.config.model_config import model_extra_config
 
 
 logger = init_logger(__name__)
@@ -189,7 +191,8 @@ class Qwen3MoeAttention(nn.Module):
         kv_cache: Tuple[torch.Tensor, torch.Tensor],
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states, x_transform='AG')
+        is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
+        qkv, _ = self.qkv_proj(hidden_states, x_transform='AG', is_prefill = is_prefill)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
         q_by_head = q.view(*q.shape[:-1], q.shape[-1] // self.head_dim,
@@ -275,6 +278,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
         # Self Attention
         if residual is None:
             residual = hidden_states
+            if model_extra_config.operator_opt_config.use_prefetch:
+                QKV_PREFETCH_SIZE = model_extra_config.operator_opt_config.attn_prefetch * 1024 * 1024
+                torch_npu.npu_prefetch(self.self_attn.qkv_proj.weight, residual , QKV_PREFETCH_SIZE)
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(

@@ -6,15 +6,19 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, List, Optional, Tuple
 
+import os
 import torch
 import torch_npu
+import torch.distributed as dist
+
 from vllm.distributed import get_pp_group, get_world_group
 from vllm.distributed import get_tp_group, get_dp_group, get_ep_group
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
 from vllm.model_executor.utils import set_weight_attrs
 
-import os
+from omni.models.common.config.model_config import model_extra_config
+
 
 
 class FusedMoeWeightScaleSupported(Enum):
@@ -122,6 +126,9 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
     def __init__(self, moe: MoEConfig):
         super().__init__()
         self.moe = moe
+        if model_extra_config.operator_opt_config.use_prefetch:
+            self.w13_prefetch_size = model_extra_config.operator_opt_config.expert_gate_up_prefetch * 1024 * 1024 # 24
+            self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024 # 12
 
     def create_weights(self, layer: torch.nn.Module, num_experts: int,
                        hidden_size: int, intermediate_size_per_partition: int,
@@ -150,6 +157,135 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         layer.w13_weight = torch.nn.Parameter(w13, requires_grad=False)
         w2 = layer.w2_weight.data.transpose(1, 2).contiguous()
         layer.w2_weight = torch.nn.Parameter(w2, requires_grad=False)
+
+        if model_extra_config.operator_opt_config.gmm_nz:
+            layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight.data, 29).contiguous()
+            layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight.data, 29).contiguous()
+    
+    def alltoall_prefill(self, layer: torch.nn.Module,
+            x: torch.Tensor,
+            router_logits: torch.Tensor,
+            top_k: int,
+            renormalize: bool,
+            use_grouped_topk: bool = False,
+            topk_group: Optional[int] = None,
+            num_expert_group: Optional[int] = None,
+            global_num_experts: int = -1,
+            expert_range: List[int] = None,
+            custom_routing_function: Optional[Callable] = None,
+            scoring_func: str = 'softmax',
+            e_score_correction_bias: Optional[torch.Tensor] = None,
+            apply_router_weight_on_input: bool = False,
+            activation: str = 'silu'):
+        topk_weights, topk_ids = FusedMoE.select_experts(
+                hidden_states=x,
+                router_logits=router_logits,
+                use_grouped_topk=use_grouped_topk,
+                top_k=top_k,
+                renormalize=renormalize,
+                topk_group=topk_group,
+                num_expert_group=num_expert_group,
+                custom_routing_function=custom_routing_function,
+                scoring_func=scoring_func,
+                e_score_correction_bias=e_score_correction_bias,
+                indices_type=None
+            )
+        topk_weights = topk_weights.to(x.dtype)
+        topk_ids = topk_ids.int()
+        expanded_x, expanded_row_idx, tokens_per_expert, _ = torch_npu.npu_moe_init_routing_v2(
+            x,
+            topk_ids,
+            scale=None,
+            offset=None,
+            active_num=topk_ids.numel(),
+            expert_num=global_num_experts,
+            expert_capacity=-1,
+            drop_pad_mode=0,
+            expert_tokens_num_type=1,
+            expert_tokens_num_flag=True,
+            active_expert_range=[0, global_num_experts],
+            quant_mode=-1,
+            row_idx_type=0,
+        )
+        
+        tokens_per_expert_group = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
+        dist.all_to_all_single(tokens_per_expert_group, tokens_per_expert)
+
+        combine_tokens = torch.stack([tokens_per_expert_group, tokens_per_expert], dim=0)
+        ep_size = get_ep_group().world_size
+
+        combine_tokens = combine_tokens.view(2, ep_size, -1).sum(2)
+        all_tokens = combine_tokens[0].sum()
+        combine_tokens_cpu = combine_tokens.cpu().tolist()
+        # all2all input splits, 大小为当前rank路由到其它rank的token数总和
+        input_splits = combine_tokens_cpu[1]
+        # all2all output splits, 每个rank拿到的其它卡的token数
+        output_splits = combine_tokens_cpu[0]
+        # all2all output, 展开成一维，大小为其它卡路由到当前rank的token数总和
+        gathered_tokens = expanded_x.new_empty(
+            all_tokens.item(), expanded_x.shape[1]
+        )
+        dist.all_to_all_single(gathered_tokens, expanded_x, output_splits, input_splits)
+
+        # 按专家归并后的tokens， 按专家归并后的scales, 给FinalizeRouting用的索引, 每个专家处理的token数
+        hidden_states_sorted_by_experts, _, gathered_idxs_unsort, tokens_per_local_expert = torch_npu.npu_moe_re_routing(
+            gathered_tokens,
+            tokens_per_expert_group.view(ep_size, -1)
+        )
+        group_list = tokens_per_local_expert.to(torch.int64)
+
+        gate_up_proj = torch_npu.npu_grouped_matmul(
+            [hidden_states_sorted_by_experts],
+            [layer.w13_weight],
+            bias=None,
+            group_list=group_list,
+            split_item=3,
+            output_dtype=x.dtype,
+            group_type=0,
+            group_list_type=1
+        )[0]
+
+        inter_states = torch_npu.npu_swiglu(gate_up_proj)
+
+        hidden_states_ordered_by_experts = torch_npu.npu_grouped_matmul(
+            [inter_states],
+            [layer.w2_weight],
+            bias=None,
+            group_list=group_list,
+            split_item=3,
+            output_dtype=x.dtype,
+            group_type=0,
+            group_list_type=1
+        )[0]
+
+        new_x = torch_npu.npu_moe_finalize_routing(
+            hidden_states_ordered_by_experts.float(),
+            skip1=None,
+            skip2=None,
+            bias=None,
+            scales=None,
+            expanded_src_to_dst_row=gathered_idxs_unsort.to(torch.float32).argsort().to(torch.int32),
+            export_for_source_row=None,
+            drop_pad_mode=2
+        )
+
+        new_x = new_x.to(torch.bfloat16)
+        gathered_tokens = new_x.new_empty(*expanded_x.shape)
+
+        dist.all_to_all_single(gathered_tokens, new_x, input_splits, output_splits)
+
+        y = torch_npu.npu_moe_finalize_routing(
+            expanded_permuted_rows=gathered_tokens,
+            skip1=None,
+            skip2=None,
+            bias=None,
+            scales=topk_weights, # 数据类型要求与y一致
+            expanded_src_to_dst_row=expanded_row_idx,
+            export_for_source_row=topk_ids,
+            drop_pad_mode=2
+        )
+
+        return y
 
     def apply_all2all_decode(
             self,
@@ -180,6 +316,13 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
             indices_type=None
         )
         topk_ids = topk_ids.int()
+
+        if model_extra_config.operator_opt_config.use_prefetch:
+            flag_expert_prefetch = topk_ids
+            if self.w13_prefetch_size > 0:
+                torch_npu.npu_prefetch(layer.w13_weight, flag_expert_prefetch, self.w13_prefetch_size)
+            if self.w2_prefetch_size > 0:
+                torch_npu.npu_prefetch(layer.w2_weight, flag_expert_prefetch, self.w2_prefetch_size)
 
         tp_world_size = 1
         expand_x, dynamic_scales, expand_idx, expert_token_nums, ep_recv_counts, tp_recv_counts, expand_scales = torch_npu.npu_moe_distribute_dispatch_v2(
@@ -265,20 +408,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         is_prefill: bool = False,
     ) -> torch.Tensor:
         if is_prefill:
-            assert len(x.shape) == 2
-            assert len(router_logits.shape) == 2
-            n_tokens = x.shape[0]
-            n_tokens_tensor = torch.Tensor([n_tokens]).int().npu()
-            n_tokens_list = get_ep_group().all_gather(n_tokens_tensor, dim=0).tolist()
-            x_output_list = [torch.empty((n, x.shape[1]), dtype=x.dtype, device=x.device) for n in n_tokens_list]
-            router_logits_output_list = [torch.empty((n, router_logits.shape[1]), dtype=router_logits.dtype, device=router_logits.device) for n in n_tokens_list]
-            get_ep_group().all_gather_v(x_output_list, x)
-            get_ep_group().all_gather_v(router_logits_output_list, router_logits)
-            x = torch.cat(x_output_list)
-            router_logits = torch.cat(router_logits_output_list)
-        else:
-            return self.apply_all2all_decode(
-                layer,
+            if model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+                return self.alltoall_prefill(layer,
                 x,
                 router_logits,
                 top_k,
@@ -287,10 +418,43 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
                 topk_group,
                 num_expert_group,
                 global_num_experts,
+                expert_range,
                 custom_routing_function,
                 scoring_func,
-                e_score_correction_bias
-            )
+                e_score_correction_bias,
+                apply_router_weight_on_input,
+                activation)
+            else:
+                assert len(x.shape) == 2
+                assert len(router_logits.shape) == 2
+                n_tokens = x.shape[0]
+                n_tokens_tensor = torch.Tensor([n_tokens]).int().npu()
+                n_tokens_list = get_ep_group().all_gather(n_tokens_tensor, dim=0).tolist()
+                x_output_list = [torch.empty((n, x.shape[1]), dtype=x.dtype, device=x.device) for n in n_tokens_list]
+                router_logits_output_list = [torch.empty((n, router_logits.shape[1]), dtype=router_logits.dtype, device=router_logits.device) for n in n_tokens_list]
+                get_ep_group().all_gather_v(x_output_list, x)
+                get_ep_group().all_gather_v(router_logits_output_list, router_logits)
+                x = torch.cat(x_output_list)
+                router_logits = torch.cat(router_logits_output_list)
+        else:
+            if model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
+                return self.apply_all2all_decode(
+                    layer,
+                    x,
+                    router_logits,
+                    top_k,
+                    renormalize,
+                    use_grouped_topk,
+                    topk_group,
+                    num_expert_group,
+                    global_num_experts,
+                    custom_routing_function,
+                    scoring_func,
+                    e_score_correction_bias
+                )
+            else:
+                x = get_ep_group().all_gather(x, dim=0)
+                router_logits = get_ep_group().all_gather(router_logits, dim=0)
 
         topk_weights, topk_ids = FusedMoE.select_experts(
             hidden_states=x,
@@ -359,11 +523,11 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         )
 
         y = torch_npu.npu_moe_finalize_routing(
-            y.float(), None, None, None,
-            topk_weights.float(), # 数据类型要求与y一致
+            y, None, None, None,
+            topk_weights, # 数据类型要求与y一致
             another_expanded_idx,
             topk_ids,
-        ).to(x.dtype)
+        )
 
         if is_prefill:
             assert len(y.shape) == 2
