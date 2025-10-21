@@ -18,6 +18,7 @@ Set the corresponding environment variable to a YAML config file:
 ### Usage
 * export PROFILING_NAMELIST=/path/to/namelist.yml
 * Example yaml configs are in the [`assets/`](./assets) folder.
+* export ROLE=prefill or export ROLE=decode
 
 ### Step to use omnilogger_namelist.yml for vllm tracing
 
