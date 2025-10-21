@@ -120,13 +120,6 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
             self.local_expert_indices_offset + i for i in range(self.n_routed_experts)
         ]
 
-        self.smooth_scale = torch.ones(
-            (self.n_routed_experts, layer.w13_weight_scale.shape[-1] // 2),
-            dtype=torch.float32,
-            device="npu",
-        )
-        torch._dynamo.mark_static(self.smooth_scale)
-
     def apply(
         self,
         layer: torch.nn.Module,

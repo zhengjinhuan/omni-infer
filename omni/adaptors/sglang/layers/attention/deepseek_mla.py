@@ -121,14 +121,6 @@ class DeepseekMLA(nn.Module):
         self.layer_scatter_modes = layer_scatter_modes
         self.quant_symbol = quant_config is not None
 
-        self.mask_length = 2048
-        self.attn_mask = ~torch.tril(
-            torch.ones(
-                (self.mask_length, self.mask_length),
-                dtype=torch.bool,
-                device=global_server_args_dict["device"],
-            )
-        )
         self.enable_fused_qkv = os.environ.get("USE_FUSE_QKV_A_PROJ", "0") == "1"
         # For tensor parallel attention
         if self.q_lora_rank is not None:
@@ -404,7 +396,7 @@ class DeepseekMLA(nn.Module):
                 key_rope=k_rope,
                 num_heads=self.num_local_heads,
                 input_layout="TND",
-                atten_mask=self.attn_mask,
+                atten_mask=forward_batch.attn_backend.forward_metadata.attn_mask,
                 sparse_mode=3,
                 actual_seq_lengths=metadata.seq_lens_list_cumsum,
                 actual_seq_lengths_kv=metadata.seq_lens_list_cumsum,

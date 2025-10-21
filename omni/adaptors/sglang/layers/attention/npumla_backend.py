@@ -66,7 +66,14 @@ class NpuMLADecodeMetadata:
                 or forward_batch.global_num_tokens_cpu is None
             ):
                 self.seq_lens_list_cumsum[-1] = batch_size
-
+        self.mask_length = 2048
+        self.attn_mask = ~torch.tril(
+            torch.ones(
+                (self.mask_length, self.mask_length),
+                dtype=torch.bool,
+                device="npu",
+            )
+        )
 
 def create_npumla_kv_indices(
     bs,
