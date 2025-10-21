@@ -236,9 +236,30 @@ index adc87a5e4..ddaf1bf1d 100644
          if self.debug_mode:
              assert len(torch.unique(out_indices)) == len(out_indices)
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index 26814fb90..f1cc2c38e 100644
+index 26814fb90..af849b1af 100644
 --- a/python/sglang/srt/model_executor/forward_batch_info.py
 +++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -711,13 +711,13 @@ class ForwardBatch:
+         if self.encoder_lens is not None:
+             self.encoder_lens = self._pad_tensor_to_size(self.encoder_lens, bs)
+         self.positions = self._pad_tensor_to_size(self.positions, num_tokens)
+-        self.global_num_tokens_cpu = global_num_tokens
+-        self.global_num_tokens_gpu = self.global_num_tokens_gpu.new_tensor(
+-            global_num_tokens
+-        )
+-        self.global_num_tokens_for_logprob_cpu = global_num_tokens.copy()
+-        self.global_num_tokens_for_logprob_gpu = self.global_num_tokens_gpu.clone()
+-
++        if not model_runner.is_draft_worker:
++            self.global_num_tokens_cpu = global_num_tokens
++            self.global_num_tokens_gpu = self.global_num_tokens_gpu.new_tensor(
++                global_num_tokens
++            )
++            self.global_num_tokens_for_logprob_cpu = global_num_tokens.copy()
++            self.global_num_tokens_for_logprob_gpu = self.global_num_tokens_gpu.clone()
+         if self.mrope_positions is not None:
+             self.mrope_positions = self._pad_tensor_to_size(self.mrope_positions, bs)
+ 
 @@ -747,8 +747,9 @@ class ForwardBatch:
          bs = getattr(self, "raw_bs", self.batch_size)
  
@@ -396,10 +417,10 @@ index 376cd029c..02f74fabd 100644
                  TritonAttnBackend,
 diff --git a/python/sglang/srt/speculative/mtp_worker.py b/python/sglang/srt/speculative/mtp_worker.py
 new file mode 100644
-index 000000000..1163c2801
+index 000000000..9228c0f77
 --- /dev/null
 +++ b/python/sglang/srt/speculative/mtp_worker.py
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,359 @@
 +import logging
 +import os
 +import time
@@ -574,9 +595,11 @@ index 000000000..1163c2801
 +            bid = model_worker_batch.bid
 +
 +            ## Verify
-+            verified_id, accept_length, last_accepted_index = self.verify(model_worker_batch.input_ids,
-+                                                                          next_token_ids,
-+                                                                          num_reqs, batch)
++            verified_id, accept_length, last_accepted_index, bouns_ids, evict_mask = (
++                self.verify(model_worker_batch.input_ids,
++                            next_token_ids,
++                            num_reqs, batch)
++            )
 +
 +
 +            # Set inputs for MTP
@@ -594,7 +617,7 @@ index 000000000..1163c2801
 +                                hidden_states=logits_output.hidden_states,
 +                                verified_id=verified_id,
 +                                accept_length=accept_length,
-+                                accept_length_cpu=accept_length.tolist(),
++                                accept_length_cpu=[],
 +                                seq_lens_for_draft_extend=batch.seq_lens,
 +                                req_pool_indices_for_draft_extend=batch.req_pool_indices,
 +                                capture_hidden_mode=CaptureHiddenMode.LAST
@@ -620,6 +643,9 @@ index 000000000..1163c2801
 +            batch.spec_info = forward_batch.spec_info
 +            batch.input_ids = verified_id
 +            batch.seq_lens += accept_length
++            if not batch.forward_mode.is_idle():
++                self.free_unaccepted_slot(batch, bouns_ids, evict_mask)
++            accept_length_per_req_cpu = accept_length.tolist()
 +            self.restore_sampling_info(batch.sampling_info)
 +
 +            # if not process, EagleDraftInput merge batch will error
@@ -695,6 +721,27 @@ index 000000000..1163c2801
 +            self.speculative_num_draft_tokens,
 +        )
 +
++    def free_unaccepted_slot(self, batch, bouns_ids, evict_mask):
++
++        # Iterate every accepted token and check if req has finished after append the token
++        # should be checked BEFORE free kv cache slots
++        bouns_ids_cpu = bouns_ids.tolist()
++        for i, (req, bonus_ids_per_reqs) in enumerate(zip(batch.reqs, bouns_ids_cpu)):
++            for token_id in bonus_ids_per_reqs:
++                if token_id == -1:
++                    break
++                req.output_ids.append(token_id)
++                req.check_finished()
++                if req.finished():
++                    # has_finished = True
++                    break
++
++        # Free the KV cache for unaccepted tokens in new pages
++        if self.page_size == 1:
++            # TODO: boolean array index leads to a device sync. Remove it.
++            batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
++        else:
++            batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask.view(-1)])
 +
 +    def verify(self, input_ids, forward_token_ids, num_reqs, batch):
 +
@@ -702,6 +749,8 @@ index 000000000..1163c2801
 +        num_valid_tokens = num_reqs * num_sampling_tokens_per_req
 +        input_ids = input_ids[:num_valid_tokens]
 +        forward_token_ids = forward_token_ids[:num_valid_tokens]
++        bouns_ids = None
++        evict_mask = None
 +
 +        if batch.forward_mode.is_idle():
 +            accepted_num = torch.zeros(num_reqs, device=input_ids.device, dtype=torch.int32)  # (b,)
@@ -723,32 +772,14 @@ index 000000000..1163c2801
 +
 +            # offset [1, 2], accepted_num[B, 1]
 +            bouns_mask = offset[None, :] <= accepted_num[:, None] - 1
-+            bouns_ids_cpu = torch.where(bouns_mask, forward_token_ids.view(num_reqs, -1), self.minus_one).tolist()
++            bouns_ids = torch.where(bouns_mask, forward_token_ids.view(num_reqs, -1), self.minus_one)
 +
-+            # Iterate every accepted token and check if req has finished after append the token
-+            # should be checked BEFORE free kv cache slots
-+            for i, (req, bonus_ids_per_reqs) in enumerate(zip(batch.reqs, bouns_ids_cpu)):
-+                for token_id in bonus_ids_per_reqs:
-+                    if token_id == -1:
-+                        break
-+                    req.output_ids.append(token_id)
-+                    req.check_finished()
-+                    if req.finished():
-+                        # has_finished = True
-+                        break
-+
-+            # Free the KV cache for unaccepted tokens
++            # Calculate evict mask for unaccepted tokens in new pages
 +            evict_mask = offset[None, :] > accepted_num[:, None]  # [B, num_tokens], evict unaccpeted tokens
 +            page_first_slot_mask = (batch.seq_lens[:, None] + offset[None, :]) % self.page_size == 1 # [num_tokens]
 +            evict_mask = evict_mask & page_first_slot_mask
 +
-+            if self.page_size == 1:
-+                # TODO: boolean array index leads to a device sync. Remove it.
-+                batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
-+            else:
-+                batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask.view(-1)])
-+
-+        return output_token_ids, accepted_num, last_accepted_index
++        return output_token_ids, accepted_num, last_accepted_index, bouns_ids, evict_mask
 \ No newline at end of file
 diff --git a/python/sglang/srt/speculative/spec_info.py b/python/sglang/srt/speculative/spec_info.py
 index af556b99c..a658902a0 100644
