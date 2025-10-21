@@ -47,6 +47,7 @@ class NpuMLADecodeMetadata:
         forward_batch: ForwardBatch = None,
         actual_seq_lengths: Dict = None,
         norm_res: Dict = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ):
         self.page_size = PAGE_SIZE
         self.npumla_metadata = npumla_metadata
@@ -66,14 +67,7 @@ class NpuMLADecodeMetadata:
                 or forward_batch.global_num_tokens_cpu is None
             ):
                 self.seq_lens_list_cumsum[-1] = batch_size
-        self.mask_length = 2048
-        self.attn_mask = ~torch.tril(
-            torch.ones(
-                (self.mask_length, self.mask_length),
-                dtype=torch.bool,
-                device="npu",
-            )
-        )
+        self.attn_mask = attn_mask
 
 def create_npumla_kv_indices(
     bs,
@@ -132,8 +126,8 @@ class NpuMLABackend(TorchNativeAttnBackend):
             if model_runner.dp_size > 1:
                 max_graph_bs = model_runner.server_args.torch_compile_max_bs
                 self.norm_res = torch.zeros([max_graph_bs, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
-                self.actual_seq_lengths = torch.tensor(list(range(1, max_graph_bs + 1)), dtype=torch.int64, device="npu")
                 self.mc2_mask = torch.zeros(max_graph_bs, dtype=torch.bool, device="npu")
+                self.actual_seq_lengths = torch.tensor(list(range(1, max_graph_bs + 1)), dtype=torch.int64, device="npu")
         self.data_type = model_runner.kv_cache_dtype
         self.q_data_type = model_runner.dtype
 
@@ -188,7 +182,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
                 self.req_to_token.stride(0),
                 self.max_seqlen_pad,
             )
-            if self.actual_seq_lengths is None :
+            if not forward_batch.can_run_graph:
                 self.actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device="npu")
 
             if forward_batch.can_run_graph :
@@ -201,7 +195,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
                 forward_batch.seq_lens_cpu.tolist(),
                 forward_batch,
                 self.actual_seq_lengths,
-                self.norm_res,
+                self.norm_res if forward_batch.can_run_graph else None,
             )
         else:
             self.forward_metadata = NpuMLADecodeMetadata(
@@ -210,6 +204,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
                 mc2_mask=None,
                 seq_lens_list=forward_batch.extend_seq_lens_cpu,
                 forward_batch=forward_batch,
+                attn_mask=self.attn_mask,
             )
         if hasattr(self.model_runner.model.model, "layers"):
             self.forward_metadata.cos, self.forward_metadata.sin = self.model_runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(forward_batch.positions)

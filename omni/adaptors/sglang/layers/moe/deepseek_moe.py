@@ -284,7 +284,13 @@ class DeepseekMoE(nn.Module):
 
         # TODO: not aligned with vLLM's: not using smooth_scale
         # smooth_scale, now dpsk use smooth_scale == 1
-
+        epsilon = 1e-2
+        self.smooth_scale = torch.nn.Parameter(
+            torch.ones(
+                size=(self.num_experts, config.hidden_size),
+                dtype=torch.float32
+            ) * (1 - epsilon) + epsilon)
+        
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -345,7 +351,7 @@ class DeepseekMoE(nn.Module):
             topk_ids=topk_ids,
             forward_batch=forward_batch,
             comm_group=self.group,
-            dynamic_scale=forward_batch.smooth_scale,
+            dynamic_scale=self.smooth_scale,
         )
 
         if len(final_hidden_states_list) != 3:

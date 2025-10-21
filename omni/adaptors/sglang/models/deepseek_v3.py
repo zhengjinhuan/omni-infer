@@ -284,8 +284,6 @@ class DeepseekV3Model(nn.Module):
             ]
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.n_routed_experts = config.n_routed_experts
-        self.hidden_size = config.hidden_size
 
     def get_input_embeddings(self) -> torch.Tensor:
         return self.embed_tokens
@@ -311,15 +309,7 @@ class DeepseekV3Model(nn.Module):
             hidden_states = input_embeds
 
         residual = None
-        ep_num_redundant_experts = global_server_args_dict["ep_num_redundant_experts"]
 
-        num_experts = self.n_routed_experts + ep_num_redundant_experts
-        epsilon = 1e-2
-        forward_batch.smooth_scale = torch.nn.Parameter(
-            torch.ones(
-                size=(num_experts, self.hidden_size),
-                dtype=torch.float32
-            ) * (1 - epsilon) + epsilon)
         for i in range(total_num_layers):
             layer = self.layers[i]
             prefetch_list = None
