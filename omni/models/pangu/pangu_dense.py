@@ -274,13 +274,14 @@ class PanguEmbeddedDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
         cos: torch.Tensor,
-        sin: torch.Tensor
+        sin: torch.Tensor,
+        next_layer: torch.nn.Module = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         use_prefetch = int(os.environ.get('USE_WEIGHT_PREFETCH',"1"))
         
         if use_prefetch:
             mlp_layer = [self.mlp.gate_up_proj, self.mlp.down_proj]
-            attn_layer = [self.self_attn.qkv_proj]
+            attn_layer = [next_layer.self_attn.qkv_proj, next_layer.self_attn.o_proj] if next_layer else None
         else:
             mlp_layer = None
             attn_layer = None
@@ -296,7 +297,7 @@ class PanguEmbeddedDecoderLayer(nn.Module):
                 hidden_states, residual)
             x_transform = "AG"
         
-        if use_prefetch:
+        if use_prefetch and attn_layer:
             MAX_PREFETCH_SIZE = 90000000
             for layer in attn_layer:
                 torch_npu.npu_prefetch(layer.weight, hidden_states, MAX_PREFETCH_SIZE)
@@ -397,7 +398,10 @@ class PanguEmbeddedModel(nn.Module):
                 self.layers[self.start_layer:self.end_layer]):
             if idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(hidden_states + residual)
-            hidden_states, residual = layer(positions, hidden_states, residual, cos, sin)
+            if idx == self.end_layer - self.start_layer - 1:
+                hidden_states, residual = layer(positions, hidden_states, residual, cos, sin)
+            else:
+                hidden_states, residual = layer(positions, hidden_states, residual, cos, sin, self.layers[idx+1])
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
