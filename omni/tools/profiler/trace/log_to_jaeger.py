@@ -243,6 +243,8 @@ def build_spans(reqid, action_times, roles, print_avg_trace, TP_x, duration_dict
     # 6. output
     spans_out = []
     for i, s in enumerate(span_objs):
+        if s["start_time"] is None or s["end_time"] is None:
+            continue
         # print( reqid, "-->", s.get("start_idx"), s.get("end_idx"), s.get("span_name"), s.get("span_type"))
         key = (s.get("start_idx"), s.get("end_idx"), s.get("span_name"), s.get("span_type"))
         if key == EXTRA_SPANS[0]:
@@ -289,6 +291,8 @@ def build_spans(reqid, action_times, roles, print_avg_trace, TP_x, duration_dict
     if filter_flag:
         for i, s in enumerate(span_objs):       
             key = (s.get("start_idx"), s.get("end_idx"), s.get("span_name"), s.get("span_type"))
+            if s["start_time"] is None or s["end_time"] is None:
+                continue
             duration_us = int((s["end_time"] - s["start_time"]) * 1e6)
             duration_dict[key].append(duration_us)
     
