@@ -51,7 +51,7 @@ from omni.adaptors.vllm.distributed.parallel_state import(
     get_scale_parallel_group
 )
 
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 logger = init_logger(__name__)
 

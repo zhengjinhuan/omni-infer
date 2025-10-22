@@ -26,6 +26,7 @@ from contextlib import nullcontext
 
 import numpy as np
 import torch
+import torch_npu
 import torch.distributed as dist
 from vllm.config import CompilationLevel, VllmConfig
 from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group, get_tensor_model_parallel_rank
@@ -43,13 +44,13 @@ from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
+from omni.models.config_loader.loader import model_extra_config, call_config_updater
 from omni.adaptors.vllm.forward_context import set_forward_context
 from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.layers.sampler import SimpleSampler, AscendSamplerV1
 from omni.layers.npu_sampler_cache import PenaltyCache, ProbCache
 from omni.adaptors.vllm.platform import NPUPlatform
-from omni.models.common.config.model_config import update_model_extra_config, model_extra_config
 from omni.adaptors.vllm.ems.ems_env import EmsEnv
 from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
@@ -61,10 +62,7 @@ if TYPE_CHECKING:
 else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
 
-if model_extra_config.operator_opt_config.use_omni_placement:
-    from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
-    _GLOBAL_STEP = 0
-
+_GLOBAL_STEP = 0
 MAX_GEAR_NUM = 6
 NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which is 4 on cuda.
 
@@ -228,9 +226,8 @@ class NPUModelRunner(GPUModelRunner):
             self.decode_gear_list = []
             self.decode_gear_list.append(self.max_num_reqs if not self.use_spec_decode else self.max_num_reqs * \
                                             (1 + self.speculative_config.num_speculative_tokens))
-        update_model_extra_config(decode_gear_list=self.decode_gear_list,
-                                  enable_torchair_graph_mode=self.enable_torchair_graph_mode)
-
+    
+    
     def _prepare_inputs(
         self,
         scheduler_output: "SchedulerOutput",
@@ -542,7 +539,7 @@ class NPUModelRunner(GPUModelRunner):
             model_kwargs["attn_metadata"] = attn_metadata
             start_f = time.time()
 
-            if model_extra_config.operator_opt_config.use_omni_placement:
+            if model_extra_config.task_config.enable_omni_placement:
                 is_prompt = attn_state != AscendAttentionState.DecodeOnly
                 global _GLOBAL_STEP
                 self.planner.place_experts()
@@ -1035,11 +1032,12 @@ class NPUModelRunner(GPUModelRunner):
         if not int(os.getenv("NO_NPU_MOCK", "0")):
             logger.info("Loading model weights took %.4f GB", m.consumed_memory / float(2**30))
 
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
+            from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
             first_k_dense_replace_names = ['num_dense_layers', 'first_k_dense_replace']
             first_k_dense_replace = get_attr_by_names(self.model.config, first_k_dense_replace_names, 3)
             param_dict = dict(self.model.named_parameters())
-            self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path)
+            self.planner = OmniPlanner()
             self.planner.init_dram_weights(param_dict, first_k_dense_replace=first_k_dense_replace)
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
@@ -1186,7 +1184,7 @@ class NPUModelRunner(GPUModelRunner):
                 "Skipping NPU graph capture. Please add "
                 "-O %s to use NPU graphs.", CompilationLevel.PIECEWISE)
         
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             self.planner.start_dynamic_optimize_expert_load_balance()
 
     def _get_closest_gear(self, max_num_token):

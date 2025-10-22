@@ -41,7 +41,7 @@ from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 NZ_DIM = 16
 

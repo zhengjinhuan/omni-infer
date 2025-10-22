@@ -59,11 +59,11 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_round_cross_group_from_list
 )
 from omni.layers.moe.fused_moe.layer import FusedMoE
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.moe.fused_moe.fused_moe import fused_experts_moe_dispatch_combine
 from omni.adaptors.vllm.utils import get_attr_by_names
 
-if model_extra_config.operator_opt_config.use_omni_placement:
+if model_extra_config.task_config.enable_omni_placement:
     from omni.accelerators.placement.omni_placement.omni_planner import OmniPlanner
 
 """NPU Stream Switch Names"""
@@ -228,8 +228,8 @@ class DeepseekMoE(nn.Module):
         if self.global_rank >= self.redundancy_shared_expert_num:
             moe_prefix = f"{prefix}.experts"
             # omni placement for redundancy route experts
-            if model_extra_config.operator_opt_config.use_omni_placement:
-                self.planner = OmniPlanner(config_file= model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
+            if model_extra_config.task_config.enable_omni_placement:
+                self.planner = OmniPlanner(device="npu",
                                            rank=get_world_group().rank_in_group,
                                            world_size=get_world_group().world_size,
                                            num_experts=self.n_routed_experts,
@@ -259,9 +259,9 @@ class DeepseekMoE(nn.Module):
             (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
             intermediate_size = config.moe_intermediate_size * self.n_shared_experts
             # omni placement for redundancy shared experts
-            if self.redundancy_shared_expert_num > 0 and model_extra_config.operator_opt_config.use_omni_placement:
+            if self.redundancy_shared_expert_num > 0 and model_extra_config.task_config.enable_omni_placement:
                 # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
-                self.planner = OmniPlanner(config_file=model_extra_config.operator_opt_config.omni_placement_config_path, device="npu",
+                self.planner = OmniPlanner(device="npu",
                                            rank=self.global_rank, world_size=self.ep_size,
                                            num_experts=self.n_routed_experts,
                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
@@ -290,8 +290,8 @@ class DeepseekMoE(nn.Module):
 
         self.tuning_config = None
         if not model_extra_config.operator_opt_config.gmm_nz:
-            self.tuning_config = model_extra_config.operator_opt_config.decode_gear_list[:1]
-        elif model_extra_config.operator_opt_config.decode_gear_list[0] >= 32:
+            self.tuning_config = model_extra_config.task_config.decode_gear_list[:1]
+        elif model_extra_config.task_config.decode_gear_list[0] >= 32:
             self.tuning_config = [256]
         
         self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
@@ -540,7 +540,7 @@ class DeepseekMoE(nn.Module):
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
         group_list = expert_token_nums.to(torch.int64)
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             layer.planner.record_activation(layer.moe_layer_idx, group_list, support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (not is_prefill))
 
         # cal experts
@@ -697,7 +697,7 @@ class DeepseekMoE(nn.Module):
                                                             self.routed_scaling_factor,
                                                             layer=self.experts)
         max_num_deployed_expert=self.n_routed_experts
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             if self.planner.is_moe_layer(self.moe_layer_idx):
                 hidden_states, topk_ids, topk_weights = self.planner.plan(layer_idx_moe=self.moe_layer_idx,
                                                                           tokens=hidden_states,

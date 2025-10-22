@@ -49,3 +49,6 @@ packages.find.exclude = [
 cmdclass.build_ext = "pybind11.setup_helpers.build_ext"
 include-package-data = true
 license-files = ["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]
+
+[tool.setuptools.package-data]
+"omni.models.configs" = ["*.json"]

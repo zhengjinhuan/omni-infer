@@ -24,7 +24,7 @@ from vllm.v1.outputs import SamplerOutput as SamplerOutputV1
 from vllm.v1.sample.ops.penalties import apply_min_token_penalties
 from vllm.sampling_params import SamplingType
 from vllm.sequence import Logprob, VLLM_INVALID_TOKEN_ID
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 
 FP32_EPS = 2 ** -24

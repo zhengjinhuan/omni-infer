@@ -21,10 +21,11 @@ from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.models.deepseek_v2 import get_spec_layer_idx_from_weight_name
 from vllm.distributed.parallel_state import (
+    get_dp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
     from .deepseek_v3_a2 import DeepseekDecoderLayer
@@ -163,7 +164,7 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
             selected_indices: Optional[torch.Tensor] = None,
             embedding_bias: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
-        if model_extra_config.parall_config.dp_size <= 1 and selected_indices is not None:
+        if get_dp_group().world_size <= 1 and selected_indices is not None:
             hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
             if hidden_states.shape[0] != selected_indices.shape[0]:
                 hidden_states = hidden_states.index_select(0, selected_indices)

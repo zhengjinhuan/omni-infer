@@ -1,27 +1,24 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-
+import os
+import torch_npu
 from transformers import AutoConfig
 from vllm import ModelRegistry
-import os
-from omni.models.common.config.model_config import model_extra_config
 
-import os
 if os.getenv("PROFILING_NAMELIST", None):
     print("<<<Profiler patch environmental variable is enabled, applying profiler patches.")
     from omni.tools.profiler import apply_profiler_patches
 
 def register_model():
-    is_A2 = os.getenv("ASCEND_PLATFORM", "A3")=="A2"
-    all2all = model_extra_config.operator_opt_config.prefill_moe_all_to_all
+    is_A2 = torch_npu.npu.get_device_name(0).startswith("Ascend910B")
     ModelRegistry.register_model(
         "DeepseekV2ForCausalLM",
         "omni.models.deepseek.deepseek_v2:CustomDeepseekV2ForCausalLM")
-
+    
     from omni.models.deepseek.deepseek_v32 import DeepseekV32Config
     AutoConfig.register("deepseek_v32", DeepseekV32Config)
 
-    if is_A2 and not all2all:
+    if is_A2:
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3_a2:DeepseekV3ForCausalLM")
@@ -124,7 +121,7 @@ def register_model():
         ModelRegistry.register_model(
             "Qwen2ForCausalLM",
             mock_model_class_factory(Qwen2ForCausalLM))
-        if is_A2 and not all2all:
+        if is_A2:
             from omni.models.deepseek.deepseek_v3_a2 import DeepseekV3ForCausalLM
         else:
             from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM

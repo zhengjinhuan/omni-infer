@@ -32,6 +32,7 @@ from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
+    get_dp_group,
     get_pp_group,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_gather
@@ -66,7 +67,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.moe.deepseek_moe import DeepseekMoE 
 from omni.layers.attention.deepseek_mla import DeepseekMLA 
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.mla import group_request_list
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
@@ -254,7 +255,7 @@ class PanguUltraMoEDecoderLayer(nn.Module):
             hidden_states, residual = self.pre_mlp_layernorm(hidden_states, residual)
 
             # Perform full hidden splitting to avoid OOM
-            if model_extra_config.parall_config.dp_size > 1 and attn_metadata is None:
+            if get_dp_group().world_size > 1 and attn_metadata is None:
                 reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
                 local_length = hidden_states.shape[0]
                 # global_max_length = torch.tensor(0, dtype=torch.int64)
@@ -737,7 +738,7 @@ class PanguUltraMoEForCausalLM(nn.Module):
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
-									  parallel_lmhead=(model_extra_config.parall_config.dp_size > 1))
+									  parallel_lmhead=(get_dp_group().world_size > 1))
         self.logits_processor = LogitsProcessor(self.config.vocab_size,
                                                 logits_as_input=True)
         self.sampler = Sampler()

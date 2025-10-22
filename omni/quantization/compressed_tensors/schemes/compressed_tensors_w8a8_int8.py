@@ -13,7 +13,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.schemes import C
 from vllm.model_executor.parameter import (ChannelQuantScaleParameter,
                                            ModelWeightParameter,
                                            PerTensorScaleParameter)
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 
 class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
