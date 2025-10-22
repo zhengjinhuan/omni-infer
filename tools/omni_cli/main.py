@@ -38,6 +38,7 @@ from omni_cli.omni_cfg import parse_remaining_args
 from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
 from omni_cli.omni_inspect import print_node_config
+from omni_cli.omni_run import create_run_parser
 
 INFO    = "\033[92m[INFO]\033[0m"      # green
 WARNING = "\033[93m[WARNING]\033[0m"   # yellow
@@ -136,8 +137,6 @@ def execute_command(command):
     )
 
     return_code = process.wait()
-    if return_code != 0:
-        print(f"{ERROR} Deployment failed with return code {return_code}")
 
     return return_code
 
@@ -561,6 +560,8 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
             tf.write("# Export environment variables\n")
             tf.write(export_block + "\n\n")
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
+
+            tf.write(f'test ! -e /usr/local/Ascend/latest && mkdir -p /usr/local/Ascend/latest && ln -sf /usr/local/Ascend/ascend-toolkit/latest/* /usr/local/Ascend/latest || echo "Link already exists or target missing"')
 
             tf.write(f'test ! -e /usr/local/Ascend/latest && mkdir -p /usr/local/Ascend/latest '
                      f'&& ln -sf /usr/local/Ascend/ascend-toolkit/latest/* /usr/local/Ascend/latest '
@@ -1194,7 +1195,10 @@ def run_docker_containers(
                 )
 
                 print(f"Executing script on host {host}:")
-                execute_command(cmd)
+                return_code = execute_command(cmd)
+                if return_code != 0:
+                    print(f"{ERROR} Deployment failed with return code {return_code}")
+                    raise Exception("Deployment failed")
             finally:
                 # Clean up temporary file
                 try:
@@ -1221,6 +1225,8 @@ def main():
     parser = argparse.ArgumentParser(description="Omni Inference Service Management")
     subparsers = parser.add_subparsers(dest="command", required=True)
     default_deploy_path = ''
+
+    create_run_parser(subparsers)
 
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
@@ -1361,6 +1367,9 @@ def main():
     args = parser.parse_args()
 
     if hasattr(args, 'func'):
+        if args.command == 'run':
+            args.func(args)
+            return
         if  hasattr(args, 'config_path') and args.config_path is not None:
             default_deploy_path = args.config_path
         else:
