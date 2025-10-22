@@ -23,15 +23,14 @@ from transformers import PretrainedConfig
 from sglang.srt.distributed import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from omni.adaptors.sglang.layers.layernorm import RMSNorm
-from sglang.srt.layers.logits_processor import LogitsProcessor
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from .deepseek_v3 import DeepseekDecoderLayer, DeepseekV3ForCausalLM
 from sglang.srt.utils import BumpAllocator, add_prefix
 
-from omni.adaptors.sglang.layers.vocab_parallel_embedding import VocabParallelEmbedding
+from omni.adaptors.sglang.layers.vocab_parallel_embedding import VocabParallelEmbedding, ParallelLMHead
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +145,6 @@ class DeepseekV3ForCausalLMNextN(DeepseekV3ForCausalLM):
             config, quant_config, prefix=add_prefix("model", prefix)
         )
         self.lm_head = None
-        self.logits_processor = LogitsProcessor(config)
 
     @torch.no_grad()
     def forward(
@@ -156,9 +154,31 @@ class DeepseekV3ForCausalLMNextN(DeepseekV3ForCausalLM):
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, forward_batch)
-        return self.logits_processor(
-            input_ids, hidden_states, self.lm_head, forward_batch
+        if forward_batch.is_extend_in_batch:
+            last_index = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
+            pruned_states = hidden_states[last_index]
+        else:
+            pruned_states = hidden_states
+        logits = self.compute_lmhead(pruned_states)
+        return LogitsProcessorOutput(
+            next_token_logits=logits,
+            hidden_states=hidden_states,
         )
+
+    def compute_lmhead(
+            self,
+            hidden_states: torch.Tensor,
+            selected_indices: Optional[torch.Tensor] = None,
+            embedding_bias: Optional[torch.Tensor] = None,
+    ) -> Optional[torch.Tensor]:
+        if selected_indices is not None:
+            hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+            if hidden_states.shape[0] != selected_indices.shape[0]:
+                hidden_states = hidden_states.index_select(0, selected_indices)
+
+        # Get the logits for the next tokens.
+        logits = self.lm_head(hidden_states, embedding_bias)
+        return logits
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         super().load_weights(weights, is_nextn=True)
