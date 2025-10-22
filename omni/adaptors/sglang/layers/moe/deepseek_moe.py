@@ -290,7 +290,7 @@ class DeepseekMoE(nn.Module):
                 size=(self.num_experts, config.hidden_size),
                 dtype=torch.float32
             ) * (1 - epsilon) + epsilon)
-
+        
     def forward(
         self,
         hidden_states: torch.Tensor,

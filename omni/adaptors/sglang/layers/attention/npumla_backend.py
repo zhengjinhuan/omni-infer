@@ -37,8 +37,9 @@ class NpuMLADecodeMetadata:
         layer,
         forward_batch: ForwardBatch = None,
         block_kv_indices: Optional[torch.Tensor] = None,
-        actual_seq_lengths = None,
-        norm_res = None,
+        actual_seq_lengths: Dict = None,
+        norm_res: Dict = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ):
         self.page_size = PAGE_SIZE
         self.block_kv_indices = block_kv_indices
@@ -65,7 +66,7 @@ class NpuMLADecodeMetadata:
                 or forward_batch.global_num_tokens_cpu is None
             ):
                 self.seq_lens_list_cumsum[-1] = bs
-
+        self.attn_mask = attn_mask
         self.cos, self.sin = layer.self_attn.rotary_emb.get_cos_sin(forward_batch.positions)
 
 
@@ -194,6 +195,9 @@ class NpuMLABackend(TorchNativeAttnBackend):
         if forward_batch.forward_mode.is_decode_or_idle():
 
             bs = forward_batch.input_ids.size(0)
+            if not forward_batch.can_run_graph:
+                self.norm_res = None
+                self.actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device=self.device)
 
             self.forward_metadata = NpuMLADecodeMetadata(
                 layer=layer,
@@ -206,6 +210,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
             self.forward_metadata = NpuMLADecodeMetadata(
                 layer=layer,
                 forward_batch=forward_batch,
+                attn_mask=self.attn_mask,
             )
 
     def init_cuda_graph_state(self,
