@@ -478,21 +478,21 @@ class DeepseekMLA(nn.Module):
             q_rope = q_rope.view(bsz, self.num_local_heads, -1)
         attn_ops_scope = tng.ops if forward_batch.can_run_graph else torch.ops.npu
         attn_output, _ = attn_ops_scope.npu_fused_infer_attention_score(
-            q_nope, 
-            k_nope, 
-            k_nope, 
-            query_rope=q_rope, 
+            q_nope,
+            k_nope,
+            k_nope,
+            query_rope=q_rope,
             key_rope=k_rope,
             num_heads=self.num_local_heads,
-            num_key_value_heads=1, 
+            num_key_value_heads=1,
             input_layout='TND_NTD',
             scale=self.scaling,
-            antiquant_mode=0, 
+            antiquant_mode=0,
             antiquant_scale=None,
             block_table=metadata.block_kv_indices,
             block_size=metadata.page_size,
             actual_seq_lengths=metadata.actual_seq_lengths,
-            actual_seq_lengths_kv=metadata.seq_lens
+            actual_seq_lengths_kv=metadata.actual_seq_lengths_kv
         )
        
         attn_output = attn_output.view(self.num_local_heads, -1, self.kv_lora_rank)
@@ -504,4 +504,3 @@ class DeepseekMLA(nn.Module):
         output, _ = self.o_proj(attn_output)
 
         return output
-
