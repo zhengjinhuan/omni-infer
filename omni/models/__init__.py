@@ -2,7 +2,6 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 import torch_npu
-from transformers import AutoConfig
 from vllm import ModelRegistry
 
 if os.getenv("PROFILING_NAMELIST", None):
@@ -14,9 +13,6 @@ def register_model():
     ModelRegistry.register_model(
         "DeepseekV2ForCausalLM",
         "omni.models.deepseek.deepseek_v2:CustomDeepseekV2ForCausalLM")
-    
-    from omni.models.deepseek.deepseek_v32 import DeepseekV32Config
-    AutoConfig.register("deepseek_v32", DeepseekV32Config)
 
     if is_A2:
         ModelRegistry.register_model(
