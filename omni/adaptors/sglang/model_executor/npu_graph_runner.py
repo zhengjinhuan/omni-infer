@@ -251,9 +251,10 @@ class NpuGraphRunner(DeviceRunnerBase):
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.block_kv_indices)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.cos)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.sin)
-        mark_tensor_static(forward_batch.attn_backend.forward_metadata.seq_lens)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.actual_seq_lengths_kv)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.actual_seq_lengths)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.norm_res)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.mc2_mask)
         try:
             mark_tensor_static(forward_batch.token_to_kv_pool.k_buffer, is_cache=True)
             mark_tensor_static(forward_batch.token_to_kv_pool.v_buffer, is_cache=True)
