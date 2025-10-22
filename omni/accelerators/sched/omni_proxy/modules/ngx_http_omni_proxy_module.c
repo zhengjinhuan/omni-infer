@@ -9,6 +9,10 @@
 #include <stdbool.h>
 #include <omni_apc.h>
 #include <omni_metrics.h>
+#include <errno.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <omni_health.h>
 
 ngx_module_t ngx_http_omni_proxy_module;
 #define PREFILL_ENDPOINTS "prefill_endpoints"
@@ -19,6 +23,8 @@ ngx_module_t ngx_http_omni_proxy_module;
 
 static const char *PREFILL_URI = "/prefill_sub";
 static const size_t PREFILL_URI_LEN = sizeof("/prefill_sub") - 1;
+
+static ngx_int_t ngx_http_omni_proxy_health_status_handler(ngx_http_request_t *r);
 
 static omni_global_state_t *g_state;          // In share memory
 static omni_worker_local_state_t local_state; // In local process memory space
@@ -1262,6 +1268,7 @@ static void *ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
     conf->prefill_max_num_seqs = NGX_CONF_UNSET_UINT;
     conf->decode_max_num_seqs = NGX_CONF_UNSET_UINT;
     conf->prefill_starvation_timeout = NGX_CONF_UNSET_UINT;
+    conf->health_status_enabled = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -1294,6 +1301,8 @@ static char *ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *ch
     {
         conf->metrics_enabled = (prev->metrics_enabled != NGX_CONF_UNSET) ? prev->metrics_enabled : NGX_CONF_UNSET;
     }
+
+    ngx_conf_merge_value(conf->health_status_enabled, prev->health_status_enabled, 0);
 
     if (conf->model_path.len != 0 || conf->vllm_kv_port_offset != NGX_CONF_UNSET || conf->pd_policy != NGX_CONF_UNSET)
     {
@@ -1359,6 +1368,7 @@ static ngx_int_t ngx_http_omni_init_upstreams(ngx_cycle_t *cycle)
                     continue;
                 }
                 g_state->prefill_states[j].index = j;
+                g_state->prefill_states[j].healthy = 1;
                 address = &g_state->prefill_states[j].address;
             } else if (is_decode) {
                 if (j >= MAX_DECODE_UPSTREAMS) {
@@ -1368,6 +1378,7 @@ static ngx_int_t ngx_http_omni_init_upstreams(ngx_cycle_t *cycle)
                     continue;
                 }
                 g_state->decode_states[j].index = j;
+                g_state->decode_states[j].healthy = 1;
                 address = &g_state->decode_states[j].address;
             }
 
@@ -1387,6 +1398,9 @@ static ngx_int_t ngx_http_omni_init_upstreams(ngx_cycle_t *cycle)
                 address->text[UPSTREAM_ADDR_NAME_MAX - 1] = '\0';
                 address->text_len = UPSTREAM_ADDR_NAME_MAX - 1;
             }
+
+            address->name_str.data = (u_char*)address->text;
+            address->name_str.len = address->text_len;
 
             if (peer[j].sockaddr->sa_family == AF_INET) {
                 struct sockaddr_in *ipv4 = (struct sockaddr_in *)&address->sockaddr;
@@ -1570,6 +1584,12 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
     *h = ngx_http_omni_proxy_metrics_handler;
 
     return NGX_OK;
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+    *h = ngx_http_omni_proxy_health_status_handler;
 }
 
 static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
@@ -1969,6 +1989,49 @@ static char *omni_proxy_metrics(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
+static ngx_int_t ngx_http_omni_proxy_health_status_handler(ngx_http_request_t *r)
+{
+    ngx_http_omni_loc_conf_t *olcf;
+    ngx_int_t rc;
+    ngx_buf_t *b;
+    ngx_chain_t out;
+
+    omni_global_state_t *gs = omni_get_global_state();
+    omni_health_check_job_t *job;
+    ngx_uint_t i, total_checks;
+
+    olcf = ngx_http_get_module_loc_conf(r, ngx_http_omni_proxy_module);
+
+    if (!olcf || !olcf->health_status_enabled) {
+        return NGX_DECLINED;
+    }
+
+    job = ngx_pcalloc(r->pool, sizeof(omni_health_check_job_t));
+    if (job == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    job->request = r;
+
+    total_checks = gs->num_prefill_endpoints + gs->num_decode_endpoints;
+    if (total_checks == 0) {
+        omni_health_send_response(job);
+        return NGX_DONE;
+    }
+    job->pending_checks = total_checks;
+
+    r->main->count++;
+
+    // --- add r->connection->log ---
+    for (i = 0; i < gs->num_prefill_endpoints; i++) {
+        omni_run_single_health_check(job, r->connection->log, 0, i);
+    }
+    for (i = 0; i < gs->num_decode_endpoints; i++) {
+        omni_run_single_health_check(job, r->connection->log, 1, i);
+    }
+
+    return NGX_DONE;
+}
+
 static ngx_command_t omni_proxy_commands[] = {
 
     {ngx_string("omni_proxy"),
@@ -2032,6 +2095,13 @@ static ngx_command_t omni_proxy_commands[] = {
      ngx_conf_set_num_slot,
      NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_omni_loc_conf_t, prefill_starvation_timeout),
+     NULL},
+
+    {ngx_string("omni_proxy_health_status"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+     ngx_conf_set_flag_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, health_status_enabled),
      NULL},
 
     ngx_null_command};
