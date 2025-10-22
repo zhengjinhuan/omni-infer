@@ -1,29 +1,17 @@
 # 环境准备
 
-硬件：目前仅支持CloudMatrix384推理卡  
-操作系统：Linux  
-Python：>=3.9, <= 3.11
+1. 操作系统：Linux  
+2. Python：版本需满足 >=3.9 且 <= 3.11
 
 # 环境检查
 ## Ascend NPU固件和驱动检查
-使用如下命令检查Ascend NPU固件和驱动是否正确安装  
-```shell
-npu-smi info
-```
-正常显示如下图所示
-
-![image](./figures/432644be-20cf-4163-95f4-72bfde0eff90.png)
-
+使用命令 `npu-smi info`检查 Ascend NPU 固件和驱动是否正确安装，正常显示应如下图所示  
+![image](./figures/432644be-20cf-4163-95f4-72bfde0eff90.png)  
 ![image](./figures/d00adf38-6e60-42ad-94be-a74964c47694.png)
 
 ## 网络连通性检查
 
-若要PD分离部署，确保部署PD分离部署的CloudMatrix384机器网络是连通的 
-可以在其中一台机器上使用ping命令进行尝试，命令示例如下
-
-```
-ping 192.168.1.100
-```
+若要进行 PD 分离部署，需确保部署 PD 分离的 CloudMatrix384 机器网络连通。可在其中一台机器上使用 ping命令测试，例如 `ping 192.168.1.100`
 
 # 安装
 
@@ -45,30 +33,23 @@ pip list | grep omni_infer
 ![image](./figures/7bf10117-2c1a-4ec7-a7b6-2ce29c37fda1.png)
 
 ### 从源代码构建 wheel
-执行如下步骤即可下载 omni_infer 以及 vllm 源码并安装 vllm；  
-1. git clone 拉取 omni_infer 源码；
-2. 在目录 `omniinfer/infer_engines` 下 git clone 拉取 vllm v0.9.0 源码，注意文件夹名改为 "vllm"；infer_engines下的目录结构如下:
-    
-    ![alt text](./figures/20250702_141938.png)
-
+执行步骤：
+1. 使用 git clone 拉取 omni_infer 源码；
+2. 在目录 `omniinfer/infer_engines` 下 git clone 拉取 vllm v0.9.0 源码，注意文件夹名改为 "vllm"；
 3. 卸载已有的omni_infer包；
     ```bash
     pip uninstall vllm -y
     pip uninstall omni_infer -y
-    pip uninstall omni_placement -y (若不存在omni_placement安装包可忽略)
+    pip uninstall omni_placement -y  # 若不存在 omni_placement 安装包可忽略
     ```
-
 4. 编译omni_infer，最终在`build/dist`目录下有生成whl包；
     ```bash
     cd omniinfer
     bash build/build.sh
     ```
-
 5. 进入 `build/dist` 目录，安装whl包，可以通过pip list查看是否有安装成功；
     ```bash
     cd build/dist
-
-    # 安装 vllm/omni_infer 等 whl 包：
     pip install vllm*.whl
     pip install omni_infer*.whl
     ```
@@ -144,56 +125,7 @@ bash docker_build_run.sh
 
 ## 混部
 
-目前支持Qwen2.5系列模型TP>=1, DP=1  
-以`Qwen2.5-0.5B-Instruct`为例，示例中的`--model`填充实际的模型存放目录
-
-```bash
-#!/bin/bash
-set -e
-
-export GLOO_SOCKET_IFNAME=enp23s0f3
-export VLLM_USE_V1=1
-export VLLM_WORKER_MULTIPROC_METHOD=fork
-export VLLM_ENABLE_MC2=0
-export USING_LCCL_COM=0
-export VLLM_LOGGING_LEVEL=DEBUG
-export ASCEND_RT_VISIBLE_DEVICES=0
-
-python3 -m vllm.entrypoints.openai.api_server \
-    --host 0.0.0.0 \
-    --port 8300 \
-    --model /data/Qwen2.5-0.5B-Instruct \
-    --data-parallel-size 1 \
-    --tensor-parallel-size 1 \
-    --dtype bfloat16 \
-    --max-model-len 4096 \
-    --trust_remote_code \
-    --gpu_memory_utilization 0.9 \
-    --enforce-eager \
-    --block_size 128 \
-    --served-model-name qwen \
-    --distributed-executor-backend mp \
-    --max-num-batched-tokens 20000 \
-    --max-num-seqs 128
-```
-
-拉起成功后，可以通过curl命令进行测试
-```bash
-curl -X POST http://127.0.0.1:8300/v1/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-        "model": "qwen",
-        "temperature": 0,
-        "max_tokens": 50,
-        "prompt": "how are you?",
-        "stream": true,
-        "stream_options": {
-          "include_usage": true,
-          "continuous_usage_stats": true
-        }
-      }'
-```
-其中，如果希望结果更友好的展示，不需要流式地返回，可以删去`stream`、`stream_options`配置
+可以参考 [quick start 中的单机混部快速部署](omni_infer_quick_start.md#单机混部快速部署hugging-face-模型)
 
 ## PD分离
 
