@@ -52,12 +52,7 @@ class DeepseekModelNextN(nn.Module):
 
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            enable_tp=not global_server_args_dict["enable_dp_attention"],
-            prefix=add_prefix("embed_tokens", prefix),
-        )
+        self.embed_tokens = None
 
         self.enorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.hnorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -150,13 +145,7 @@ class DeepseekV3ForCausalLMNextN(DeepseekV3ForCausalLM):
         self.model = DeepseekModelNextN(
             config, quant_config, prefix=add_prefix("model", prefix)
         )
-        self.lm_head = ParallelLMHead(
-            config.vocab_size,
-            config.hidden_size,
-            quant_config=quant_config,
-            prefix=add_prefix("model.shared_head.head", prefix),
-            use_attn_tp_group=global_server_args_dict["enable_dp_lm_head"],
-        )
+        self.lm_head = None
         self.logits_processor = LogitsProcessor(config)
 
     @torch.no_grad()
