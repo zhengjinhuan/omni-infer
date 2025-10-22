@@ -19,7 +19,7 @@
 #     Defaults to None.
 pattern_path: null
 
-#define max_layer_num as a constant 58 (for deepseek moe layer num 58)
+# define max_layer_num as a constant 58 (for deepseek moe layer num 58)
 max_moe_layer_num: 58
 
 enable_dynamic: False
@@ -33,6 +33,10 @@ dump_dir: "../dump_data"
 
 max_batch_size: 100000
 max_top_k: 8
+
+# Adaptation for longcat zero expert
+enable_zero_expert: False
+normal_expert_ids: 255
 
 # Optimizers
 Optimizers:

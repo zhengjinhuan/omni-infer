@@ -137,6 +137,16 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
         # redundant_enable_per_layer, True is redundant layer, False is Origin Layer
         self.redundant_enable_per_layer = self.expert_mapping.get_redundant_enable_per_layer()
+        
+        # param for longcat zero expert
+        self.enable_zero_expert = getattr(self.config, 'enable_zero_expert', False)
+        self.normal_expert_ids = getattr(self.config, 'normal_expert_ids', 255)
+        
+        if self.enable_zero_expert:
+            self.plan_experts = self.plan_with_zero_experts
+        else:
+            self.plan_experts = self.plan_normal_experts
+        
         print(self,flush=True)
     
     def __str__(self):
@@ -296,7 +306,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         if self.enable_dynamic:
             omni_placement.do_placement_optimizer(self.placement_manager)
 
-    def plan(
+    def plan_normal_experts(
         self,
         layer_idx_moe: Optional[int] = None,
         tokens: Optional[torch.Tensor] = None,
@@ -331,6 +341,91 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             batch_size = token_expert_ids.shape[0]
             token_expert_ids = expert_mapping[token_expert_ids, self.redundant_bias[:batch_size,] % self.num_redundant_per_expert[layer_idx_moe][token_expert_ids]]
         return tokens, token_expert_ids, token_expert_scores
+
+    def plan_with_zero_experts(
+        self,
+        layer_idx_moe: Optional[int] = None,
+        tokens: Optional[torch.Tensor] = None,
+        token_expert_ids: Optional[torch.Tensor] = None,
+        token_expert_scores: Optional[torch.Tensor] = None,
+        top_k: int = 8,
+        expert_mapping: Optional[torch.Tensor] = None,
+        is_prefill=True
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Optimize token-to-expert mapping using configured optimizers.
+
+        This method takes input tokens and their initially assigned experts and scores. It computes
+        expert loads, updates the cluster status accordingly, and then optimizes the assignment
+        of tokens to experts by applying the configured optimization strategies.
+
+        Args:
+            layer_idx_moe: Identifier for the current layer (optional)
+            tokens: Input tokens tensor with shape [num_tokens, ...]
+            token_expert_ids: Initial expert assignments, shape [num_tokens, top_k], -1 indicates unassigned
+            token_expert_scores: Importance scores for expert assignments, shape [num_tokens, top_k]
+
+        Returns:
+            Tuple containing (original tokens, optimized expert IDs, optimized scores)
+        """
+    
+        if not self.is_moe_layer(layer_idx_moe):
+            return tokens, token_expert_ids, token_expert_scores
+        
+        mask = (token_expert_ids >= 0) & (token_expert_ids <= self.normal_expert_ids)
+        
+        if self.enable_rank_round_robin:
+            new_token_expert_ids = torch.where(
+                mask,
+                torch.nn.functional.embedding(
+                    token_expert_ids, 
+                    expert_mapping
+                ).squeeze(-1),
+                token_expert_ids
+            )
+        else:
+            batch_size = token_expert_ids.shape[0]
+            new_token_expert_ids = torch.where(
+                mask,
+                expert_mapping[
+                    token_expert_ids,
+                    (self.redundant_bias[:batch_size,] % self.num_redundant_per_expert[layer_idx_moe][token_expert_ids])
+                ],
+                token_expert_ids
+            )
+
+        return tokens, new_token_expert_ids, token_expert_scores
+
+    def plan(
+        self,
+        layer_idx_moe: Optional[int] = None,
+        tokens: Optional[torch.Tensor] = None,
+        token_expert_ids: Optional[torch.Tensor] = None,
+        token_expert_scores: Optional[torch.Tensor] = None,
+        top_k: int = 8,
+        expert_mapping: Optional[torch.Tensor] = None,
+        is_prefill=True
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Optimize token-to-expert mapping using configured optimizers.
+
+        This method takes input tokens and their initially assigned experts and scores. It computes
+        expert loads, updates the cluster status accordingly, and then optimizes the assignment
+        of tokens to experts by applying the configured optimization strategies.
+
+        Args:
+            layer_idx_moe: Identifier for the current layer (optional)
+            tokens: Input tokens tensor with shape [num_tokens, ...]
+            token_expert_ids: Initial expert assignments, shape [num_tokens, top_k], -1 indicates unassigned
+            token_expert_scores: Importance scores for expert assignments, shape [num_tokens, top_k]
+
+        Returns:
+            Tuple containing (original tokens, optimized expert IDs, optimized scores)
+        """
+        # Input validation check
+        if not self.is_moe_layer(layer_idx_moe):
+            return tokens, token_expert_ids, token_expert_scores
+        return self.plan_experts(layer_idx_moe, tokens, token_expert_ids, token_expert_scores, top_k, expert_mapping, is_prefill)
 
 
     @staticmethod
