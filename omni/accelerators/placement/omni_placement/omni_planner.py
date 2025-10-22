@@ -378,7 +378,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             new_token_expert_ids = torch.where(
                 mask,
                 torch.nn.functional.embedding(
-                    torch.clamp(token_expert_ids, 0, self.normal_expert_ids), 
+                    token_expert_ids, 
                     expert_mapping
                 ).squeeze(-1),
                 token_expert_ids
@@ -388,15 +388,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             new_token_expert_ids = torch.where(
                 mask,
                 expert_mapping[
-                    torch.clamp(token_expert_ids, 0, self.normal_expert_ids),
-                    (
-                        self.redundant_bias[:batch_size,] % torch.max(
-                            self.num_redundant_per_expert[layer_idx_moe][
-                                torch.clamp(token_expert_ids, 0, self.normal_expert_ids)
-                            ],
-                            torch.tensor(1, device=token_expert_ids.device, dtype=self.num_redundant_per_expert.dtype)
-                        )
-                    )
+                    token_expert_ids,
+                    (self.redundant_bias[:batch_size,] % self.num_redundant_per_expert[layer_idx_moe][token_expert_ids])
                 ],
                 token_expert_ids
             )
