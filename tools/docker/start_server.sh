@@ -10,7 +10,9 @@ source ~/.bashrc
 # 清理内存
 python -c "import torch; torch.npu.empty_cache()"
 
-exec python -m vllm.entrypoints.openai.api_server \
+ASCEND_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0}  # 默认值为 0
+exec env ASCEND_RT_VISIBLE_DEVICES=${ASCEND_DEVICES} \
+    python -m vllm.entrypoints.openai.api_server \
     --host ${HOST} \
     --port ${PORT} \
     --data-parallel-size 1 \
