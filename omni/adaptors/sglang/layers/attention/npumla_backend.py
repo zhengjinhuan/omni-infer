@@ -118,27 +118,6 @@ class KVBlockTable:
             ptr = torch.nn.functional.pad(ptr, (0, bs - ptr.size(0)))
         return self.block_table[ptr, :]
 
-def create_npumla_kv_indices(
-    bs,
-    req_to_token_ptr,  # [max_batch, max_context_len]
-    req_pool_indices_ptr,
-    page_kernel_lens_ptr,
-    kv_start_idx,
-    kv_indices_ptr,
-    req_to_token_ptr_stride,
-    kv_indices_ptr_stride,
-    PAGED_SIZE=128,
-):
-    req_to_tokens = (
-        req_to_token_ptr[req_pool_indices_ptr, : page_kernel_lens_ptr.max()][
-            :, ::PAGED_SIZE
-        ]
-        // PAGED_SIZE
-    )
-    kv_indices_ptr[: req_to_tokens.size(0), : req_to_tokens.size(1)].copy_(
-        req_to_tokens
-    )
-
 
 class NpuMLABackend(TorchNativeAttnBackend):
     """npumla attention kernels."""
@@ -217,7 +196,8 @@ class NpuMLABackend(TorchNativeAttnBackend):
 
             bs = forward_batch.input_ids.size(0)
             if not forward_batch.can_run_graph:
-                self.actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device="npu")
+                self.norm_res = None
+                self.actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device=self.device)
 
             self.forward_metadata = NpuMLADecodeMetadata(
                 layer=layer,
