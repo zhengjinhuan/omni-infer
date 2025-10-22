@@ -8,6 +8,7 @@ from torch.nn import Parameter
 import torch_npu
 
 from compressed_tensors.quantization import QuantizationStrategy
+from vllm.distributed import get_tp_group
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import CompressedTensorsScheme
 from vllm.model_executor.parameter import (ChannelQuantScaleParameter,
@@ -100,6 +101,13 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
             pertoken_scale = x.get('pertoken_scale')
         else:
             x_int8, pertoken_scale = torch_npu.npu_dynamic_quant(x)
+        if x_transform == 'AG':
+            pertoken_scale = get_tp_group().all_gather(pertoken_scale, dim=0)
+            x_int8 = get_tp_group().all_gather(x_int8, dim=0)
+        elif x_transform == 'A2A':
+            pertoken_scale = get_tp_group().all_to_all(pertoken_scale, dim=0)
+            x_int8 = get_tp_group().all_to_all(x_int8, dim=0)
+
 
         throw_dequant = getattr(layer, 'throw_dequant', False)
         if throw_dequant and bias is None:
