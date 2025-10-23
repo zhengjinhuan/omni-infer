@@ -1007,8 +1007,11 @@ class NPUModelRunner(GPUModelRunner):
         return hidden_states
 
     def profile_run(self) -> None:
-        if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
+        if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer" \
+            and not model_extra_config.parall_config.enable_attn_ffn_disaggregation:
             hidden_states = self._dummy_run(self.max_batch_size * get_dp_group().world_size)
+        elif model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            hidden_states = self._dummy_run(self.max_num_reqs)
         else:
             hidden_states = self._dummy_run(self.max_num_tokens)
 

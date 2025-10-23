@@ -786,6 +786,22 @@ function nginx_set_load_modules_framework() {
     fi
 }
 
+truncate_last_n() {
+    local input_str="$1"
+    local n="$2"
+    
+    IFS=',' read -ra elements <<< "$input_str"
+    local total=${#elements[@]}
+    
+    if [ "$n" -ge "$total" ]; then
+        # 如果n大于等于元素数量，返回所有元素
+        echo "$input_str"
+    else
+        local start=$((total -n))
+        printf ",%s" "${elements[@]:$start:$n}" | cut -c2-
+    fi
+}
+
 function nginx_configuration() {
     local nginx_conf_file="$1"
     local start_core_index="$2"
@@ -799,6 +815,8 @@ function nginx_configuration() {
     local decode_lb_sdk="${10}"
     local metrics_servers_list="${11}"
     local enable_internal_metrics="${12}"
+    local enable_attention_ffn_disaggregation="${13}"
+    local attention_num="${14}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
     create_default_nginx_conf $nginx_conf_file
@@ -810,6 +828,15 @@ function nginx_configuration() {
     nginx_set_http_config $nginx_conf_file
     nginx_set_listen_port $nginx_conf_file $listen_port
     nginx_set_reuseport $nginx_conf_file
+    if [[ "$enable_attention_ffn_disaggregation" = "true" ]]; then
+        if [ "$attention_num" -gt 0 ]; then
+            decode_servers_list=$(truncate_last_n "$decode_servers_list" $attention_num)
+            echo "Truncated decode_servers_list when AFD is enabled: $decode_servers_list"
+        else
+            echo "Invalid input: attention_num must be greater than 0"
+            exit 1
+        fi
+    fi
     nginx_set_upstream $nginx_conf_file $decode_servers_list "decode_servers" true "$decode_lb_sdk"
     nginx_set_upstream $nginx_conf_file $prefill_servers_list "prefill_servers" false "$prefill_lb_sdk"
     if [[ -n "$metrics_servers_list" ]]; then
@@ -915,6 +942,8 @@ decode_lb_sdk="pd_score_balance"
 prefill_max_num_seqs=16
 decode_max_num_seqs=32
 enable_internal_metrics=""
+enable_attention_ffn_disaggregation=false
+attention_num=0
 
 print_help() {
     echo "Usage:"
@@ -937,7 +966,9 @@ print_help() {
     echo "  --decode-max-num-seqs <N>                  Decode servers' setups for max-num-seqs"
     echo "  --engine-type <string>                     Engine type: vllm or sglang. Default: \"vllm\""
     echo "  --bootstrap-port <PORT>                    Bootstrap port(s) (optional). Default: empty, one port or a list of"
-    echo "  --enable-internal-metrics [size]          Enable internal metrics with optional shared memory size (default: 128k)"
+    echo "  --enable-internal-metrics [size]           Enable internal metrics with optional shared memory size (default: 128k)"
+    echo "  --enable-attention-ffn-disaggregation      Enable attention FFN disaggregation"
+    echo "  --attention-num <N>                        Number of NPUs deploying the attention mechanism (required when enable-attention-ffn-disaggregation is true)"
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
@@ -1043,6 +1074,14 @@ while [[ $# -gt 0 ]]; do
                 shift 1
             fi
             ;;
+        --enable-attention-ffn-disaggregation)
+            enable_attention_ffn_disaggregation=true
+            shift 1
+            ;;
+        --attention-num)
+            attention_num="$2"
+            shift 2
+            ;;
         --client-body-buffer-size)
             client_body_buffer_size="$2"
             shift 2
@@ -1101,7 +1140,7 @@ function do_start() {
     # TODO: Currently only sglang is supported in the refactor implementation.
     # vllm support will be added later.
     if [ "$engine_type" = "vllm" ]; then
-        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics"
+        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics" "$enable_attention_ffn_disaggregation" "$attention_num"
     elif [ "$engine_type" = "sglang" ]; then
         nginx_configuration_refactor "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"  "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics"
     fi

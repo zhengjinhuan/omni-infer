@@ -42,6 +42,7 @@ from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
+    get_ep_group,
     get_dp_group,
     get_pp_group,
     get_tensor_model_parallel_world_size,
@@ -178,19 +179,23 @@ class DeepseekDecoderLayer(nn.Module):
             prefix: str,
             cache_config: Optional[CacheConfig] = None,
             quant_config: Optional[QuantizationConfig] = None,
+            is_ffn_die: Optional[bool] = False,
     ) -> None:
         super().__init__()
+        layer_idx = int(prefix.split(sep='.')[-1])
         self.prefix = prefix
-        self.layer_name = f"{prefix}.self_attn.attn"
         self.hidden_size = config.hidden_size
+        self.is_ffn_die = is_ffn_die
+
+        self.layer_name = f"{prefix}.self_attn.attn"
         self.quant_symbol = quant_config is not None
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         max_position_embeddings = getattr(config, "max_position_embeddings",
-                                          8192)
+                                        8192)
         # DecoderLayers are created with `make_layers` which passes the prefix
         # with the layer's index.
-        layer_idx = int(prefix.split(sep='.')[-1])
+        
         self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
@@ -207,6 +212,13 @@ class DeepseekDecoderLayer(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.self_attn",
         )
+        
+        if not self.is_ffn_die:
+            self.input_layernorm = RMSNorm(config.hidden_size,
+                                       eps=config.rms_norm_eps)
+            self.post_attention_layernorm = RMSNorm(config.hidden_size,
+                                                eps=config.rms_norm_eps)
+
         if (config.n_routed_experts is not None
                 and layer_idx >= config.first_k_dense_replace
                 and layer_idx % config.moe_layer_freq == 0):
@@ -217,19 +229,16 @@ class DeepseekDecoderLayer(nn.Module):
             )
             self.is_moe = True
         else:
-            self.mlp = ParallelDeepseekMLP(
-                hidden_size=config.hidden_size,
-                intermediate_size=config.intermediate_size,
-                hidden_act=config.hidden_act,
-                quant_config=quant_config,
-                prefix=f"{prefix}.mlp",
-            )
+            if not self.is_ffn_die:
+                self.mlp = ParallelDeepseekMLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    prefix=f"{prefix}.mlp",
+                )
             self.is_moe = False
-        self.input_layernorm = RMSNorm(config.hidden_size,
-                                       eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size,
-                                                eps=config.rms_norm_eps)
-
+        
     def forward(
             self,
             positions: torch.Tensor,
@@ -242,35 +251,37 @@ class DeepseekDecoderLayer(nn.Module):
     ) -> torch.Tensor:
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[self.layer_name]
-        # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            # Adapt: adapt for w8a8 dynamic, do quant
-            # Combines residual add and rmsnorm
-            quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and not model_extra_config.operator_opt_config.enable_dsa)
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual, quant_symbol=quant_symbol)
-            # Adapt end.
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=hidden_states,
-            kv_cache=kv_cache,
-            attn_metadata=attn_metadata,
-        )
-
         is_prefill = attn_metadata is None or attn_metadata.prefill is not None
 
-        if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
-            with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
+        if not self.is_ffn_die:
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                # Adapt: adapt for w8a8 dynamic, do quant
+                # Combines residual add and rmsnorm
+                quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and not model_extra_config.operator_opt_config.enable_dsa)
+                hidden_states, residual = self.input_layernorm(
+                    hidden_states, residual, quant_symbol=quant_symbol)
+                # Adapt end.
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                attn_metadata=attn_metadata,
+            )
+
+            if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
+                with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
+                    hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+            else:
                 hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        else:
-            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        # hidden : tokens * 7168
+            # hidden : tokens * 7168
 
         # Perform full hidden splitting to avoid OOM
-        if (get_dp_group().world_size  > 1  or DeepseekDecoderLayer.is_split_hidden_states) and is_prefill:
+        if (get_dp_group().world_size  > 1  or DeepseekDecoderLayer.is_split_hidden_states) and is_prefill \
+            and not model_extra_config.parall_config.enable_attn_ffn_disaggregation:
             # During prefill, chunk is only triggered when an extremely large number of identical tokens is detected — to prevent GMM from OOM. 
             # Prefill performance may degrade slightly as a trade-off. 
             # For longer sequences (e.g., >256K or 512K tokens), consider adjusting SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER to optimize memory usage or avoid OOM.
@@ -303,6 +314,8 @@ class DeepseekDecoderLayer(nn.Module):
                 if isinstance(hidden_states, (tuple, list)):
                     assert len(hidden_states) == 2
                     hidden_states = hidden_states[0] + hidden_states[1]
+            elif self.is_ffn_die:
+                pass
             else:
                 hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
 
@@ -388,6 +401,8 @@ class DeepseekV3Model(nn.Module):
         self.prefix = f"{prefix}.layers"
         self.postfix = ".self_attn.attn"
         self.tp_size = get_tensor_model_parallel_world_size()
+        self.hidden_size = config.hidden_size
+        self.is_ffn_die = self.is_ffn_die_in_afd()
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
@@ -403,6 +418,7 @@ class DeepseekV3Model(nn.Module):
                 prefix,
                 cache_config=cache_config,
                 quant_config=quant_config,
+                is_ffn_die=self.is_ffn_die,
             ),
             prefix=f"{prefix}.layers")
 
@@ -440,6 +456,14 @@ class DeepseekV3Model(nn.Module):
         # Split hidden_states if token count or ratio exceeds threshold, to prevent GMM OOM in MoE.
         is_split_hidden_states = max_token_ratio >= ratio_threshold or max_count >= count_threshold
         return is_split_hidden_states
+
+    def is_ffn_die_in_afd(self) -> bool:
+        flag = False
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            ffn_dies = get_ep_group().world_size - model_extra_config.parall_config.attn_dies
+            if get_ep_group().rank_in_group < ffn_dies:
+                flag = True
+        return flag
 
     def forward(
             self,
@@ -502,24 +526,33 @@ class DeepseekV3Model(nn.Module):
             # split input for sp attention
             hidden_states = generate_sp_inputs(hidden_states, attn_metadata)
 
+        if self.is_ffn_die:
+            residual = None
+            fake_hidden_states = torch.zeros(size=(input_ids.shape[0], self.hidden_size), dtype=torch.bfloat16, device=input_ids.device)
+            hidden_states = fake_hidden_states
+
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             layer_id = i - 3
 
-            if i >= self.first_k_dense_replace and i < self.end_layer - 1:
-                next_attention_weights = {
-                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
-                    'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
-                    'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
-                    'W_UK': self.layers[i + 1].self_attn.W_UK
-                }
+            if not self.is_ffn_die:
+                if i >= self.first_k_dense_replace and i < self.end_layer - 1:
+                    next_attention_weights = {
+                        'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
+                        'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
+                        'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
+                        'W_UK': self.layers[i + 1].self_attn.W_UK
+                    }
+                else:
+                    next_attention_weights = {
+                        'q_a_proj_weight': None,
+                        'kv_a_proj_with_mqa_weight': None,
+                        'q_b_proj_weight': None,
+                        'W_UK': None
+                    }
             else:
-                next_attention_weights = {
-                    'q_a_proj_weight': None,
-                    'kv_a_proj_with_mqa_weight': None,
-                    'q_b_proj_weight': None,
-                    'W_UK': None
-                }
+                next_attention_weights = None
+
             hidden_states, residual = layer(positions,
                                             hidden_states,
                                             kv_caches[i - self.start_layer] if kv_caches is not None else None,
@@ -533,8 +566,10 @@ class DeepseekV3Model(nn.Module):
                 "hidden_states": hidden_states,
                 "residual": residual
             })
-
-        hidden_states, _ = self.norm(hidden_states, residual)
+        if residual is not None:
+            hidden_states, _ = self.norm(hidden_states, residual)
+        else:
+            hidden_states = self.norm(hidden_states)
 
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
@@ -801,7 +836,8 @@ class DeepseekV3ForCausalLM(nn.Module):
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
-									  parallel_lmhead=(get_dp_group().world_size > 1))
+									  parallel_lmhead=(get_dp_group().world_size > 1 \
+                                        and not model_extra_config.parall_config.enable_attn_ffn_disaggregation))
         self.logits_processor = LogitsProcessor(self.config.vocab_size,
                                                 logits_as_input=True)
         self.sampler = Sampler()
@@ -810,6 +846,13 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         self.return_hidden_states = True
         self.max_num_token = vllm_config.scheduler_config.max_num_batched_tokens
+
+        is_ffn_die = False
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            ffn_dies = get_ep_group().world_size - model_extra_config.parall_config.attn_dies
+            if get_ep_group().rank_in_group < ffn_dies:
+                is_ffn_die = True
+        self.is_ffn_die = is_ffn_die
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -827,10 +870,17 @@ class DeepseekV3ForCausalLM(nn.Module):
     ) -> Optional[torch.Tensor]:
         hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors, self.max_num_token)
-        if attn_metadata is None:
-            logits = self.compute_lmhead(hidden_states[-1:, ...], None)
-        else:
-            logits = self.compute_lmhead(hidden_states, selected_indices)
+        
+        if self.is_ffn_die:
+            logits = torch.zeros(size=(hidden_states.shape[0], 
+                                    self.config.vocab_size), 
+                                    dtype=hidden_states.dtype, 
+                                    device=hidden_states.device)
+        else: 
+            if attn_metadata is None:
+                logits = self.compute_lmhead(hidden_states[-1:, ...], None)
+            else:
+                logits = self.compute_lmhead(hidden_states, selected_indices)
 
         if self.return_hidden_states:
             return hidden_states, logits

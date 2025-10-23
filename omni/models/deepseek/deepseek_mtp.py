@@ -25,6 +25,8 @@ from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
+from vllm.distributed import get_ep_group
+
 from omni.models.config_loader.loader import model_extra_config
 
 if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
@@ -60,6 +62,7 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
     def __init__(self, *,
                  vllm_config,
                  prefix: str,
+                 is_ffn_die: Optional[bool] = False,
     ):
         self.config = vllm_config.model_config.hf_config
         self.cache_config = vllm_config.cache_config
@@ -68,6 +71,7 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         super().__init__(self.config, prefix,
                          cache_config=self.cache_config,
                          quant_config=self.quant_config,
+                         is_ffn_die=is_ffn_die,
                         )
 
         self.ignore_share_weight = True # TODO get from config
@@ -129,8 +133,10 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
             attn_metadata=attn_metadata,
             residual=None,
         )
-
-        hidden_states, _ = self.shared_head.norm(encoded_states, residual)
+        if residual is not None:
+            hidden_states, _ = self.shared_head.norm(encoded_states, residual)
+        else:
+            hidden_states = self.shared_head.norm(encoded_states)
 
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
@@ -205,11 +211,17 @@ class DeepseekMultiTokenPredictor(nn.Module):
         self.mtp_start_layer_idx = self.config.num_hidden_layers
         self.num_mtp_layers = self.config.num_nextn_predict_layers
         self.ignore_share_weight = True # TODO get from config
+        is_ffn_die = False
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            ffn_dies = get_ep_group().world_size - model_extra_config.parall_config.attn_dies
+            if get_ep_group().rank_in_group < ffn_dies:
+                is_ffn_die = True
         self.layers = nn.ModuleDict({
             str(i + self.mtp_start_layer_idx):
             DeepseekMultiTokenPredictorLayer(
                 vllm_config=vllm_config,
                 prefix=f"{prefix}.layers.{i + self.mtp_start_layer_idx}",
+                is_ffn_die=is_ffn_die,
             )
             for i in range(min(self.num_mtp_layers, vllm_config.speculative_config.num_speculative_tokens))
         })

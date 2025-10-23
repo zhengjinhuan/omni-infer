@@ -917,6 +917,12 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
         global_rank = get_world_group().rank_in_group
         all_to_all_group_size = world_size // experts_tp_size
 
+        ffn_dies = world_size - model_extra_config.parall_config.attn_dies \
+            if model_extra_config.parall_config.enable_attn_ffn_disaggregation else world_size
+        
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation and global_rank < ffn_dies:
+            mc2_mask = torch.zeros([hidden_states.shape[0]], dtype=torch.bool, device=hidden_states.device)
+
         kwargs.update({
             "scales": None,  # Quantization coefficient
             "quant_mode": layer.quant_mode,  # 0: Non-quantization; 1: Static quantization; 2: Dynamic quantization
@@ -932,24 +938,28 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
         output = torch_npu.npu_moe_distribute_dispatch_v2(**kwargs)
         expand_x, dynamic_scale, expand_idx, expert_token_nums, ep_recv_counts = output[0:5]
 
-        group_list = expert_token_nums.to(torch.int64)
+        if global_rank < ffn_dies:
+            group_list = expert_token_nums.to(torch.int64)
 
-        if model_extra_config.task_config.enable_omni_placement and is_route_expert:
-            layer.planner.record_activation(layer.moe_layer_idx, group_list,
-                                            support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
-                                                not is_prefill))
+            if model_extra_config.task_config.enable_omni_placement and is_route_expert:
+                layer.planner.record_activation(layer.moe_layer_idx, group_list,
+                                                support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
+                                                    not is_prefill))
 
-        if shared_expert_rank_num > 0 and global_rank // experts_tp_size < shared_expert_rank_num:
-            if model_extra_config.operator_opt_config.shared_experts_to_gmm:
-                hidden_states_experts = shared_expert_quant_forward(layer, expand_x, group_list, act_dtype, dynamic_scale)
+            if shared_expert_rank_num > 0 and global_rank // experts_tp_size < shared_expert_rank_num:
+                if model_extra_config.operator_opt_config.shared_experts_to_gmm:
+                    hidden_states_experts = shared_expert_quant_forward(layer, expand_x, group_list, act_dtype, dynamic_scale)
+                else:
+                    x = {"x_int8": expand_x, "pertoken_scale": dynamic_scale}
+                    hidden_states_experts = layer(x)
             else:
-                x = {"x_int8": expand_x, "pertoken_scale": dynamic_scale}
-                hidden_states_experts = layer(x)
+                # cal experts
+                group_list = group_list[
+                            :len(layer.w13_weight)]  # Adapt to redundant and non-redundant layers, #ENABLE_OMNI_PLANNER
+                hidden_states_experts = moe_expert_quant_forward(layer, expand_x, group_list, act_dtype, dynamic_scale)
         else:
-            # cal experts
-            group_list = group_list[
-                         :len(layer.w13_weight)]  # Adapt to redundant and non-redundant layers, #ENABLE_OMNI_PLANNER
-            hidden_states_experts = moe_expert_quant_forward(layer, expand_x, group_list, act_dtype, dynamic_scale)
+            hidden_states = torch.zeros_like(expand_x).to(torch.bfloat16)
+            ep_recv_counts = torch.zeros_like(ep_recv_counts)
 
         # moeCombine
         kwargs = {

@@ -223,14 +223,14 @@ class ParallelLMHead(VocabParallelEmbedding):
             return self
 
     def forward(self, hidden_states, embedding_bias):
-        if get_dp_group().world_size > 1:
+        if self.parallel_lmhead:
             hidden_states = get_local_world_group().all_gather(hidden_states, dim=0)
 
         logits = self.quant_method.apply(self,
                                          hidden_states,
                                          bias=embedding_bias)
 
-        if get_dp_group().world_size > 1:
+        if self.parallel_lmhead:
             logits = get_local_world_group().all_to_all(logits)
         else:
             logits = tensor_model_parallel_all_gather(logits)

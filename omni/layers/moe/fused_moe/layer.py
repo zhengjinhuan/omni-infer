@@ -192,6 +192,8 @@ class FusedMoE(torch.nn.Module):
         self.expert_mapping = kwargs.get("expert_mapping", None)
         ep_size = get_ep_group().world_size
         if ep_size > 1:
+            if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+                ep_size = ep_size - model_extra_config.parall_config.attn_dies
             ep_size = ep_size - model_extra_config.parall_config.redundancy_shared_expert_num
             num_experts = int(num_experts / ep_size)
             tp_size = 1
@@ -527,3 +529,31 @@ class FusedMoE(torch.nn.Module):
                 expert_data=expert_data,
                 tp_rank=tp_rank)
             return
+
+class FakeMoe():
+    def __init__(
+        self,
+        num_experts: int,
+        top_k: int,
+        hidden_size: int,
+        quant_config: Optional[QuantizationConfig] = None,
+    ):
+        if quant_config is None:
+            self.quant_mode = UNQUANT_MODE
+        else:
+            self.quant_mode = DYNAMIC_QUANT_MODE
+        
+        self.tp_size = 1
+        self.num_experts = num_experts
+        self.top_k = top_k
+        
+        if model.extra_config.operator_opt_config.decode_moe_dispatch_combine:
+            # 适配dispatch combine算子
+            self.ep_size = get_ep_group().world_size
+            self.global_rank = get_world_group().rank_in_group
+            self.world_size = get_world_group().world_size
+            self.moe_all_to_all_group = get_world_group().device_group
+            self.moe_all_to_all_group_name = self.moe_all_to_all_group._get_backend(torch.device("npu")).get_hccl_comm_name(self.global_rank)
+            self.moe_rs_group = get_pp_group().device_group
+            self.moe_rs_group_rank = get_pp_group().rank_in_group
+            self.moe_rs_group_name = self.moe_rs_group._get_backend(torch.device("npu")).get_hccl_comm_name(self.moe_rs_group_rank)

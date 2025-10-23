@@ -47,7 +47,7 @@ from omni.layers.linear import (
     MergedReplicatedLinear,
 )
 from omni.layers.activation import SiluAndMul
-from omni.layers.moe.fused_moe.layer import FusedMoE, UNQUANT_MODE, DYNAMIC_QUANT_MODE
+from omni.layers.moe.fused_moe.layer import FusedMoE, UNQUANT_MODE, DYNAMIC_QUANT_MODE, FakeMoe
 from omni.adaptors.vllm.distributed.communication_op import (
     all_gather_two_stage,
     reduce_scatter_two_stage,
@@ -219,89 +219,104 @@ class DeepseekMoE(nn.Module):
         
         self.shared_experts = None
         self.experts = None
+        self.fake_experts = None
         self.global_rank = get_world_group().rank_in_group
         self.planner = None
         self.moe_layer_idx = None
         self.expert_mapping = None
         self.attn_prefetch = None
+        self.is_attn_die = False
 
-        if self.global_rank >= self.redundancy_shared_expert_num:
-            moe_prefix = f"{prefix}.experts"
-            # omni placement for redundancy route experts
-            if model_extra_config.task_config.enable_omni_placement:
-                self.planner = OmniPlanner(device="npu",
-                                           rank=get_world_group().rank_in_group,
-                                           world_size=get_world_group().world_size,
-                                           num_experts=self.n_routed_experts,
-                                           num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix, first_k_dense_replace=self.first_k_dense_replace)
-                self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
-            self.experts = FusedMoE(
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            ffn_dies = get_ep_group().world_size - model_extra_config.parall_config.attn_dies
+            self.is_attn_die = False if get_ep_group().rank_in_group < ffn_dies else True
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation and self.is_attn_die:
+            self.fake_experts = FakeMoe(
                 num_experts=self.n_routed_experts,
                 top_k=self.top_k,
                 hidden_size=config.hidden_size,
-                intermediate_size=config.moe_intermediate_size,
-                reduce_results=False,
-                renormalize=self.renormalize,
-                quant_config=quant_config,
-                use_grouped_topk=self.use_grouped_topk,
-                num_expert_group=self.num_expert_group,
-                topk_group=self.topk_group,
-                prefix=moe_prefix,
-                scoring_func=self.scoring_func,
-                e_score_correction_bias=self.gate.e_score_correction_bias,
-                planner=self.planner,
-                moe_layer_idx=self.moe_layer_idx,
-                expert_mapping=self.expert_mapping,
-				first_k_dense_replace=self.first_k_dense_replace
+                quant_config=quant_config
             )
-        if self.n_shared_experts is not None and \
-            (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
-            intermediate_size = config.moe_intermediate_size * self.n_shared_experts
-            # omni placement for redundancy shared experts
-            if self.redundancy_shared_expert_num > 0 and model_extra_config.task_config.enable_omni_placement:
-                # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
-                self.planner = OmniPlanner(device="npu",
-                                           rank=self.global_rank, world_size=self.ep_size,
-                                           num_experts=self.n_routed_experts,
-                                           num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
-                self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=self.first_k_dense_replace)
-                self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
+        else:
+            if self.global_rank >= self.redundancy_shared_expert_num:
+                moe_prefix = f"{prefix}.experts"
+                # omni placement for redundancy route experts
+                if model_extra_config.task_config.enable_omni_placement:
+                    self.planner = OmniPlanner(device="npu",
+                                            rank=get_world_group().rank_in_group,
+                                            world_size=get_world_group().world_size,
+                                            num_experts=self.n_routed_experts,
+                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
+                    self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(moe_prefix, first_k_dense_replace=self.first_k_dense_replace)
+                    self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
+                self.experts = FusedMoE(
+                    num_experts=self.n_routed_experts,
+                    top_k=self.top_k,
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.moe_intermediate_size,
+                    reduce_results=False,
+                    renormalize=self.renormalize,
+                    quant_config=quant_config,
+                    use_grouped_topk=self.use_grouped_topk,
+                    num_expert_group=self.num_expert_group,
+                    topk_group=self.topk_group,
+                    prefix=moe_prefix,
+                    scoring_func=self.scoring_func,
+                    e_score_correction_bias=self.gate.e_score_correction_bias,
+                    planner=self.planner,
+                    moe_layer_idx=self.moe_layer_idx,
+                    expert_mapping=self.expert_mapping,
+                    first_k_dense_replace=self.first_k_dense_replace
+                )
+            if self.n_shared_experts is not None and \
+                (self.redundancy_shared_expert_num == 0 or self.global_rank < self.redundancy_shared_expert_num):
+                intermediate_size = config.moe_intermediate_size * self.n_shared_experts
+                # omni placement for redundancy shared experts
+                if self.redundancy_shared_expert_num > 0 and model_extra_config.task_config.enable_omni_placement:
+                    # The order that first initializing OmniPlanner, then ReplicatedDeepseekMLP, should correspond to the router expert rank initialization order in the layer.py file.
+                    self.planner = OmniPlanner(device="npu",
+                                            rank=self.global_rank, world_size=self.ep_size,
+                                            num_experts=self.n_routed_experts,
+                                            num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
+                    self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(f"{prefix}.share_experts", first_k_dense_replace=self.first_k_dense_replace)
+                    self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx, is_prefill=False)
 
-            self.shared_experts = ReplicatedDeepseekMLP(
-                hidden_size=config.hidden_size,
-                intermediate_size=intermediate_size,
-                hidden_act=config.hidden_act,
-                quant_config=quant_config,
-                reduce_results=False,
-                prefix=f"{prefix}.shared_experts",
-            )
+                self.shared_experts = ReplicatedDeepseekMLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    reduce_results=False,
+                    prefix=f"{prefix}.shared_experts",
+                )
 
-        if self.experts is not None:
-            self.w13_prefetch_size = model_extra_config.operator_opt_config.expert_gate_up_prefetch * 1024 * 1024
-            self.w2_prefetch_size = 0
-            self.local_expert_num = self.experts.w13_weight.shape[0]
-            if self.quant_symbol:
-                self.in_scale_2 = torch.ones((self.local_expert_num, config.moe_intermediate_size), dtype=torch.float32, device=current_platform.device_type)
-                # call the mark_static to reduce memory usage
-                torch._dynamo.mark_static(self.in_scale_2)
-                if self.ep_size > 64:
-                    self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
+            if self.experts is not None:
+                self.w13_prefetch_size = model_extra_config.operator_opt_config.expert_gate_up_prefetch * 1024 * 1024
+                self.w2_prefetch_size = 0
+                self.local_expert_num = self.experts.w13_weight.shape[0]
+                if self.quant_symbol:
+                    self.in_scale_2 = torch.ones((self.local_expert_num, config.moe_intermediate_size), dtype=torch.float32, device=current_platform.device_type)
+                    # call the mark_static to reduce memory usage
+                    torch._dynamo.mark_static(self.in_scale_2)
+                    if self.ep_size > 64:
+                        self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
 
-        self.tuning_config = None
-        if not model_extra_config.operator_opt_config.gmm_nz:
-            self.tuning_config = model_extra_config.task_config.decode_gear_list[:1]
-        elif model_extra_config.task_config.decode_gear_list[0] >= 32:
-            self.tuning_config = [256]
-        
-        self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
-                                model_extra_config.operator_opt_config.prefill_moe_all_to_all)
-        if self.experts_pruning:
-            self.experts_pruning_threshold = torch.tensor(
-                    [0, 0.01, 0.01, 0.01, 0.0665, 0.086, 0.125, 0.135])
+            self.tuning_config = None
+            if not model_extra_config.operator_opt_config.gmm_nz:
+                self.tuning_config = model_extra_config.task_config.decode_gear_list[:1]
+            elif model_extra_config.task_config.decode_gear_list[0] >= 32:
+                self.tuning_config = [256]
+            
+            self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
+                                    model_extra_config.operator_opt_config.prefill_moe_all_to_all)
+            if self.experts_pruning:
+                self.experts_pruning_threshold = torch.tensor(
+                        [0, 0.01, 0.01, 0.01, 0.0665, 0.086, 0.125, 0.135])
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
-        if self.redundancy_shared_expert_num > 0:
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)
+        elif self.redundancy_shared_expert_num > 0:
             if attn_metadata is None or attn_metadata.prefill is not None:
                 return self.forward_separate_expert_prefill(hidden_states, residual, attn_metadata)
             else:
@@ -711,7 +726,13 @@ class DeepseekMoE(nn.Module):
         if model_extra_config.operator_opt_config.best_ep and attn_metadata.decode.best_topk is not None:
             fake_topk_ids = attn_metadata.decode.best_topk
             topk_ids = tng.scope.npu_wait_tensor(fake_topk_ids, topk_ids)
-        hidden_states = fused_experts_moe_dispatch_combine(self.shared_experts or self.experts,
+        
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            ep_world_size = get_ep_group().world_size
+            ffn_dies = ep_world_size - model_extra_config.parall_config.attn_dies
+            max_num_deployed_expert = int((self.n_routed_experts / (ffn_dies - self.redundancy_shared_expert_num))) * (ep_world_size - self.redundancy_shared_expert_num)
+
+        hidden_states = fused_experts_moe_dispatch_combine(self.shared_experts or self.experts or self.fake_experts,
                                                                 hidden_states,
                                                                 topk_weights,
                                                                 topk_ids,
