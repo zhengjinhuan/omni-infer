@@ -11,6 +11,7 @@ else
 fi
 
 client_body_buffer_size="1024K"
+stream_ops="off"
 bootstrap_port=""
 engine_type="vllm"
 
@@ -436,6 +437,7 @@ ${upstream_servers}
 
 function nginx_set_location_openai_compatible() {
     local nginx_conf_file="$1"
+    local stream_ops="$2"
 
     local location_block="
         # match all API of v1
@@ -448,6 +450,7 @@ function nginx_set_location_openai_compatible() {
         # match /v1/completions and /v1/chat/completions
         location ~ ^/v1(/chat)?/completions$ {
             set_request_id on;
+            stream_ops $stream_ops;
             prefill /prefill_internal;
             proxy_pass http://decode_servers;
             proxy_http_version 1.1;
@@ -842,7 +845,7 @@ function nginx_configuration() {
     if [[ -n "$metrics_servers_list" ]]; then
         nginx_set_upstream $nginx_conf_file $metrics_servers_list "metrics_servers" false ""
     fi
-    nginx_set_location_openai_compatible $nginx_conf_file
+    nginx_set_location_openai_compatible $nginx_conf_file $stream_ops
     if [[ -n "$metrics_servers_list" ]]; then
         nginx_set_location_metrics $nginx_conf_file
     fi
@@ -970,6 +973,7 @@ print_help() {
     echo "  --enable-attention-ffn-disaggregation      Enable attention FFN disaggregation"
     echo "  --attention-num <N>                        Number of NPUs deploying the attention mechanism (required when enable-attention-ffn-disaggregation is true)"
     echo "  --dry-run,             -d                  Generate and display configuration without starting the proxy"
+    echo "  --stream-ops <add|set_opt|off>             Set stream_ops directive (default: off), set add to enforce turning on streaming and stream_options, set set_opt to only turn on stream_options when streaming is on"
     echo "  --stop,                -S                  Stop global proxy"
     echo "  --rollback,            -R                  Rollback configuration when stopping"
     echo "  --help,                -h                  Show this help message"
@@ -1080,6 +1084,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --attention-num)
             attention_num="$2"
+            shift 2
+            ;;
+        --stream-ops)
+            stream_ops="$2"
             shift 2
             ;;
         --client-body-buffer-size)

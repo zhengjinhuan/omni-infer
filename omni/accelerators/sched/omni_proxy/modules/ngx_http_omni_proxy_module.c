@@ -21,6 +21,34 @@ ngx_module_t ngx_http_omni_proxy_module;
 #define TIMER_INTERVAL 1
 #define UUID_STR_LEN 37
 
+enum req_metrics_tokens_var {
+    VAR_PROMPT_NUM_TOKENS,
+    VAR_DECODED_TOKENS,
+    VAR_MAX_TOKENS,
+    VAR_MAX_MATCH_DEPTH,
+};
+
+enum req_metrics_time_var {
+    VAR_TIME_RECEIVED,
+    VAR_TIME_CONTENTS_RECEIVED,
+    VAR_TIME_TOKENIZED,
+    VAR_TIME_APC_UPDATED,
+
+    VAR_TIME_ENTER_WAIT_PREFILL,
+    VAR_TIME_PREFILL_SCHEDULED,
+    VAR_TIME_TO_PREFILL,
+    VAR_TIME_PREFILLED,
+
+    VAR_TIME_ENTER_WAIT_DECODE,
+    VAR_TIME_DECODE_SCHEDULED,
+    VAR_TIME_TO_DECODE,
+
+    VAR_TIME_LATENCY,
+    VAR_TIME_FIRST_TOKEN,
+    VAR_TPOT,
+    VAR_TTFT,
+};
+
 static const char *PREFILL_URI = "/prefill_sub";
 static const size_t PREFILL_URI_LEN = sizeof("/prefill_sub") - 1;
 
@@ -2042,6 +2070,184 @@ static ngx_int_t ngx_http_omni_proxy_health_status_handler(ngx_http_request_t *r
     return NGX_DONE;
 }
 
+static ngx_int_t omni_req_uint_var_get(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    omni_req_t *ctx = omni_get_req(r);
+    if (ctx == NULL) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    u_char *p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
+    if (p == NULL) {
+        v->not_found = 1;
+        return NGX_ERROR;
+    }
+    uint32_t value;
+    switch (data) {
+        case VAR_PROMPT_NUM_TOKENS:
+            value = ctx->metrics.prompt_num_tokens;
+            break;
+        case VAR_DECODED_TOKENS:
+            value = ctx->metrics.decoded_tokens;
+            break;
+        case VAR_MAX_TOKENS:
+            value = ctx->metrics.max_tokens;
+            break;
+        case VAR_MAX_MATCH_DEPTH:
+            value = ctx->max_match_depth;
+            break;
+        default :
+            v->not_found = 1;
+            return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(p, "%ui", value) - p;
+    v->data = p;
+    v->valid = 1;
+    v->no_cacheable = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+static ngx_int_t omni_req_time_var_get(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    omni_req_t *ctx = omni_get_req(r);
+    if (ctx == NULL) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    u_char *p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
+    if (p == NULL) {
+        v->not_found = 1;
+        return NGX_ERROR;
+    }
+
+    ngx_msec_t time;
+    switch (data) {
+        case VAR_TIME_RECEIVED:
+            time = ctx->metrics.time_received;
+            break;
+        case VAR_TIME_CONTENTS_RECEIVED:
+            time = ctx->metrics.time_contents_received - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_TOKENIZED:
+            time = ctx->metrics.time_tokenized - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_APC_UPDATED:
+            time = ctx->metrics.time_apc_updated - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_ENTER_WAIT_PREFILL:
+            time = ctx->metrics.time_enter_wait_prefill - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_PREFILL_SCHEDULED:
+            time = ctx->metrics.time_prefill_scheduled - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_TO_PREFILL:
+            time = ctx->metrics.time_to_prefill - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_PREFILLED:
+            time = ctx->metrics.time_prefilled - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_ENTER_WAIT_DECODE:
+            time = ctx->metrics.time_enter_wait_decode - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_DECODE_SCHEDULED:
+            time = ctx->metrics.time_decode_scheduled - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_TO_DECODE:
+            time = ctx->metrics.time_to_decode - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_LATENCY:
+            time = ctx->metrics.time_last_reponse - ctx->metrics.time_received;
+            break;
+        case VAR_TIME_FIRST_TOKEN:
+            time = ctx->metrics.time_first_token;
+            break;
+        case VAR_TPOT:
+            time = ctx->metrics.tpot;
+            break;
+        case VAR_TTFT:
+            time = ctx->metrics.ttft;
+            break;
+        default :
+            v->not_found = 1;
+            return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(p, "%ui", time) - p;
+    v->data = p;
+    v->valid = 1;
+    v->no_cacheable = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+static ngx_http_variable_t ngx_http_omni_variables[] = {
+    {ngx_string("promt_tks"), NULL, omni_req_uint_var_get,
+     VAR_PROMPT_NUM_TOKENS, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("decoded_tks"), NULL, omni_req_uint_var_get,
+     VAR_DECODED_TOKENS, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("max_tks"), NULL, omni_req_uint_var_get,
+     VAR_MAX_TOKENS, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("max_match"), NULL, omni_req_uint_var_get,
+     VAR_MAX_MATCH_DEPTH, NGX_HTTP_VAR_CHANGEABLE, 0},
+
+    {ngx_string("rcved"), NULL, omni_req_time_var_get,
+     VAR_TIME_RECEIVED, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("cont_rcved"), NULL, omni_req_time_var_get,
+     VAR_TIME_CONTENTS_RECEIVED, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("tknized"), NULL, omni_req_time_var_get,
+     VAR_TIME_TOKENIZED, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("apc"), NULL, omni_req_time_var_get,
+     VAR_TIME_APC_UPDATED, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("wait_p"), NULL, omni_req_time_var_get,
+     VAR_TIME_ENTER_WAIT_PREFILL, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("p_sched"), NULL, omni_req_time_var_get,
+     VAR_TIME_PREFILL_SCHEDULED, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("to_p"), NULL, omni_req_time_var_get,
+     VAR_TIME_TO_PREFILL, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("p_ed"), NULL, omni_req_time_var_get,
+     VAR_TIME_PREFILLED, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("wait_d"), NULL, omni_req_time_var_get,
+     VAR_TIME_ENTER_WAIT_DECODE, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("d_sched"), NULL, omni_req_time_var_get,
+     VAR_TIME_DECODE_SCHEDULED, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("to_d"), NULL, omni_req_time_var_get,
+     VAR_TIME_TO_DECODE, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("latency"), NULL, omni_req_time_var_get,
+     VAR_TIME_LATENCY, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("1st_tk"), NULL, omni_req_time_var_get,
+     VAR_TIME_FIRST_TOKEN, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("tpot"), NULL, omni_req_time_var_get,
+     VAR_TPOT, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("ttft"), NULL, omni_req_time_var_get,
+     VAR_TTFT, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_null_string, NULL, NULL, 0, 0, 0}
+};
+
+static ngx_int_t ngx_http_omni_add_variables(ngx_conf_t *cf)
+{
+    ngx_http_variable_t *var, *v;
+
+    for (v = ngx_http_omni_variables; v->name.len; v++) {
+        var = ngx_http_add_variable(cf, &v->name, v->flags);
+        if (var == NULL) {
+            return NGX_ERROR;
+        }
+
+        var->get_handler = v->get_handler;
+        var->data = v->data;
+    }
+
+    return NGX_OK;
+}
+
 static ngx_command_t omni_proxy_commands[] = {
 
     {ngx_string("omni_proxy"),
@@ -2117,8 +2323,8 @@ static ngx_command_t omni_proxy_commands[] = {
     ngx_null_command};
 
 static ngx_http_module_t omni_proxy_module_ctx = {
-    NULL,                   // preconfiguration
-    omni_proxy_post_config, // postconfiguration
+    ngx_http_omni_add_variables, /* preconfiguration */
+    omni_proxy_post_config, /* postconfiguration */
     NULL,                   /* create main configuration */
     NULL,                   /* init main configuration */
 
