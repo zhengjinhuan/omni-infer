@@ -287,6 +287,14 @@ function generate_nginx_conf() {
         \cp -n "$nginx_conf_file" "${nginx_conf_file}_bak"
     fi
 
+    # Ensure log_file directory exists
+    if [[ -n "$log_file" ]]; then
+        log_dir=$(dirname "$log_file")
+        if [[ ! -d "$log_dir" ]]; then
+            mkdir -p "$log_dir"
+        fi
+    fi
+
     cat > "$nginx_conf_file" <<EOF
 load_module /usr/local/nginx/modules/ngx_http_omni_proxy_module.so;
 load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;
