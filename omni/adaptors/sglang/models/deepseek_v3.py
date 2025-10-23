@@ -25,7 +25,7 @@ from sglang.srt.distributed import get_tensor_model_parallel_world_size, tensor_
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
 from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
-from sglang.srt.layers.logits_processor import LogitsProcessor
+from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.fp8_utils import (
@@ -34,7 +34,6 @@ from sglang.srt.layers.quantization.fp8_utils import (
     requant_weight_ue8m0_inplace,
 )
 from sglang.srt.layers.quantization.int8_utils import block_dequant as int8_block_dequant
-from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -60,7 +59,7 @@ from omni.adaptors.sglang.layers.linear import (
     MergedColumnParallelLinear,
     RowParallelLinear,
 )
-from omni.adaptors.sglang.layers.vocab_parallel_embedding import VocabParallelEmbedding
+from omni.adaptors.sglang.layers.vocab_parallel_embedding import VocabParallelEmbedding, ParallelLMHead
 logger = logging.getLogger(__name__)
 
 
@@ -428,10 +427,31 @@ class DeepseekV3ForCausalLM(nn.Module):
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
-
-        return self.logits_processor(
-            input_ids, hidden_states, self.lm_head, forward_batch
+        if forward_batch.is_extend_in_batch :
+            last_index = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
+            pruned_states = hidden_states[last_index]
+        else :
+            pruned_states = hidden_states
+        logits = self.compute_lmhead(pruned_states)
+        return LogitsProcessorOutput(
+            next_token_logits=logits,
+            hidden_states=hidden_states,
         )
+
+    def compute_lmhead(
+            self,
+            hidden_states: torch.Tensor,
+            selected_indices: Optional[torch.Tensor] = None,
+            embedding_bias: Optional[torch.Tensor] = None,
+    ) -> Optional[torch.Tensor]:
+        if selected_indices is not None:
+            hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+            if hidden_states.shape[0] != selected_indices.shape[0]:
+                hidden_states = hidden_states.index_select(0, selected_indices)
+
+        # Get the logits for the next tokens.
+        logits = self.lm_head(hidden_states, embedding_bias)
+        return logits
 
     def post_load_weights(self, is_nextn=False, weight_names=None):
 
@@ -455,144 +475,9 @@ class DeepseekV3ForCausalLM(nn.Module):
                 if not is_nextn
                 else self.model.decoder.self_attn
             )
-            w = self_attn.kv_b_proj.weight
-            # NOTE(HandH1998): Since `bmm_fp8` only supports per-tensor scale, we have to requantize `self_attn.kv_b_proj`.
-            # This may affect the accuracy of fp8 model.
-            # Fix deepseek v3 blockwise bmm by using deep_gemm
-            use_deep_gemm_bmm = False
-
-            if w.dtype in (
-                torch.float8_e4m3fn,
-                torch.float8_e4m3fnuz,
-            ):
-                if (
-                    hasattr(self.quant_config, "weight_block_size")
-                    and self.quant_config.weight_block_size is not None
-                ):
-                    weight_block_size = self.quant_config.weight_block_size
-                    assert hasattr(self_attn.kv_b_proj, "weight_scale_inv")
-
-                    weight = w
-                    weight_scale = self_attn.kv_b_proj.weight_scale_inv
-
-                    w, scale = block_quant_to_tensor_quant(
-                        weight, weight_scale, weight_block_size
-                    )
-                    self_attn.w_scale = scale
-                else:
-                    weight = w
-                    weight_scale = self_attn.kv_b_proj.weight_scale
-
-                    w, scale = channel_quant_to_tensor_quant(weight, weight_scale)
-                    self_attn.w_scale = scale
-
-            if w.dtype == torch.int8:
-                if hasattr(self.quant_config, "weight_block_size"):
-                    # block-wise int8 need it
-                    weight_block_size = self.quant_config.weight_block_size
-                    if weight_block_size is not None:
-                        assert hasattr(self_attn.kv_b_proj, "weight_scale_inv")
-                        weight = w
-                        weight_scale = self_attn.kv_b_proj.weight_scale_inv
-                        w = int8_block_dequant(
-                            weight, weight_scale, weight_block_size
-                        ).to(torch.bfloat16)
-                else:
-                    # channel-wise int8 need it
-                    w = w.to(torch.bfloat16) * self_attn.kv_b_proj.weight_scale.to(
-                        torch.bfloat16
-                    )
-
-            w_kc, w_vc = w.unflatten(
-                0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim)
-            ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1)
-            if not use_deep_gemm_bmm:
-                self_attn.w_kc = bind_or_assign(self_attn.w_kc, w_kc.contiguous())
-                self_attn.w_vc = bind_or_assign(
-                    self_attn.w_vc, w_vc.transpose(1, 2).contiguous()
-                )
-                if (
-                    hasattr(self_attn.kv_b_proj, "weight_scale")
-                    and self_attn.w_scale is None
-                ):
-                    self_attn.w_scale = bind_or_assign(
-                        self_attn.w_scale, self_attn.kv_b_proj.weight_scale
-                    )
-
-            else:
-                num_tiles_k = self_attn.qk_nope_head_dim // weight_block_size[1]
-                num_tiles_n = self_attn.v_head_dim // weight_block_size[0]
-                ws_kc, ws_vc = weight_scale.unflatten(
-                    0, (-1, (num_tiles_k + num_tiles_n))
-                ).split([num_tiles_k, num_tiles_n], dim=1)
-                self_attn.w_scale_k = bind_or_assign(
-                    self_attn.w_scale_k, ws_kc.transpose(1, 2).contiguous()
-                )
-                self_attn.w_scale_v = bind_or_assign(
-                    self_attn.w_scale_v, ws_vc.contiguous()
-                )
-                self_attn.w_kc = bind_or_assign(
-                    self_attn.w_kc, w_kc.transpose(1, 2).contiguous()
-                )
-                self_attn.w_vc = bind_or_assign(self_attn.w_vc, w_vc.contiguous())
-                self_attn.use_deep_gemm_bmm = True
-
-        if (
-            deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
-            and deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0
-            and hasattr(self.quant_config, "weight_block_size")
-            and self.quant_config.weight_block_size is not None
-        ):
-            self._weight_requant_ue8m0(is_nextn)
-
-    def _weight_requant_ue8m0(self, is_nextn=False):
-        weight_block_size = self.quant_config.weight_block_size
-
-        moe_layers = list(
-            range(
-                self.config.first_k_dense_replace,
-                self.config.num_hidden_layers,
-                self.config.moe_layer_freq,
-            )
-        )
-
-        num_hidden_layers = 1 if is_nextn else self.config.num_hidden_layers
-        for layer_id in range(num_hidden_layers):
-            if is_nextn:
-                layer = self.model.decoder
-            else:
-                layer = self.model.layers[layer_id]
-
-            for module in [
-                layer.self_attn.fused_qkv_a_proj_with_mqa,
-                layer.self_attn.q_b_proj,
-                layer.self_attn.kv_b_proj,
-                layer.self_attn.o_proj,
-            ]:
-                requant_weight_ue8m0_inplace(
-                    module.weight, module.weight_scale_inv, weight_block_size
-                )
-
-            if layer_id in moe_layers or is_nextn:
-                shared_experts = getattr(layer.mlp, "shared_experts", None)
-                if shared_experts is not None:
-                    for module in [
-                        shared_experts.gate_up_proj,
-                        shared_experts.down_proj,
-                    ]:
-                        requant_weight_ue8m0_inplace(
-                            module.weight, module.weight_scale_inv, weight_block_size
-                        )
-            else:
-                mlp = layer.mlp
-                assert isinstance(mlp, ParallelDeepseekMLP)
-                for module in [
-                    mlp.gate_up_proj,
-                    mlp.down_proj,
-                ]:
-                    requant_weight_ue8m0_inplace(
-                        module.weight, module.weight_scale_inv, weight_block_size
-                    )
+            if self_attn.w_kc is not None and self_attn.w_vc is not None:
+                self_attn.w_kc = torch.nn.Parameter(self_attn.w_kc.contiguous(), requires_grad=False)
+                self_attn.w_vc = torch.nn.Parameter(self_attn.w_vc.contiguous(), requires_grad=False)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]], is_nextn=False):
 
@@ -821,15 +706,11 @@ class DeepseekV3ForCausalLM(nn.Module):
         self.post_load_weights(is_nextn=is_nextn, weight_names=weight_names)
 
     def get_embed_and_head(self):
-        return self.model.embed_tokens.weight, self.lm_head.weight
+        return self.model.embed_tokens, self.lm_head
 
     def set_embed_and_head(self, embed, head):
-        del self.model.embed_tokens.weight
-        del self.lm_head.weight
-        self.model.embed_tokens.weight = embed
-        self.lm_head.weight = head
-        # torch.cuda.empty_cache()
-        # torch.cuda.synchronize()
+        self.model.embed_tokens = embed
+        self.lm_head = head
 
     @classmethod
     def get_model_config_for_expert_location(cls, config):

@@ -121,14 +121,6 @@ class DeepseekMLA(nn.Module):
         self.layer_scatter_modes = layer_scatter_modes
         self.quant_symbol = quant_config is not None
 
-        self.mask_length = 2048
-        self.attn_mask = ~torch.tril(
-            torch.ones(
-                (self.mask_length, self.mask_length),
-                dtype=torch.bool,
-                device=global_server_args_dict["device"],
-            )
-        )
         self.enable_fused_qkv = os.environ.get("USE_FUSE_QKV_A_PROJ", "0") == "1"
         # For tensor parallel attention
         if self.q_lora_rank is not None:
@@ -294,6 +286,26 @@ class DeepseekMLA(nn.Module):
         self.weight_block_size = None
         self.enable_mla_multi_stream = False
 
+        if get_attention_dp_size() > 1:
+            kv_b_proj_weight = self.kv_b_proj.weight.T
+
+            expected_shape = (
+                self.kv_lora_rank,
+                self.num_heads * (self.qk_nope_head_dim + self.v_head_dim)
+            )
+            if kv_b_proj_weight.shape != expected_shape:
+                raise RuntimeError(f"{kv_b_proj_weight.shape} != {expected_shape}")
+
+            kv_b_proj_weight = kv_b_proj_weight.view(
+                self.kv_lora_rank,
+                self.num_heads,
+                self.qk_nope_head_dim + self.v_head_dim,
+            )
+            self.w_kc, self.w_vc = kv_b_proj_weight.split(
+                [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+            self.w_kc = self.w_kc.permute(1, 2, 0)
+            self.w_vc = self.w_vc.transpose(0, 1)
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -404,7 +416,7 @@ class DeepseekMLA(nn.Module):
                 key_rope=k_rope,
                 num_heads=self.num_local_heads,
                 input_layout="TND",
-                atten_mask=self.attn_mask,
+                atten_mask=forward_batch.attn_backend.forward_metadata.attn_mask,
                 sparse_mode=3,
                 actual_seq_lengths=metadata.seq_lens_list_cumsum,
                 actual_seq_lengths_kv=metadata.seq_lens_list_cumsum,
@@ -486,21 +498,21 @@ class DeepseekMLA(nn.Module):
             q_rope = q_rope.view(bsz, self.num_local_heads, -1)
         attn_ops_scope = tng.ops if forward_batch.can_run_graph else torch.ops.npu
         attn_output, _ = attn_ops_scope.npu_fused_infer_attention_score(
-            q_nope, 
-            k_nope, 
-            k_nope, 
-            query_rope=q_rope, 
+            q_nope,
+            k_nope,
+            k_nope,
+            query_rope=q_rope,
             key_rope=k_rope,
             num_heads=self.num_local_heads,
-            num_key_value_heads=1, 
+            num_key_value_heads=1,
             input_layout='TND_NTD',
             scale=self.scaling,
-            antiquant_mode=0, 
+            antiquant_mode=0,
             antiquant_scale=None,
             block_table=metadata.block_kv_indices,
             block_size=metadata.page_size,
             actual_seq_lengths=metadata.actual_seq_lengths,
-            actual_seq_lengths_kv=metadata.seq_lens
+            actual_seq_lengths_kv=metadata.actual_seq_lengths_kv
         )
        
         attn_output = attn_output.view(self.num_local_heads, -1, self.kv_lora_rank)
@@ -512,4 +524,3 @@ class DeepseekMLA(nn.Module):
         output, _ = self.o_proj(attn_output)
 
         return output
-
