@@ -1,3 +1,5 @@
+profiles:
+  vllm:
     qwen:
       D:
         env:
