@@ -234,12 +234,6 @@ static void omni_proxy_req_body_handler(ngx_http_request_t *r)
 }
 static inline void omni_proxy_cleanup_req(omni_req_t *req)
 {
-    ngx_http_request_t *r = omni_get_http_request(req);
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                "<<<Action: Received all tokens; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
-
     omni_proxy_request_phase_t phases[PHASE_MAX];
     size_t count = 0;
     omni_req_get_phases(req, phases, &count);
@@ -313,6 +307,11 @@ static void omni_proxy_main_req_cleanup(void *data)
     omni_req_t *req = data;
     omni_proxy_cleanup_req(req);
 
+    ngx_http_request_t *r = omni_get_http_request(req);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                "<<<Action: Received all tokens; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
     ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
                   "[Decode-%d]: Done from %d.",
                   req->slot_index, req->decode_upstream_endpoint_idx);
@@ -654,13 +653,8 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
             struct timeval tv;
             gettimeofday(&tv, NULL);
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                        "<<<Action: Proxy got first token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
-        }else if (req->metrics.decoded_tokens == 3){
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                         "<<<Action: Proxy got second token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
-        }else if (req->metrics.decoded_tokens == 4){
+        }else if (req->metrics.decoded_tokens == 3){
             struct timeval tv;
             gettimeofday(&tv, NULL);
             ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
@@ -676,6 +670,10 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
     }
     else
     {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                    "<<<Action: Proxy got first token; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, req->request_id);
         req->metrics.ttft = ngx_current_msec - req->metrics.time_received;
         req->metrics.time_first_token = req->metrics.tpot = ngx_current_msec - req->metrics.time_to_decode;
         req->metrics.decoded_tokens++;
@@ -1470,13 +1468,24 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
             continue;
         }
 
+        bool is_prefill = false;
+        const char *type_str = NULL;
+
         if (ngx_strncmp(uscf->host.data, PREFILL_ENDPOINTS, sizeof(PREFILL_ENDPOINTS) - 1) == 0)
         {
+            is_prefill = true;
+            type_str = "prefill";
             local_state.num_prefill_endpoints = uscf->servers->nelts;
         }
         else if (ngx_strncmp(uscf->host.data, DECODE_ENDPOINTS, sizeof(DECODE_ENDPOINTS) - 1) == 0)
         {
+            type_str = "decode";
             local_state.num_decode_endpoints = uscf->servers->nelts;
+        }
+        else
+        {
+            // If it's not a prefill or decode upstream, skip it.
+            continue;
         }
 
         int count = 0;
@@ -1491,7 +1500,7 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
                 ngx_str_t shm_name;
 
                 u_char *buffer = ngx_pcalloc(cf->pool, 64);
-                u_char *end = ngx_snprintf(buffer, 64, "omni_proxy_%d", count);
+                u_char *end = ngx_snprintf(buffer, 64, "omni_proxy_%s_%d", type_str, count);
                 *end = 0;
 
                 shm_name.data = buffer;
@@ -1509,8 +1518,9 @@ static ngx_int_t omni_proxy_init_apc_shm(ngx_conf_t *cf)
                 shm_zone->init = omni_proxy_apc_shm_initialized;
 
                 ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
-                                "    Created 20MB shared memory zone: %V",
-                                &shm_name);
+                                "    Created 20MB shared memory zone: %V (zone=%p)",
+                                &shm_name,
+                                shm_zone);
             }
         }
     }

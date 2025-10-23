@@ -60,13 +60,13 @@ mkdir $TARGET_FOLDER
 
 for IP in $(cat "$SERVER_LIST"); do
     echo "Collecting logs from $IP..."
-    scp -i /home/cjj/keypair-dwe-g00615224-0606.pem -r "root@$IP:$REMOTE_FOLDER" "./logs_$IP"
+    scp -i key.pem -r "root@$IP:$REMOTE_FOLDER" "./logs_$IP"
     mv "./logs_$IP" $TARGET_FOLDER
 
     # copy logs in proxy
-    if ssh -i /home/cjj/keypair-dwe-g00615224-0606.pem root@$IP "test -f '$PROXY_FOLDER/nginx_error.log'"; then
+    if ssh -i key.pem root@$IP "test -f '$PROXY_FOLDER/nginx_error.log'"; then
         echo "nginx_error.log found on $IP, copying..."
-        scp -i /home/cjj/keypair-dwe-g00615224-0606.pem "root@$IP:$PROXY_FOLDER/nginx_error.log" "$TARGET_FOLDER/nginx_${IP}.log"
+        scp -i key.pem "root@$IP:$PROXY_FOLDER/nginx_error.log" "$TARGET_FOLDER/nginx_${IP}.log"
     fi
 done
 ```
